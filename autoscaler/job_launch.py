@@ -8,12 +8,11 @@ def _submit_slurm_job(script_path: str) -> int:
     try:
         result = subprocess.run(
             ["sbatch", script_path],
-            capture_output=True,
-            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             check=True
         )
-
-        output = result.stdout.strip()
+        output = result.stdout.decode().strip()
         job_id = int(output.split()[-1])
         logger.info(f"Job submitted successfully with Job ID: {job_id}")
         return job_id

@@ -10,10 +10,9 @@ def get_slurm_jobs_by_state(state: str) -> int:
             ["squeue", "-u", "$USER", f"--state={state}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             check=True
         )
-        num_jobs = len(result.stdout.strip().split("\n")) - 1
+        num_jobs = len(result.stdout.decode().strip().split("\n")) - 1
         logger.info(f"Number of SLURM {state.lower()} jobs: {num_jobs}")
         return num_jobs
     except subprocess.CalledProcessError as e:
@@ -41,10 +40,9 @@ def get_ray_status() -> str:
             ["ray", "status"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             check=True
         )
-        return result.stdout
+        return result.stdout.decode()
     except subprocess.CalledProcessError as e:
         logger.error(f"Error getting Ray status: {e}")
         return ""

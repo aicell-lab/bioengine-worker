@@ -11,11 +11,15 @@ class TestAutoscaler(unittest.TestCase):
         if os.path.exists(log_file):
             os.remove(log_file)
 
-    def test_initialize_logs_creates_log_file(self):
+    def test_creates_log_file(self):
         """Test that the initialize_logs method creates the log file."""
-        autoscaler = Autoscaler()
+        Autoscaler()
         log_file = os.path.join(Config.LOGS_DIR, Config.AUTOSCALER_LOGS_FILENAME)
         self.assertTrue(os.path.exists(log_file))
+
+    def test_get_load_status(self):
+        "Test if the correct load status is retrieved from mock ray status messages and mock slurm status messages"
+        ...
 
 if __name__ == "__main__":
     unittest.main()

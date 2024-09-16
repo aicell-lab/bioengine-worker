@@ -1,10 +1,30 @@
 import unittest
+import os
+from datetime import datetime
+from main import Autoscaler, Config
 
-from main import say_hello
+class TestAutoscaler(unittest.TestCase):
+    def setUp(self):
+        """Set up the environment for testing."""
+        # Remove the log file if it exists before each test
+        log_file = os.path.join(Config.LOGS_DIR, Config.AUTOSCALER_LOGS_FILENAME)
+        if os.path.exists(log_file):
+            os.remove(log_file)
 
-class TestMain(unittest.TestCase):
-    def test_say_hello(self):
-        self.assertEqual(say_hello(), "Hello, World!")
+    def test_initialize_logs_creates_log_file(self):
+        """Test that the initialize_logs method creates the log file."""
+        autoscaler = Autoscaler()
+        log_file = os.path.join(Config.LOGS_DIR, Config.AUTOSCALER_LOGS_FILENAME)
+        self.assertTrue(os.path.exists(log_file))
+
+    def test_log_file_initial_content(self):
+        """Test the initial content of the log file."""
+        autoscaler = Autoscaler()
+        log_file = os.path.join(Config.LOGS_DIR, Config.AUTOSCALER_LOGS_FILENAME)
+        with open(log_file, 'r') as f:
+            first_line = f.readline().strip()
+        expected_start = f"Log file created on {datetime.now().strftime('%Y-%m-%d')}"
+        self.assertTrue(first_line.startswith(expected_start))
 
 if __name__ == "__main__":
     unittest.main()

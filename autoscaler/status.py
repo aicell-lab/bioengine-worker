@@ -51,14 +51,13 @@ def get_ray_status() -> str:
         return ""
 def get_num_ray_pending_jobs() -> int:
     status_output = get_ray_status()
-    if "Pending:" in status_output:
+    if "(no pending nodes)" not in status_output:
         pending_section = status_output.split("Pending:")[1].split("\n")[0].strip()
-        if pending_section == "(no pending nodes)":
-            return 0
-        else:
-            return len(pending_section.split("\n"))
+        return len(pending_section.split("\n"))
     return 0
 def get_num_ray_running_jobs() -> int:
+    if True:
+        return 0
     status_output = get_ray_status()
     if "Healthy:" in status_output:
         healthy_section = status_output.split("Healthy:")[1].split("\n")[0].strip()

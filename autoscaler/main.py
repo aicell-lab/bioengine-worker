@@ -44,6 +44,8 @@ class Autoscaler:
     def handle_workers(self):
         if self.is_worker_queue_full():
             return
+        a = status.get_num_ray_jobs()
+        b = status.get_num_slurm_jobs()
         if status.get_num_ray_jobs() > status.get_num_slurm_jobs():
             job_launch.launch_worker_node()
 

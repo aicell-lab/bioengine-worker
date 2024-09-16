@@ -12,9 +12,7 @@ class Autoscaler:
         log_file = os.path.join(Config.LOGS_DIR, Config.AUTOSCALER_LOGS_FILENAME)
         if not os.path.exists(log_file):
             with open(log_file, 'w') as f:
-                timestamp = datetime.now().strftime(Config.Logging.INITIAL_LOG_TIMESTAMP_FORMAT)
-                initial_log_entry = Config.Logging.INITIAL_LOG_FORMAT.format(timestamp=timestamp)
-                f.write(initial_log_entry)
+                pass
         return log_file
 
     def setup_logging(self):
@@ -29,7 +27,7 @@ class Autoscaler:
         )
 
     def run(self):
-        self.logger.info(Config.Logging.START_MSG)
+        logging.info(Config.Logging.START_MSG)
         
 
 if __name__ == "__main__":

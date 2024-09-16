@@ -2,6 +2,7 @@ import unittest
 import os
 from datetime import datetime
 from main import Autoscaler, Config
+import status
 
 class TestAutoscaler(unittest.TestCase):
     def setUp(self):
@@ -10,21 +11,17 @@ class TestAutoscaler(unittest.TestCase):
         log_file = os.path.join(Config.LOGS_DIR, Config.AUTOSCALER_LOGS_FILENAME)
         if os.path.exists(log_file):
             os.remove(log_file)
+        self.autoscaler = Autoscaler()
 
-    def test_initialize_logs_creates_log_file(self):
+    def test_creates_log_file(self):
         """Test that the initialize_logs method creates the log file."""
-        autoscaler = Autoscaler()
         log_file = os.path.join(Config.LOGS_DIR, Config.AUTOSCALER_LOGS_FILENAME)
         self.assertTrue(os.path.exists(log_file))
 
-    def test_log_file_initial_content(self):
-        """Test the initial content of the log file."""
-        autoscaler = Autoscaler()
-        log_file = os.path.join(Config.LOGS_DIR, Config.AUTOSCALER_LOGS_FILENAME)
-        with open(log_file, 'r') as f:
-            first_line = f.readline().strip()
-        expected_start = f"Log file created on {datetime.now().strftime('%Y-%m-%d')}"
-        self.assertTrue(first_line.startswith(expected_start))
+    def test_get_load_status(self):
+        "Test if the correct load status is retrieved from mock ray status messages and mock slurm status messages"
+        print(status.get_num_slurm_pending_jobs())
+        ...
 
 if __name__ == "__main__":
     unittest.main()

@@ -61,12 +61,23 @@ class Autoscaler:
         self.log_slurm_status()
         self.log_ray_status()
 
+    def loop_step(self):
+        self.handle_workers()
+        self.log_status()
+        time.sleep(Config.AUTOSCALER_CHECK_INTERVAL)
+
+    def on_shutdown(self):
+        for handler in logging.root.handlers[:]:
+            handler.close()
+            logging.root.removeHandler(handler)
+
     def run(self):
         logging.info(Config.Logging.START_MSG)
-        while True:
-            self.handle_workers()
-            self.log_status()
-            time.sleep(Config.AUTOSCALER_CHECK_INTERVAL) 
+        try:
+            while True:
+                self.loop_step()
+        finally:
+            self.on_shutdown()
         
 
 if __name__ == "__main__":

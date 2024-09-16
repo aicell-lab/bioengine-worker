@@ -8,7 +8,8 @@ def get_slurm_jobs_by_state(state: str) -> int:
     try:
         result = subprocess.run(
             ["squeue", "-u", "$USER", f"--state={state}"],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             check=True
         )
@@ -38,7 +39,8 @@ def get_ray_status() -> str:
     try:
         result = subprocess.run(
             ["ray", "status"],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             check=True
         )

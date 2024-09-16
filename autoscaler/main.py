@@ -1,8 +1,10 @@
 from config import Config
 import status
+import job_launch
+
 import os
 import logging
-from datetime import datetime
+import time 
 
 class Autoscaler:
     def __init__(self):
@@ -17,18 +19,54 @@ class Autoscaler:
         return log_file
 
     def setup_logging(self):
+        log_file = self.setup_log_files()
+        # Clear existing handlers to avoid duplicates
+        for handler in logging.root.handlers[:]:
+            handler.close() 
+            logging.root.removeHandler(handler)
         logging.basicConfig(
             level=Config.Logging.LEVEL,
             format=Config.Logging.FORMAT,
             datefmt=Config.Logging.DATE_FORMAT,
             handlers=[
-                logging.FileHandler(self.setup_log_files()),
-                logging.StreamHandler() 
+                logging.FileHandler(log_file, mode='a'),  # Ensure append mode
+                logging.StreamHandler()
             ]
         )
 
+    def is_worker_queue_full(self) -> bool:
+        if status.get_num_slurm_jobs() >= Config.MAX_NODES:
+            return True
+        if status.get_num_slurm_pending_jobs() > 0:
+            return True # Avoid spamming slurm jobs
+        return False
+
+    def handle_workers(self):
+        if self.is_worker_queue_full():
+            return
+        if status.get_num_ray_jobs() > status.get_num_slurm_jobs():
+            job_launch.launch_worker_node()
+
+    def log_slurm_status(self):
+        logging.info(f"Pending SLURM jobs: {status.get_num_slurm_pending_jobs()}")
+        logging.info(f"Running SLURM jobs: {status.get_num_slurm_running_jobs()}")
+        logging.info(f"Total SLURM jobs: {status.get_num_slurm_jobs()}")
+
+    def log_ray_status(self):
+        logging.info(f"Pending Ray jobs: {status.get_num_ray_pending_jobs()}")
+        logging.info(f"Running Ray jobs: {status.get_num_ray_running_jobs()}")
+        logging.info(f"Total Ray jobs: {status.get_num_ray_jobs()}")
+
+    def log_status(self):
+        self.log_slurm_status()
+        self.log_ray_status()
+
     def run(self):
         logging.info(Config.Logging.START_MSG)
+        while True:
+            self.handle_workers()
+            self.log_status()
+            time.sleep(Config.AUTOSCALER_CHECK_INTERVAL) 
         
 
 if __name__ == "__main__":

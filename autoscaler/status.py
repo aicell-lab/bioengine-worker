@@ -56,8 +56,6 @@ def get_num_ray_pending_jobs() -> int:
         return len(pending_section.split("\n"))
     return 0
 def get_num_ray_running_jobs() -> int:
-    if True:
-        return 0
     status_output = get_ray_status()
     if "Healthy:" in status_output:
         healthy_section = status_output.split("Healthy:")[1].split("\n")[0].strip()

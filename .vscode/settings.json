@@ -1,0 +1,8 @@
+{
+    "python.autoComplete.extraPaths": [
+        "${workspaceFolder}/autoscaler"
+    ],
+    "python.analysis.extraPaths": [
+        "./autoscaler"
+    ]
+}

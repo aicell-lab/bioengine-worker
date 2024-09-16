@@ -19,6 +19,8 @@ class Config:
         SCRIPTS_DIR,
         WORKER_BATCH_FILENAME
     )
+
+    AUTOSCALER_CHECK_INTERVAL = 5
     
     class Logging:
         LEVEL = "DEBUG" 

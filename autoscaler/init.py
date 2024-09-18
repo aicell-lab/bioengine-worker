@@ -35,10 +35,8 @@ def _setup_logging():
 def _check_ray_status() -> bool:
     import subprocess
     try:
-        result = terminal.run_command(args=['ray', 'status'])
-        if not result:
-             return False
-        return int(result.returncode) == 0
+        result = subprocess.run(['ray', 'status'])
+        return result.returncode == 0
     except Exception as e:
         print(f"Error checking Ray status {e}")
     return False

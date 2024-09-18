@@ -1,11 +1,9 @@
 import subprocess
 import logging
 import terminal
+from config import Config
 
 logger = logging.getLogger(__name__)
-
-class Slurm:
-    ...
 
 ## SLURM STATUS
 def get_slurm_jobs_by_state(state: str) -> int:
@@ -42,4 +40,46 @@ def get_num_ray_running_jobs() -> int:
 
 def get_num_ray_jobs() -> int:
     return get_num_ray_pending_jobs() + get_num_ray_running_jobs()
+
+class JobMetrics:
+    def __init__(self):
+        self.pending_jobs = 0
+        self.running_jobs = 0
+        self.total_jobs = 0
+
+    def set_jobs(self, pending_jobs: int, running_jobs: int):
+        self.pending_jobs = pending_jobs
+        self.running_jobs = running_jobs
+        self._set_total_jobs()
+
+    def _set_total_jobs(self):
+        self.total_jobs = self.pending_jobs + self.running_jobs
+
+    def __str__(self):
+        return (f"JobStatus(pending_jobs={self.pending_jobs}, "
+                f"running_jobs={self.running_jobs}, "
+                f"total_jobs={self.total_jobs})")
+
+class Status:
+    def __init__(self):
+        self.slurm = JobMetrics()
+        self.ray = JobMetrics()
+        self.update()
+
+    def update(self):
+        self.slurm.set_jobs(pending_jobs=get_num_slurm_pending_jobs(), running_jobs=get_num_slurm_running_jobs())
+        self.ray.set_jobs(pending_jobs=get_num_ray_pending_jobs(), running_jobs=get_num_ray_running_jobs())
+
+    def is_worker_queue_full(self) -> bool:
+        if self.slurm.total_jobs >= Config.MAX_NODES:
+            return True
+        if self.slurm.pending_jobs > 0:
+            return True # Avoid spamming slurm jobs
+        return False
+    
+    def need_more_workers(self) -> bool:
+        return self.ray.total_jobs > self.slurm.total_jobs
+
+    def __str__(self):
+        return f"Slurm({self.slurm}) Ray({self.ray})"
 

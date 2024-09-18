@@ -1,6 +1,7 @@
 import os
 import logging
 from config import Config
+import terminal
 
 ## Initialize and close global resources such as singletons.
 
@@ -34,8 +35,10 @@ def _setup_logging():
 def _check_ray_status() -> bool:
     import subprocess
     try:
-        result = subprocess.run(['ray', 'status'], capture_output=True, text=True)
-        return result.returncode == 0
+        result = terminal.run_command(args=['ray', 'status'])
+        if not result:
+             return False
+        return int(result.returncode) == 0
     except Exception as e:
         print(f"Error checking Ray status {e}")
     return False

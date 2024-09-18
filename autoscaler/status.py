@@ -4,6 +4,9 @@ import terminal
 
 logger = logging.getLogger(__name__)
 
+class Slurm:
+    ...
+
 ## SLURM STATUS
 def get_slurm_jobs_by_state(state: str) -> int:
     output = terminal.run_command(["squeue", "-u", "$USER", f"--state={state}"])

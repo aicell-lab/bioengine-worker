@@ -32,7 +32,7 @@ def get_num_ray_pending_jobs() -> int:
     return 0
 def get_num_ray_running_jobs() -> int:
     status_output = get_ray_status()
-    if "Healthy:" in status_output:
+    if status_output and "Healthy:" in status_output:
         healthy_section = status_output.split("Healthy:")[1].split("\n")[0].strip()
         num_active_workers = len(healthy_section.split("\n"))
         return max(0,num_active_workers - 1)  # Subtract 1 to exclude login head-node

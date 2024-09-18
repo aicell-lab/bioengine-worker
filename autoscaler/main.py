@@ -1,11 +1,9 @@
 
 from scaler import Scaler
-import config
-import logging
+import init
 
 if __name__ == "__main__":
-    config.init_singletons()
-    autoscaler = Scaler()
-    autoscaler.run()
-    config.shutdown_singletons()
+    if init.setup():
+        Scaler().run()
+        init.shutdown()
 

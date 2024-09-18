@@ -2,6 +2,17 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Python: Run main.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/autoscaler/main.py", 
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/autoscaler"
+            }
+        }/*,
+        {
             "name": "Python: Run Unit Tests",
             "type": "debugpy",
             "request": "launch",
@@ -11,6 +22,6 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/autoscaler"
             }
-        }
+        }*/
     ]
 }

@@ -1,29 +1,16 @@
 import subprocess
 import logging
+import terminal
 
 logger = logging.getLogger(__name__)
 
 ## SLURM STATUS
 def get_slurm_jobs_by_state(state: str) -> int:
-    try:
-        result = subprocess.run(
-            ["squeue", "-u", "$USER", f"--state={state}"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
-        num_jobs = len(result.stdout.decode().strip().split("\n")) - 1
-        logger.info(f"Number of SLURM {state.lower()} jobs: {num_jobs}")
-        return num_jobs
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Error getting SLURM {state.lower()} jobs: {e}")
-        return 0
-    except FileNotFoundError:
-        logger.error("The 'squeue' command was not found. Ensure SLURM is installed and accessible.")
-        return 0
-    except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
-        return 0
+    output = terminal.run_command(["squeue", "-u", "$USER", f"--state={state}"])
+    num_jobs = 0
+    if output:
+        num_jobs = len(output.strip().split("\n")) - 1
+    return num_jobs
 
 def get_num_slurm_pending_jobs() -> int:
     return get_slurm_jobs_by_state("PENDING")
@@ -32,26 +19,13 @@ def get_num_slurm_running_jobs() -> int:
 def get_num_slurm_jobs() -> int:
     return get_num_slurm_pending_jobs() + get_num_slurm_running_jobs()
 
-
 ## RAY CLUSTER STATUS
 def get_ray_status() -> str:
-    try:
-        result = subprocess.run(
-            ["ray", "status"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True
-        )
-        return result.stdout.decode()
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Error getting Ray status: {e}")
-        return ""
-    except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
-        return ""
+    return terminal.run_command(args=["ray", "status"])
+
 def get_num_ray_pending_jobs() -> int:
     status_output = get_ray_status()
-    if "(no pending nodes)" not in status_output:
+    if status_output and "(no pending nodes)" not in status_output:
         pending_section = status_output.split("Pending:")[1].split("\n")[0].strip()
         return len(pending_section.split("\n"))
     return 0

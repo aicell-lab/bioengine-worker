@@ -1,6 +1,6 @@
 from config import Config
 import status
-import job_launch
+import terminal
 
 import os
 import logging
@@ -45,7 +45,7 @@ class Autoscaler:
         if self.is_worker_queue_full():
             return
         if status.get_num_ray_jobs() > status.get_num_slurm_jobs():
-            job_launch.launch_worker_node()
+            terminal.launch_worker_node()
 
     def log_slurm_status(self):
         logging.info(f"Pending SLURM jobs: {status.get_num_slurm_pending_jobs()}")

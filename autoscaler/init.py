@@ -31,8 +31,22 @@ def _setup_logging():
             ]
         )
 
+def _check_ray_status() -> bool:
+    import subprocess
+    try:
+        result = subprocess.run(['ray', 'status'], capture_output=True, text=True)
+        return result.returncode == 0
+    except Exception as e:
+        print(f"Error checking Ray status {e}")
+    return False
+
 def shutdown():
     _clear_loggers()
 
-def setup():
+def setup() -> bool:
+     import sys
      _setup_logging()
+     if not _check_ray_status():
+          print(f"No head node detected. Launch a Ray head node before running this autoscaler.", file=sys.stderr)
+          return False
+     return True

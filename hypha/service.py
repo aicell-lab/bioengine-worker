@@ -66,8 +66,7 @@ def create_services() -> List[Callable]:
 
 async def register_service():
     services = create_services()
-    colab_client = await Hypha.authenticate()
-    service_info = await Hypha.register_service(server_handle=colab_client, callbacks=services)
+    service_info = await Hypha.register_service(server_handle=await Hypha.authenticate(), callbacks=services)
     Hypha.print_services(service_info=service_info, callbacks=services)
 
 if __name__ == "__main__":

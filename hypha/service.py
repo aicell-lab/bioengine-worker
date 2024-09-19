@@ -1,49 +1,56 @@
+from typing import List, Callable
 from hypha_rpc import login, connect_to_server
 import asyncio
 
-def hello_world(context):
-    return "Hello World"
-def run_python_script(script, data_url, context):
-    pass
-async def register_service():
+class Config:
     server_url = "https://hypha.aicell.io"
-    workspace_name = "ws-user-google-oauth2|***" # TODO: Change
+    workspace_name = "hpc-ray-cluster"
     service_id = "ray"
     client_id = "berzelius"
+    service_name = "Ray"
 
-    # Login to hypha server
-    token = await login({"server_url": server_url})
-
-    # Connect to the workspace
-    colab_client = await connect_to_server(
+class Hypha:
+    async def _connect(token: str):
+        return await connect_to_server(
         {
-            "server_url": server_url,
-            "workspace": workspace_name,
-            "client_id": client_id,
+            "server_url": Config.server_url,
+            "workspace": Config.workspace_name,
+            "client_id": Config.client_id,
             "name": "Berzelius",
             "token": token,
         }
     )
-
-    # Register a new service
-    service_info = await colab_client.register_service(
+    async def _login():
+        return await login({"server_url": Config.server_url})
+    
+    async def authenticate():
+        return await Hypha._connect(await Hypha._login())
+    
+    async def register_service(server_handle, callback: Callable):
+        return await server_handle.register_service(
         {
-            "name": "ray",
-            "id": service_id,
+            "name": Config.service_name,
+            "id": Config.service_id,
             "config": {
                 "visibility": "public",
                 "require_context": True,  # TODO: only allow the service to be called by logged-in users
             },
-            # Exposed functions:
-            "hello_world": hello_world,
-            "run_python_script": run_python_script,
-
+            callback.__name__: callback,
         }, {"overwrite": True}
     )
-    sid = service_info["id"]
-    assert sid == f"{workspace_name}/{client_id}:{service_id}"
-    print(f"Registered service with ID: {sid}")
-    print(f"Test the service at: {server_url}/{workspace_name}/services/{client_id}:{service_id}/hello_world")
+
+    def print_service_info(service_info, callback: Callable):
+        sid = service_info["id"]
+        assert sid == f"{Config.workspace_name}/{Config.client_id}:{Config.service_id}"
+        print(f"Registered service with ID: {sid}")
+        print(f"Test the service at: {Config.server_url}/{Config.workspace_name}/services/{Config.client_id}:{Config.service_id}/{callback.__name__}")
+
+async def register_service():
+    def inference_task(context = None):
+        return "my_inference_result"
+    colab_client = await Hypha.authenticate()
+    service_info = await Hypha.register_service(server_handle=colab_client, callback=inference_task)
+    Hypha.print_service_info(service_info=service_info, callback=inference_task)
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()

@@ -10,6 +10,8 @@ class Config:
     service_name = "Ray"
 
 class Hypha:
+
+    @staticmethod
     async def _connect(token: str):
         return await connect_to_server(
         {
@@ -20,37 +22,53 @@ class Hypha:
             "token": token,
         }
     )
+
+    @staticmethod
     async def _login():
         return await login({"server_url": Config.server_url})
     
+    @staticmethod
     async def authenticate():
         return await Hypha._connect(await Hypha._login())
-    
-    async def register_service(server_handle, callback: Callable):
-        return await server_handle.register_service(
-        {
+
+    @staticmethod
+    def _get_services(callbacks: List[Callable]):
+        services = {
             "name": Config.service_name,
             "id": Config.service_id,
             "config": {
                 "visibility": "public",
-                "require_context": True,  # TODO: only allow the service to be called by logged-in users
-            },
-            callback.__name__: callback,
-        }, {"overwrite": True}
-    )
+                "require_context": True,
+            }
+        }
+        for callback in callbacks:
+            services[callback.__name__] = callback
+        return services
 
-    def print_service_info(service_info, callback: Callable):
+    @staticmethod
+    async def register_service(server_handle, callbacks: List[Callable]):
+        return await server_handle.register_service(Hypha._get_services(callbacks), {"overwrite": True})
+
+    @staticmethod
+    def print_services(service_info, callbacks: List[Callable]):
         sid = service_info["id"]
         assert sid == f"{Config.workspace_name}/{Config.client_id}:{Config.service_id}"
         print(f"Registered service with ID: {sid}")
-        print(f"Test the service at: {Config.server_url}/{Config.workspace_name}/services/{Config.client_id}:{Config.service_id}/{callback.__name__}")
+        for callback in callbacks:
+            print(f"Test the service at: {Config.server_url}/{Config.workspace_name}/services/{Config.client_id}:{Config.service_id}/{callback.__name__}")
+
+def create_services() -> List[Callable]:
+    def inference_task(context=None):
+        return "my_inference_result"
+    def another_task(context=None):
+        return "another_result"
+    return [inference_task, another_task]
 
 async def register_service():
-    def inference_task(context = None):
-        return "my_inference_result"
+    services = create_services()
     colab_client = await Hypha.authenticate()
-    service_info = await Hypha.register_service(server_handle=colab_client, callback=inference_task)
-    Hypha.print_service_info(service_info=service_info, callback=inference_task)
+    service_info = await Hypha.register_service(server_handle=colab_client, callbacks=services)
+    Hypha.print_services(service_info=service_info, callbacks=services)
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()

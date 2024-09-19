@@ -11,4 +11,4 @@ This script has hardcoded values as its main purpose is to be run on the Berzeli
 SSH into Berzelius and start two [tmux](https://github.com/tmux/tmux/wiki) sessions. Launch a Ray head node server in the first session. Once the Ray server is up run [main.py](autoscaler/main.py) in the second session.
 
 ## Virtual Environment (Python)
-Ray and other [dependecies](requirements.txt) are required to run the autoscaler and Ray workers. [worker.sh](scripts/worker.sh) starts a virtual environment with a hardcoded path before connecting to the head node.
+Ray and other [dependencies](requirements.txt) are required to run the autoscaler and Ray workers. [worker.sh](scripts/worker.sh) starts a virtual environment with a hardcoded path before connecting to the head node.

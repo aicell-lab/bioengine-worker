@@ -9,8 +9,7 @@
 #SBATCH --output=$HOME/logs/%x_%j.out   # Ensure logs directory exists before running this
 #SBATCH --error=$HOME/logs/%x_%j.err
 
-# IP of Ray head node
-HEAD_NODE_IP=10.81.254.11   # The IP may be changed by the autoscaler script via REGEX find-replace
+# $HEAD_NODE_IP exported from launch_worker.sh
 RAY_PORT=6379
 ENV_NAME="ray_env"
 

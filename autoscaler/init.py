@@ -2,6 +2,7 @@ import os
 import logging
 from config import Config
 import terminal
+import sys
 
 ## Initialize and close global resources such as singletons.
 
@@ -40,7 +41,6 @@ def shutdown():
     _clear_loggers()
 
 def setup() -> bool:
-     import sys
      _setup_logging()
      if not _check_ray_status():
           print(f"No head node detected. Launch a Ray head node before running this autoscaler.", file=sys.stderr)

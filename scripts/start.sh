@@ -14,6 +14,14 @@ pip install hypha-rpc
 ray stop
 ray start --head --node-ip-address=${HEAD_NODE_IP} --port=6379 --num-cpus=0 --num-gpus=0
 
+cleanup() {
+    echo "Stopping all child processes..."
+    ray stop
+    kill 0 
+    exit 0
+}
+trap cleanup SIGINT SIGTERM
+
 SCRIPT_DIR=$(dirname "$0")
 python "$SCRIPT_DIR/../autoscaler/main.py" &
 python "$SCRIPT_DIR/../hypha/service.py" &

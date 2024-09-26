@@ -3,17 +3,17 @@ import asyncio
 from connection import Hypha
 
 def create_services() -> List[Callable]:
-    def inference_task(context=None):
-        return "my_inference_result"
-    async def another_task(context=None):
-        import numpy as np
-        import zip_util
-        images = [np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8) for _ in range(5)]
-        zip_bytes = zip_util.pack_zip(images)
-        base64_encoded = zip_util.encode_to_base64(zip_bytes)
-        return {"success": True, "zip_file_encoded": base64_encoded}
-
-    return [inference_task, another_task]
+    def hello_world_task(context=None):
+        return "hello world!"
+    
+    async def cellpose_inference(encoded_zip: str = None, context=None):
+        if encoded_zip is None:
+            return {"success": False, "message": f"Missing argument 'encoded_zip' (type: zip file encoded as base64)"}
+        
+        encoded_zip_result = "..."
+        return {"success": True, "encoded_zip": encoded_zip_result}
+    
+    return [hello_world_task, cellpose_inference]
 
 async def register_service():
     services = create_services()

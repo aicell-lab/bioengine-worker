@@ -30,7 +30,7 @@ def _extract_images_from_zip(zip_data: bytes) -> Dict[str,bytes]:
     return extracted_images 
 
 def _extract_np_arrays(images: Dict[str, bytes]) -> List[np.ndarray]:
-    return [np.array(Image.open(io.BytesIO(img_data))) for img_name, img_data in images.items()]
+    return [np.array(Image.open(io.BytesIO(img_data))) for _, img_data in images.items()]
 
 def extract_image_data_from_zip(zip_data: bytes) -> List[np.ndarray]:
     return _extract_np_arrays(_extract_images_from_zip(zip_data))
@@ -49,3 +49,6 @@ def pack_zip(images: List[np.ndarray]) -> bytes:
 
 def encode_to_base64(byte_data: bytes) -> str:
     return base64.b64encode(byte_data).decode('utf-8')
+
+def decode_base64_zip(encoded_zip: str) -> bytes:
+    return base64.b64decode(encoded_zip)

@@ -1,6 +1,12 @@
 from cellpose import models
 import zip_util
 import numpy as np
+import ray
+import asyncio
+
+@ray.remote(num_gpus=1)
+def sync_ray_service(encoded_zip: str, context=None) -> str:
+    return asyncio.run(service(encoded_zip, context))
 
 async def service(encoded_zip: str, context=None) -> str:
     masks_list = []

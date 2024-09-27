@@ -12,7 +12,7 @@ def create_services() -> List[Callable]:
         if encoded_zip is None:
             return {"success": False, "message": f"Missing argument 'encoded_zip' (type: zip file encoded as base64)"}
         result = cellpose_service.sync_ray_service.remote(encoded_zip)
-        encoded_zip_result = await ray.get(result)
+        encoded_zip_result = ray.get(result)
         return {"success": True, "encoded_zip": encoded_zip_result}
     
     return [hello_world_task, cellpose_inference]

@@ -3,6 +3,7 @@ import terminal
 from config import Config
 import ray
 from dataclasses import dataclass, field
+from ray.util.state import list_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class RayMetrics:
     num_workers: int = field(default=0)
     num_available_workers: int = field(default=0)
     num_occupied_workers: int = field(default=0)
+    num_pending_tasks: int = field(default=0)
 
     def __post_init__(self):
         self.update()
@@ -51,10 +53,16 @@ class RayMetrics:
     def _get_num_available_workers() -> int:
         return ray.available_resources().get("GPU", 0)
 
+    @staticmethod
+    def _get_num_pending_tasks() -> int:    # https://docs.ray.io/en/latest/ray-observability/user-guides/cli-sdk.html#state-api-overview-ref
+        pending_tasks = list_tasks(filters=[ ("state", "=", "PENDING_NODE_ASSIGNMENT")])
+        return len(pending_tasks)
+
     def update(self):
         self.num_workers = RayMetrics._get_num_workers()
         self.num_available_workers = RayMetrics._get_num_available_workers()
         self.num_occupied_workers = self.num_workers - self.num_available_workers
+        self.num_pending_tasks = RayMetrics._get_num_pending_tasks()
 
 
 class Status:
@@ -74,8 +82,8 @@ class Status:
             return True # Avoid spamming slurm jobs
         return False
     
-    def need_more_workers(self) -> bool: # TODO: Implement logic
-        return False 
+    def need_more_workers(self) -> bool:
+        return self.ray_metrics.num_pending_tasks > 0 
 
     def __str__(self):
         return f"JobMetrics({self.job_metrics}) RayMetrics({self.ray_metrics})"

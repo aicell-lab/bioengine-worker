@@ -8,14 +8,17 @@ class Scaler:
     def __init__(self):
         self.status = Status()
 
-    def handle_workers(self):
+    def _allocate_workers(self):
         if not self.status.is_worker_queue_full() and self.status.need_more_workers():
             terminal.launch_worker_node()
-
-    def loop_step(self):
+    
+    def _update_status(self):
         self.status.update()
         logging.info(f"Status: {self.status}")
-        self.handle_workers()
+
+    def loop_step(self):
+        self._update_status()
+        self._allocate_workers()
         time.sleep(Config.AUTOSCALER_CHECK_INTERVAL)
 
     def run(self):

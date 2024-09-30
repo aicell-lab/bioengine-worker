@@ -3,6 +3,7 @@ import logging
 from config import Config
 import terminal
 import sys
+import ray
 
 ## Initialize and close global resources such as singletons.
 
@@ -33,16 +34,27 @@ def _setup_logging():
             ]
         )
 
-def _check_ray_status() -> bool:
-    result = terminal.run_command(args=['ray', 'status'])
-    return result and "ERROR" not in result
+def _connect_to_head_node() -> bool:
+    result = False
+    try:
+        ray.init(address="auto")
+        result = True
+    except ray.exceptions.RayConnectionError as e:
+        print(f"Failed to connect to Ray cluster: {e}", file=sys.stderr)
+    except TimeoutError as e:
+        print(f"Connection attempt timed out: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"An error occurred during Ray initialization: {e}", file=sys.stderr)
+    return result
 
 def shutdown():
     _clear_loggers()
 
 def setup() -> bool:
+     result = True
      _setup_logging()
-     if not _check_ray_status():
+     if not _connect_to_head_node():
           print(f"No head node detected. Launch a Ray head node before running this autoscaler.", file=sys.stderr)
-          return False
-     return True
+          result = False
+     return result
+

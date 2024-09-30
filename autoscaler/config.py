@@ -20,7 +20,7 @@ class Config:
         WORKER_LAUNCH_FILENAME
     )
 
-    AUTOSCALER_CHECK_INTERVAL = 5
+    AUTOSCALER_CHECK_INTERVAL = 10
     
     class Logging:
         LEVEL = "DEBUG" 

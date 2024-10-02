@@ -9,4 +9,6 @@ conda info --envs | grep -q "^${ENV_NAME} " || mamba create --name ${ENV_NAME} p
 mamba activate ${ENV_NAME}
 pip install "ray[all]"
 pip install hypha-rpc
+pip install bioimageio.core
+pip install bioimageio.spec
 

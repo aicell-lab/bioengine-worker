@@ -11,5 +11,5 @@ if [[ $output =~ (export\ [a-zA-Z_][a-zA-Z0-9_]*=[^ ]+) ]]; then
     eval "$export_variable"
 else
     echo "FAIL"
-    exit 1  # Return a non-zero exit status to indicate failure
+    exit 1
 fi

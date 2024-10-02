@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+
+[project]
+name = "autoscaler"
+version = "0.1.0"
+readme = "README.md"
+description = "Ray autoscaler for Berzelius"
+dependencies = []
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["autoscaler*"]
+exclude = ["tests*", "scripts*"]
+
+[options.entry_points]
+console_scripts = [
+    "autoscaler = autoscaler.__main__:main",
+]

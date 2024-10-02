@@ -9,3 +9,4 @@ virtualenv>=20.17.1
 pytest>=7.0.0
 coverage>=6.0.0
 sh>=1.14.0
+python-dotenv>=1.0.1

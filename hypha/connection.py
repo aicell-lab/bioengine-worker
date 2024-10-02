@@ -1,6 +1,7 @@
 from typing import List, Callable
 from hypha_rpc import login, connect_to_server
 from config import Config
+import os
 
 class Hypha:
 
@@ -27,7 +28,11 @@ class Hypha:
     
     @staticmethod
     async def authenticate():
-        return await Hypha.connect(await Hypha.retrieve_token())
+        token = os.getenv(Config.TOKEN_VAR_NAME, None)
+        if not token:
+            print(f"Expected token from environment variable {Config.TOKEN_VAR_NAME}")
+            return None
+        return await Hypha.connect(token)
 
     @staticmethod
     def _get_services(callbacks: List[Callable]):

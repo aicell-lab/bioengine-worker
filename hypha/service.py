@@ -21,8 +21,9 @@ def create_services() -> List[Callable]:
 async def register_service():
     services = create_services()
     server = await Hypha.authenticate()
-    service_info = await Hypha.register_service(server_handle=server, callbacks=services)
-    Hypha.print_services(service_info=service_info, callbacks=services)
+    if server:
+        service_info = await Hypha.register_service(server_handle=server, callbacks=services)
+        Hypha.print_services(service_info=service_info, callbacks=services)
 
 
 if __name__ == "__main__":

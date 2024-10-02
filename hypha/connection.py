@@ -5,24 +5,29 @@ from config import Config
 class Hypha:
 
     @staticmethod
-    async def _connect(token: str):
-        return await connect_to_server(
-        {
-            "server_url": Config.server_url,
-            "workspace": Config.workspace_name,
-            "client_id": Config.client_id,
-            "name": "Berzelius",
-            "token": token,
-        }
-    )
+    async def connect(token: str):
+        result = None
+        try:
+            result = await connect_to_server(
+                {
+                    "server_url": Config.server_url,
+                    "workspace": Config.workspace_name,
+                    "client_id": Config.client_id,
+                    "name": "Berzelius",
+                    "token": token,
+                }
+            )
+        except Exception as e:
+            print("Connecting failed:", e)
+        return result
 
     @staticmethod
-    async def _login():
+    async def retrieve_token():
         return await login({"server_url": Config.server_url})
     
     @staticmethod
     async def authenticate():
-        return await Hypha._connect(await Hypha._login())
+        return await Hypha.connect(await Hypha.retrieve_token())
 
     @staticmethod
     def _get_services(callbacks: List[Callable]):

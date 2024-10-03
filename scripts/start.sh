@@ -4,7 +4,7 @@ HEAD_NODE_IP=$(hostname -I | awk '{print $1}')
 SCRIPT_DIR=$(dirname "$0")
 
 source "$SCRIPT_DIR/mamba_env.sh"
-source "$SCRIPT_DIR/mamba_packages.sh"
+pip install -r "$SCRIPT_DIR/../requirements.txt"
 source "$SCRIPT_DIR/token.sh"
 
 ray stop

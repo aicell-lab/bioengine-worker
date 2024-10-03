@@ -4,5 +4,12 @@
     ],
     "python.analysis.extraPaths": [
         "./autoscaler"
+    ],
+    "python.testing.enabled": true,
+    "python.testing.pytestEnabled": true,
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestArgs": [
+            "tests"
     ]
+    
 }

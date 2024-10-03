@@ -8,8 +8,8 @@ def create_services() -> List[Callable]:
     def hello_world_task(context=None):
         return "hello world!"
     
-    #async def test_cellpose(img_data, context=None):
-    #    return await cellpose_service.test_cellpose.remote(img_data)
+    async def test_cellpose(img_data, context=None):
+        return await cellpose_service.test_cellpose.remote(img_data)
     
     async def cellpose_inference(encoded_zip: str = None, context=None):
         if encoded_zip is None:
@@ -17,8 +17,7 @@ def create_services() -> List[Callable]:
         result = await cellpose_service.service.remote(encoded_zip)
         return {"success": True, "encoded_zip": result}
     
-    return [hello_world_task, cellpose_inference]
-
+    return [hello_world_task, cellpose_inference, test_cellpose]
 
 async def register_service():
     services = create_services()
@@ -26,7 +25,6 @@ async def register_service():
     if server:
         service_info = await Hypha.register_service(server_handle=server, callbacks=services)
         Hypha.print_services(service_info=service_info, callbacks=services)
-
 
 if __name__ == "__main__":
     ray.init(address='auto')

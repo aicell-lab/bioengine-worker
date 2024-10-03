@@ -2,7 +2,7 @@
 #SBATCH --job-name=ray_worker
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
-#SBATCH --time=00:20:00 		# Tweak time if necessary
+#SBATCH --time=00:10:00 		# Tweak time if necessary
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=8G

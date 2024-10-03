@@ -12,6 +12,14 @@ class ImgConfig:
     img_name = "test_img.png"
     img_out_name = "test_img_out.png"
 
+class BerzeConfig:
+    token_env_var = "HYPHA_TEST_TOKEN"
+    url = "https://hypha.aicell.io"
+    workspace = "hpc-ray-cluster"
+    service_name = "ray"
+    client_id = "berzelius" # User-specific
+    service_id = f"{workspace}/{client_id}:{service_name}"
+
 def download_image():
     if not os.path.exists(ImgConfig.img_name):
         print(f"Image {ImgConfig.img_name} not found. Downloading...")
@@ -26,9 +34,9 @@ def download_image():
 async def connect_to_berzelius():
     server = None
     try:
-        server = await connect_to_server({"token": os.environ.get("HYPHA_TEST_TOKEN"),
-                                      "server_url": "https://hypha.aicell.io",
-                                       "workspace": "hpc-ray-cluster" })
+        server = await connect_to_server({"token": os.environ.get(BerzeConfig.token_env_var),
+                                      "server_url": BerzeConfig.url,
+                                       "workspace": BerzeConfig.workspace })
     except Exception as e:
         pytest.fail(f"Connecting to the server failed: {e}")
     return server
@@ -37,11 +45,11 @@ async def connect_to_berzelius():
 async def test_cellpose():
     download_image()
     server = await connect_to_berzelius()
-    svc = await server.get_service("hpc-ray-cluster/berzelius:ray")
+    svc = await server.get_service(BerzeConfig.service_id)
     img_data = imageio.imread(ImgConfig.img_name)
     print(f"Image shape: {img_data.shape}")
     ret = await svc.test_cellpose(img_data)
     print(ret)
-    imageio.imwrite('output.png', ret)
+    imageio.imwrite(ImgConfig.img_out_name, ret)
     
 

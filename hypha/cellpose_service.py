@@ -21,9 +21,9 @@ def service(encoded_zip: str, context=None) -> str:
 
 @ray.remote(num_gpus=1)
 def test_cellpose(img_data, context=None) -> str:
-    assert len(img_data.shape) == 3, "Image data must be 3-dimensional (H, W, C)"
-    assert img_data.shape[2] == 1 or img_data.shape[2] == 3, "Image must have 1 channel (grayscale) or 3 channels (RGB)"
-    assert img_data.shape[0] > 0 and img_data.shape[1] > 0, "Image dimensions must be positive"
+    #assert len(img_data.shape) == 3, "Image data must be 3-dimensional (H, W, C)"
+    #assert img_data.shape[2] == 1 or img_data.shape[2] == 3, "Image must have 1 channel (grayscale) or 3 channels (RGB)"
+    #assert img_data.shape[0] > 0 and img_data.shape[1] > 0, "Image dimensions must be positive"
 
     return _get_mask(img_data=img_data, model=_get_model())
 

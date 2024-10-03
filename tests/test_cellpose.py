@@ -3,7 +3,7 @@ import hypha_rpc
 from hypha_rpc import connect_to_server
 from dotenv import load_dotenv
 import os
-import imageio
+import imageio.v2 as imageio
 
 import pathlib
 script_directory = pathlib.Path(__file__).parent.resolve()
@@ -19,6 +19,9 @@ async def test_cellpose():
 
     svc = await server.get_service("hpc-ray-cluster/berzelius:ray")
     img_data = imageio.imread(f"{script_directory}/test_img.png")
+    print(f"Image shape: {img_data.shape}")
     ret = await svc.test_cellpose(img_data)
     print(ret)
+    imageio.imwrite('output.png', ret)
+    
 

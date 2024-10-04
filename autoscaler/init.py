@@ -1,9 +1,9 @@
 import os
 import logging
 from config import Config
-import terminal
 import sys
 import ray
+from zombie import ZombieTerminator
 
 ## Initialize and close global resources such as singletons.
 
@@ -49,6 +49,7 @@ def _connect_to_head_node() -> bool:
 
 def shutdown():
     _clear_loggers()
+    ZombieTerminator.terminate_all_jobs()
 
 def setup() -> bool:
      result = True

@@ -1,24 +1,24 @@
-from config import Config
-from status import Status
-import terminal
 import logging
 import time
+from config import Config
+from status import Status
+from zombie import ZombieTerminator
+import terminal
 
 class Scaler:
     def __init__(self):
         self.status = Status()
+        self.zombie_terminator = ZombieTerminator(status=self.status)
 
     def _allocate_workers(self):
         if not self.status.is_worker_queue_full() and self.status.need_more_workers():
             terminal.launch_worker_node()
-    
-    def _update_status(self):
-        self.status.update()
-        logging.info(f"Status: {self.status}")
 
     def loop_step(self):
-        self._update_status()
+        self.status.update()
+        logging.info(f"Status: {self.status}")
         self._allocate_workers()
+        self.zombie_terminator.update()
         time.sleep(Config.AUTOSCALER_CHECK_INTERVAL)
 
     def run(self):

@@ -64,6 +64,10 @@ class RayMetrics:
         self.num_occupied_workers = self.num_workers - self.num_available_workers
         self.num_pending_tasks = RayMetrics._get_num_pending_tasks()
 
+    def is_work_ongoing(self):
+        return self.num_occupied_workers > 0 or self.num_pending_tasks > 0
+
+
 
 class Status:
     def __init__(self):

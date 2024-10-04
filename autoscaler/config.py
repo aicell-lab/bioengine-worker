@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta
 
 def get_path_n_levels_up(file_path: str, n: int) -> str:
     base_dir = os.path.abspath(file_path)
@@ -21,6 +22,7 @@ class Config:
     )
 
     AUTOSCALER_CHECK_INTERVAL = 10
+    ZOMBIE_TIMEOUT = timedelta(seconds=60, minutes=0)
     
     class Logging:
         LEVEL = "DEBUG" 

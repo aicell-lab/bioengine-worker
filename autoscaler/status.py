@@ -75,15 +75,19 @@ class Status:
         self.job_metrics.update()
         self.ray_metrics.update()
 
-    def is_worker_queue_full(self) -> bool:
-        if self.job_metrics.total_jobs >= Config.MAX_NODES:
-            return True
-        if self.job_metrics.pending_jobs > 0:
-            return True # Avoid spamming slurm jobs
-        return False
+    def _is_job_queue_full(self) -> bool:
+        slurm = self.job_metrics
+        return any([
+            slurm.total_jobs >= Config.MAX_NODES,
+            slurm.total_jobs > self.ray_metrics.num_workers,
+            slurm.pending_jobs > 0
+        ])
+
+    def is_worker_queue_full(self) -> bool: # Avoid spamming slurm jobs
+        return self.ray_metrics.num_available_workers > 0 or self._is_job_queue_full()
     
     def need_more_workers(self) -> bool:
-        return self.ray_metrics.num_pending_tasks > 0 
+        return self.ray_metrics.num_pending_tasks > self.ray_metrics.num_available_workers
 
     def __str__(self):
         return f"JobMetrics({self.job_metrics}) RayMetrics({self.ray_metrics})"

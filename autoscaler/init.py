@@ -33,6 +33,7 @@ def _setup_logging():
             logging.StreamHandler()
             ]
         )
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 def _connect_to_head_node() -> bool:
     result = False

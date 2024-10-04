@@ -9,14 +9,21 @@ class Scaler:
     def __init__(self):
         self.status = Status()
         self.zombie_terminator = ZombieTerminator(status=self.status)
+        self.prev_status_log = ""
 
     def _allocate_workers(self):
         if not self.status.is_worker_queue_full() and self.status.need_more_workers():
             terminal.launch_worker_node()
 
+    def _log_status(self):
+        status_log = str(self.status)
+        if self.prev_status_log != status_log:
+            logging.info(f"Status: {status_log}")
+            self.prev_status_log = status_log
+
     def loop_step(self):
         self.status.update()
-        logging.info(f"Status: {self.status}")
+        self._log_status()        
         self._allocate_workers()
         self.zombie_terminator.update()
         time.sleep(Config.AUTOSCALER_CHECK_INTERVAL)

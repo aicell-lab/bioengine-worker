@@ -1,12 +1,9 @@
-import logging
 import terminal
 from config import Config
 import ray
 from dataclasses import dataclass, field
 from ray.util.state import list_tasks
 import os
-
-logger = logging.getLogger(__name__)
 
 @dataclass
 class JobMetrics:

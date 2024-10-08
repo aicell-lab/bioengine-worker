@@ -40,7 +40,6 @@ def _setup_logging():
 
 def _connect_to_ray_head() -> bool:
     result = False
-    logging.info(f"connecting to ray head... address: {Config.Head.address}")
     try:
         ray.init(address="auto")
         result = True

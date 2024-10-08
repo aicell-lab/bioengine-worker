@@ -33,9 +33,6 @@ class Config:
 
     class Head:
         port=6379
-        ip=util.get_head_LAN_IP()
-        address=f"ray://{ip}:{port}"
-        num_cpus=0
-        num_gpus=0
+        ip=None
 
 

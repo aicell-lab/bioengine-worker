@@ -18,7 +18,7 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM
 
-python "$SCRIPT_DIR/../autoscaler/main.py"
+python "$SCRIPT_DIR/../autoscaler/main.py" "$HEAD_NODE_IP"
 MAIN_PID=$!
 wait $MAIN_PID
 

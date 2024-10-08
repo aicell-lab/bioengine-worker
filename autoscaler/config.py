@@ -11,7 +11,7 @@ class Config:
 
     class Scaling:
         MAX_NODES = 94
-        CHECK_INTERVAL = timedelta(seconds=10)
+        CHECK_INTERVAL = timedelta(seconds=5)
         ZOMBIE_TIMEOUT = timedelta(seconds=60, minutes=0)
     
     class Logging:

@@ -4,7 +4,7 @@ import socket
 from pathlib import Path
 
 def _get_path_n_levels_up(file_path: str, n: int) -> Path:
-    return str(Path(file_path).resolve().parents[n])
+    return Path(file_path).resolve().parents[n]
 
 def get_dir_path(relative_path: str) -> Path:
     return _get_path_n_levels_up(__file__, 2) / relative_path

@@ -1,9 +1,7 @@
 import subprocess
 import logging
-from config import Config
 from typing import List
-
-logger = logging.getLogger(__name__)
+from config import Config
 
 def run_command(args: List[str]) -> str:
     try:
@@ -15,21 +13,23 @@ def run_command(args: List[str]) -> str:
         )
         return result.stdout.decode().strip()
     except subprocess.CalledProcessError as e:
-        logger.error(f"Process error: {e.stderr}, args: {args}")
-        return None
+        logging.error(f"Process error: {e.stderr}, args: {args}")
     except FileNotFoundError:
-        logger.error("The 'squeue' command was not found. Ensure SLURM is installed and accessible.")
-        return None
+        logging.error("The 'squeue' command was not found. Ensure SLURM is installed and accessible.")
     except Exception as e:
-        logger.error(f"Unkown error: {e}")
-        return None
+        logging.error(f"Unkown error: {e}")
+
+def _get_worker_launch_args() -> List[str]:
+    #sbatch --export=HEAD_NODE_IP=${HEAD_NODE_IP},SCRIPT_DIR=${SCRIPT_DIR} "$SCRIPT_DIR/worker.sh"
+    env_vars = f"--export=HEAD_NODE_IP={Config.Head.ip},SCRIPT_DIR={Config.Shell.script_directory_path}"
+    return ["sbatch", env_vars, Config.Shell.worker_script_path]
 
 def launch_worker_node() -> int:
     try:
-        output = run_command(args=[Config.WORKER_LAUNCH_PATH])
+        output = run_command(args=_get_worker_launch_args())
         job_id = int(output.split()[-1])
-        logger.info(f"Job submitted successfully with Job ID: {job_id}")
+        logging.info(f"Job submitted with ID: {job_id}")
         return job_id
     except subprocess.CalledProcessError as e:
-        logger.error(f"Error submitting SLURM job: {e.stderr}")
-        return -1
+        logging.error(f"Error submitting SLURM job: {e.stderr}")
+    return -1

@@ -1,28 +1,18 @@
-import os
-from datetime import datetime, timedelta
-
-def get_path_n_levels_up(file_path: str, n: int) -> str:
-    base_dir = os.path.abspath(file_path)
-    for _ in range(n):
-        base_dir = os.path.dirname(base_dir)
-    return base_dir
+from datetime import timedelta
+from pathlib import Path
+import util
 
 class Config:
-    MAX_NODES = 94
-    LOGS_DIR = os.path.expanduser("~/logs")
-    AUTOSCALER_LOGS_FILENAME = "autoscaler.out"
+    class Shell:
+        script_directory_name = "scripts"
+        script_directory_path = util.get_dir_path(relative_path=script_directory_name)
+        worker_script_name = "worker.sh"
+        worker_script_path = util.get_script_path(script_dir=script_directory_name,script_filesname=worker_script_name)
 
-    WORKER_LAUNCH_FILENAME = "launch_worker.sh"
-    SCRIPTS_DIR = "scripts"
-    CONFIG_FILE_PATH = __file__
-    WORKER_LAUNCH_PATH = os.path.join(
-        get_path_n_levels_up(CONFIG_FILE_PATH, 2),
-        SCRIPTS_DIR,
-        WORKER_LAUNCH_FILENAME
-    )
-
-    AUTOSCALER_CHECK_INTERVAL = 10
-    ZOMBIE_TIMEOUT = timedelta(seconds=60, minutes=0)
+    class Scaling:
+        MAX_NODES = 94
+        CHECK_INTERVAL = timedelta(seconds=10)
+        ZOMBIE_TIMEOUT = timedelta(seconds=60, minutes=0)
     
     class Logging:
         LEVEL = "DEBUG" 
@@ -30,6 +20,22 @@ class Config:
         DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
         INITIAL_LOG_FORMAT = "Log file created on {timestamp}.\n"
         INITIAL_LOG_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
-        START_MSG = "Starting autoscaler..."
+        LOGS_DIR = Path.home() / "logs"
+        AUTOSCALER_LOGS_FILENAME = "autoscaler.out"
+
+    class Workspace:
+        server_url = "https://hypha.aicell.io"
+        workspace_name = "hpc-ray-cluster"
+        service_id = "ray"
+        client_id = "berzelius"
+        service_name = "Ray"
+        TOKEN_VAR_NAME = "hypha_token_env_name"
+
+    class Head:
+        port=6379
+        ip=util.get_head_LAN_IP()
+        address=f"ray://{ip}:{port}"
+        num_cpus=0
+        num_gpus=0
 
 

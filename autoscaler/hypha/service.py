@@ -19,16 +19,11 @@ def create_services() -> List[Callable]:
     
     return [hello_world_task, cellpose_inference, test_cellpose]
 
-async def register_service():
+async def register_services():
     services = create_services()
     server = await Hypha.authenticate()
     if server:
         service_info = await Hypha.register_service(server_handle=server, callbacks=services)
         Hypha.print_services(service_info=service_info, callbacks=services)
 
-if __name__ == "__main__":
-    ray.init(address='auto')
-    loop = asyncio.get_event_loop()
-    loop.create_task(register_service())
-    loop.run_forever()
 

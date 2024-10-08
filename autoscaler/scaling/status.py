@@ -79,7 +79,7 @@ class Status:
     def _is_job_queue_full(self) -> bool:
         slurm = self.job_metrics
         return any([
-            slurm.total_jobs >= Config.MAX_NODES,
+            slurm.total_jobs >= Config.Scaling.MAX_NODES,
             slurm.total_jobs > self.ray_metrics.num_workers,
             slurm.pending_jobs > 0
         ])

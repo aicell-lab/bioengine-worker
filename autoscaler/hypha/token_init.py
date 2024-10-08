@@ -51,21 +51,17 @@ def print_token_details(token):
     expiration_time = timedelta(minutes=expiration_time_minutes)
     print(f"Expiration time: {format_timedelta(expiration_time)}")
 
-def print_export(token):
-    print(f'export {Config.TOKEN_VAR_NAME}="{token}"')
-
 def get_token():
-    token = os.getenv(Config.TOKEN_VAR_NAME, '')
+    token = os.getenv(Config.Workspace.TOKEN_VAR_NAME, '')
     if token == '' or is_token_expired(token):
         print(f"No token found from environment variable '{Config.TOKEN_VAR_NAME}'")
         token = asyncio.run(Hypha.retrieve_token())
         print_token_details(token)
     return token
 
-# If successful this scripts last print before termination 
-# is the token and expected token envrionment variable name. 
-# Print format is "export x=y".
-# This is meant to be used by "token.sh" to automatically configure a global environment variable.
-if __name__ == "__main__":
-    print_export(get_token())
+def set_token() -> bool:
+    workspace_token = get_token()
+    os.environ[Config.Workspace.TOKEN_VAR_NAME] = workspace_token
+    return bool(workspace_token)
+
 

@@ -1,15 +1,16 @@
 import os
 import logging
 from config import Config
-import sys
 import ray
-from zombie import ZombieTerminator
+from scaling.zombie import ZombieTerminator
+import hypha.token_init
+import terminal
 
-## Initialize and close global resources such as singletons.
+## Initialize and close global resources
 
 def _setup_log_files():
-        os.makedirs(Config.LOGS_DIR, exist_ok=True)
-        log_file = os.path.join(Config.LOGS_DIR, Config.AUTOSCALER_LOGS_FILENAME)
+        os.makedirs(Config.Logging.LOGS_DIR, exist_ok=True)
+        log_file = os.path.join(Config.Logging.LOGS_DIR, Config.Logging.AUTOSCALER_LOGS_FILENAME)
         if not os.path.exists(log_file):
             with open(log_file, 'w') as f:
                 pass
@@ -35,28 +36,41 @@ def _setup_logging():
         )
         logging.getLogger("urllib3").setLevel(logging.WARNING)
 
-def _connect_to_head_node() -> bool:
+
+def _start_head_node() -> bool:
     result = False
     try:
-        ray.init(address="auto")
+        ray.init(
+            address=Config.Head.address,
+            num_cpus=Config.Head.num_cpus,
+            num_gpus=Config.Head.num_gpus,
+        )
         result = True
     except ray.exceptions.RayConnectionError as e:
-        print(f"Failed to connect to Ray cluster: {e}", file=sys.stderr)
+        logging.error(f"Failed to connect to Ray cluster: {e}")
     except TimeoutError as e:
-        print(f"Connection attempt timed out: {e}", file=sys.stderr)
+        logging.error(f"Connection attempt timed out: {e}")
     except Exception as e:
-        print(f"An error occurred during Ray initialization: {e}", file=sys.stderr)
+        logging.error(f"An error occurred during Ray initialization: {e}")
     return result
 
 def shutdown():
     _clear_loggers()
     ZombieTerminator.terminate_all_jobs()
 
+def _stop_existing_ray_head():
+     terminal.run_command(["ray", "stop"])
+
 def setup() -> bool:
-     result = True
-     _setup_logging()
-     if not _connect_to_head_node():
-          print(f"No head node detected. Launch a Ray head node before running this autoscaler.", file=sys.stderr)
-          result = False
-     return result
+    _setup_logging()
+    _stop_existing_ray_head()
+
+    if not hypha.token_init.set_token():
+        return False
+
+    if not _start_head_node():
+        logging.error("Unable to start ray server.")
+        return False
+    
+    return True
 

@@ -5,6 +5,7 @@ from status import Status
 from zombie import ZombieTerminator
 import terminal
 
+
 class Scaler:
     def __init__(self):
         self.status = Status()
@@ -26,9 +27,9 @@ class Scaler:
         self._log_status()        
         self._allocate_workers()
         self.zombie_terminator.update()
-        time.sleep(Config.AUTOSCALER_CHECK_INTERVAL)
+        time.sleep(Config.Scaling.CHECK_INTERVAL.total_seconds())
 
     def run(self):
-        logging.info(Config.Logging.START_MSG)
+        logging.info("Starting autoscaler...")
         while True:
             self.loop_step()

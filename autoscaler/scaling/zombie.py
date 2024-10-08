@@ -31,7 +31,7 @@ class ZombieTerminator:
     
     def _is_zombie_timeout(self) -> bool:
         zombie_time = datetime.now() - self.last_work_time
-        return zombie_time > Config.ZOMBIE_TIMEOUT
+        return zombie_time > Config.Scaling.ZOMBIE_TIMEOUT
 
     def _should_terminate_jobs(self) -> bool:
         return self._are_workers_zombies() and self._is_zombie_timeout()

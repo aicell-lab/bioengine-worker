@@ -1,16 +1,15 @@
-import os
 from typing import List
 import psutil
 import socket
 from pathlib import Path
 
-def _get_path_n_levels_up(file_path: str, n: int) -> str:
+def _get_path_n_levels_up(file_path: str, n: int) -> Path:
     return str(Path(file_path).resolve().parents[n])
 
-def get_dir_path(relative_path: str) -> str:
+def get_dir_path(relative_path: str) -> Path:
     return _get_path_n_levels_up(__file__, 2) / relative_path
 
-def get_script_path(script_dir: str, script_filename: str) -> str:
+def get_script_path(script_dir: str, script_filename: str) -> Path:
     return get_dir_path(script_dir) / script_filename
 
 def _get_LAN_IPs(target_netmask: str = '255.255.0.0') -> List[str]:

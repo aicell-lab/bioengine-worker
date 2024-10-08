@@ -7,7 +7,7 @@ class Config:
         script_directory_name = "scripts"
         script_directory_path = util.get_dir_path(relative_path=script_directory_name)
         worker_script_name = "worker.sh"
-        worker_script_path = util.get_script_path(script_dir=script_directory_name,script_filesname=worker_script_name)
+        worker_script_path = util.get_script_path(script_dir=script_directory_name,script_filename=worker_script_name)
 
     class Scaling:
         MAX_NODES = 94

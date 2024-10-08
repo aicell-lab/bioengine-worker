@@ -1,5 +1,5 @@
 from cellpose import models
-import zip_util
+import hypha.zip_util
 import numpy as np
 import ray
 

@@ -46,8 +46,6 @@ def _start_head_node() -> bool:
             num_gpus=Config.Head.num_gpus,
         )
         result = True
-    except ray.exceptions.RayConnectionError as e:
-        logging.error(f"Failed to connect to Ray cluster: {e}")
     except TimeoutError as e:
         logging.error(f"Connection attempt timed out: {e}")
     except Exception as e:

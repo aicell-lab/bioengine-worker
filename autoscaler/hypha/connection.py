@@ -11,9 +11,9 @@ class Hypha:
         try:
             result = await connect_to_server(
                 {
-                    "server_url": Config.server_url,
-                    "workspace": Config.workspace_name,
-                    "client_id": Config.client_id,
+                    "server_url": Config.Workspace.server_url,
+                    "workspace": Config.Workspace.workspace_name,
+                    "client_id": Config.Workspace.client_id,
                     "name": "Berzelius",
                     "token": token,
                 }
@@ -24,21 +24,21 @@ class Hypha:
 
     @staticmethod
     async def retrieve_token():
-        return await login({"server_url": Config.server_url})
+        return await login({"server_url": Config.Workspace.server_url})
     
     @staticmethod
     async def authenticate():
-        token = os.getenv(Config.TOKEN_VAR_NAME, None)
+        token = os.getenv(Config.Workspace.TOKEN_VAR_NAME, None)
         if not token:
-            print(f"Expected token from environment variable {Config.TOKEN_VAR_NAME}")
+            print(f"Expected token from environment variable {Config.Workspace.TOKEN_VAR_NAME}")
             return None
         return await Hypha.connect(token)
 
     @staticmethod
     def _get_services(callbacks: List[Callable]):
         services = {
-            "name": Config.service_name,
-            "id": Config.service_id,
+            "name": Config.Workspace.service_name,
+            "id": Config.Workspace.service_id,
             "config": {
                 "visibility": "public",
                 "require_context": True,
@@ -55,8 +55,8 @@ class Hypha:
     @staticmethod
     def print_services(service_info, callbacks: List[Callable]):
         sid = service_info["id"]
-        assert sid == f"{Config.workspace_name}/{Config.client_id}:{Config.service_id}"
+        assert sid == f"{Config.Workspace.workspace_name}/{Config.Workspace.client_id}:{Config.Workspace.service_id}"
         print(f"Registered service with ID: {sid}")
         for callback in callbacks:
-            print(f"Test the service at: {Config.server_url}/{Config.workspace_name}/services/{Config.client_id}:{Config.service_id}/{callback.__name__}")
+            print(f"Test the service at: {Config.Workspace.server_url}/{Config.Workspace.workspace_name}/services/{Config.Workspace.client_id}:{Config.Workspace.service_id}/{callback.__name__}")
 

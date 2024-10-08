@@ -1,7 +1,7 @@
 from typing import List, Callable
 import asyncio
-from connection import Hypha
-import cellpose_service
+from hypha.connection import Hypha
+import hypha.cellpose_service
 import ray
 
 def create_services() -> List[Callable]:

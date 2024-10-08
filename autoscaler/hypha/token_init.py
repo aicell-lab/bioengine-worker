@@ -1,4 +1,4 @@
-from connection import Hypha
+from hypha.connection import Hypha
 import asyncio
 import os
 from config import Config
@@ -54,7 +54,7 @@ def print_token_details(token):
 def get_token():
     token = os.getenv(Config.Workspace.TOKEN_VAR_NAME, '')
     if token == '' or is_token_expired(token):
-        print(f"No token found from environment variable '{Config.TOKEN_VAR_NAME}'")
+        print(f"No token found from environment variable '{Config.Workspace.TOKEN_VAR_NAME}'")
         token = asyncio.run(Hypha.retrieve_token())
         print_token_details(token)
     return token

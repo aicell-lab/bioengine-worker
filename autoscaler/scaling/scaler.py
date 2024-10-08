@@ -1,8 +1,8 @@
 import logging
 import time
 from config import Config
-from status import Status
-from zombie import ZombieTerminator
+from scaling.status import Status
+from scaling.zombie import ZombieTerminator
 import terminal
 
 

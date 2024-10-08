@@ -1,5 +1,5 @@
 from datetime import datetime
-from status import Status
+from scaling.status import Status
 from config import Config
 from typing import List
 import terminal

@@ -35,16 +35,14 @@ def _setup_logging():
             ]
         )
         logging.getLogger("urllib3").setLevel(logging.WARNING)
+        logging.getLogger("websockets.client").setLevel(logging.WARNING)
 
 
-def _start_head_node() -> bool:
+def _connect_to_ray_head() -> bool:
     result = False
+    logging.info(f"connecting to ray head... address: {Config.Head.address}")
     try:
-        ray.init(
-            address=Config.Head.address,
-            num_cpus=Config.Head.num_cpus,
-            num_gpus=Config.Head.num_gpus,
-        )
+        ray.init(address="auto")
         result = True
     except TimeoutError as e:
         logging.error(f"Connection attempt timed out: {e}")
@@ -56,18 +54,14 @@ def shutdown():
     _clear_loggers()
     ZombieTerminator.terminate_all_jobs()
 
-def _stop_existing_ray_head():
-     terminal.run_command(["ray", "stop"])
-
 def setup() -> bool:
     _setup_logging()
-    _stop_existing_ray_head()
 
     if not hypha.token_init.set_token():
         return False
 
-    if not _start_head_node():
-        logging.error("Unable to start ray server.")
+    if not _connect_to_ray_head():
+        logging.error("Unable to connect to ray server.")
         return False
     
     return True

@@ -27,9 +27,13 @@ def _get_worker_launch_args() -> List[str]:
 def launch_worker_node() -> int:
     try:
         output = run_command(args=_get_worker_launch_args())
-        job_id = int(output.split()[-1])
-        logging.info(f"Job submitted with ID: {job_id}")
-        return job_id
+        if output is None:
+            logging.error("Failed to launch worker script!")
+            return -1
+        else:
+            job_id = int(output.split()[-1])
+            logging.info(f"Job submitted with ID: {job_id}")
+            return job_id
     except subprocess.CalledProcessError as e:
         logging.error(f"Error submitting SLURM job: {e.stderr}")
     return -1

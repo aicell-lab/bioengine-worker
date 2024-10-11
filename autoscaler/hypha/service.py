@@ -5,17 +5,13 @@ from hypha.admin import AdminChecker
 from config import Config
 
 def create_services() -> List[Callable]:
-    admin_checker = AdminChecker(Config.Workspace.admin_emails)
 
-    @admin_checker.context_verification()
     def hello_world_task(context=None):
         return "hello world!"
     
-    @admin_checker.context_verification()
     async def test_cellpose(img_data, context=None):
         return await hypha.cellpose_service.test_cellpose.remote(img_data)
     
-    @admin_checker.context_verification()
     async def cellpose_inference(encoded_zip: str = None, context=None):
         if encoded_zip is None:
             return {"success": False, "message": f"Missing argument 'encoded_zip' (type: zip file encoded as base64)"}
@@ -24,8 +20,13 @@ def create_services() -> List[Callable]:
     
     return [hello_world_task, cellpose_inference, test_cellpose]
 
+def apply_admin_check(services: List[Callable]) -> List[Callable]:
+    """Apply the admin verification decorator to each service function."""
+    admin_checker = AdminChecker(Config.Workspace.admin_emails)
+    return [admin_checker.context_verification()(service) for service in services]
+
 async def register_services():
-    services = create_services()
+    services = apply_admin_check(create_services())
     server = await Hypha.authenticate()
     if server:
         service_info = await Hypha.register_service(server_handle=server, callbacks=services)

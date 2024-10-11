@@ -1,5 +1,6 @@
 from functools import wraps
 import logging
+import inspect
 
 class NotAdminError(Exception):
     """Custom exception for non-admin access."""
@@ -25,19 +26,35 @@ class AdminChecker:
         
     def verify_context(self, context) -> bool:
         """Verify the context to check if the user is an admin."""
-        email = self.get_admin_email(context)
-        logging.info(f"Admin context for {email}!")
-        return True
-
+        try:
+            email = self.get_admin_email(context)
+            logging.info(f"Admin context for {email}!")
+            return True
+        except NotAdminError as e:
+            logging.warning(f"Unauthorized access attempt: {str(e)}")
+            return False 
+    
     def context_verification(self):
-        """Decorator to verify the context for admin services."""
+        """Meta decorator to verify context for admin services."""
         def decorator(func):
             @wraps(func)
-            async def wrapper(*args, context=None, **kwargs):
+            async def async_wrapper(*args, context=None, **kwargs):
                 if self.verify_context(context):
                     return await func(*args, context=context, **kwargs)
                 else:
                     raise NotAdminError("Unauthorized access")
-            return wrapper
+
+            @wraps(func)
+            def sync_wrapper(*args, context=None, **kwargs):
+                if self.verify_context(context):
+                    return func(*args, context=context, **kwargs)
+                else:
+                    raise NotAdminError("Unauthorized access")
+
+            if inspect.iscoroutinefunction(func):
+                return async_wrapper
+            else:
+                return sync_wrapper
+            
         return decorator
     

@@ -2,15 +2,21 @@ from typing import List, Callable
 import asyncio
 from hypha.connection import Hypha
 import hypha.cellpose_service
-import ray
+from admin import AdminChecker
+from config import Config
 
 def create_services() -> List[Callable]:
+    admin_checker = AdminChecker(Config.Workspace.admin_emails)
+
+    @admin_checker.context_verification()
     def hello_world_task(context=None):
         return "hello world!"
     
+    @admin_checker.context_verification()
     async def test_cellpose(img_data, context=None):
         return await hypha.cellpose_service.test_cellpose.remote(img_data)
     
+    @admin_checker.context_verification()
     async def cellpose_inference(encoded_zip: str = None, context=None):
         if encoded_zip is None:
             return {"success": False, "message": f"Missing argument 'encoded_zip' (type: zip file encoded as base64)"}

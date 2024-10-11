@@ -10,7 +10,7 @@ class Config:
         worker_script_path = util.get_script_path(script_dir=script_directory_name,script_filename=worker_script_name)
 
     class Scaling:
-        MAX_NODES = 94
+        MAX_NODES = 5
         CHECK_INTERVAL = timedelta(seconds=5)
         ZOMBIE_TIMEOUT = timedelta(seconds=60, minutes=0)
     
@@ -30,6 +30,7 @@ class Config:
         client_id = "berzelius"
         service_name = "Ray"
         TOKEN_VAR_NAME = "hypha_token_env_name"
+        admin_emails = ['marcus.andersson@scilifelab.se']
 
     class Head:
         port=6379

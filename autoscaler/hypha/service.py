@@ -1,8 +1,7 @@
 from typing import List, Callable
-import asyncio
 from hypha.connection import Hypha
 import hypha.cellpose_service
-from admin import AdminChecker
+from hypha.admin import AdminChecker
 from config import Config
 
 def create_services() -> List[Callable]:

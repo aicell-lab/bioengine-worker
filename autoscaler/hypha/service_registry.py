@@ -14,7 +14,7 @@ class RemoteRayMethods:
         return local_context.get('result', '') 
     
     @ray.remote(num_gpus=1)
-    def exec_bytes(script: str) -> str:
+    def exec_bytes(script: str) -> bytes:
         local_context = {}
         exec(script, {}, local_context)
         return local_context.get('result', b'')

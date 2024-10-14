@@ -1,6 +1,5 @@
 from scaling.scaler import Scaler
-import hypha.service
-import config
+import hypha.service_registry as service_registry
 import init
 import signal
 import asyncio
@@ -17,7 +16,7 @@ async def scaler_loop():
     await asyncio.to_thread(Scaler().run)
 
 async def main_loop():
-    await hypha.service.register_services()
+    await service_registry.register_services()
     scaler_task = asyncio.create_task(scaler_loop())  
     await scaler_task 
 

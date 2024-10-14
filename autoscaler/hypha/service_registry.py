@@ -4,7 +4,6 @@ from hypha.admin import AdminChecker
 from config import Config
 import inspect
 from hypha.connection import Hypha
-from hypha.service_registry import ServiceRegistry
 import ray
 
 class RemoteRayMethods:

@@ -19,6 +19,17 @@ class RemoteRayMethods:
         exec(script, {}, local_context)
         return local_context.get('result', b'')
     
+    @ray.remote(num_gpus=1)
+    def exec_str_untrusted(script: str) -> str:
+        """Execute untrusted code in a sandboxed environment and retrieve the result."""
+        # TODO: Implement
+        return ''
+    @ray.remote(num_gpus=1)
+    def exec_bytes_untrusted(script: str) -> bytes:
+        """Execute untrusted code in a sandboxed environment and retrieve the result."""
+        # TODO: Implement
+        return b''
+    
 def service_method(func):
     func._is_service = True
     return func

@@ -36,26 +36,21 @@ class AdminChecker:
     
     def context_verification(self):
         """Meta decorator to verify context for admin services."""
+
+        def check_context(func, context, *args, **kwargs):
+            if not self.verify_context(context):
+                raise NotAdminError("Unauthorized access")
+            return func(*args, context=context, **kwargs)
+        
         def decorator(func):
             @wraps(func)
             async def async_wrapper(*args, context=None, **kwargs):
-                if self.verify_context(context):
-                    return await func(*args, context=context, **kwargs)
-                else:
-                    raise NotAdminError("Unauthorized access")
-
+                return await check_context(func, context, *args, **kwargs)
             @wraps(func)
             def sync_wrapper(*args, context=None, **kwargs):
-                if self.verify_context(context):
-                    return func(*args, context=context, **kwargs)
-                else:
-                    raise NotAdminError("Unauthorized access")
-
-            if inspect.iscoroutinefunction(func):
-                return async_wrapper
-            else:
-                return sync_wrapper
-            
+                return check_context(func, context, *args, **kwargs)
+            return async_wrapper if inspect.iscoroutinefunction(func) else sync_wrapper
+        
         return decorator
     
     

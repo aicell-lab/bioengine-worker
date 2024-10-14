@@ -5,7 +5,21 @@ from config import Config
 import inspect
 from hypha.connection import Hypha
 from hypha.service_registry import ServiceRegistry
+import ray
 
+class RemoteRayMethods:
+    @ray.remote(num_gpus=1)
+    def exec_str(script: str) -> str:
+        local_context = {}
+        exec(script, {}, local_context)
+        return local_context.get('result', '') 
+    
+    @ray.remote(num_gpus=1)
+    def exec_bytes(script: str) -> str:
+        local_context = {}
+        exec(script, {}, local_context)
+        return local_context.get('result', b'')
+    
 def service_method(func):
     func._is_service = True
     return func
@@ -17,6 +31,14 @@ class ServiceRegistry:
     @service_method
     def hello_world_task(self, context=None) -> str:
         return "hello world!"
+    
+    @service_method
+    async def exec_str(self, script: str, context=None) -> str:
+        return await RemoteRayMethods.exec_str.remote(script)
+
+    @service_method
+    async def exec_bytes(self, script: str, context=None) -> bytes:
+        return await RemoteRayMethods.exec_bytes.remote(script)
 
     def _get_service_methods(self) -> List[Callable]:
         """Collect only methods marked as service methods."""

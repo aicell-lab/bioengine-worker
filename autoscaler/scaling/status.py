@@ -70,6 +70,7 @@ class RayMetrics:
 class Status:
     def __init__(self):
         self.status_log = ''
+        self.prev_status_log = ''
         self.job_metrics = JobMetrics()
         self.ray_metrics = RayMetrics()
         self.update()

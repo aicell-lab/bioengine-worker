@@ -30,15 +30,15 @@ class ServiceRegistry:
         self.admin_checker = AdminChecker(Config.Workspace.admin_emails)
 
     @service_method
-    def hello_world_task(context=None) -> str:
+    def hello_world_task(self, context=None) -> str:
         return "hello world!"
     
     @service_method
-    async def exec_str(script: str, context=None) -> str:
+    async def exec_str(self, script: str, context=None) -> str:
         return await RemoteRayMethods.exec_str.remote(script)
 
     @service_method
-    async def exec_bytes(script: str, context=None) -> bytes:
+    async def exec_bytes(self, script: str, context=None) -> bytes:
         return await RemoteRayMethods.exec_bytes.remote(script)
 
     def _get_service_methods(self) -> List[Callable]:

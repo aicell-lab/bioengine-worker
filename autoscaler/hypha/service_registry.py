@@ -9,12 +9,14 @@ import ray
 class RemoteRayMethods:
     @ray.remote(num_gpus=1)
     def exec_str(script: str) -> str:
+        """Execute trusted code and return the result as str."""
         local_context = {}
         exec(script, {}, local_context)
         return local_context.get('result', '') 
     
     @ray.remote(num_gpus=1)
     def exec_bytes(script: str) -> bytes:
+        """Execute trusted code and return the result as bytes."""
         local_context = {}
         exec(script, {}, local_context)
         return local_context.get('result', b'')
@@ -24,6 +26,7 @@ class RemoteRayMethods:
         """Execute untrusted code in a sandboxed environment and retrieve the result."""
         # TODO: Implement
         return ''
+    
     @ray.remote(num_gpus=1)
     def exec_bytes_untrusted(script: str) -> bytes:
         """Execute untrusted code in a sandboxed environment and retrieve the result."""
@@ -39,15 +42,15 @@ class ServiceRegistry:
         self.admin_checker = AdminChecker(Config.Workspace.admin_emails)
 
     @service_method
-    def hello_world_task(self, context=None) -> str:
+    def hello_world_task(context=None) -> str:
         return "hello world!"
     
     @service_method
-    async def exec_str(self, script: str, context=None) -> str:
+    async def exec_str(script: str, context=None) -> str:
         return await RemoteRayMethods.exec_str.remote(script)
 
     @service_method
-    async def exec_bytes(self, script: str, context=None) -> bytes:
+    async def exec_bytes(script: str, context=None) -> bytes:
         return await RemoteRayMethods.exec_bytes.remote(script)
 
     def _get_service_methods(self) -> List[Callable]:

@@ -10,7 +10,6 @@ class Scaler:
     def __init__(self):
         self.status = Status()
         self.zombie_terminator = ZombieTerminator(status=self.status)
-        self.prev_status_log = ""
 
     def _allocate_workers(self):
         if not self.status.is_worker_queue_full() and self.status.need_more_workers():

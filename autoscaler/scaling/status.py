@@ -106,8 +106,8 @@ class Status:
                 f"  Running:   {self.job_metrics.running_jobs}\n"
                 f"  Pending:   {self.job_metrics.pending_jobs}\n"
                 f"\nRay Workers:\n"
-                f"  Total:          {self.ray_metrics.num_workers}\n"
-                f"  Available:      {self.ray_metrics.num_available_workers}\n"
-                f"  Occupied:       {self.ray_metrics.num_occupied_workers}\n"
-                f"Pending Tasks:  {self.ray_metrics.num_pending_tasks}\n")
+                f"  Total:     {self.ray_metrics.num_workers}\n"
+                f"  Available: {self.ray_metrics.num_available_workers}\n"
+                f"  Occupied:  {self.ray_metrics.num_occupied_workers}\n"
+                f"Pending Tasks: {self.ray_metrics.num_pending_tasks}\n")
 

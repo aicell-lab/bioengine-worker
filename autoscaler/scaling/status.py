@@ -91,7 +91,7 @@ class Status:
     def _log_status(self):
         self.status_log = str(self)
         if self.prev_status_log != self.status_log:
-            logging.info(self.status_log)
+            logging.info(f"\n{self.status_log}")
             self.prev_status_log = self.status_log
 
     def is_worker_queue_full(self) -> bool: # Avoid spamming slurm jobs

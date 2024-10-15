@@ -4,6 +4,7 @@ import ray
 from dataclasses import dataclass, field
 from ray.util.state import list_tasks
 import os
+import logging
 
 @dataclass
 class JobMetrics:
@@ -68,6 +69,7 @@ class RayMetrics:
 
 class Status:
     def __init__(self):
+        self.status_log = ''
         self.job_metrics = JobMetrics()
         self.ray_metrics = RayMetrics()
         self.update()
@@ -75,6 +77,7 @@ class Status:
     def update(self):
         self.job_metrics.update()
         self.ray_metrics.update()
+        self._log_status()
 
     def _is_job_queue_full(self) -> bool:
         slurm = self.job_metrics
@@ -83,6 +86,12 @@ class Status:
             slurm.total_jobs > self.ray_metrics.num_workers,
             slurm.pending_jobs > 0
         ])
+    
+    def _log_status(self):
+        self.status_log = str(self)
+        if self.prev_status_log != self.status_log:
+            logging.info(self.status_log)
+            self.prev_status_log = self.status_log
 
     def is_worker_queue_full(self) -> bool: # Avoid spamming slurm jobs
         return self.ray_metrics.num_available_workers > 0 or self._is_job_queue_full()
@@ -91,5 +100,13 @@ class Status:
         return self.ray_metrics.num_pending_tasks > self.ray_metrics.num_available_workers
 
     def __str__(self):
-        return f"JobMetrics({self.job_metrics}) RayMetrics({self.ray_metrics})"
+        return (f"SLURM Jobs:\n"
+                f"  Total:     {self.job_metrics.total_jobs}\n"
+                f"  Running:   {self.job_metrics.running_jobs}\n"
+                f"  Pending:   {self.job_metrics.pending_jobs}\n"
+                f"\nRay Workers:\n"
+                f"  Total:          {self.ray_metrics.num_workers}\n"
+                f"  Available:      {self.ray_metrics.num_available_workers}\n"
+                f"  Occupied:       {self.ray_metrics.num_occupied_workers}\n"
+                f"Pending Tasks:  {self.ray_metrics.num_pending_tasks}\n")
 

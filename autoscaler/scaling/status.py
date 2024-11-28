@@ -15,7 +15,7 @@ class JobMetrics:
     @staticmethod
     def _get_slurm_jobs_by_state(state: str) -> int:
         user = getpass.getuser()
-        output = terminal.run_command(["squeue", "-u", user, f"--state={state}", "--noheader", "--format=%i"])
+        output = terminal.run_command(["squeue", "-u", user, f"--state={state}", "--noheader", "--format=%i"]) or ""
         return len(output.splitlines())
     
     @staticmethod

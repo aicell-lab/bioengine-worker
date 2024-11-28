@@ -10,6 +10,7 @@ class Config:
         worker_script_path = util.get_script_path(script_dir=script_directory_name,script_filename=worker_script_name)
 
     class Scaling:
+        MIN_NODES = 0
         MAX_NODES = 5
         CHECK_INTERVAL = timedelta(seconds=5)
         ZOMBIE_TIMEOUT = timedelta(seconds=60, minutes=0)

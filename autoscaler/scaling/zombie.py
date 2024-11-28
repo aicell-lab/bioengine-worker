@@ -3,7 +3,7 @@ from scaling.status import Status
 from config import Config
 from typing import List
 import terminal
-import os
+import getpass
 
 class ZombieTerminator:
     
@@ -13,7 +13,7 @@ class ZombieTerminator:
 
     @staticmethod
     def _get_job_ids() -> List[str]:
-        user = os.getenv("USER")
+        user = getpass.getuser()
         job_ids_output = terminal.run_command(["squeue", "-u", user, "-h", "-o", "%A"])    
         return job_ids_output.splitlines()
     

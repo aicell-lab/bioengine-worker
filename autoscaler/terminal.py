@@ -1,9 +1,9 @@
 import subprocess
 import logging
-from typing import List
+from typing import List, Optional
 from config import Config
 
-def run_command(args: List[str]) -> str:
+def run_command(args: List[str]) -> Optional[str]:
     try:
         result = subprocess.run(
             args,
@@ -22,7 +22,7 @@ def run_command(args: List[str]) -> str:
 def _get_worker_launch_args() -> List[str]:
     #sbatch --export=HEAD_NODE_IP=${HEAD_NODE_IP},SCRIPT_DIR=${SCRIPT_DIR} "$SCRIPT_DIR/worker.sh"
     env_vars = f"--export=HEAD_NODE_IP={Config.Head.ip},SCRIPT_DIR={Config.Shell.script_directory_path}"
-    return ["sbatch", env_vars, Config.Shell.worker_script_path]
+    return ["sbatch", env_vars, str(Config.Shell.worker_script_path)]
 
 def launch_worker_node() -> int:
     try:

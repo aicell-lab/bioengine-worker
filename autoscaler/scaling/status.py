@@ -3,8 +3,8 @@ from config import Config
 import ray
 from dataclasses import dataclass, field
 from ray.util.state import list_tasks
-import os
 import logging
+import getpass
 
 @dataclass
 class JobMetrics:
@@ -14,7 +14,7 @@ class JobMetrics:
 
     @staticmethod
     def _get_slurm_jobs_by_state(state: str) -> int:
-        user = os.getenv("USER")
+        user = getpass.getuser()
         output = terminal.run_command(["squeue", "-u", user, f"--state={state}", "--noheader", "--format=%i"])
         return len(output.splitlines())
     

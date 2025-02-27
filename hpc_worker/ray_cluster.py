@@ -1,0 +1,415 @@
+import logging
+import os
+import ray
+import subprocess
+import tempfile
+import time
+from typing import Dict, Optional
+
+
+def check_ray_cluster() -> Dict:
+    """Check ray cluster status using Ray's Python API"""
+    try:
+        was_connected = ray.is_initialized()
+        if not was_connected:
+            try:
+                ray.init(address="auto")
+            except ConnectionError:
+                # This is an expected state - no Ray cluster running
+                return {"head_running": False, "worker_count": 0}
+
+        # Parse output from ray.nodes() which gives more detailed info
+        nodes = ray.nodes()
+        is_head_running = any(node["Alive"] for node in nodes)
+        worker_count = sum(
+            1 for node in nodes if node["Alive"] and not node.get("IsSyncPoint", False)
+        )
+
+        # Disconnect only if we connected in this function
+        if not was_connected:
+            ray.shutdown()
+
+        return {
+            "head_running": is_head_running,
+            "worker_count": max(0, worker_count - 1),  # Subtract 1 to exclude head node
+        }
+    except Exception as e:
+        # Log only unexpected errors
+        if not str(e).startswith("Could not find any running Ray instance"):
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error checking ray cluster: {str(e)}")
+
+        # Make sure to disconnect even if there was an error
+        if ray.is_initialized():
+            ray.shutdown()
+        return {"head_running": False, "worker_count": 0}
+
+
+def start_ray_cluster(
+    logger: Optional[logging.Logger] = None, context: dict = None
+) -> Dict:
+    """Start a Ray cluster head node"""
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    try:
+        # Check if Ray is already running
+        ray_status = check_ray_cluster()
+        if ray_status["head_running"]:
+            return {"success": True, "message": "Ray cluster is already running"}
+
+        # Start ray as the head node with the specified parameters using correct arguments
+        ray.init(
+            address="local",  # Force creating a new Ray instance
+            num_cpus=0,
+            num_gpus=0,
+            include_dashboard=True,
+            dashboard_host="0.0.0.0",
+        )
+
+        # Wait a moment for initialization
+        time.sleep(2)
+
+        # Verify the cluster is running
+        runtime_context = ray.get_runtime_context()
+        host_ip, port = runtime_context.gcs_address.split(":")
+
+        return {
+            "success": True,
+            "message": f"Ray cluster started successfully on {host_ip}:{port}",
+        }
+
+    except Exception as e:
+        logger.error(f"Error initializing Ray: {str(e)}")
+        return {"success": False, "message": f"Error initializing Ray: {str(e)}"}
+
+
+def shutdown_ray_cluster(
+    logger: Optional[logging.Logger] = None, context: dict = None
+) -> Dict:
+    """Shutdown the Ray cluster and all its nodes"""
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    try:
+        # Check if Ray is running
+        ray_status = check_ray_cluster()
+        if not ray_status["head_running"]:
+            return {"success": True, "message": "Ray cluster is not running"}
+
+        # Connect to the cluster if not already connected
+        if not ray.is_initialized():
+            ray.init(address="auto")
+
+        # Get node info before shutdown for reporting
+        nodes = ray.nodes()
+        node_count = sum(1 for node in nodes if node["Alive"])
+
+        # Perform the shutdown
+        ray.shutdown()
+
+        # Wait a moment for shutdown to complete
+        time.sleep(2)
+
+        # Verify shutdown was successful
+        ray_status = check_ray_cluster()
+        if not ray_status["head_running"]:
+            logger.info(f"Successfully shut down Ray cluster with {node_count} node(s)")
+            return {
+                "success": True,
+                "message": f"Successfully shut down Ray cluster with {node_count} node(s)",
+            }
+        else:
+            logger.warning("Ray cluster is still running after shutdown attempt.")
+            return {
+                "success": False,
+                "message": "Failed to shut down Ray cluster completely",
+            }
+
+    except Exception as e:
+        logger.error(f"Error shutting down Ray cluster: {str(e)}")
+        return {"success": False, "message": f"Error during shutdown: {str(e)}"}
+
+
+def submit_worker_job(
+    num_gpus: int = 1,
+    num_cpus: int = 4,
+    mem_per_cpu: int = 8,
+    time_limit: str = "1:00:00",
+    container_image: str = "chiron_worker_0.1.0.sif",
+    logger: Optional[logging.Logger] = None,
+    context: dict = None,
+) -> Dict:
+    """Submit a Slurm job to start a Ray worker directly with an apptainer container
+
+    Args:
+        num_gpus: Number of GPUs to allocate to the worker
+        num_cpus: Number of CPUs to allocate to the worker
+        mem_per_cpu: Memory per CPU in GB
+        time_limit: Time limit for the job in HH:MM:SS format
+        container_image: Apptainer/Singularity container image to run
+        logger: Logger instance
+        context: RPC context
+
+    Returns:
+        Dict with job submission status
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    try:
+        # First check if Ray cluster is running
+        ray_status = check_ray_cluster()
+        if not ray_status["head_running"]:
+            return {
+                "success": False,
+                "message": "Cannot start worker: Ray head node is not running",
+            }
+
+        # Get Ray GCS address if not already connected
+        was_connected = ray.is_initialized()
+        if not was_connected:
+            ray.init(address="auto")
+
+        # Get the head node IP and port
+        runtime_context = ray.get_runtime_context()
+        head_ip, ray_port = runtime_context.gcs_address.split(":")
+
+        # Clean up Ray connection if we initiated it
+        if not was_connected:
+            ray.shutdown()
+
+        # Create logs directory if it doesn't exist
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        logs_dir = os.path.join(base_dir, "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+
+        # Define the Ray worker command that will run inside the container
+        ray_worker_cmd = f"ray start --address={head_ip}:{ray_port} --num-cpus={num_cpus} --num-gpus={num_gpus} --block"
+
+        # Define the apptainer command with the Ray worker command
+        apptainer_cmd = f"apptainer run --contain --writable-tmpfs --nv {container_image} {ray_worker_cmd}"
+
+        # Create a temporary batch script
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".sh", delete=False
+        ) as batch_file:
+            batch_script = f"""
+            #!/bin/bash
+            #SBATCH --job-name=ray_worker
+            #SBATCH --ntasks=1
+            #SBATCH --nodes=1
+            #SBATCH --gpus={num_gpus}
+            #SBATCH --cpus-per-task={num_cpus}
+            #SBATCH --mem-per-cpu={mem_per_cpu}G
+            #SBATCH --time={time_limit}
+            #SBATCH --output={logs_dir}/%x_%j.out
+            #SBATCH --error={logs_dir}/%x_%j.err
+
+            # Print some diagnostic information
+            echo "Starting Ray worker node"
+            echo "Host: $(hostname)"
+            echo "Date: $(date)"
+            echo "Connecting to head node: {head_ip}:{ray_port}"
+            echo "GPUs: {num_gpus}, CPUs: {num_cpus}"
+            echo "GPU info: $(nvidia-smi -L)"
+
+            # Run the apptainer container with Ray worker
+            {apptainer_cmd}
+
+            # Print completion status
+            echo "Ray worker job completed with status $?" 
+            """
+            for line in batch_script.split("\n"):
+                batch_file.write(line.strip() + "\n")
+            temp_script_path = batch_file.name
+
+        # Make the script executable
+        os.chmod(temp_script_path, 0o755)
+
+        # Submit the job with sbatch
+        logger.info(
+            f"Submitting worker job to SLURM with {num_gpus} GPUs and {num_cpus} CPUs"
+        )
+        result = subprocess.run(
+            ["sbatch", temp_script_path], capture_output=True, text=True, check=True
+        )
+
+        # Clean up the temporary file
+        try:
+            os.remove(temp_script_path)
+        except:
+            logger.warning(f"Failed to remove temporary script: {temp_script_path}")
+
+        # Parse job ID from Slurm output (usually "Submitted batch job 12345")
+        job_id = None
+        if result.stdout and "Submitted batch job" in result.stdout:
+            job_id = result.stdout.strip().split()[-1]
+
+        logger.info(f"Worker job submitted successfully. Job ID: {job_id}")
+
+        return {
+            "success": True,
+            "message": f"Worker job submitted successfully with job ID {job_id}",
+            "job_id": job_id,
+            "head_node": f"{head_ip}:{ray_port}",
+            "resources": {
+                "gpus": num_gpus,
+                "cpus": num_cpus,
+                "mem_per_cpu": f"{mem_per_cpu}G",
+                "time_limit": time_limit,
+                "container": container_image,
+            },
+            "command": apptainer_cmd,
+        }
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error submitting Slurm job: {e.stderr}")
+        return {"success": False, "message": f"Error submitting Slurm job: {e.stderr}"}
+    except Exception as e:
+        logger.error(f"Unexpected error submitting worker job: {str(e)}")
+        return {"success": False, "message": f"Unexpected error: {str(e)}"}
+
+
+def get_user_jobs(
+    logger: Optional[logging.Logger] = None, context: dict = None
+) -> Dict:
+    """Get all Ray worker jobs for the current user
+
+    Returns a dictionary with job information including ID, name, state,
+    runtime, and time limit for all Ray worker jobs owned by the current user.
+
+    Args:
+        logger: Logger instance
+        context: RPC context
+
+    Returns:
+        Dict with Ray worker job information
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    try:
+        # Run squeue command to get all jobs for the current user
+        # Format: JobID, Name, State, Time, TimeLimit
+        result = subprocess.run(
+            ["squeue", "-u", os.environ["USER"], "-o", "%i %j %T %M %L"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        # Parse the output
+        lines = result.stdout.strip().split("\n")
+
+        # Skip the header line if present
+        if len(lines) > 0 and not lines[0][0].isdigit():
+            lines = lines[1:]
+
+        jobs = []
+        for line in lines:
+            if line.strip():
+                parts = line.split()
+                if len(parts) >= 5:
+                    job_id, job_name, state, runtime, time_limit = (
+                        parts[0],
+                        parts[1],
+                        parts[2],
+                        parts[3],
+                        parts[4],
+                    )
+
+                    # Only include Ray worker jobs
+                    if job_name == "ray_worker":
+                        jobs.append(
+                            {
+                                "job_id": job_id,
+                                "name": job_name,
+                                "state": state,
+                                "runtime": runtime,
+                                "time_limit": time_limit,
+                            }
+                        )
+
+        return {"success": True, "ray_worker_jobs": jobs, "worker_count": len(jobs)}
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error getting job status: {e.stderr}")
+        return {
+            "success": False,
+            "message": f"Error getting job status: {e.stderr}",
+            "ray_worker_jobs": [],
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error getting job status: {str(e)}")
+        return {
+            "success": False,
+            "message": f"Unexpected error: {str(e)}",
+            "ray_worker_jobs": [],
+        }
+
+
+def cancel_all_ray_jobs(logger: Optional[logging.Logger] = None) -> Dict:
+    """Cancel all Ray worker jobs for the current user
+
+    This is used for cleanup when the main process exits unexpectedly.
+
+    Args:
+        logger: Logger instance
+
+    Returns:
+        Dict with cancellation result information
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    try:
+        # First get all ray worker jobs
+        jobs_result = get_user_jobs(logger=logger)
+
+        if not jobs_result["success"]:
+            logger.error("Failed to retrieve job list for cleanup")
+            return {
+                "success": False,
+                "message": "Failed to retrieve job list for cleanup",
+            }
+
+        ray_jobs = jobs_result.get("ray_worker_jobs", [])
+
+        if not ray_jobs:
+            logger.info("No Ray worker jobs to clean up")
+            return {
+                "success": True,
+                "message": "No Ray worker jobs to clean up",
+                "cancelled_jobs": 0,
+            }
+
+        # Get list of job IDs to cancel
+        job_ids = [job["job_id"] for job in ray_jobs]
+        job_id_str = " ".join(job_ids)
+
+        # Cancel the jobs
+        logger.info(f"Cancelling {len(job_ids)} Ray worker jobs: {job_id_str}")
+
+        if job_ids:
+            result = subprocess.run(
+                ["scancel", *job_ids], capture_output=True, text=True
+            )
+
+            if result.returncode != 0:
+                logger.error(f"Error cancelling jobs: {result.stderr}")
+                return {
+                    "success": False,
+                    "message": f"Error cancelling jobs: {result.stderr}",
+                }
+
+        return {
+            "success": True,
+            "message": f"Successfully cancelled {len(job_ids)} Ray worker jobs",
+            "cancelled_jobs": len(job_ids),
+            "job_ids": job_ids,
+        }
+
+    except Exception as e:
+        logger.error(f"Unexpected error cancelling jobs: {str(e)}")
+        return {"success": False, "message": f"Unexpected error: {str(e)}"}

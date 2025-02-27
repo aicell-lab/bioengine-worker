@@ -1,11 +1,11 @@
-import logging
 import os
 from datetime import datetime, timezone
 from typing import Dict
 
-import ray
 import yaml
 import numpy as np
+
+from hpc_worker.ray_cluster import check_ray_cluster
 
 def format_time(last_deployed_time_s: int, tz: timezone = timezone.utc) -> Dict:
     current_time = datetime.now(tz)
@@ -34,41 +34,6 @@ def format_time(last_deployed_time_s: int, tz: timezone = timezone.utc) -> Dict:
         "duration_since": " ".join(duration_parts) if duration_parts else "0s"
     }
 
-def check_ray_cluster() -> Dict:
-    """Check ray cluster status using Ray's Python API"""
-    try:
-        was_connected = ray.is_initialized()
-        if not was_connected:
-            try:
-                ray.init(address='auto')
-            except ConnectionError:
-                # This is an expected state - no Ray cluster running
-                return {'head_running': False, 'worker_count': 0}
-        
-        # Parse output from ray.nodes() which gives more detailed info
-        nodes = ray.nodes()
-        is_head_running = any(node['Alive'] for node in nodes)
-        worker_count = sum(1 for node in nodes if node['Alive'] and not node.get('IsSyncPoint', False))
-        
-        # Disconnect only if we connected in this function
-        if not was_connected:
-            ray.shutdown()
-        
-        return {
-            'head_running': is_head_running,
-            'worker_count': max(0, worker_count - 1)  # Subtract 1 to exclude head node
-        }
-    except Exception as e:
-        # Log only unexpected errors
-        if not str(e).startswith("Could not find any running Ray instance"):
-            logger = logging.getLogger(__name__)
-            logger.error(f"Error checking ray cluster: {str(e)}")
-        
-        # Make sure to disconnect even if there was an error
-        if ray.is_initialized():
-            ray.shutdown()
-        return {'head_running': False, 'worker_count': 0}
-
 def load_dataset_info(dataset_path: str) -> Dict:
     """Load dataset information from info.npz file"""
     info_path = os.path.join(dataset_path, 'info.npz')
@@ -91,7 +56,7 @@ def process_model_info(image: str) -> Dict:
         'version': version
     }
 
-def worker_status(config_path: str, registered_at: int) -> Dict:
+def worker_status(config_path: str, registered_at: int, context: dict) -> Dict:
     """Get complete worker status"""
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)

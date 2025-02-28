@@ -251,7 +251,11 @@ def submit_worker_job(
         if result.stdout and "Submitted batch job" in result.stdout:
             job_id = result.stdout.strip().split()[-1]
 
-        logger.info(f"Worker job submitted successfully. Job ID: {job_id}")
+        logger.info(
+            f"Worker job submitted successfully. Job ID: {job_id}, Resources: {num_gpus} GPU(s), "
+            f"{num_cpus} CPU(s), {mem_per_cpu}G mem/CPU, {time_limit} time limit"
+        )
+        logger.info(f"Worker command: {apptainer_cmd}")
 
         return {
             "success": True,
@@ -265,7 +269,6 @@ def submit_worker_job(
                 "time_limit": time_limit,
                 "container": container_image,
             },
-            "command": apptainer_cmd,
         }
 
     except subprocess.CalledProcessError as e:
@@ -428,6 +431,7 @@ if __name__ == "__main__":
     print("===== Testing Ray cluster functions =====", end="\n\n")
 
     # Check Ray cluster status
+    logger.info("Checking Ray cluster status")
     status = check_ray_cluster()
     print(status, end="\n\n")
 
@@ -436,10 +440,14 @@ if __name__ == "__main__":
     print(start_result, end="\n\n")
 
     # Test getting job status
+    logger.info("Checking ray worker job status")
     status_result = get_user_jobs(logger=logger)
     print(status_result, end="\n\n")
 
     # Test submitting a worker job
+    submit_result = submit_worker_job(logger=logger)
+    print(submit_result, end="\n\n")
+
     submit_result = submit_worker_job(logger=logger)
     print(submit_result, end="\n\n")
 

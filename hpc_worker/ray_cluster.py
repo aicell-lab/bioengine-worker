@@ -221,11 +221,16 @@ def submit_worker_job(
             echo "Ray worker job completed with status $?" 
             """
             for line in batch_script.split("\n"):
-                batch_file.write(line.strip() + "\n")
+                # Remove leading whitespace and line breaks
+                line = line.strip()
+                if line:
+                    batch_file.write(line + "\n")
             temp_script_path = batch_file.name
 
-        # Make the script executable
-        os.chmod(temp_script_path, 0o755)
+        # Create logs directory if it doesn't exist
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        logs_dir = os.path.join(base_dir, "logs")
+        os.makedirs(logs_dir, exist_ok=True)
 
         # Submit the job with sbatch
         logger.info(
@@ -413,3 +418,35 @@ def cancel_all_ray_jobs(logger: Optional[logging.Logger] = None) -> Dict:
     except Exception as e:
         logger.error(f"Unexpected error cancelling jobs: {str(e)}")
         return {"success": False, "message": f"Unexpected error: {str(e)}"}
+
+
+if __name__ == "__main__":
+    # Test the functions
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
+    print("===== Testing Ray cluster functions =====", end="\n\n")
+
+    # Check Ray cluster status
+    status = check_ray_cluster()
+    print(status, end="\n\n")
+
+    # Test starting Ray cluster
+    start_result = start_ray_cluster(logger=logger)
+    print(start_result, end="\n\n")
+
+    # Test getting job status
+    status_result = get_user_jobs(logger=logger)
+    print(status_result, end="\n\n")
+
+    # Test submitting a worker job
+    submit_result = submit_worker_job(logger=logger)
+    print(submit_result, end="\n\n")
+
+    # Test cancelling all jobs
+    cancel_result = cancel_all_ray_jobs(logger=logger)
+    print(cancel_result, end="\n\n")
+
+    # Test shutting down Ray cluster
+    shutdown_result = shutdown_ray_cluster(logger=logger)
+    print(shutdown_result, end="\n\n")

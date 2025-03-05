@@ -63,8 +63,7 @@ def start_ray_cluster(
             address="local",  # Force creating a new Ray instance
             num_cpus=0,
             num_gpus=0,
-            include_dashboard=True,
-            dashboard_host="0.0.0.0",
+            include_dashboard=False,
         )
 
         # Wait a moment for initialization
@@ -131,7 +130,7 @@ def shutdown_ray_cluster(
         return {"success": False, "message": f"Error during shutdown: {str(e)}"}
 
 
-def submit_worker_job(
+def submit_ray_worker_job(
     num_gpus: int = 1,
     num_cpus: int = 4,
     mem_per_cpu: int = 8,
@@ -233,9 +232,6 @@ def submit_worker_job(
         os.makedirs(logs_dir, exist_ok=True)
 
         # Submit the job with sbatch
-        logger.info(
-            f"Submitting worker job to SLURM with {num_gpus} GPUs and {num_cpus} CPUs"
-        )
         result = subprocess.run(
             ["sbatch", temp_script_path], capture_output=True, text=True, check=True
         )
@@ -279,7 +275,7 @@ def submit_worker_job(
         return {"success": False, "message": f"Unexpected error: {str(e)}"}
 
 
-def get_user_jobs(
+def get_ray_worker_jobs(
     logger: Optional[logging.Logger] = None, context: dict = None
 ) -> Dict:
     """Get all Ray worker jobs for the current user
@@ -357,13 +353,17 @@ def get_user_jobs(
         }
 
 
-def cancel_all_ray_jobs(logger: Optional[logging.Logger] = None) -> Dict:
-    """Cancel all Ray worker jobs for the current user
-
-    This is used for cleanup when the main process exits unexpectedly.
+def cancel_ray_worker_jobs(
+    job_ids: Optional[list] = None,
+    logger: Optional[logging.Logger] = None, 
+    context: dict = None
+) -> Dict:
+    """Cancel Ray worker jobs for the current user
 
     Args:
+        job_ids: Optional list of specific job IDs to cancel. If None or empty, cancels all Ray worker jobs
         logger: Logger instance
+        context: RPC context
 
     Returns:
         Dict with cancellation result information
@@ -373,7 +373,7 @@ def cancel_all_ray_jobs(logger: Optional[logging.Logger] = None) -> Dict:
 
     try:
         # First get all ray worker jobs
-        jobs_result = get_user_jobs(logger=logger)
+        jobs_result = get_ray_worker_jobs(logger=logger)
 
         if not jobs_result["success"]:
             logger.error("Failed to retrieve job list for cleanup")
@@ -392,16 +392,27 @@ def cancel_all_ray_jobs(logger: Optional[logging.Logger] = None) -> Dict:
                 "cancelled_jobs": 0,
             }
 
+        # Filter jobs if specific job_ids were provided
+        if job_ids:
+            job_ids = [str(job_id) for job_id in job_ids]  # Convert to strings
+            ray_jobs = [job for job in ray_jobs if job["job_id"] in job_ids]
+            if not ray_jobs:
+                return {
+                    "success": True,
+                    "message": "No matching Ray worker jobs found to cancel",
+                    "cancelled_jobs": 0,
+                }
+
         # Get list of job IDs to cancel
-        job_ids = [job["job_id"] for job in ray_jobs]
-        job_id_str = " ".join(job_ids)
+        jobs_to_cancel = [job["job_id"] for job in ray_jobs]
+        job_id_str = " ".join(jobs_to_cancel)
 
         # Cancel the jobs
-        logger.info(f"Cancelling {len(job_ids)} Ray worker jobs: {job_id_str}")
+        logger.info(f"Cancelling {len(jobs_to_cancel)} Ray worker jobs: {job_id_str}")
 
-        if job_ids:
+        if jobs_to_cancel:
             result = subprocess.run(
-                ["scancel", *job_ids], capture_output=True, text=True
+                ["scancel", *jobs_to_cancel], capture_output=True, text=True
             )
 
             if result.returncode != 0:
@@ -413,9 +424,9 @@ def cancel_all_ray_jobs(logger: Optional[logging.Logger] = None) -> Dict:
 
         return {
             "success": True,
-            "message": f"Successfully cancelled {len(job_ids)} Ray worker jobs",
-            "cancelled_jobs": len(job_ids),
-            "job_ids": job_ids,
+            "message": f"Successfully cancelled {len(jobs_to_cancel)} Ray worker jobs",
+            "cancelled_jobs": len(jobs_to_cancel),
+            "job_ids": jobs_to_cancel,
         }
 
     except Exception as e:
@@ -441,18 +452,18 @@ if __name__ == "__main__":
 
     # Test getting job status
     logger.info("Checking ray worker job status")
-    status_result = get_user_jobs(logger=logger)
+    status_result = get_ray_worker_jobs(logger=logger)
     print(status_result, end="\n\n")
 
     # Test submitting a worker job
-    submit_result = submit_worker_job(logger=logger)
+    submit_result = submit_ray_worker_job(logger=logger)
     print(submit_result, end="\n\n")
 
-    submit_result = submit_worker_job(logger=logger)
+    submit_result = submit_ray_worker_job(logger=logger)
     print(submit_result, end="\n\n")
 
     # Test cancelling all jobs
-    cancel_result = cancel_all_ray_jobs(logger=logger)
+    cancel_result = cancel_ray_worker_jobs(logger=logger)
     print(cancel_result, end="\n\n")
 
     # Test shutting down Ray cluster

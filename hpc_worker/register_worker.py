@@ -40,9 +40,9 @@ from hpc_worker.worker_status import worker_status
 from hpc_worker.ray_cluster import (
     start_ray_cluster,
     shutdown_ray_cluster,
-    submit_worker_job,
-    get_user_jobs,
-    cancel_all_ray_jobs,
+    submit_ray_worker_job,
+    get_ray_worker_jobs,
+    cancel_ray_worker_jobs,
 )
 
 
@@ -89,9 +89,9 @@ async def register_hpc_worker(args):
     )
     start_ray_func = partial(start_ray_cluster, logger=logger)
     shutdown_ray_func = partial(shutdown_ray_cluster, logger=logger)
-    submit_worker_func = partial(submit_worker_job, logger=logger)
-    get_jobs_func = partial(get_user_jobs, logger=logger)
-    cancel_jobs_func = partial(cancel_all_ray_jobs, logger=logger)
+    submit_job_func = partial(submit_ray_worker_job, logger=logger)
+    get_jobs_func = partial(get_ray_worker_jobs, logger=logger)
+    cancel_jobs_func = partial(cancel_ray_worker_jobs, logger=logger)
 
     logger.info("Connecting to Hypha server...")
     hypha_token = os.environ.get("HYPHA_TOKEN") or await login(
@@ -112,21 +112,22 @@ async def register_hpc_worker(args):
                 "run_in_executor": False,
             },
             "ping": lambda context: "pong",
-            "get_status": status_func,
+            "get_worker_status": status_func,
             "start_ray_cluster": start_ray_func,
             "shutdown_ray_cluster": shutdown_ray_func,
-            "submit_worker_job": submit_worker_func,
-            "get_jobs": get_jobs_func,
-            "cancel_all_jobs": cancel_jobs_func,
+            "submit_ray_worker_job": submit_job_func,
+            "get_ray_worker_jobs": get_jobs_func,
+            "cancel_ray_worker_jobs": cancel_jobs_func,
         }
     )
 
     logger.info(f"Service registered with ID: {service_info.id}")
     sid = service_info.id.split("/")[1]
     service_url = f"{args.server_url}/{server.config.workspace}/services/{sid}"
-    logger.info(f"Test the HPC worker service here: {service_url}/get_status")
+    logger.info(f"Test the HPC worker service here: {service_url}/get_worker_status")
     logger.info(f"Start Ray cluster with: {service_url}/start_ray_cluster")
     logger.info(f"Shutdown Ray cluster with: {service_url}/shutdown_ray_cluster")
-    logger.info(f"Submit worker jobs with: {service_url}/submit_worker_job")
-    logger.info(f"Get user job status with: {service_url}/get_jobs")
-    logger.info(f"Cancel all Ray worker jobs with: {service_url}/cancel_all_jobs")
+    logger.info(f"Submit a Ray worker job with: {service_url}/submit_ray_worker_job")
+    logger.info(f"Get Ray worker jobs status with: {service_url}/get_ray_worker_jobs")
+    logger.info(f"Cancel Ray worker jobs with: {service_url}/cancel_ray_worker_jobs")
+

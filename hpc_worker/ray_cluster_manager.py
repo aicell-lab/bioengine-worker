@@ -58,6 +58,7 @@ class RayClusterManager:
             # Parse output from ray.nodes() for detailed info
             nodes = ray.nodes()
             is_head_running = any(node["Alive"] for node in nodes)
+            # Count only worker nodes (not head nodes which have IsSyncPoint=True)
             worker_count = sum(
                 1 for node in nodes if node["Alive"] and not node.get("IsSyncPoint", False)
             )
@@ -69,7 +70,7 @@ class RayClusterManager:
 
             return {
                 "head_running": is_head_running,
-                "worker_count": max(0, worker_count - 1),  # Subtract 1 to exclude head node
+                "worker_count": worker_count,  # Removed "-1" since we're already filtering by IsSyncPoint
             }
         except Exception as e:
             # Log only unexpected errors

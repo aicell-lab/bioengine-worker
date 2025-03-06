@@ -16,21 +16,21 @@ class RayClusterManager:
     def __init__(
         self, 
         logger: Optional[logging.Logger] = None,
-        num_gpus: Optional[int] = None,
-        num_cpus: Optional[int] = None,
-        mem_per_cpu: Optional[int] = None,
-        time_limit: Optional[str] = None,
-        container_image: Optional[str] = None,
+        num_gpus: int = 1,
+        num_cpus: int = 4,
+        mem_per_cpu: int = 8,
+        time_limit: str = "1:00:00",
+        container_image: str = "chiron_worker_0.1.0.sif",
     ):
         """Initialize the Ray cluster manager
         
         Args:
             logger: Optional logger instance. If None, creates a new logger.
-            num_gpus: Default number of GPUs per worker
-            num_cpus: Default number of CPUs per worker
-            mem_per_cpu: Default memory per CPU in GB
-            time_limit: Default time limit in HH:MM:SS format
-            container_image: Default container image for workers
+            num_gpus: Number of GPUs per worker (default: 1)
+            num_cpus: Number of CPUs per worker (default: 4) 
+            mem_per_cpu: Memory per CPU in GB (default: 8)
+            time_limit: Time limit in HH:MM:SS format (default: 1:00:00)
+            container_image: Container image for workers (default: chiron_worker_0.1.0.sif)
         """
         # Set up logging
         self.logger = logger or logging.getLogger("ray_cluster")
@@ -44,21 +44,14 @@ class RayClusterManager:
             console_handler.setFormatter(formatter)
             self.logger.addHandler(console_handler)
         
-        # Instance parameters with defaults from job_config if not provided
+        # Set job configuration from parameters
         self.job_config = {
-            "num_gpus": 1,
-            "num_cpus": 4,
-            "mem_per_cpu": 8,
-            "time_limit": "1:00:00",
-            "container_image": "chiron_worker_0.1.0.sif"
+            "num_gpus": num_gpus,
+            "num_cpus": num_cpus, 
+            "mem_per_cpu": mem_per_cpu,
+            "time_limit": time_limit,
+            "container_image": container_image
         }
-        
-        # Override defaults with any provided values
-        if num_gpus is not None: self.job_config["num_gpus"] = num_gpus
-        if num_cpus is not None: self.job_config["num_cpus"] = num_cpus
-        if mem_per_cpu is not None: self.job_config["mem_per_cpu"] = mem_per_cpu
-        if time_limit is not None: self.job_config["time_limit"] = time_limit
-        if container_image is not None: self.job_config["container_image"] = container_image
         
         # Base directory for logs and scripts
         self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -13,11 +13,24 @@ class RayClusterManager:
     and submitting/monitoring worker jobs.
     """
     
-    def __init__(self, logger: Optional[logging.Logger] = None):
+    def __init__(
+        self, 
+        logger: Optional[logging.Logger] = None,
+        num_gpus: Optional[int] = None,
+        num_cpus: Optional[int] = None,
+        mem_per_cpu: Optional[int] = None,
+        time_limit: Optional[str] = None,
+        container_image: Optional[str] = None,
+    ):
         """Initialize the Ray cluster manager
         
         Args:
             logger: Optional logger instance. If None, creates a new logger.
+            num_gpus: Default number of GPUs per worker
+            num_cpus: Default number of CPUs per worker
+            mem_per_cpu: Default memory per CPU in GB
+            time_limit: Default time limit in HH:MM:SS format
+            container_image: Default container image for workers
         """
         # Set up logging
         self.logger = logger or logging.getLogger("ray_cluster")
@@ -30,6 +43,22 @@ class RayClusterManager:
             )
             console_handler.setFormatter(formatter)
             self.logger.addHandler(console_handler)
+        
+        # Instance parameters with defaults from job_config if not provided
+        self.job_config = {
+            "num_gpus": 1,
+            "num_cpus": 4,
+            "mem_per_cpu": 8,
+            "time_limit": "1:00:00",
+            "container_image": "chiron_worker_0.1.0.sif"
+        }
+        
+        # Override defaults with any provided values
+        if num_gpus is not None: self.job_config["num_gpus"] = num_gpus
+        if num_cpus is not None: self.job_config["num_cpus"] = num_cpus
+        if mem_per_cpu is not None: self.job_config["mem_per_cpu"] = mem_per_cpu
+        if time_limit is not None: self.job_config["time_limit"] = time_limit
+        if container_image is not None: self.job_config["container_image"] = container_image
         
         # Base directory for logs and scripts
         self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -177,21 +206,11 @@ class RayClusterManager:
     
     def submit_worker_job(
         self,
-        num_gpus: int = 1,
-        num_cpus: int = 4,
-        mem_per_cpu: int = 8,
-        time_limit: str = "1:00:00",
-        container_image: str = "chiron_worker_0.1.0.sif",
         context: Optional[Dict] = None,
     ) -> Dict:
         """Submit a Slurm job to start a Ray worker
         
         Args:
-            num_gpus: Number of GPUs to allocate to the worker
-            num_cpus: Number of CPUs to allocate to the worker
-            mem_per_cpu: Memory per CPU in GB
-            time_limit: Time limit for the job in HH:MM:SS format
-            container_image: Apptainer/Singularity container image to run
             context: RPC context
             
         Returns:
@@ -222,10 +241,10 @@ class RayClusterManager:
                 self.ray_connected = False
 
             # Define the Ray worker command that will run inside the container
-            ray_worker_cmd = f"ray start --address={head_ip}:{ray_port} --num-cpus={num_cpus} --num-gpus={num_gpus} --block"
+            ray_worker_cmd = f"ray start --address={head_ip}:{ray_port} --num-cpus={self.job_config['num_cpus']} --num-gpus={self.job_config['num_gpus']} --block"
 
             # Define the apptainer command with the Ray worker command
-            apptainer_cmd = f"apptainer run --contain --writable-tmpfs --nv {container_image} {ray_worker_cmd}"
+            apptainer_cmd = f"apptainer run --contain --writable-tmpfs --nv {self.job_config['container_image']} {ray_worker_cmd}"
 
             # Create a temporary batch script
             with tempfile.NamedTemporaryFile(
@@ -236,10 +255,10 @@ class RayClusterManager:
                 #SBATCH --job-name=ray_worker
                 #SBATCH --ntasks=1
                 #SBATCH --nodes=1
-                #SBATCH --gpus={num_gpus}
-                #SBATCH --cpus-per-task={num_cpus}
-                #SBATCH --mem-per-cpu={mem_per_cpu}G
-                #SBATCH --time={time_limit}
+                #SBATCH --gpus={self.job_config["num_gpus"]}
+                #SBATCH --cpus-per-task={self.job_config["num_cpus"]}
+                #SBATCH --mem-per-cpu={self.job_config["mem_per_cpu"]}G
+                #SBATCH --time={self.job_config["time_limit"]}
                 #SBATCH --output={self.logs_dir}/%x_%j.out
                 #SBATCH --error={self.logs_dir}/%x_%j.err
 
@@ -248,7 +267,7 @@ class RayClusterManager:
                 echo "Host: $(hostname)"
                 echo "Date: $(date)"
                 echo "Connecting to head node: {head_ip}:{ray_port}"
-                echo "GPUs: {num_gpus}, CPUs: {num_cpus}"
+                echo "GPUs: {self.job_config["num_gpus"]}, CPUs: {self.job_config["num_cpus"]}"
                 echo "GPU info: $(nvidia-smi -L)"
 
                 # Run the apptainer container with Ray worker
@@ -281,8 +300,8 @@ class RayClusterManager:
                 job_id = result.stdout.strip().split()[-1]
 
             self.logger.info(
-                f"Worker job submitted successfully. Job ID: {job_id}, Resources: {num_gpus} GPU(s), "
-                f"{num_cpus} CPU(s), {mem_per_cpu}G mem/CPU, {time_limit} time limit"
+                f"Worker job submitted successfully. Job ID: {job_id}, Resources: {self.job_config['num_gpus']} GPU(s), "
+                f"{self.job_config['num_cpus']} CPU(s), {self.job_config['mem_per_cpu']}G mem/CPU, {self.job_config['time_limit']} time limit"
             )
             
             return {
@@ -291,11 +310,11 @@ class RayClusterManager:
                 "job_id": job_id,
                 "head_node": f"{head_ip}:{ray_port}",
                 "resources": {
-                    "gpus": num_gpus,
-                    "cpus": num_cpus,
-                    "mem_per_cpu": f"{mem_per_cpu}G",
-                    "time_limit": time_limit,
-                    "container": container_image,
+                    "gpus": self.job_config['num_gpus'],
+                    "cpus": self.job_config['num_cpus'],
+                    "mem_per_cpu": f"{self.job_config['mem_per_cpu']}G",
+                    "time_limit": self.job_config['time_limit'],
+                    "container": self.job_config['container_image'],
                 },
             }
 

@@ -12,6 +12,7 @@ from hypha_rpc import connect_to_server, login
 
 from hpc_worker.ray_cluster_manager import RayClusterManager
 from hpc_worker.ray_deployment_manager import RayDeploymentManager
+from hpc_worker.ray_autoscaler import RayAutoscaler
 
 # Load environment variables
 ENV_FILE = find_dotenv()
@@ -31,6 +32,7 @@ class HpcWorker:
         dataset_paths: Optional[List[str]] = None,
         trusted_models: Optional[List[str]] = None,
         logger: Optional[logging.Logger] = None,
+        autoscale: bool = False,
     ):
         """Initialize HPC worker
 
@@ -42,6 +44,7 @@ class HpcWorker:
             dataset_paths: List of dataset directories
             trusted_models: List of trusted Docker images
             logger: Optional logger instance
+            autoscale: Enable autoscaling
 
         Raises:
             ValueError: If config_path is not provided and any of num_gpu, dataset_paths,
@@ -138,6 +141,13 @@ class HpcWorker:
             logger=self.logger,
             service_id="ray-model-services",
         )
+
+        # Initialize Ray autoscaler (disabled by default)
+        self.autoscaler = RayAutoscaler(
+            ray_manager=self.ray_manager,
+            logger=self.logger
+        )
+        self.autoscale_enabled = autoscale
 
         # Server connection - initialized during register()
         self.server = None
@@ -332,11 +342,20 @@ class HpcWorker:
                     "undeploy_artifact": self.deployment_manager.undeploy_artifact,
                     "list_deployments": self.deployment_manager.list_deployments,
                     "deploy_all_artifacts": self.deployment_manager.deploy_all_artifacts,
+                    # Autoscaling methods
+                    "start_autoscaling": self.start_autoscaling,
+                    "stop_autoscaling": self.stop_autoscaling,
+                    "get_autoscaler_status": self.get_autoscaler_status,
+                    "configure_autoscaler": self.configure_autoscaler,
                 }
             )
 
             # Initialize the deployment manager with the server connection
             await self.deployment_manager.initialize(self.server)
+
+            # Start autoscaler if enabled in config
+            if self.autoscale_enabled:
+                await self.start_autoscaling()
 
             self.logger.info(f"Service registered with ID: {self.service_info.id}")
             sid = self.service_info.id.split("/")[1]
@@ -372,6 +391,120 @@ class HpcWorker:
             self.logger.error(f"Error registering service: {str(e)}")
             return {"success": False, "message": f"Error: {str(e)}"}
 
+    # Add these autoscaler-related methods
+    async def start_autoscaling(self, min_workers: int = 0, max_workers: int = 4, context=None) -> Dict:
+        """Start the Ray cluster autoscaler.
+        
+        Args:
+            min_workers: Minimum number of worker nodes to maintain
+            max_workers: Maximum number of worker nodes to allow
+            context: RPC context
+            
+        Returns:
+            Dict with operation status
+        """
+        try:
+            # Update configuration if provided
+            self.autoscaler.min_workers = min_workers
+            self.autoscaler.max_workers = max_workers
+            
+            # Start the autoscaler
+            await self.autoscaler.start()
+            self.autoscale_enabled = True
+            
+            return {
+                "success": True, 
+                "message": f"Autoscaler started with min_workers={min_workers}, max_workers={max_workers}"
+            }
+        except Exception as e:
+            self.logger.error(f"Error starting autoscaler: {str(e)}")
+            return {"success": False, "message": f"Error: {str(e)}"}
+    
+    async def stop_autoscaling(self, context=None) -> Dict:
+        """Stop the Ray cluster autoscaler.
+        
+        Args:
+            context: RPC context
+            
+        Returns:
+            Dict with operation status
+        """
+        try:
+            # Stop the autoscaler
+            await self.autoscaler.stop()
+            self.autoscale_enabled = False
+            
+            return {"success": True, "message": "Autoscaler stopped"}
+        except Exception as e:
+            self.logger.error(f"Error stopping autoscaler: {str(e)}")
+            return {"success": False, "message": f"Error: {str(e)}"}
+    
+    def get_autoscaler_status(self, context=None) -> Dict:
+        """Get the current status of the autoscaler.
+        
+        Args:
+            context: RPC context
+            
+        Returns:
+            Dict with autoscaler status
+        """
+        try:
+            status = self.autoscaler.get_autoscaler_status()
+            status["success"] = True
+            return status
+        except Exception as e:
+            self.logger.error(f"Error getting autoscaler status: {str(e)}")
+            return {"success": False, "message": f"Error: {str(e)}"}
+    
+    async def configure_autoscaler(
+        self, 
+        min_workers: Optional[int] = None,
+        max_workers: Optional[int] = None, 
+        target_gpu_utilization: Optional[float] = None, 
+        target_cpu_utilization: Optional[float] = None,
+        scale_up_cooldown_seconds: Optional[int] = None,
+        scale_down_cooldown_seconds: Optional[int] = None,
+        context=None
+    ) -> Dict:
+        """Configure the Ray cluster autoscaler.
+        
+        Args:
+            min_workers: Minimum number of worker nodes
+            max_workers: Maximum number of worker nodes
+            target_gpu_utilization: Target GPU utilization (0-1)
+            target_cpu_utilization: Target CPU utilization (0-1)
+            scale_up_cooldown_seconds: Cooldown period between scale up operations
+            scale_down_cooldown_seconds: Cooldown period between scale down operations
+            context: RPC context
+            
+        Returns:
+            Dict with operation status
+        """
+        try:
+            # Update configuration for provided parameters
+            if min_workers is not None:
+                self.autoscaler.min_workers = min_workers
+            if max_workers is not None:
+                self.autoscaler.max_workers = max_workers
+            if target_gpu_utilization is not None:
+                self.autoscaler.target_gpu_utilization = max(0.0, min(1.0, target_gpu_utilization))
+            if target_cpu_utilization is not None:
+                self.autoscaler.target_cpu_utilization = max(0.0, min(1.0, target_cpu_utilization))
+            if scale_up_cooldown_seconds is not None:
+                self.autoscaler.scale_up_cooldown = scale_up_cooldown_seconds
+            if scale_down_cooldown_seconds is not None:
+                self.autoscaler.scale_down_cooldown = scale_down_cooldown_seconds
+            
+            # Get updated status
+            status = self.autoscaler.get_autoscaler_status()
+            status["success"] = True
+            status["message"] = "Autoscaler configuration updated"
+            
+            return status
+        except Exception as e:
+            self.logger.error(f"Error configuring autoscaler: {str(e)}")
+            return {"success": False, "message": f"Error: {str(e)}"}
+
     # Cleanup methods
     async def cleanup(self) -> Dict:
         """Clean up resources on shutdown
@@ -381,6 +514,16 @@ class HpcWorker:
         """
         self.logger.info("Cleaning up before shutdown...")
         results = {}
+
+        # Stop the autoscaler if running
+        if self.autoscale_enabled:
+            try:
+                self.logger.info("Stopping autoscaler")
+                await self.autoscaler.stop()
+                results["autoscaler"] = {"success": True, "message": "Autoscaler stopped"}
+            except Exception as e:
+                self.logger.error(f"Error stopping autoscaler: {str(e)}")
+                results["autoscaler"] = {"success": False, "message": str(e)}
 
         # Clean up Ray Serve deployments
         try:

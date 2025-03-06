@@ -78,6 +78,7 @@ This script registers a HPC worker service with the Hypha server, enabling:
 - Ray cluster management (start/stop)
 - Submitting worker jobs to the HPC system
 - Managing trusted models and datasets
+- Auto-scaling of resources based on workload
 
 Container execution:
     Run in image chiron_worker_0.1.0.sif

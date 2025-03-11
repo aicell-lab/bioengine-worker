@@ -16,10 +16,11 @@ class RayClusterManager:
     def __init__(
         self, 
         logger: Optional[logging.Logger] = None,
+        # Job configuration parameters
         num_gpus: int = 1,
         num_cpus: int = 4,
         mem_per_cpu: int = 8,
-        time_limit: str = "1:00:00",
+        time_limit: str = "4:00:00",
         container_image: str = "chiron_worker_0.1.0.sif",
     ):
         """Initialize the Ray cluster manager
@@ -29,7 +30,7 @@ class RayClusterManager:
             num_gpus: Number of GPUs per worker (default: 1)
             num_cpus: Number of CPUs per worker (default: 4) 
             mem_per_cpu: Memory per CPU in GB (default: 8)
-            time_limit: Time limit in HH:MM:SS format (default: 1:00:00)
+            time_limit: Time limit in HH:MM:SS format (default: 4:00:00)
             container_image: Container image for workers (default: chiron_worker_0.1.0.sif)
         """
         # Set up logging
@@ -126,7 +127,9 @@ class RayClusterManager:
                 address="local",  # Force creating a new Ray instance
                 num_cpus=0,
                 num_gpus=0,
-                include_dashboard=False,
+                include_dashboard=True,
+                dashboard_host="0.0.0.0",
+                dashboard_port=8265,
             )
             self.ray_connected = True
 

@@ -33,6 +33,9 @@ class HpcWorker:
         trusted_models: Optional[List[str]] = None,
         logger: Optional[logging.Logger] = None,
         autoscale: bool = False,
+        gpus_per_worker: Optional[int] = None,
+        worker_config: Optional[Dict] = None,
+        autoscaler_config: Optional[Dict] = None,
     ):
         """Initialize HPC worker
 
@@ -45,6 +48,9 @@ class HpcWorker:
             trusted_models: List of trusted Docker images
             logger: Optional logger instance
             autoscale: Enable autoscaling
+            gpus_per_worker: Number of GPUs per worker
+            worker_config: Configuration for worker jobs
+            autoscaler_config: Configuration for autoscaler
 
         Raises:
             ValueError: If config_path is not provided and any of num_gpu, dataset_paths,
@@ -63,71 +69,79 @@ class HpcWorker:
             console_handler.setFormatter(formatter)
             self.logger.addHandler(console_handler)
 
-        # Set default server URL (may be overwritten by config)
-        self.server_url = server_url
+        # Default configurations
+        default_worker_config = {
+            "num_cpus": 8,
+            "mem_per_cpu": 16,
+            "time_limit": "4:00:00"
+        }
+        
+        default_autoscaler_config = {
+            "min_workers": 0,
+            "target_gpu_utilization": 0.7,
+            "scale_up_cooldown": 30,
+            "scale_down_cooldown": 300
+        }
 
-        # Handle configuration
-        if config_path:
-            # Use existing config file
+        # Handle configuration from file or parameters
+        if config_path and os.path.exists(config_path):
+            # Load existing config
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f) or {}
+            
+            # Use config file values but allow override from parameters
+            self.server_url = server_url or config.get('server_url', "https://hypha.aicell.io")
+            self.gpus_per_worker = gpus_per_worker or config.get('gpus_per_worker', 1)
+            self.worker_config = worker_config or config.get('worker_config', default_worker_config)
+            self.autoscaler_config = autoscaler_config or config.get('autoscaler', default_autoscaler_config)
+            
+            # Other values from config
+            self.max_gpus = num_gpu or config.get('max_gpus', 1)
+            self.dataset_paths = dataset_paths or config.get('dataset_paths', [])
+            self.trusted_models = trusted_models or config.get('trusted_models', [])
+            
             self.config_path = config_path
-
-            # Check if config file exists and has content
-            if not os.path.exists(config_path) or os.path.getsize(config_path) == 0:
-                # Create a new config with provided parameters
-                if (
-                    num_gpu is not None
-                    and dataset_paths is not None
-                    and trusted_models is not None
-                ):
-                    self.create_worker_config(
-                        dataset_paths=dataset_paths,
-                        max_gpus=num_gpu,
-                        trusted_models=trusted_models,
-                        server_url=server_url,
-                        config_path=self.config_path,
-                    )
-                else:
-                    # Create a minimal config with just server_url
-                    self.create_worker_config(
-                        dataset_paths=[],
-                        max_gpus=0,
-                        trusted_models=[],
-                        server_url=server_url,
-                        config_path=self.config_path,
-                    )
-                self.logger.info(
-                    f"Created worker configuration file at {self.config_path}"
-                )
-            else:
-                # Load config to get server_url (if present)
-                with open(self.config_path, "r") as f:
-                    config = yaml.safe_load(f) or {}  # Default to empty dict if None
-                    if "server_url" in config:
-                        self.server_url = config["server_url"]
         else:
-            # Check that all required parameters are provided
-            if num_gpu is None or dataset_paths is None or trusted_models is None:
+            # Create new config from parameters
+            if not all([num_gpu is not None, dataset_paths, trusted_models]):
                 raise ValueError(
-                    "If config_path is not provided, all of num_gpu, dataset_paths, "
-                    "and trusted_models must be specified."
+                    "If config_path is not provided or invalid, all of num_gpu, "
+                    "dataset_paths, and trusted_models must be specified."
                 )
 
-            # Determine config directory and path
-            if config_dir is None:
-                config_dir = os.path.join(os.path.dirname(__file__), "config")
-            os.makedirs(config_dir, exist_ok=True)
+            # Use provided parameters or defaults
+            self.server_url = server_url
+            self.max_gpus = num_gpu
+            self.dataset_paths = dataset_paths
+            self.trusted_models = trusted_models
+            self.gpus_per_worker = gpus_per_worker or 1
+            self.worker_config = worker_config or default_worker_config
+            self.autoscaler_config = autoscaler_config or default_autoscaler_config
 
-            self.config_path = os.path.join(config_dir, "worker_config.yaml")
+            # Create config directory and file if needed
+            if not config_path:
+                if not config_dir:
+                    config_dir = os.path.join(os.path.dirname(__file__), "config")
+                os.makedirs(config_dir, exist_ok=True)
+                self.config_path = os.path.join(config_dir, "worker_config.yaml")
+            else:
+                self.config_path = config_path
 
             # Create new config file
             self.create_worker_config(
-                dataset_paths=dataset_paths,
-                max_gpus=num_gpu,
-                trusted_models=trusted_models,
-                server_url=server_url,
+                dataset_paths=self.dataset_paths,
+                max_gpus=self.max_gpus,
+                trusted_models=self.trusted_models,
+                server_url=self.server_url,
                 config_path=self.config_path,
+                gpus_per_worker=self.gpus_per_worker,
+                worker_config=self.worker_config,
+                autoscaler_config=self.autoscaler_config,
             )
             self.logger.info(f"Created worker configuration file at {self.config_path}")
+
+        # Calculate max workers based on available GPUs and GPUs per worker
+        self.max_workers = self.max_gpus // self.gpus_per_worker
 
         # Initialize registration timestamp
         self.registered_at = int(time.time())
@@ -135,17 +149,34 @@ class HpcWorker:
         # Initialize Ray cluster manager
         self.ray_manager = RayClusterManager(logger=self.logger)
 
-        # Initialize Ray deployment manager
-        self.deployment_manager = RayDeploymentManager(
-            hpc_worker=self,
-            logger=self.logger,
-            service_id="ray-model-services",
-        )
+        # Start Ray cluster immediately
+        self.logger.info("Starting Ray cluster for deployment manager...")
+        ray_result = self.ray_manager.start_cluster()
+        if not ray_result["success"]:
+            self.logger.warning(f"Failed to start Ray cluster: {ray_result['message']}")
+            self.logger.warning("Will retry Ray initialization during registration")
 
-        # Initialize Ray autoscaler (disabled by default)
+        # Initialize Ray deployment manager only after Ray is started
+        try:
+            self.deployment_manager = RayDeploymentManager(
+                logger=self.logger,
+                deployment_collection_id="ray-deployments",
+                service_id="ray-model-services",
+            )
+        except RuntimeError as e:
+            self.logger.warning(f"Could not initialize deployment manager yet: {e}")
+            self.deployment_manager = None  # Will initialize during register()
+
+        # Initialize Ray autoscaler with calculated values
         self.autoscaler = RayAutoscaler(
             ray_manager=self.ray_manager,
-            logger=self.logger
+            logger=self.logger,
+            min_workers=self.autoscaler_config.get('min_workers', 0),
+            max_workers=self.max_workers,
+            target_gpu_utilization=self.autoscaler_config.get('target_gpu_utilization', 0.7),
+            scale_up_cooldown_seconds=self.autoscaler_config.get('scale_up_cooldown', 60),
+            scale_down_cooldown_seconds=self.autoscaler_config.get('scale_down_cooldown', 300),
+            gpus_per_worker=self.gpus_per_worker
         )
         self.autoscale_enabled = autoscale
 
@@ -161,6 +192,9 @@ class HpcWorker:
         trusted_models: List[str],
         server_url: str,
         config_path: str,
+        gpus_per_worker: int = 1,
+        worker_config: Optional[Dict] = None,
+        autoscaler_config: Optional[Dict] = None,
     ) -> None:
         """Create worker configuration file
 
@@ -170,10 +204,25 @@ class HpcWorker:
             trusted_models: List of trusted Docker/SIF images
             server_url: Hypha server URL
             config_path: Path to save the config file
+            gpus_per_worker: Number of GPUs per worker
+            worker_config: Configuration for worker jobs
+            autoscaler_config: Configuration for autoscaler
         """
         config = {
             "machine_name": socket.gethostname(),
             "max_gpus": max_gpus,
+            "gpus_per_worker": gpus_per_worker,
+            "worker_config": worker_config or {
+                "num_cpus": 8,
+                "mem_per_cpu": 16,
+                "time_limit": "8:00:00"
+            },
+            "autoscaler": autoscaler_config or {
+                "min_workers": 0,
+                "target_gpu_utilization": 0.7,
+                "scale_up_cooldown": 60,
+                "scale_down_cooldown": 300
+            },
             "dataset_paths": dataset_paths,
             "trusted_models": trusted_models,
             "server_url": server_url,
@@ -308,6 +357,24 @@ class HpcWorker:
         self.logger.info("Connecting to Hypha server...")
 
         try:
+            # Ensure Ray is running
+            ray_status = self.ray_manager.check_cluster()
+            if not ray_status["head_running"]:
+                self.logger.info("Starting Ray cluster...")
+                ray_result = self.ray_manager.start_cluster()
+                if not ray_result["success"]:
+                    raise RuntimeError(f"Failed to start Ray cluster: {ray_result['message']}")
+                self.logger.info("Ray cluster started successfully")
+
+            # Initialize deployment manager if not already initialized
+            if self.deployment_manager is None:
+                self.logger.info("Initializing Ray deployment manager...")
+                self.deployment_manager = RayDeploymentManager(
+                    logger=self.logger,
+                    deployment_collection_id="ray-deployments",
+                    service_id="ray-model-services",
+                )
+
             # Login to Hypha server
             hypha_token = os.environ.get("HYPHA_TOKEN")
             if not hypha_token:
@@ -567,7 +634,7 @@ class HpcWorker:
 
 
 if __name__ == "__main__":
-    """Test the HpcWorker class functionality."""
+    """Test the HpcWorker class functionality including autoscaling."""
     import asyncio
 
     # Configure logging
@@ -576,71 +643,96 @@ if __name__ == "__main__":
 
     print("===== Testing HPC Worker class =====", end="\n\n")
 
-    # Define config path in hpc_worker/config/
-    config_dir = os.path.join(os.path.dirname(__file__), "config")
-    os.makedirs(config_dir, exist_ok=True)
-    config_file_path = os.path.join(config_dir, "worker_config.yaml")
-
-    # Create HPC worker instance
-    print("Creating HPC worker instance...")
+    # Create HPC worker instance with direct parameters
+    print("Creating HPC worker instance with autoscaling...")
     worker = HpcWorker(
-        config_path=config_file_path,
-        num_gpu=2,
+        server_url="https://hypha.aicell.io",
+        num_gpu=4,
         dataset_paths=["/proj/aicell/users/x_nilme/tabula/tabula/resource/demo/blood"],
         trusted_models=["ghcr.io/aicell-lab/tabula:0.1.1"],
+        autoscale=True,
+        gpus_per_worker=1,
+        worker_config={
+            "num_cpus": 8,
+            "mem_per_cpu": 16,
+            "time_limit": "1:00:00"
+        },
+        autoscaler_config={
+            "min_workers": 0,
+            "target_gpu_utilization": 0.7,
+            "scale_up_cooldown": 5,
+            "scale_down_cooldown": 30
+        }
     )
-    print(f"Worker created with config at {config_file_path}", end="\n\n")
+    print("Worker created with direct parameters", end="\n\n")
 
-    # Print worker config
-    print("Worker configuration:")
-    with open(config_file_path, "r") as f:
-        print(f.read(), end="\n\n")
+    async def run_tests():
+        try:
+            # Test get_worker_status
+            print("Getting worker status...")
+            status = worker.get_worker_status()
+            print(f"Worker status: {status}", end="\n\n")
 
-    # Test get_worker_status
-    print("Getting worker status...")
-    status = worker.get_worker_status()
-    print(f"Worker status: {status}", end="\n\n")
+            # Start Ray cluster
+            print("Starting Ray cluster...")
+            ray_status = worker.ray_manager.check_cluster()
+            if not ray_status["head_running"]:
+                start_result = worker.ray_manager.start_cluster()
+                print(f"Start result: {start_result}", end="\n\n")
+            else:
+                print("Ray cluster already running", end="\n\n")
 
-    # Test ray manager functionality
-    print("Testing Ray cluster functionality...")
+            # Start autoscaler
+            print("Starting autoscaler...")
+            autoscale_result = await worker.start_autoscaling()
+            print(f"Autoscaler start result: {autoscale_result}", end="\n\n")
 
-    # Check cluster status
-    print("Checking Ray cluster status...")
-    ray_status = worker.ray_manager.check_cluster()
-    print(f"Ray cluster status: {ray_status}", end="\n\n")
+            # Test autoscaler status
+            print("Getting autoscaler status...")
+            status = worker.get_autoscaler_status()
+            print(f"Initial autoscaler status: {status}", end="\n\n")
 
-    # Test starting Ray cluster (only if not already running)
-    if not ray_status["head_running"]:
-        print("Starting Ray cluster...")
-        start_result = worker.ray_manager.start_cluster()
-        print(f"Start result: {start_result}", end="\n\n")
-    else:
-        print("Ray cluster already running, skipping start", end="\n\n")
+            # Submit some test jobs to trigger autoscaling
+            print("Submitting test jobs to trigger autoscaling...")
+            for i in range(3):
+                job_result = worker.ray_manager.submit_worker_job()
+                print(f"Job {i+1} submission result: {job_result}")
 
-    # Test submit job functionality
-    print("Submitting Ray worker job...")
-    job_result = worker.ray_manager.submit_worker_job()
-    print(f"Job submission result: {job_result}", end="\n\n")
+            # Monitor autoscaling for a while
+            print("\nMonitoring autoscaler for 60 seconds...")
+            for i in range(6):
+                await asyncio.sleep(10)
+                status = worker.get_autoscaler_status()
+                print(f"\nAutoscaler status at {i*10}s:")
+                print(f"Workers: {status['current_metrics']['worker_count']}")
+                print(f"GPU Utilization: {status['current_metrics'].get('gpu', 0):.2f}")
+                print(f"Pending workers: {status['scaling_status']['pending_workers']}")
 
-    # Get worker jobs
-    print("Checking Ray worker jobs...")
-    jobs_result = worker.ray_manager.get_worker_jobs()
-    print(f"Worker jobs: {jobs_result}", end="\n\n")
+            # Stop autoscaler
+            print("\nStopping autoscaler...")
+            stop_result = await worker.stop_autoscaling()
+            print(f"Autoscaler stop result: {stop_result}", end="\n\n")
 
-    # Cancel worker jobs
-    print("Cancelling Ray worker jobs...")
-    cancel_result = worker.ray_manager.cancel_worker_jobs()
-    print(f"Cancel result: {cancel_result}", end="\n\n")
+            # Cancel any remaining jobs
+            print("Cancelling worker jobs...")
+            cancel_result = worker.ray_manager.cancel_worker_jobs()
+            print(f"Cancel result: {cancel_result}", end="\n\n")
 
-    # Test shutting down Ray cluster
-    print("Shutting down Ray cluster...")
-    shutdown_result = worker.ray_manager.shutdown_cluster()
-    print(f"Shutdown result: {shutdown_result}", end="\n\n")
+            # Final cleanup
+            print("Running final cleanup...")
+            cleanup_result = await worker.cleanup()
+            print(f"Cleanup result: {cleanup_result}", end="\n\n")
 
-    # Test cleanup method
-    print("Testing cleanup...")
+        except Exception as e:
+            print(f"Error during tests: {str(e)}")
+            # Ensure cleanup runs even if tests fail
+            await worker.cleanup()
+
+    # Run the tests
+    print("Starting tests...")
     loop = asyncio.get_event_loop()
-    cleanup_result = loop.run_until_complete(worker.cleanup())
-    print(f"Cleanup result: {cleanup_result}", end="\n\n")
-
+    try:
+        loop.run_until_complete(run_tests())
+    finally:
+        loop.close()
     print("===== HPC Worker class tests completed =====")

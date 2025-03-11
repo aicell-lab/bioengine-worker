@@ -176,12 +176,6 @@ class RayAutoscaler:
             tasks = list_tasks()
             pending_tasks = sum(1 for task in tasks if task["state"] == "PENDING")
             
-            # Enhanced task analysis
-            gpu_tasks = sum(1 for task in tasks if task.get("required_resources", {}).get("GPU", 0) > 0)
-            cpu_intensive_tasks = sum(1 for task in tasks if task.get("required_resources", {}).get("CPU", 0) >= 2)
-            memory_intensive_tasks = sum(1 for task in tasks if 
-                                        task.get("required_resources", {}).get("object_store_memory", 0) > 1e9)
-            
             # Get resource metrics
             resources = ray.cluster_resources()
             available = ray.available_resources()
@@ -194,9 +188,9 @@ class RayAutoscaler:
                 "active_workers": active_workers,
                 "pending_workers": pending_workers,
                 "pending_tasks": pending_tasks,
-                "gpu_tasks": gpu_tasks,
-                "cpu_intensive_tasks": cpu_intensive_tasks,
-                "memory_intensive_tasks": memory_intensive_tasks,
+                # "gpu_tasks": gpu_tasks,
+                # "cpu_intensive_tasks": cpu_intensive_tasks,
+                # "memory_intensive_tasks": memory_intensive_tasks,
                 "cpu": 0.0,
                 "gpu": 0.0,
                 "memory": 0.0,
@@ -610,62 +604,136 @@ class RayAutoscaler:
         }
 
 if __name__ == "__main__":
-    """Test the RayAutoscaler class"""
+    """Test the RayAutoscaler class with Ray Serve deployment"""
     import asyncio
     from hpc_worker.ray_cluster_manager import RayClusterManager
-    
-    # Configure logging
+    import time
+    from ray import serve
+
+    # Configure logging 
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
+            
+    # Define a simple GPU task that must run on a worker (not head node)
+    @serve.deployment(
+        num_replicas=1,
+        ray_actor_options={
+            "num_cpus": 1,
+            "num_gpus": 1,
+            "memory": 2000 * 1024 * 1024,  # 2GB memory
+            "resources": {"worker_node": 1}  # Ensure runs on worker
+        },
+    )
+    class TimeServer:
+        def __init__(self):
+            import ray
+            self.node_ip = ray.util.get_node_ip_address()
+
+        async def __call__(self):
+            import datetime
+            current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            return {
+                "time": current_time,
+                "node": self.node_ip
+            }
     
+    app = TimeServer.bind(route_prefix=None)
+
     async def test_autoscaler():
         logger.info("Starting autoscaler test")
-        
-        # Create a RayClusterManager
+
+        # Create RayClusterManager with test configuration
         cluster_manager = RayClusterManager(
             logger=logger,
-            # Use shorter time for testing
             time_limit="1:00:00",
         )
-        
-        # Start Ray cluster if not running
+
+        # Start Ray cluster
         logger.info("Starting Ray cluster")
         start_result = cluster_manager.start_cluster()
         if not start_result["success"]:
             logger.error(f"Failed to start Ray cluster: {start_result}")
             return
         logger.info("Ray cluster started successfully")
-        
-        # Create and start the autoscaler
+
+        # Create and start the autoscaler with shorter thresholds for quicker testing
         autoscaler = RayAutoscaler(
             cluster_manager,
             logger=logger,
-            # Use shorter time for testing
-            metrics_interval_seconds=5,  
-            scale_up_threshold_seconds=10,
-            scale_down_threshold_seconds=20,
+            # Use shorter times for faster testing
+            metrics_interval_seconds=3,  
+            scale_up_threshold_seconds=3,
+            scale_down_threshold_seconds=5,
+            scale_up_cooldown_seconds=5,
+            scale_down_cooldown_seconds=5,
+            node_grace_period_seconds=5
         )
         
         await autoscaler.start()
+
+        while True:
+            # Test if autoscaler is running
+            await asyncio.sleep(1)
         
         try:
-            # Run for some time to test scaling behavior
-            logger.info("Autoscaler running - will test for 60 seconds")
+            # Connect to Ray cluster as client
+            if not ray.is_initialized():
+                ray.init(address="auto", runtime_env={"working_dir": "."})
+
+            # Start ray serve
+            serve.start()
+
+            # Deploy the service
+            logger.info("Deploying TimeServer service to trigger scaling")
+            # This will block until a ray worker has been started
+            ray.serve.run(app, name="time_server", route_prefix=None)
+            logger.info("TimeServer service deployed and ready.")
+
+            # Test the service
+            app_handle = ray.serve.get_app_handle(name="time_server")
+            res = await app_handle.remote()
+            logger.info(f"TimeServer response: {res}")
+
+            # Check if upscaling occurred
+            status = autoscaler.get_autoscaler_status()
+            worker_count = status['current_metrics']['worker_count']
+            pending = status['current_metrics']['pending_tasks']
+            logger.info(f"Woker count: {worker_count}, pending tasks: {pending}")
+
+            # Wait until downscaling occurs
+            check_interval = 5
+            time_elapsed = 0
+            while True:
+                try:
+                    status = autoscaler.get_autoscaler_status()
+                    worker_count = status['current_metrics']['worker_count']
+                    
+                    # Log cluster state
+                    logger.info(f"Time {time_elapsed}s:")
+                    logger.info(f"- Workers: {worker_count}")
+
+                    if worker_count == 0:
+                        logger.info("Cluster scaled down successfully")
+                        break
+                    
+                except Exception as e:
+                    logger.error(f"Error during monitoring: {str(e)}")
+
+                await asyncio.sleep(check_interval)
+                time_elapsed += check_interval
             
-            # Check status every 10 seconds
-            for i in range(6):
-                await asyncio.sleep(10)
-                status = autoscaler.get_autoscaler_status()
-                logger.info(f"Autoscaler status: workers={status['current_metrics']['worker_count']}, "
-                           f"CPU={status['current_metrics']['cpu']:.2f}, "
-                           f"GPU={status['current_metrics']['gpu']:.2f}")
+        except Exception as e:
+            logger.error(f"Error during test: {str(e)}")
             
         finally:
-            # Stop the autoscaler
+            # Cleanup
+            if ray.is_initialized():
+                ray.shutdown()
+            
             await autoscaler.stop()
             logger.info("Autoscaler stopped")
             
-            # Shutdown the Ray cluster
+            # Cleanup cluster
             cluster_manager.cancel_worker_jobs()
             cluster_manager.shutdown_cluster()
     

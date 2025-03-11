@@ -3,10 +3,8 @@ import os
 import ray
 import subprocess
 import tempfile
-import time
 from typing import Dict, List, Optional
-
-import ray.autoscaler
+import shutil
 
 
 class RayClusterManager:
@@ -50,19 +48,35 @@ class RayClusterManager:
         # Set job configuration from parameters
         self.job_config = {
             "num_gpus": num_gpus,
-            "num_cpus": num_cpus, 
+            "num_cpus": num_cpus,
             "mem_per_cpu": mem_per_cpu,
             "time_limit": time_limit,
-            "container_image": container_image
+            "container_image": container_image,
         }
         
         # Base directory for logs and scripts
         self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.logs_dir = os.path.join(self.base_dir, "logs")
         os.makedirs(self.logs_dir, exist_ok=True)
+
+    @property
+    def ray_executable(self) -> str:
+        """Get the path to the Ray executable
         
-        # Track if we're connected to Ray
-        self.ray_connected = False
+        Returns:
+            Path to the Ray executable
+        """
+        # Check ray binary as it appears in PATH
+        ray_path = shutil.which("ray")
+        if ray_path:
+            return ray_path
+        else:
+            # Check ray binary in python environment
+            ray_path = os.path.join(ray.__file__.split("/lib/python")[0], "bin/ray")
+            if os.path.exists(ray_path):
+                return ray_path
+            else:
+                raise FileNotFoundError("Ray executable not found")
         
     def check_cluster(self) -> Dict:
         """Check the status of the Ray cluster
@@ -70,6 +84,12 @@ class RayClusterManager:
         Returns:
             Dict containing head node status, worker count and worker node IDs
         """
+        output = {
+            "head_running": False,
+            "head_address": None,
+            "worker_count": 0,
+            "worker_node_ids": []
+        }
         try:
             was_connected = ray.is_initialized()
             if not was_connected:
@@ -77,50 +97,42 @@ class RayClusterManager:
                     ray.init(address="auto")
                 except ConnectionError:
                     # Expected state - no Ray cluster running
-                    return {
-                        "head_running": False, 
-                        "worker_count": 0,
-                        "worker_node_ids": []
-                    }
+                    return output
 
-            # Parse output from ray.nodes() for detailed info
-            nodes = ray.nodes()
-            is_head_running = any(node["Alive"] for node in nodes)
+            # Set the head node as running
+            output["head_running"] = True
+
+            # Get the head node address
+            runtime_context = ray.get_runtime_context()
+            output["head_address"] = runtime_context.gcs_address
             
             # Get worker nodes and their IDs
             worker_nodes = [
-                node for node in nodes 
-                if node["Alive"] and not node.get("IsSyncPoint", False)
+                node for node in ray.nodes() 
+                if node["Alive"] and not node.get("IsSyncPoint", False) 
+                and node["Resources"].get("CPU", 0) == self.job_config["num_cpus"]
+                and node["Resources"].get("GPU", 0) == self.job_config["num_gpus"]
             ]
-            worker_count = len(worker_nodes)
-            worker_node_ids = [node["NodeID"] for node in worker_nodes]
+            output["worker_count"] = len(worker_nodes)
+            output["worker_node_ids"] = [node["NodeID"] for node in worker_nodes]
 
             # Disconnect only if we connected in this function
-            if not was_connected and self.ray_connected:
+            if not was_connected:
                 ray.shutdown()
 
-            return {
-                "head_running": is_head_running,
-                "worker_count": worker_count,
-                "worker_node_ids": worker_node_ids
-            }
+            return output
         except Exception as e:
             # Log only unexpected errors
             if not str(e).startswith("Could not find any running Ray instance"):
                 self.logger.error(f"Error checking ray cluster: {str(e)}")
 
             # Make sure to disconnect even if there was an error
-            if ray.is_initialized() and self.ray_connected:
+            if ray.is_initialized():
                 ray.shutdown()
-                self.ray_connected = False
                 
-            return {
-                "head_running": False, 
-                "worker_count": 0,
-                "worker_node_ids": []
-            }
+            return output
     
-    def start_cluster(self, context: Optional[Dict] = None) -> Dict:
+    def start_cluster(self, force: bool = False, context: Optional[Dict] = None) -> Dict:
         """Start a Ray cluster head node
         
         Args:
@@ -133,26 +145,33 @@ class RayClusterManager:
             # Check if Ray is already running
             ray_status = self.check_cluster()
             if ray_status["head_running"]:
-                return {"success": True, "message": "Ray cluster is already running"}
+                if force:
+                    self.logger.info("Ray cluster is already running. Forcing restart...")
+                    self.shutdown_cluster()
+                else:    
+                    self.logger.info("Ray cluster is already running")
+                    return {"success": True, "message": "Ray cluster is already running"}
 
             # Start ray as the head node with the specified parameters
-            ray.init(
-                address="local",  # Force creating a new Ray instance
-                num_cpus=0,
-                num_gpus=0,
-                include_dashboard=True,
-                dashboard_host="0.0.0.0",
-                dashboard_port=8265,
+            subprocess.run(
+                [
+                    self.ray_executable,
+                    "start",
+                    "--head",
+                    "--num-cpus=0",
+                    "--num-gpus=0",
+                    "--include-dashboard=False",
+                ],
+                check=True
             )
-            self.ray_connected = True
 
-            # Wait a moment for initialization
-            time.sleep(2)
+            # Verify the cluster is running on the correct IP and port
+            ray_status = self.check_cluster()
+            if not ray_status["head_running"]:
+                self.logger.error("Ray cluster failed to start")
+                return {"success": False, "message": "Ray cluster failed to start"}
 
-            # Verify the cluster is running
-            runtime_context = ray.get_runtime_context()
-            host_ip, port = runtime_context.gcs_address.split(":")
-
+            host_ip, port = ray_status["head_address"].split(":")
             return {
                 "success": True,
                 "message": f"Ray cluster started successfully on {host_ip}:{port}",
@@ -177,16 +196,13 @@ class RayClusterManager:
             if not ray_status["head_running"]:
                 return {"success": True, "message": "Ray cluster is not running"}
 
-            # Get node info before shutdown for reporting
-            nodes = ray.nodes()
-            node_count = sum(1 for node in nodes if node["Alive"])
-
-            # Perform the shutdown
-            ray.shutdown()
-            self.ray_connected = False
-
-            # Wait a moment for shutdown to complete
-            time.sleep(2)
+            # Get the number of worker nodes
+            node_count = ray_status["worker_count"]
+            
+            # Shutdown the Ray cluster
+            subprocess.run(
+                [self.ray_executable, "stop"], check=True
+            )
 
             # Verify shutdown was successful
             ray_status = self.check_cluster()
@@ -228,15 +244,11 @@ class RayClusterManager:
                     "message": "Cannot start worker: Ray head node is not running",
                 }
 
-            # Get the head node IP and port
-            runtime_context = ray.get_runtime_context()
-            head_ip, ray_port = runtime_context.gcs_address.split(":")
-
             # Define the Ray worker command that will run inside the container
-            ray_worker_cmd = f"ray start --address={head_ip}:{ray_port} --num-cpus={self.job_config['num_cpus']} --num-gpus={self.job_config['num_gpus']} --block"
+            ray_worker_cmd = f"ray start --address={ray_status['head_address']} --num-cpus={self.job_config['num_cpus']} --num-gpus={self.job_config['num_gpus']} --block"
 
             # Define the apptainer command with the Ray worker command
-            apptainer_cmd = f"apptainer run --writable-tmpfs --nv {self.job_config['container_image']} {ray_worker_cmd}"  # --contain
+            apptainer_cmd = f"apptainer run --writable-tmpfs --contain --nv {self.job_config['container_image']} {ray_worker_cmd}"
 
             # Create a temporary batch script
             with tempfile.NamedTemporaryFile(
@@ -258,7 +270,7 @@ class RayClusterManager:
                 echo "Starting Ray worker node"
                 echo "Host: $(hostname)"
                 echo "Date: $(date)"
-                echo "Connecting to head node: {head_ip}:{ray_port}"
+                echo "Connecting to head node: {ray_status['head_address']}"
                 echo "GPUs: {self.job_config["num_gpus"]}, CPUs: {self.job_config["num_cpus"]}"
                 echo "GPU info: $(nvidia-smi -L)"
 
@@ -300,7 +312,7 @@ class RayClusterManager:
                 "success": True,
                 "message": f"Worker job submitted successfully with job ID {job_id}",
                 "job_id": job_id,
-                "head_node": f"{head_ip}:{ray_port}",
+                "head_node": f"{ray_status['head_address']}",
                 "resources": {
                     "gpus": self.job_config['num_gpus'],
                     "cpus": self.job_config['num_cpus'],
@@ -438,16 +450,9 @@ class RayClusterManager:
             self.logger.info(f"Cancelling {len(jobs_to_cancel)} Ray worker jobs: {job_id_str}")
 
             if jobs_to_cancel:
-                result = subprocess.run(
-                    ["scancel", *jobs_to_cancel], capture_output=True, text=True
+                subprocess.run(
+                    ["scancel", *jobs_to_cancel], check=True
                 )
-
-                if result.returncode != 0:
-                    self.logger.error(f"Error cancelling jobs: {result.stderr}")
-                    return {
-                        "success": False,
-                        "message": f"Error cancelling jobs: {result.stderr}",
-                    }
 
             return {
                 "success": True,
@@ -501,7 +506,7 @@ class RayClusterManager:
                 def stop_worker():
                     """Stops the worker node by executing 'ray stop'."""
                     import subprocess
-                    subprocess.Popen("ray stop", shell=True)
+                    subprocess.run(["ray", "stop"], check=True)
 
                 # ray.autoscaler._private.commands.kill_node(node_id)
                 print(f"Node: {target_node['NodeManagerAddress']}, Resources: {target_node['Resources']}")
@@ -541,7 +546,7 @@ if __name__ == "__main__":
 
     # Test starting Ray cluster
     print("Starting Ray cluster...")
-    start_result = ray_manager.start_cluster()
+    start_result = ray_manager.start_cluster(force=True)
     print(start_result, end="\n\n")
 
     # Test getting job status
@@ -559,7 +564,7 @@ if __name__ == "__main__":
     print(submit_result, end="\n\n")
 
     # Test getting job status
-    sleep(3) # Wait for jobs to start
+    sleep(5) # Wait for jobs to start
     print("Getting submitted worker job status...")
     status_result = ray_manager.get_worker_jobs()
     print(status_result, end="\n\n")

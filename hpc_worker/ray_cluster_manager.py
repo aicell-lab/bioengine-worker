@@ -105,16 +105,18 @@ class RayClusterManager:
             # Get the head node address
             runtime_context = ray.get_runtime_context()
             output["head_address"] = runtime_context.gcs_address
+            head_ip = output["head_address"].split(":")[0]
             
             # Get worker nodes and their IDs
-            worker_nodes = [
-                node for node in ray.nodes() 
-                if node["Alive"] and not node.get("IsSyncPoint", False) 
-                and node["Resources"].get("CPU", 0) == self.job_config["num_cpus"]
-                and node["Resources"].get("GPU", 0) == self.job_config["num_gpus"]
+            worker_node_ids = [
+                node["NodeID"] for node in ray.nodes() 
+                if node["Alive"]  # Exclude dead nodes
+                and f"node:{head_ip}" not in node["Resources"]  # Exclude head node
+                and node["Resources"].get("CPU", 0) == self.job_config["num_cpus"]  # Match worker CPU count
+                and node["Resources"].get("GPU", 0) == self.job_config["num_gpus"]  # Match worker GPU count
             ]
-            output["worker_count"] = len(worker_nodes)
-            output["worker_node_ids"] = [node["NodeID"] for node in worker_nodes]
+            output["worker_count"] = len(worker_node_ids)
+            output["worker_node_ids"] = worker_node_ids
 
             # Disconnect only if we connected in this function
             if not was_connected:
@@ -191,14 +193,6 @@ class RayClusterManager:
             Dict containing operation status and result message
         """
         try:
-            # Check if Ray is running
-            ray_status = self.check_cluster()
-            if not ray_status["head_running"]:
-                return {"success": True, "message": "Ray cluster is not running"}
-
-            # Get the number of worker nodes
-            node_count = ray_status["worker_count"]
-            
             # Shutdown the Ray cluster
             subprocess.run(
                 [self.ray_executable, "stop"], check=True
@@ -207,10 +201,10 @@ class RayClusterManager:
             # Verify shutdown was successful
             ray_status = self.check_cluster()
             if not ray_status["head_running"]:
-                self.logger.info(f"Successfully shut down Ray cluster with {node_count} node(s)")
+                self.logger.info(f"Successfully shut down Ray cluster.")
                 return {
                     "success": True,
-                    "message": f"Successfully shut down Ray cluster with {node_count} node(s)",
+                    "message": f"Successfully shut down Ray cluster."
                 }
             else:
                 self.logger.warning("Ray cluster is still running after shutdown attempt.")
@@ -476,13 +470,8 @@ class RayClusterManager:
             Dict containing operation status and result message
         """
         try:
-            # Check if Ray is running
-            ray_status = self.check_cluster()
-            if not ray_status["head_running"]:
-                return {
-                    "success": False,
-                    "message": "Ray cluster is not running"
-                }
+            # Connect to the Ray cluster
+            ray.init(address="auto")
 
             # Get all nodes
             nodes = ray.nodes()
@@ -499,6 +488,15 @@ class RayClusterManager:
                     "success": False,
                     "message": f"Node {node_id} not found in cluster"
                 }
+            
+            # Check if the target node is the head node
+            runtime_context = ray.get_runtime_context()
+            if target_node["NodeManagerAddress"] == runtime_context.gcs_address:
+                self.logger.warning("Cannot close head node")
+                return {
+                    "success": False,
+                    "message": "Cannot close head node"
+                }
                 
             # Remove the node from the cluster
             try:
@@ -509,8 +507,8 @@ class RayClusterManager:
                     subprocess.run(["ray", "stop"], check=True)
 
                 # ray.autoscaler._private.commands.kill_node(node_id)
-                print(f"Node: {target_node['NodeManagerAddress']}, Resources: {target_node['Resources']}")
                 worker_ip = target_node["NodeManagerAddress"]
+                print(f"Node IP: {worker_ip}, Resources: {target_node['Resources']}")
                 obj_ref = stop_worker.options(resources={f"node:{worker_ip}": 0.01}).remote()
                 ray.get(obj_ref)
 
@@ -539,6 +537,9 @@ if __name__ == "__main__":
 
     print("===== Testing Ray cluster class =====", end="\n\n")
 
+    # Make sure Ray cluster is not running
+    ray_manager.shutdown_cluster()
+
     # Check Ray cluster status
     print("Checking Ray cluster status...")
     status = ray_manager.check_cluster()
@@ -559,15 +560,14 @@ if __name__ == "__main__":
     submit_result = ray_manager.submit_worker_job()
     print(submit_result, end="\n\n")
 
-    print("Submitting another worker job...")
-    submit_result = ray_manager.submit_worker_job()
-    print(submit_result, end="\n\n")
-
     # Test getting job status
-    sleep(5) # Wait for jobs to start
-    print("Getting submitted worker job status...")
-    status_result = ray_manager.get_worker_jobs()
-    print(status_result, end="\n\n")
+    print("Waiting for submitted worker job to start...")
+    started = False
+    while not started:
+        status_result = ray_manager.get_worker_jobs()
+        print(status_result, end="\n\n")
+        started = any(job['state'] == 'RUNNING' for job in status_result.get('ray_worker_jobs', []))
+        sleep(1)
 
     # Test getting node IDs
     print("Getting worker node IDs...")
@@ -580,9 +580,9 @@ if __name__ == "__main__":
     print(status, end="\n\n")
 
     # # Test closing a worker node
-    # print("Closing a worker node...")
-    # close_result = ray_manager.close_worker_node(node_ids[0])
-    # print(close_result, end="\n\n")
+    print("Closing a worker node...")
+    close_result = ray_manager.close_worker_node(node_ids[0])
+    print(close_result, end="\n\n")
 
     # Test cancelling all jobs
     print("Cancelling all worker jobs...")

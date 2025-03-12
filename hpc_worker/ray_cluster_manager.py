@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 from typing import Dict, List, Optional
 import shutil
-
+import socket
 
 class RayClusterManager:
     """
@@ -16,6 +16,10 @@ class RayClusterManager:
     def __init__(
         self, 
         logger: Optional[logging.Logger] = None,
+        # Ray cluster configuration parameters
+        head_node_port: int = 6379,
+        node_manager_port: int = 6700,
+        ray_client_server_port: int = 10001,
         # Job configuration parameters
         num_gpus: int = 1,
         num_cpus: int = 4,
@@ -27,6 +31,12 @@ class RayClusterManager:
         
         Args:
             logger: Optional logger instance. If None, creates a new logger.
+            head_node_port: Port of the head node (default: 6379)
+                This port is used for the Ray head node and GCS server
+            node_manager_port: Port for Ray node manager (default: 6700)
+                This port is used for the Ray node manager, object manager (node_manager_port + 1) and Redis shard ports (node_manager_port + 2)
+            ray_client_server_port: Port for Ray client server (default: 10001)
+                This port is used for the Ray client server (ray_client_server_port) and worker ports (ray_client_server_port + 1 to ray_client_server_port + 998)
             num_gpus: Number of GPUs per worker (default: 1)
             num_cpus: Number of CPUs per worker (default: 4) 
             mem_per_cpu: Memory per CPU in GB (default: 8)
@@ -44,6 +54,24 @@ class RayClusterManager:
             )
             console_handler.setFormatter(formatter)
             self.logger.addHandler(console_handler)
+
+        # Check if ports are available
+        head_node_port = self._find_port(head_node_port, step=1)
+        node_manager_port = self._find_port(node_manager_port, step=100)
+        ray_client_server_port = self._find_port(ray_client_server_port, step=10000)
+
+        # Set ray port configuration
+        # Ports configuration: https://docs.ray.io/en/latest/ray-core/configure.html#ports-configurations
+        # SLURM networking caveats: https://github.com/ray-project/ray/blob/1000ae9671967994f7bfdf7b1e1399223ad4fc61/doc/source/cluster/vms/user-guides/community/slurm.rst#id22
+        self.ray_port_config = {
+            "head_node_port": head_node_port,  # gcs_server_port
+            "node_manager_port": node_manager_port,
+            "object_manager_port": node_manager_port + 1,
+            "redis_shard_port": node_manager_port + 2,
+            "ray_client_server_port": ray_client_server_port,
+            "min_worker_port": ray_client_server_port + 1,
+            "max_worker_port": ray_client_server_port + 998,
+        }
         
         # Set job configuration from parameters
         self.job_config = {
@@ -77,6 +105,30 @@ class RayClusterManager:
                 return ray_path
             else:
                 raise FileNotFoundError("Ray executable not found")
+            
+    def _find_port(self, port: int, step: int = 1) -> bool:
+        """
+        Check if a port is available. If not, find the next available port
+
+        Args:
+            port: Port number to check
+            step: Step size for checking the next port
+        
+        Returns:
+            Available port number
+        """
+        available = False
+        out_port = port
+        while not available:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                if s.connect_ex(("localhost", out_port)) != 0:
+                    available = True
+                else:
+                    out_port += step
+        if out_port != port:
+            self.logger.warning(f"Port {port} is not available. Using {out_port} instead.")
+        return out_port
+
         
     def check_cluster(self) -> Dict:
         """Check the status of the Ray cluster
@@ -160,6 +212,13 @@ class RayClusterManager:
                     self.ray_executable,
                     "start",
                     "--head",
+                    f"--port={self.ray_port_config['head_node_port']}",  # --gcs-server-port
+                    f"--node-manager-port={self.ray_port_config['node_manager_port']}",
+                    f"--object-manager-port={self.ray_port_config['object_manager_port']}",
+                    f"--redis-shard-ports={self.ray_port_config['redis_shard_port']}",
+                    f"--ray-client-server-port={self.ray_port_config['ray_client_server_port']}",
+                    f"--min-worker-port={self.ray_port_config['min_worker_port']}",
+                    f"--max-worker-port={self.ray_port_config['max_worker_port']}",
                     "--num-cpus=0",
                     "--num-gpus=0",
                     "--include-dashboard=False",
@@ -174,6 +233,13 @@ class RayClusterManager:
                 return {"success": False, "message": "Ray cluster failed to start"}
 
             host_ip, port = ray_status["head_address"].split(":")
+            if int(port) != self.ray_port_config['head_node_port']:
+                self.logger.error(f"Ray cluster started on incorrect port: {port}")
+                return {
+                    "success": False,
+                    "message": f"Ray cluster started on incorrect port: {port}",
+                }
+
             return {
                 "success": True,
                 "message": f"Ray cluster started successfully on {host_ip}:{port}",
@@ -533,7 +599,11 @@ if __name__ == "__main__":
     from time import sleep
 
     # Test the class
-    ray_manager = RayClusterManager()
+    ray_manager = RayClusterManager(
+        head_node_port=6380,
+        node_manager_port=6800,
+        ray_client_server_port=20001,
+    )
 
     print("===== Testing Ray cluster class =====", end="\n\n")
 

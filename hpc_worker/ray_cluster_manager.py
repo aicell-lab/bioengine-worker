@@ -6,6 +6,7 @@ import tempfile
 from typing import Dict, List, Optional
 import shutil
 import socket
+import re
 
 class RayClusterManager:
     """
@@ -19,6 +20,8 @@ class RayClusterManager:
         # Ray cluster configuration parameters
         head_node_port: int = 6379,
         node_manager_port: int = 6700,
+        object_manager_port: int = 6701,
+        redis_shard_port: int = 6702,
         ray_client_server_port: int = 10001,
         # Job configuration parameters
         num_gpus: int = 1,
@@ -55,23 +58,21 @@ class RayClusterManager:
             console_handler.setFormatter(formatter)
             self.logger.addHandler(console_handler)
 
-        # Check if ports are available
-        head_node_port = self._find_port(head_node_port, step=1)
-        node_manager_port = self._find_port(node_manager_port, step=100)
-        ray_client_server_port = self._find_port(ray_client_server_port, step=10000)
-
         # Set ray port configuration
         # Ports configuration: https://docs.ray.io/en/latest/ray-core/configure.html#ports-configurations
         # SLURM networking caveats: https://github.com/ray-project/ray/blob/1000ae9671967994f7bfdf7b1e1399223ad4fc61/doc/source/cluster/vms/user-guides/community/slurm.rst#id22
-        self.ray_port_config = {
-            "head_node_port": head_node_port,  # gcs_server_port
-            "node_manager_port": node_manager_port,
-            "object_manager_port": node_manager_port + 1,
-            "redis_shard_port": node_manager_port + 2,
-            "ray_client_server_port": ray_client_server_port,
-            "min_worker_port": ray_client_server_port + 1,
-            "max_worker_port": ray_client_server_port + 998,
+        result = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
+        internal_ip = result.stdout.strip().split()[0]  # Take the first IP
+        self.ray_cluster_config = {
+            "head_node_ip": internal_ip,
+            "head_node_port": self._find_ports(head_node_port, step=1),  # GCS server port
+            "node_manager_port": self._find_ports(node_manager_port, step=100),
+            "object_manager_port": self._find_ports(object_manager_port, step=100),
+            "redis_shard_port": self._find_ports(redis_shard_port, step=100),
+            "ray_client_server_port": self._find_ports(ray_client_server_port, step=10000),
         }
+        self.ray_cluster_config["min_worker_port"] = self.ray_cluster_config["ray_client_server_port"] + 1
+        self.ray_cluster_config["max_worker_port"] = self.ray_cluster_config["ray_client_server_port"] + 9998
         
         # Set job configuration from parameters
         self.job_config = {
@@ -106,7 +107,7 @@ class RayClusterManager:
             else:
                 raise FileNotFoundError("Ray executable not found")
             
-    def _find_port(self, port: int, step: int = 1) -> bool:
+    def _find_ports(self, port: int, step: int = 1) -> bool:
         """
         Check if a port is available. If not, find the next available port
 
@@ -146,7 +147,11 @@ class RayClusterManager:
             was_connected = ray.is_initialized()
             if not was_connected:
                 try:
-                    ray.init(address="auto")
+                    # TODO: handle GCS connection timeout
+                    # head_node_ip = self.ray_cluster_config["head_node_ip"]
+                    # head_node_port = self.ray_cluster_config["head_node_port"]
+                    # ray.init(address=f"{head_node_ip}:{head_node_port}")
+                    ray.init("auto")
                 except ConnectionError:
                     # Expected state - no Ray cluster running
                     return output
@@ -212,13 +217,14 @@ class RayClusterManager:
                     self.ray_executable,
                     "start",
                     "--head",
-                    f"--port={self.ray_port_config['head_node_port']}",  # --gcs-server-port
-                    f"--node-manager-port={self.ray_port_config['node_manager_port']}",
-                    f"--object-manager-port={self.ray_port_config['object_manager_port']}",
-                    f"--redis-shard-ports={self.ray_port_config['redis_shard_port']}",
-                    f"--ray-client-server-port={self.ray_port_config['ray_client_server_port']}",
-                    f"--min-worker-port={self.ray_port_config['min_worker_port']}",
-                    f"--max-worker-port={self.ray_port_config['max_worker_port']}",
+                    f"--node-ip-address={self.ray_cluster_config['head_node_ip']}",
+                    f"--port={self.ray_cluster_config['head_node_port']}",
+                    f"--node-manager-port={self.ray_cluster_config['node_manager_port']}",
+                    f"--object-manager-port={self.ray_cluster_config['object_manager_port']}",
+                    f"--redis-shard-ports={self.ray_cluster_config['redis_shard_port']}",
+                    f"--ray-client-server-port={self.ray_cluster_config['ray_client_server_port']}",
+                    f"--min-worker-port={self.ray_cluster_config['min_worker_port']}",
+                    f"--max-worker-port={self.ray_cluster_config['max_worker_port']}",
                     "--num-cpus=0",
                     "--num-gpus=0",
                     "--include-dashboard=False",
@@ -233,7 +239,7 @@ class RayClusterManager:
                 return {"success": False, "message": "Ray cluster failed to start"}
 
             host_ip, port = ray_status["head_address"].split(":")
-            if int(port) != self.ray_port_config['head_node_port']:
+            if int(port) != self.ray_cluster_config['head_node_port']:
                 self.logger.error(f"Ray cluster started on incorrect port: {port}")
                 return {
                     "success": False,
@@ -249,7 +255,7 @@ class RayClusterManager:
             self.logger.error(f"Error initializing Ray: {str(e)}")
             return {"success": False, "message": f"Error initializing Ray: {str(e)}"}
     
-    def shutdown_cluster(self, context: Optional[Dict] = None) -> Dict:
+    def shutdown_cluster(self, grace_period: int = 30, context: Optional[Dict] = None) -> Dict:
         """Shutdown the Ray cluster and all its nodes
         
         Args:
@@ -260,9 +266,14 @@ class RayClusterManager:
         """
         try:
             # Shutdown the Ray cluster
-            subprocess.run(
-                [self.ray_executable, "stop"], check=True
+            result = subprocess.run(
+                [self.ray_executable, "stop", f"--grace-period={grace_period}"],
+                capture_output=True, text=True, check=True
             )
+
+            "Stopped all 6 Ray processes."
+            "Did not find any active Ray processes."
+            "Stopped only 7 out of 8 Ray processes " "<longer text>" "to wait longer time for proper termination."
 
             # Verify shutdown was successful
             ray_status = self.check_cluster()
@@ -305,6 +316,7 @@ class RayClusterManager:
                 }
 
             # Define the Ray worker command that will run inside the container
+            # Alternatively -> ray.init("ray://berzelius1:10001")
             ray_worker_cmd = f"ray start --address={ray_status['head_address']} --num-cpus={self.job_config['num_cpus']} --num-gpus={self.job_config['num_gpus']} --block"
 
             # Define the apptainer command with the Ray worker command
@@ -537,7 +549,10 @@ class RayClusterManager:
         """
         try:
             # Connect to the Ray cluster
-            ray.init(address="auto")
+            # head_node_ip = self.ray_cluster_config["head_node_ip"]
+            # head_node_port = self.ray_cluster_config["head_node_port"]
+            # ray.init(address=f"{head_node_ip}:{head_node_port}")
+            ray.init("auto")
 
             # Get all nodes
             nodes = ray.nodes()
@@ -556,8 +571,7 @@ class RayClusterManager:
                 }
             
             # Check if the target node is the head node
-            runtime_context = ray.get_runtime_context()
-            if target_node["NodeManagerAddress"] == runtime_context.gcs_address:
+            if target_node["NodeManagerAddress"] == self.ray_cluster_config["head_node_ip"]:
                 self.logger.warning("Cannot close head node")
                 return {
                     "success": False,
@@ -570,7 +584,7 @@ class RayClusterManager:
                 def stop_worker():
                     """Stops the worker node by executing 'ray stop'."""
                     import subprocess
-                    subprocess.run(["ray", "stop"], check=True)
+                    subprocess.run([self.ray_executable, "stop"], check=True)
 
                 # ray.autoscaler._private.commands.kill_node(node_id)
                 worker_ip = target_node["NodeManagerAddress"]
@@ -599,11 +613,7 @@ if __name__ == "__main__":
     from time import sleep
 
     # Test the class
-    ray_manager = RayClusterManager(
-        head_node_port=6380,
-        node_manager_port=6800,
-        ray_client_server_port=20001,
-    )
+    ray_manager = RayClusterManager()
 
     print("===== Testing Ray cluster class =====", end="\n\n")
 
@@ -645,7 +655,7 @@ if __name__ == "__main__":
     while not node_ids:
         print("Waiting for worker nodes...")
         status = ray_manager.check_cluster()
-        # node_ids = status.get("worker_node_ids", [])
+        node_ids = status.get("worker_node_ids", [])
         sleep(1)
     print(status, end="\n\n")
 

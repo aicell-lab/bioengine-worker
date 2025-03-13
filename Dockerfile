@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
 RUN pip install --no-cache-dir -U pip && \
     pip install --no-cache-dir \
     hypha-rpc \
-    "ray[data,train,serve]" \
+    "ray[client,data,train,serve]" \
     pyyaml \
     python-dotenv
 

@@ -35,6 +35,7 @@ class RayClusterManager:
         mem_per_cpu: int = 8,
         time_limit: str = "4:00:00",
         container_image: str = "chiron_worker_0.1.0.sif",
+        further_slurm_args: List[str] = None,
     ):
         """Initialize cluster manager with networking and resource configurations.
 
@@ -51,6 +52,7 @@ class RayClusterManager:
             mem_per_cpu: Memory (GB) allocated per CPU.
             time_limit: SLURM job time limit (HH:MM:SS).
             container_image: Worker container image path.
+            further_slurm_args: Additional arguments for SLURM job script.
         """
         # Set up logging
         self.logger = logger or logging.getLogger("ray_cluster")
@@ -96,6 +98,7 @@ class RayClusterManager:
             "mem_per_cpu": mem_per_cpu,
             "time_limit": time_limit,
             "container_image": container_image,
+            "further_slurm_args": further_slurm_args,
         }
 
         # Base directory for logs and scripts
@@ -319,6 +322,11 @@ class RayClusterManager:
             # Define the apptainer command with the Ray worker command
             apptainer_cmd = f"apptainer run --writable-tmpfs --contain --nv {self.job_config['container_image']} {ray_worker_cmd}"
 
+            # Additional arguments for the batch script
+            further_args = "\n".join(
+                [f"#SBATCH {arg}" for arg in self.job_config["further_slurm_args"]]
+            )
+
             # Create a temporary batch script
             with tempfile.NamedTemporaryFile(
                 mode="w", suffix=".sh", delete=False
@@ -334,6 +342,7 @@ class RayClusterManager:
                 #SBATCH --time={self.job_config["time_limit"]}
                 #SBATCH --output={self.logs_dir}/%x_%j.out
                 #SBATCH --error={self.logs_dir}/%x_%j.err
+                {further_args}
 
                 # Print some diagnostic information
                 echo "Starting Ray worker node"

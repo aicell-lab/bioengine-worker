@@ -90,8 +90,9 @@ class RayClusterManager:
             "container_image": container_image,
             "further_slurm_args": further_slurm_args or [],
         }
-        # TODO: change worker_id to a worker job list to keep record which worker has which slurm job id
-        self.worker_id = 0
+        # Dictionary to map worker IDs to SLURM job IDs
+        self.worker_jobs = {}
+        self.next_worker_num = 1
 
         # Base directory for logs and scripts
         self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -136,6 +137,18 @@ class RayClusterManager:
                 f"Port {port} is not available. Using {out_port} instead."
             )
         return out_port
+
+    def _generate_worker_id(self) -> str:
+        """Generate a unique worker ID.
+        
+        Returns:
+            A string like 'w1', 'w2', etc.
+        """
+        while True:
+            worker_id = f"w{self.next_worker_num}"
+            self.next_worker_num += 1
+            if worker_id not in self.worker_jobs:
+                return worker_id
 
     def start_cluster(
         self, force: bool = False, context: Optional[Dict] = None
@@ -232,7 +245,7 @@ class RayClusterManager:
                 worker_id = None
                 for resource in node["Resources"].keys():
                     if resource.startswith("node:__internal_worker"):
-                        worker_id = int(resource.split("_")[-3])
+                        worker_id = resource.split("_")[-3]
                         break
 
                 # Extract available resources
@@ -347,6 +360,7 @@ class RayClusterManager:
                 "success": False,
                 "message": "Cannot start worker: Ray head node is not running",
             }
+
         try:
             head_node_ip = self.ray_cluster_config["head_node_ip"]
             head_node_port = self.ray_cluster_config["head_node_port"]
@@ -362,15 +376,17 @@ class RayClusterManager:
                 [f"#SBATCH {arg}" for arg in job_config["further_slurm_args"] if arg]
             )
 
+            # Generate unique worker ID
+            worker_id = self._generate_worker_id()
+
             # Define the Ray worker command that will run inside the container
-            self.worker_id += 1
             ray_worker_cmd = (
                 f"ray start "
                 f"--address={address} "
                 f"--num-cpus={job_config['num_cpus']} "
                 f"--num-gpus={job_config['num_gpus']} "
                 "--resources='{\\\"node:__internal_worker_"
-                + str(self.worker_id)
+                + worker_id
                 + "__\\\": 1}' "
                 f"--block"
             )
@@ -445,14 +461,21 @@ class RayClusterManager:
             job_id = None
             if result.stdout and "Submitted batch job" in result.stdout:
                 job_id = result.stdout.strip().split()[-1]
+                # Add to worker_jobs dictionary
+                self.worker_jobs[worker_id] = job_id
+
+                # Check if we've reached the dictionary size limit
+                if len(self.worker_jobs) > 100:
+                    self.worker_jobs.popitem(last=False)
 
             self.logger.info(
-                f"Worker job submitted successfully. Job ID: {job_id}, Resources: {job_config['num_gpus']} GPU(s), "
+                f"Worker job submitted successfully. Worker ID: {worker_id}, Job ID: {job_id}, Resources: {job_config['num_gpus']} GPU(s), "
                 f"{job_config['num_cpus']} CPU(s), {job_config['mem_per_cpu']}G mem/CPU, {job_config['time_limit']} time limit"
             )
 
             return {
                 "success": True,
+                "worker_id": worker_id,
                 "job_id": job_id,
                 "resources": {
                     "gpus": job_config["num_gpus"],
@@ -605,12 +628,12 @@ class RayClusterManager:
             }
 
     def shutdown_worker_node(
-        self, worker_id: Union[int, str], context: Optional[Dict] = None
+        self, worker_id: str, context: Optional[Dict] = None
     ) -> Dict:
         """Shut down specific worker node from Ray cluster.
 
         Args:
-            worker_id: Ray worker ID to shut down
+            worker_id: Ray worker ID to shut down (e.g. 'w1', 'w2')
             context: RPC context for remote calls
 
         Returns:
@@ -620,79 +643,65 @@ class RayClusterManager:
             self.logger.info("Ray cluster is not running")
             return {"success": False, "message": "Ray cluster is not running"}
 
-        if isinstance(worker_id, str):
-            worker_id = int(worker_id)
-        elif not isinstance(worker_id, int):
-            self.logger.error(f"Invalid worker ID: {worker_id}")
-            return {
-                "success": False,
-                "message": f"Invalid worker ID: {worker_id} (dtype={type(worker_id)})",
-            }
         try:
-            # Check if worker node is alive
-            cluster_status = self.cluster_status()
-            alive_workers = cluster_status["worker_nodes"]["Alive"]
-            target_node = next(
-                (node for node in alive_workers if node["WorkerID"] == worker_id), None
-            )
-            if not target_node:
-                worker_is_dead = next(
-                    (
-                        True
-                        for node in cluster_status["worker_nodes"]["Dead"]
-                        if node["WorkerID"] == worker_id
-                    ),
-                    False,
-                )
-                if worker_is_dead:
-                    self.logger.warning(f"Node {worker_id} is already stopped")
-                    return {
-                        "success": False,
-                        "message": f"Node {worker_id} is already stopped",
-                    }
-                else:
-                    self.logger.warning(f"Node {worker_id} not found in cluster")
-                    return {
-                        "success": False,
-                        "message": f"Node {worker_id} not found in cluster",
-                    }
-
-            # Define remote functions to get SLURM job ID
-            @ray.remote(resources={f"node:__internal_worker_{worker_id}__": 0.001})
-            def get_slurm_job_id():
-                import os
-
-                return os.getenv("SLURM_JOB_ID")
-
-            # TODO: Stop all tasks on the worker node before shutting down
-
-            # Shut down the worker node
-            node_id = target_node["NodeID"]
-            node_ip = target_node["NodeIP"]
-            job_id = ray.get(get_slurm_job_id.remote())
-            self.logger.info(
-                f"Closing worker {worker_id} (NodeID={node_id} | IP={node_ip} | SLURM_JOB_ID={job_id})"
-            )
-
-            # Node was successfully shut down, now stop the worker process
-            result = self.cancel_worker_jobs([job_id])
-            if not result["success"]:
+            # Check if worker id is valid
+            if worker_id not in self.worker_jobs:
+                self.logger.error(f"Worker ID {worker_id} not found in worker jobs")
                 return {
                     "success": False,
-                    "message": f"Error closing node: {result['message']}",
+                    "message": f"Worker ID {worker_id} not found in worker jobs",
                 }
 
-            self.logger.info(f"Successfully shut down worker {worker_id}")
-            return {
-                "success": True,
-                "message": f"Successfully shut down worker {worker_id}",
-            }
+            # Check if worker node exists in cluster
+            cluster_status = self.cluster_status()
+            found_in_alive = False
+            found_in_dead = False
+            
+            # Check alive nodes
+            for node in cluster_status["worker_nodes"]["Alive"]:
+                if node["WorkerID"] == worker_id:
+                    found_in_alive = True
+                    break
+                    
+            # If not alive, check dead nodes
+            if not found_in_alive:
+                for node in cluster_status["worker_nodes"]["Dead"]:
+                    if node["WorkerID"] == worker_id:
+                        found_in_dead = True
+                        break
+
+            # Handle node status
+            if found_in_dead:
+                self.logger.warning(f"Node {worker_id} is already stopped")
+            elif not (found_in_alive or found_in_dead):
+                self.logger.warning(f"Node {worker_id} not found in cluster")
+                return {
+                    "success": False,
+                    "message": f"Node {worker_id} not found in cluster",
+                }
+            
+            # TODO: Stop all tasks on the worker node before shutting down
+
+            # Get the SLURM job ID and cancel it
+            job_id = self.worker_jobs[worker_id]
+            self.logger.info(f"Shutting down worker {worker_id} (SLURM_JOB_ID={job_id})")
+            result = self.cancel_worker_jobs([job_id])
+            if result["success"]:
+                # Only remove from worker_jobs if cancellation was successful
+                del self.worker_jobs[worker_id]
+                self.logger.info(f"Successfully shut down worker {worker_id}")
+                return {
+                    "success": True,
+                    "message": f"Successfully shut down worker {worker_id}",
+                }
+            else:
+                return result
 
         except Exception as e:
-            self.logger.error(f"Error closing worker {worker_id}: {str(e)}")
+            self.logger.error(f"Error shutting down worker {worker_id}: {str(e)}")
             return {
                 "success": False,
-                "message": f"Error closing worker {worker_id}: {str(e)}",
+                "message": f"Error shutting down worker {worker_id}: {str(e)}",
             }
 
 

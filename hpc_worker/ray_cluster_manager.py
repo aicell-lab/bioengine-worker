@@ -186,7 +186,11 @@ class RayClusterManager:
             # Verify the cluster is running on the correct IP and port
             head_node_ip = self.ray_cluster_config["head_node_ip"]
             head_node_port = self.ray_cluster_config["head_node_port"]
-            ray.init(address=f"{head_node_ip}:{head_node_port}")
+            ray.init(
+                address=f"{head_node_ip}:{head_node_port}",
+                logging_format="\033[36m%(asctime)s\033[0m - \033[32m%(name)s\033[0m - \033[1;33m%(levelname)s\033[0m - %(message)s",
+                configure_logging=True
+            )
 
             return {
                 "success": True,

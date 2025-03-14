@@ -5,7 +5,8 @@ import shutil
 import socket
 import subprocess
 import tempfile
-from typing import Dict, List, Optional
+import time
+from typing import Dict, List, Optional, Union
 
 import ray
 
@@ -47,12 +48,12 @@ class RayClusterManager:
             further_slurm_args: Additional arguments for SLURM job script.
         """
         # Set up logging
-        self.logger = logger or logging.getLogger("ray_cluster")
+        self.logger = logger or logging.getLogger("RayClusterManager")
         if not logger:
             self.logger.setLevel(logging.INFO)
             console_handler = logging.StreamHandler()
             formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                "\033[36m%(asctime)s\033[0m - \033[32m%(name)s\033[0m - \033[1;33m%(levelname)s\033[0m - %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",
             )
             console_handler.setFormatter(formatter)
@@ -89,6 +90,7 @@ class RayClusterManager:
             "container_image": container_image,
             "further_slurm_args": further_slurm_args or [],
         }
+        # TODO: change worker_id to a worker job list to keep record which worker has which slurm job id
         self.worker_id = 0
 
         # Base directory for logs and scripts
@@ -197,7 +199,7 @@ class RayClusterManager:
                 self.shutdown_cluster()
             return {"success": False, "message": f"Error initializing Ray: {str(e)}"}
 
-    def _cluster_status(self) -> Dict:
+    def cluster_status(self, context: Optional[Dict] = None) -> Dict:
         """Get current cluster state including head node and worker information.
 
         Returns:
@@ -272,6 +274,7 @@ class RayClusterManager:
             self.logger.info("Ray cluster is not running")
             return {"success": True, "message": "Ray cluster is not running"}
         try:
+            self.logger.info("Shutting down Ray cluster...")
             # Disconnect from the Ray cluster
             ray.shutdown()
 
@@ -296,7 +299,7 @@ class RayClusterManager:
                 )
 
             # Clean up any remaining worker jobs
-            sleep(5)  # Wait for Ray to fully shut down
+            time.sleep(5)  # Wait for Ray to fully shut down
             result = self.cancel_worker_jobs()
             if not result["success"]:
                 return {
@@ -598,7 +601,7 @@ class RayClusterManager:
             }
 
     def shutdown_worker_node(
-        self, worker_id: str, context: Optional[Dict] = None
+        self, worker_id: Union[int, str], context: Optional[Dict] = None
     ) -> Dict:
         """Shut down specific worker node from Ray cluster.
 
@@ -612,9 +615,18 @@ class RayClusterManager:
         if not ray.is_initialized():
             self.logger.info("Ray cluster is not running")
             return {"success": False, "message": "Ray cluster is not running"}
+
+        if isinstance(worker_id, str):
+            worker_id = int(worker_id)
+        elif not isinstance(worker_id, int):
+            self.logger.error(f"Invalid worker ID: {worker_id}")
+            return {
+                "success": False,
+                "message": f"Invalid worker ID: {worker_id} (dtype={type(worker_id)})",
+            }
         try:
             # Check if worker node is alive
-            cluster_status = self._cluster_status()
+            cluster_status = self.cluster_status()
             alive_workers = cluster_status["worker_nodes"]["Alive"]
             target_node = next(
                 (node for node in alive_workers if node["WorkerID"] == worker_id), None
@@ -681,8 +693,7 @@ class RayClusterManager:
 
 
 if __name__ == "__main__":
-    from time import sleep
-
+    # TODO: move this to tests
     print("===== Testing Ray cluster class =====", end="\n\n")
 
     # Test the class
@@ -715,7 +726,7 @@ if __name__ == "__main__":
     print("Waiting for submitted worker job to start...")
     started = False
     while not started:
-        sleep(3)
+        time.sleep(3)
         cluster_status = ray_manager.get_worker_jobs()
         print(cluster_status, end="\n\n")
         started = any(
@@ -728,8 +739,8 @@ if __name__ == "__main__":
     while not worker_nodes:
         # Wait for worker node to appear in cluster status
         print("Waiting for worker node to appear in cluster status...")
-        sleep(3)
-        cluster_status = ray_manager._cluster_status()
+        time.sleep(3)
+        cluster_status = ray_manager.cluster_status()
         worker_nodes = cluster_status["worker_nodes"]["Alive"]
     print(cluster_status, end="\n\n")
 

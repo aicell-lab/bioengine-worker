@@ -211,10 +211,10 @@ class RayClusterManager:
             }
 
         except Exception as e:
-            self.logger.error(f"Error initializing Ray: {str(e)}")
+            self.logger.error(f"Error initializing Ray: {str(e.stderr) if hasattr(e, 'stderr') else str(e)}")
             if ray.is_initialized():
                 self.shutdown_cluster()
-            return {"success": False, "message": f"Error initializing Ray: {str(e)}"}
+            return {"success": False, "message": f"Error initializing Ray: {str(e.stderr) if hasattr(e, 'stderr') else str(e)}"}
 
     def cluster_status(self, context: Optional[Dict] = None) -> Dict:
         """Get current cluster state including head node and worker information.
@@ -271,7 +271,7 @@ class RayClusterManager:
         except Exception as e:
             # Log only unexpected errors
             if not str(e).startswith("Could not find any running Ray instance"):
-                self.logger.error(f"Error checking ray cluster: {str(e)}")
+                self.logger.error(f"Error checking ray cluster: {str(e.stderr) if hasattr(e, 'stderr') else str(e)}")
         finally:
             return output
 
@@ -327,8 +327,8 @@ class RayClusterManager:
             return {"success": True, "message": f"Successfully shut down Ray cluster."}
 
         except Exception as e:
-            self.logger.error(f"Error shutting down Ray cluster: {str(e)}")
-            return {"success": False, "message": f"Error during shutdown: {str(e)}"}
+            self.logger.error(f"Error shutting down Ray cluster: {str(e.stderr) if hasattr(e, 'stderr') else str(e)}")
+            return {"success": False, "message": f"Error during shutdown: {str(e.stderr) if hasattr(e, 'stderr') else str(e)}"}
 
     def submit_worker_job(
         self,
@@ -548,10 +548,10 @@ class RayClusterManager:
             return {"success": True, "ray_worker_jobs": jobs}
 
         except Exception as e:
-            self.logger.error(f"Error getting job status: {str(e)}")
+            self.logger.error(f"Error getting job status: {str(e.stderr) if hasattr(e, 'stderr') else str(e)}")
             return {
                 "success": False,
-                "message": f"Error getting job status: {str(e)}",
+                "message": f"Error getting job status: {str(e.stderr) if hasattr(e, 'stderr') else str(e)}",
                 "ray_worker_jobs": [],
             }
 
@@ -615,16 +615,16 @@ class RayClusterManager:
 
             return {
                 "success": True,
-                "message": f"Successfully cancelled {len(jobs_to_cancel)} Ray worker jobs",
+                "message": f"Successfully cancelled {len(jobs_to_cancel)} Ray worker job(s)",
                 "cancelled_jobs": len(jobs_to_cancel),
                 "job_ids": jobs_to_cancel,
             }
 
         except Exception as e:
-            self.logger.error(f"Error cancelling worker jobs: {str(e)}")
+            self.logger.error(f"Error cancelling worker jobs: {str(e.stderr) if hasattr(e, 'stderr') else str(e)}")
             return {
                 "success": False,
-                "message": f"Error cancelling worker jobs: {str(e)}",
+                "message": f"Error cancelling worker jobs: {str(e.stderr) if hasattr(e, 'stderr') else str(e)}",
             }
 
     def shutdown_worker_node(
@@ -646,21 +646,25 @@ class RayClusterManager:
         try:
             # Check if worker id is valid
             if worker_id not in self.worker_jobs:
-                self.logger.error(f"Worker ID {worker_id} not found in worker jobs")
+                self.logger.error(f"Worker ID '{worker_id}' not found in worker jobs")
                 return {
                     "success": False,
-                    "message": f"Worker ID {worker_id} not found in worker jobs",
+                    "message": f"Worker ID '{worker_id}' not found in worker jobs",
                 }
 
             # Check if worker node exists in cluster
             cluster_status = self.cluster_status()
             found_in_alive = False
             found_in_dead = False
+            node_id = None
+            node_ip = None
             
             # Check alive nodes
             for node in cluster_status["worker_nodes"]["Alive"]:
                 if node["WorkerID"] == worker_id:
                     found_in_alive = True
+                    node_id = node["NodeID"]
+                    node_ip = node["NodeIP"]
                     break
                     
             # If not alive, check dead nodes
@@ -668,27 +672,30 @@ class RayClusterManager:
                 for node in cluster_status["worker_nodes"]["Dead"]:
                     if node["WorkerID"] == worker_id:
                         found_in_dead = True
+                        node_id = node["NodeID"]
+                        node_ip = node["NodeIP"]
                         break
 
             # Handle node status
-            if found_in_dead:
-                self.logger.warning(f"Node {worker_id} is already stopped")
-            elif not (found_in_alive or found_in_dead):
-                self.logger.warning(f"Node {worker_id} not found in cluster")
+            if found_in_alive:
+                self.logger.info(f"Ray worker '{worker_id}' on machine '{node_ip}' with node ID '{node_id}' is still running")
+            elif found_in_dead:
+                self.logger.info(f"Ray worker '{worker_id}' on machine '{node_ip}' with node ID '{node_id}' is already stopped")
+            else:
+                self.logger.warning(f"Ray worker '{worker_id}' not found in cluster")
                 return {
                     "success": False,
-                    "message": f"Node {worker_id} not found in cluster",
+                    "message": f"Ray worker '{worker_id}' not found in cluster",
                 }
             
             # TODO: Stop all tasks on the worker node before shutting down
 
             # Get the SLURM job ID and cancel it
             job_id = self.worker_jobs[worker_id]
-            self.logger.info(f"Shutting down worker {worker_id} (SLURM_JOB_ID={job_id})")
+            self.logger.info(f"Shutting down worker '{worker_id}' running on SLURM job '{job_id}'")
             result = self.cancel_worker_jobs([job_id])
             if result["success"]:
                 # Only remove from worker_jobs if cancellation was successful
-                del self.worker_jobs[worker_id]
                 self.logger.info(f"Successfully shut down worker {worker_id}")
                 return {
                     "success": True,
@@ -698,10 +705,10 @@ class RayClusterManager:
                 return result
 
         except Exception as e:
-            self.logger.error(f"Error shutting down worker {worker_id}: {str(e)}")
+            self.logger.error(f"Error shutting down worker {worker_id}: {str(e.stderr) if hasattr(e, 'stderr') else str(e)}")
             return {
                 "success": False,
-                "message": f"Error shutting down worker {worker_id}: {str(e)}",
+                "message": f"Error shutting down worker {worker_id}: {str(e.stderr) if hasattr(e, 'stderr') else str(e)}",
             }
 
 

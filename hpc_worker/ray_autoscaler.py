@@ -77,7 +77,6 @@ class RayAutoscaler:
         self.last_scale_up_time = 0
         self.last_scale_down_time = 0
         self.node_metrics = {}  # Track per-node metrics
-        self.dead_nodes = set()  # Track nodes that have been shut down
 
         # Background task
         self.monitoring_task = None
@@ -108,7 +107,6 @@ class RayAutoscaler:
 
         # Clear statistics or perform any cleanup necessary
         self.node_metrics.clear()
-        self.dead_nodes.clear()
 
         # Cancel monitoring task
         if self.monitoring_task:
@@ -133,9 +131,12 @@ class RayAutoscaler:
                         break
 
                     # Collect and analyze metrics
-                    await self._collect_metrics()
-                    await self._make_scaling_decisions()
-                    await self._cleanup_dead_nodes()
+                    node_metrics, dead_node_ids = await self._collect_metrics(self.node_metrics.copy())
+                    node_metrics = await self._make_scaling_decisions(node_metrics)
+                    await self._cleanup_dead_nodes(dead_node_ids)
+
+                    # Update node metrics
+                    self.node_metrics = node_metrics
 
                     # Sleep for the metrics interval
                     await asyncio.sleep(self.autoscale_config["metrics_interval"])
@@ -147,7 +148,7 @@ class RayAutoscaler:
             self.logger.info("Autoscaler monitoring loop cancelled")
             raise  # Re-raise to properly propagate cancellation
 
-    async def _collect_metrics(self):
+    async def _collect_metrics(self, node_metrics: dict):
         """Collect resource utilization metrics from worker nodes using cluster status."""
 
         # Get current cluster status
@@ -156,19 +157,19 @@ class RayAutoscaler:
         active_nodes = cluster_status["worker_nodes"]["Alive"]
         dead_nodes = cluster_status["worker_nodes"]["Dead"]
 
-        # Remove metrics for nodes no longer in cluster
+        # Remove metrics for nodes that are no longer in cluster
         current_worker_ids = {node["WorkerID"] for node in active_nodes}
-        for worker_id in list(self.node_metrics.keys()):
+        for worker_id in list(node_metrics.keys()):
             if worker_id not in current_worker_ids:
-                self.node_metrics.pop(worker_id, None)
+                node_metrics.pop(worker_id, None)
 
         # Update metrics for active nodes
         for node in active_nodes:
             worker_id = node["WorkerID"]
 
             # Initialize metrics for new nodes
-            if worker_id not in self.node_metrics:
-                self.node_metrics[worker_id] = {
+            if worker_id not in node_metrics:
+                node_metrics[worker_id] = {
                     "ip_address": node["NodeIP"],
                     "node_id": node["NodeID"],
                     "start_time": current_time,
@@ -198,34 +199,46 @@ class RayAutoscaler:
             else:
                 memory_util = 0
 
-            self.node_metrics[worker_id]["timestamps"].append(current_time)
-            self.node_metrics[worker_id]["gpu_util"].append(gpu_util)
-            self.node_metrics[worker_id]["cpu_util"].append(cpu_util)
-            self.node_metrics[worker_id]["memory_util"].append(memory_util)
+            node_metrics[worker_id]["timestamps"].append(current_time)
+            node_metrics[worker_id]["gpu_util"].append(gpu_util)
+            node_metrics[worker_id]["cpu_util"].append(cpu_util)
+            node_metrics[worker_id]["memory_util"].append(memory_util)
 
             # Update active/idle status based on both GPU and CPU utilization
             if (
                 gpu_util >= self.autoscale_config["gpu_idle_threshold"]
                 or cpu_util >= self.autoscale_config["cpu_idle_threshold"]
             ):
-                self.node_metrics[worker_id]["last_active_time"] = current_time
+                node_metrics[worker_id]["last_active_time"] = current_time
 
             # Limit history size
             max_history = 100
-            if len(self.node_metrics[worker_id]["timestamps"]) > max_history:
+            if len(node_metrics[worker_id]["timestamps"]) > max_history:
                 for key in ["timestamps", "gpu_util", "cpu_util", "memory_util"]:
-                    self.node_metrics[worker_id][key] = self.node_metrics[worker_id][
+                    node_metrics[worker_id][key] = node_metrics[worker_id][
                         key
                     ][-max_history:]
 
-        # Update dead node set
-        for node in dead_nodes:
-            worker_id = node["WorkerID"]
-            self.dead_nodes.add(worker_id)
+        # Collect dead nodes for cleanup
+        if dead_nodes:
+            dead_node_ids = {node["WorkerID"] for node in dead_nodes}
+        else:
+            dead_node_ids = set()
+
+        return node_metrics, dead_node_ids
 
     def _get_pending_tasks(self):
         """Get pending tasks that need resources."""
-        return list_tasks(filters=[("state", "=", "PENDING_NODE_ASSIGNMENT")])
+        head_node_ip = self.ray_manager.ray_cluster_config["head_node_ip"]
+        head_node_port = self.ray_manager.ray_cluster_config["head_node_port"]
+        address = f"{head_node_ip}:{head_node_port}"
+        pending_tasks = list_tasks(
+            address=address,
+            filters=[("state", "=", "PENDING_NODE_ASSIGNMENT")]
+        )
+        if len(pending_tasks) < 0:
+            self.logger.error("Error getting pending tasks")
+        return pending_tasks
 
     def _get_num_worker_jobs(self):
         """Get number of SLURM workers in the cluster (configuring, pending or running)."""
@@ -249,10 +262,9 @@ class RayAutoscaler:
         if job_result["success"]:
             self.last_scale_up_time = time.time()
 
-    async def _make_scaling_decisions(self):
+    async def _make_scaling_decisions(self, node_metrics: dict):
         """Make scaling decisions based on resource utilization and pending tasks."""
         current_time = time.time()
-        node_metrics = self.node_metrics.copy()
         n_worker_jobs = self._get_num_worker_jobs()
         pending_tasks = self._get_pending_tasks()
 
@@ -269,7 +281,7 @@ class RayAutoscaler:
                 < self.autoscale_config["max_workers"]
             )
             if not can_scale_up:
-                return
+                return node_metrics
 
             # Determine resource needs based on pending tasks (simplified example)
 
@@ -326,18 +338,21 @@ class RayAutoscaler:
                     longest_idle_time = idle_time
                     longest_idle_worker = worker_id
 
-            if longest_idle_worker is not None:
+            if longest_idle_worker:
                 self.logger.info(
                     f"Scaling down node {longest_idle_worker} due to inactivity for {longest_idle_time}s"
                 )
                 result = self.ray_manager.shutdown_worker_node(longest_idle_worker)
                 if result["success"]:
                     self.last_scale_down_time = current_time
+                    node_metrics.pop(longest_idle_worker, None)
 
-    async def _cleanup_dead_nodes(self):
-        if self.dead_nodes:
-            self.logger.info(f"Cleaning up {len(self.dead_nodes)} dead nodes")
-            for worker_id in self.dead_nodes:
+        return node_metrics
+
+    async def _cleanup_dead_nodes(self, dead_node_ids: set):
+        if dead_node_ids:
+            self.logger.info(f"Cleaning up {len(dead_node_ids)} dead nodes from cluster: {dead_node_ids}")
+            for worker_id in dead_node_ids:
                 self.ray_manager.shutdown_worker_node(worker_id)
 
     def get_autoscaler_status(self, history_len: int = 5) -> dict:

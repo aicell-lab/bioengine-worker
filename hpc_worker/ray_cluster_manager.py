@@ -205,6 +205,9 @@ class RayClusterManager:
                 configure_logging=True,
             )
 
+            self.logger.info(
+                f"Ray cluster started successfully on {head_node_ip}:{head_node_port}"
+            )
             return {
                 "success": True,
                 "message": f"Ray cluster started successfully on {head_node_ip}:{head_node_port}",
@@ -341,8 +344,10 @@ class RayClusterManager:
                     "success": False,
                     "message": f"Error during shutdown: {result['message']}",
                 }
+            
+            self.logger.info("Ray cluster shut down successfully")
 
-            return {"success": True, "message": f"Successfully shut down Ray cluster."}
+            return {"success": True, "message": "Ray cluster shut down successfully"}
 
         except Exception as e:
             self.logger.error(
@@ -614,9 +619,12 @@ class RayClusterManager:
 
             # Filter jobs if specific job_ids were provided
             if job_ids:
-                job_ids = [str(job_id) for job_id in job_ids]  # Convert to strings
+                job_ids = {str(job_id) for job_id in job_ids}  # Convert to strings
                 ray_jobs = [job for job in ray_jobs if job["job_id"] in job_ids]
                 if not ray_jobs:
+                    self.logger.info(
+                        f"No matching Ray worker jobs found to cancel: {job_ids}"
+                    )
                     return {
                         "success": True,
                         "message": "No matching Ray worker jobs found to cancel",
@@ -648,6 +656,9 @@ class RayClusterManager:
                     }
                 ray_job_ids = {job["job_id"] for job in jobs_result.get("ray_worker_jobs", [])}
                 if not any(job_id in ray_job_ids for job_id in jobs_to_cancel):
+                    self.logger.info(
+                        f"Successfully cancelled {len(jobs_to_cancel)} Ray worker job(s)"
+                    )
                     return {
                         "success": True,
                         "message": f"Successfully cancelled {len(jobs_to_cancel)} Ray worker job(s)",

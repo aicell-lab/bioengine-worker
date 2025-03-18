@@ -10,6 +10,8 @@ from typing import Dict, List, Optional, Union
 
 import ray
 
+from hpc_worker.slurm_actor import SlurmActor
+
 
 class RayClusterManager:
     """Manages Ray cluster lifecycle and worker nodes on an HPC system.
@@ -21,7 +23,6 @@ class RayClusterManager:
 
     def __init__(
         self,
-        logger: Optional[logging.Logger] = None,
         # Ray cluster configuration parameters
         head_node_ip: str = None,
         head_node_port: int = 6379,
@@ -33,6 +34,8 @@ class RayClusterManager:
         # Job configuration parameters
         container_image: str = "bioengine_worker_0.1.0.sif",
         further_slurm_args: List[str] = None,
+        # Logger
+        logger: Optional[logging.Logger] = None,
     ):
         """Initialize cluster manager with networking and resource configurations.
 
@@ -47,18 +50,6 @@ class RayClusterManager:
             container_image: Worker container image path.
             further_slurm_args: Additional arguments for SLURM job script.
         """
-        # Set up logging
-        self.logger = logger or logging.getLogger("RayClusterManager")
-        if not logger:
-            self.logger.setLevel(logging.INFO)
-            console_handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "\033[36m%(asctime)s\033[0m - \033[32m%(name)s\033[0m - \033[1;33m%(levelname)s\033[0m - %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
-            console_handler.setFormatter(formatter)
-            self.logger.addHandler(console_handler)
-
         # Set ray port configuration
         # Ports configuration: https://docs.ray.io/en/latest/ray-core/configure.html#ports-configurations
         # SLURM networking caveats: https://github.com/ray-project/ray/blob/1000ae9671967994f7bfdf7b1e1399223ad4fc61/doc/source/cluster/vms/user-guides/community/slurm.rst#id22
@@ -94,10 +85,20 @@ class RayClusterManager:
         self.worker_jobs = {}
         self.next_worker_num = 1
 
-        # Base directory for logs and scripts
-        self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.logs_dir = os.path.join(self.base_dir, "logs")
-        os.makedirs(self.logs_dir, exist_ok=True)
+        # Set up SLURM actor
+        self.slurm_actor = SlurmActor(job_name="ray_worker")
+
+        # Set up logging
+        self.logger = logger or logging.getLogger("RayClusterManager")
+        if not logger:
+            self.logger.setLevel(logging.INFO)
+            console_handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                "\033[36m%(asctime)s\033[0m - \033[32m%(name)s\033[0m - \033[1;33m%(levelname)s\033[0m - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+            console_handler.setFormatter(formatter)
+            self.logger.addHandler(console_handler)
 
     @property
     def _ray_executable(self) -> str:
@@ -151,13 +152,12 @@ class RayClusterManager:
                 return worker_id
 
     def start_cluster(
-        self, force: bool = False, context: Optional[Dict] = None
+        self, force: bool = False
     ) -> Dict:
         """Start Ray cluster head node with configured ports and resources.
 
         Args:
             force: Force restart if cluster is running
-            context: RPC context for remote calls
 
         Returns:
             Dict with success status and result message
@@ -224,7 +224,7 @@ class RayClusterManager:
                 "message": f"Error initializing Ray: {str(e.stderr) if hasattr(e, 'stderr') else str(e)}",
             }
 
-    def cluster_status(self, context: Optional[Dict] = None) -> Dict:
+    def cluster_status(self) -> Dict:
         """Get current cluster state including head node and worker information.
 
         Returns:
@@ -297,13 +297,12 @@ class RayClusterManager:
             return output
 
     def shutdown_cluster(
-        self, grace_period: int = 30, context: Optional[Dict] = None
+        self, grace_period: int = 30
     ) -> Dict:
         """Stop Ray cluster and all worker nodes.
 
         Args:
             grace_period: Seconds to wait for graceful shutdown
-            context: RPC context for remote calls
 
         Returns:
             Dict with success status and shutdown results
@@ -376,7 +375,6 @@ class RayClusterManager:
             num_cpus: CPUs allocated per worker
             mem_per_cpu: Memory (GB) allocated per CPU
             time_limit: SLURM job time limit (HH:MM:SS)
-            context: RPC context for remote calls
 
         Returns:
             Dict with job ID and resource allocation details
@@ -520,11 +518,8 @@ class RayClusterManager:
                 "message": f"Error submitting worker job: {e.stderr if hasattr(e, 'stderr') else str(e)}",
             }
 
-    def get_worker_jobs(self, context: Optional[Dict] = None) -> Dict:
+    def get_worker_jobs(self) -> Dict:
         """Query SLURM for status of all Ray worker jobs.
-
-        Args:
-            context: RPC context for remote calls
 
         Returns:
             Dict with list of worker job details
@@ -584,14 +579,13 @@ class RayClusterManager:
             }
 
     def cancel_worker_jobs(
-        self, job_ids: Optional[List[str]] = None, grace_period: int = 30, context: Optional[Dict] = None
+        self, job_ids: Optional[List[str]] = None, grace_period: int = 30
     ) -> Dict:
         """Cancel running Ray worker jobs via SLURM.
 
         Args:
             job_ids: Specific jobs to cancel. Cancels all if None.
             grace_period: Seconds to wait until job is cancelled.
-            context: RPC context for remote calls
 
         Returns:
             Dict with cancellation results
@@ -717,13 +711,12 @@ class RayClusterManager:
         }
 
     def shutdown_worker_node(
-        self, worker_id: str, context: Optional[Dict] = None
+        self, worker_id: str
     ) -> Dict:
         """Shut down specific worker node from Ray cluster.
 
         Args:
             worker_id: Ray worker ID to shut down (e.g. 'w1', 'w2')
-            context: RPC context for remote calls
 
         Returns:
             Dict with node removal status

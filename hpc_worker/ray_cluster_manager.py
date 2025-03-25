@@ -4,9 +4,8 @@ import re
 import shutil
 import socket
 import subprocess
-import tempfile
 import time
-from typing import Dict, List, Optional, Union, Set
+from typing import Dict, List, Optional, Set
 
 import ray
 
@@ -223,18 +222,19 @@ class RayClusterManager:
                     return "dead"
         return "not_found"
 
-    def start_cluster(self, force: bool = False) -> str:
+    def start_cluster(self, force_restart: bool = False, clean_up: bool = False) -> str:
         """Start Ray cluster head node with configured ports and resources.
 
         Args:
-            force: Force restart if cluster is running
+            force_restart: Force restart if cluster is running
+            clean_up: Cancel all previous worker jobs
 
         Returns:
             str with the address of the head node
         """
         # Check if Ray is already running
         if ray.is_initialized():
-            if force:
+            if force_restart:
                 self.logger.info(
                     "Ray cluster is already initialized. Forcing restart..."
                 )
@@ -244,6 +244,11 @@ class RayClusterManager:
                 return self.head_node_address
         try:
             self.logger.info("Starting Ray cluster...")
+
+            if clean_up and len(self.worker_job_ids) > 0:
+                # Cancel all previous worker jobs
+                self.logger.info("Cleaning up previous worker jobs...")
+                self.slurm_actor.cancel_jobs()
 
             # Check and set cluster ports
             self._set_cluter_ports()
@@ -321,10 +326,9 @@ class RayClusterManager:
                 # Extract worker ID from resources
                 worker_id = self._node_resource_to_worker_id(node["Resources"])
 
-                # Skip dead nodes if job is not running anymore
-                if not node["Alive"]:
-                    if worker_id not in worker_job_ids:
-                        continue
+                # Skip nodes if job is not running anymore
+                if worker_id not in worker_job_ids:
+                    continue
 
                 # Extract available resources
                 available_resources = available_resources_per_node.get(
@@ -571,17 +575,7 @@ if __name__ == "__main__":
     )
 
     # Start Ray cluster
-    ray_manager.start_cluster(force=True)
-
-    # Test getting job status
-    print("Getting worker job status...")
-    job_ids = ray_manager.worker_job_ids
-    print(job_ids, end="\n\n")
-
-    if len(job_ids) > 0:
-        # Cancel all previous worker jobs
-        print("Cancelling all worker jobs...")
-        ray_manager.slurm_actor.cancel_jobs()
+    ray_manager.start_cluster(force_restart=True, clean_up=True)
 
     # Test submitting a worker job
     assert len(ray_manager.worker_job_history) == 0
@@ -592,33 +586,33 @@ if __name__ == "__main__":
 
     # Wait for worker to start
     status = ""
+    waited_time = 0
+    print("")
     while status != "alive":
         # Wait for worker node to appear in cluster status
-        print("Waiting for worker node to appear in cluster status...")
-        time.sleep(3)
+        print("\033[1A\033[K", end="")
+        print("Waiting for worker node to appear in cluster status" + "." * (waited_time))
+        time.sleep(1)
+        waited_time += 1
         status = ray_manager._get_worker_status(worker_id)
 
     # Test cluster status
     cluster_status = ray_manager.cluster_status()
-    print(cluster_status, end="\n\n")
+    print("\n=== Cluster status ===\n", cluster_status, end="\n\n")
 
     # Test running a remote function on worker node
     @ray.remote(num_cpus=1, num_gpus=1)
     def test_remote():
         import time
 
-        time.sleep(3)
+        time.sleep(1)
         return "Successfully run a task on the worker node!"
 
     obj_ref = test_remote.remote()
     print(ray.get(obj_ref))
 
     # Test closing a worker node
-    print("Shutting down a worker node...")
-    shutdown_result = ray_manager.remove_worker(worker_id)
-    print(shutdown_result, end="\n\n")
+    ray_manager.remove_worker(worker_id)
 
     # Test shutting down Ray cluster
-    print("Shutting down Ray cluster...")
-    shutdown_result = ray_manager.shutdown_cluster()
-    print(shutdown_result, end="\n\n")
+    ray_manager.shutdown_cluster()

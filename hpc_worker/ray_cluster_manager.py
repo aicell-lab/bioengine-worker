@@ -220,6 +220,9 @@ class RayClusterManager:
                         f"Ray worker '{worker_id}' on machine '{node_ip}' with node ID '{node_id}' is already stopped"
                     )
                     return "dead"
+                
+        # If not found in either alive or dead nodes
+        self.logger.warning(f"Ray worker '{worker_id}' not found in cluster")
         return "not_found"
 
     def start_cluster(self, force_restart: bool = False, clean_up: bool = False) -> str:
@@ -323,12 +326,20 @@ class RayClusterManager:
                 if "node:__internal_head__" in node["Resources"].keys():
                     continue
 
-                # Extract worker ID from resources
-                worker_id = self._node_resource_to_worker_id(node["Resources"])
+                if not node["Resources"]:
+                    self.logger.debug(f"Encountered dead worker node without worker ID")
+                    assert not node["Alive"] # Dead nodes should have empty resources
+                else:
+                    # Extract worker ID from resources (dead notes have empty resources -> no worker ID)
+                    worker_id = self._node_resource_to_worker_id(node["Resources"])
 
-                # Skip nodes if job is not running anymore
-                if worker_id not in worker_job_ids:
-                    continue
+                    # Skip nodes if job is not running anymore
+                    worker_job_id = self.worker_job_history.get(worker_id, None)
+                    if not worker_job_id:
+                        self.logger.error(f"Worker ID '{worker_id}' not found in worker jobs")
+                    elif worker_job_id not in worker_job_ids:
+                        self.logger.debug(f"Skipping worker node '{worker_id}' with already cancelled job ID '{worker_job_id}'")
+                        continue
 
                 # Extract available resources
                 available_resources = available_resources_per_node.get(
@@ -512,12 +523,6 @@ class RayClusterManager:
                 f"Error submitting worker job - {type(e).__name__}: {e}"
             )
             return False
-
-
-                
-        # If not found in either alive or dead nodes
-        self.logger.warning(f"Ray worker '{worker_id}' not found in cluster")
-        return "not_found"
 
     def remove_worker(self, worker_id: str) -> bool:
         """Shut down specific worker node from Ray cluster.

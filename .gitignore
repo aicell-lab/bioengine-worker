@@ -161,7 +161,7 @@ cython_debug/
 
 # Personal
 *.patch
-logs/
+*logs/
 .vscode/
 *.yaml
 *.sif

@@ -322,7 +322,7 @@ class RayAutoscaler:
 
             except asyncio.CancelledError:
                 self.logger.info("Autoscaler monitoring loop cancelled")
-                raise
+                break
 
             except Exception as e:
                 consecutive_errors += 1
@@ -353,7 +353,8 @@ class RayAutoscaler:
                 return False
 
             if not ray.is_initialized():
-                raise RuntimeError("Ray is not initialized, cannot start autoscaler")
+                self.logger.error("Ray is not initialized, cannot start autoscaler")
+                return False
 
             self.logger.info(f"Starting Ray autoscaler with config {self.autoscale_config}")
             self.is_running = True
@@ -538,6 +539,7 @@ if __name__ == "__main__":
             autoscaler = RayAutoscaler(
                 cluster_manager,
                 # Use shorter times for faster testing
+                default_time_limit="00:10:00",
                 max_workers=3,
                 metrics_interval_seconds=3,
                 scale_down_threshold_seconds=15,  # 15 seconds idle before scale down

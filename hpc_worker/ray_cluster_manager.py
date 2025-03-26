@@ -442,8 +442,8 @@ class RayClusterManager:
         self,
         num_gpus: int = 1,
         num_cpus: int = 8,
-        mem_per_cpu: int = 8,
-        time_limit: str = "4:00:00",
+        mem_per_cpu: int = 16,
+        time_limit: str = "12:00:00",
     ) -> bool:
         """Submit SLURM job for new Ray worker node.
 
@@ -585,7 +585,7 @@ if __name__ == "__main__":
     # Test submitting a worker job
     assert len(ray_manager.worker_job_history) == 0
     print("Adding a worker...")
-    ray_manager.add_worker()
+    ray_manager.add_worker(time_limit="00:10:00")
     assert len(ray_manager.worker_job_history) == 1
     worker_id = "w1"
 

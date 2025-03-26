@@ -5,7 +5,7 @@ from typing import Optional
 
 import numpy as np
 import ray
-from ray.util.state import list_tasks
+from ray.util.state import list_tasks, list_actors
 from hpc_worker.logger import create_logger
 
 
@@ -95,7 +95,25 @@ class RayAutoscaler:
                 address=self.ray_manager.head_node_address,
                 filters=[("state", "=", "PENDING_NODE_ASSIGNMENT")]
             )
+            if pending_tasks:
+                self.logger.debug(f"Found {len(pending_tasks)} pending task(s)")
+
             return pending_tasks
+        else:
+            self.logger.warning("Ray cluster is not running")
+            return []
+
+    @property
+    def pending_actors(self) -> list:
+        """Get pending actors that need resources."""
+        if ray.is_initialized():
+            pending_actors = list_actors(
+                address=self.ray_manager.head_node_address,
+                filters=[("state", "=", "PENDING_CREATION")]
+            )
+            if pending_actors:
+                self.logger.debug(f"Found {len(pending_actors)} pending actor(s)")
+            return pending_actors
         else:
             self.logger.warning("Ray cluster is not running")
             return []
@@ -164,7 +182,7 @@ class RayAutoscaler:
                 node_metrics.pop(worker_id, None)
 
         for worker_id in node_metrics.keys():
-            self.logger.debug(f"Worker '{worker_id}' has {len(node_metrics[worker_id]['timestamps'])} metrics")
+            self.logger.debug(f"Worker '{worker_id}' has {len(node_metrics[worker_id]['timestamps'])} metric(s)")
 
         assert len(active_worker_ids) == len(node_metrics), "Mismatch between active workers and metrics"
 
@@ -186,10 +204,12 @@ class RayAutoscaler:
 
         current_time = time.time()
         pending_tasks = self.pending_tasks
+        pending_actors = self.pending_actors
+        num_pending_tasks = len(pending_tasks) + len(pending_actors)
         n_worker_jobs = self.n_worker_jobs
 
         # If at least one task needs resources, check scale up, otherwise check scale down
-        if len(pending_tasks) > 0:
+        if num_pending_tasks > 0:
 
             # SCALE UP LOGIC
             can_scale_up = (
@@ -204,18 +224,19 @@ class RayAutoscaler:
                 return
             
             # Check if any pending task needs more resources than default
-            # TODO: check why resources are not specified with `@ray.remote(num_cpus=1, num_gpus=1)`
             num_gpus = self.autoscale_config["default_num_gpus"]
             num_cpus = self.autoscale_config["default_num_cpus"]
-            for task in pending_tasks:
-                task_req = task.get("required_resources", {}) or {}
-                if task_req.get("GPU", 0) > num_gpus:
-                    num_gpus = max(num_gpus, int(task_req.get("GPU", 1)))
-                if task_req.get("CPU", 0) > num_cpus:
-                    num_cpus = max(num_cpus, int(task_req.get("CPU", 4)))
+
+            # TODO: try to get resources of task / actor
+            # for task in pending_tasks:
+            #     task_req = task.get("required_resources", {}) or {}
+            #     if task_req.get("GPU", 0) > num_gpus:
+            #         num_gpus = max(num_gpus, int(task_req.get("GPU", 1)))
+            #     if task_req.get("CPU", 0) > num_cpus:
+            #         num_cpus = max(num_cpus, int(task_req.get("CPU", 4)))
 
             self.logger.info(
-                f"Scaling up with {num_gpus} GPU(s) and {num_cpus} CPU(s) due to {len(pending_tasks)} pending task(s)"
+                f"Scaling up with {num_gpus} GPU(s) and {num_cpus} CPU(s) due to {num_pending_tasks} pending task(s)"
             )
             self._scale_up(
                 num_gpus=num_gpus,
@@ -291,7 +312,6 @@ class RayAutoscaler:
         Args:
             max_consecutive_errors: Maximum number of consecutive errors before stopping
         """
-        self.logger.debug("Autoscaler monitoring loop started")
         consecutive_errors = 0
 
         while self.is_running:
@@ -302,6 +322,7 @@ class RayAutoscaler:
                     break
 
                 # Collect and analyze metrics
+                self.logger.debug("Starting autoscaler monitoring iteration")
                 _, dead_worker_ids, node_metrics = self._collect_metrics()
                 self._make_scaling_decisions(node_metrics)
                 self._cleanup_dead_nodes(dead_worker_ids)
@@ -419,7 +440,7 @@ class RayAutoscaler:
                 "active_workers": 0,
                 "idle_workers": 0,
                 "pending_workers": pending_workers,
-                "pending_tasks": len(self.pending_tasks),
+                "pending_tasks": len(self.pending_tasks) + len(self.pending_actors),
                 "average_cpu": 0.0,
                 "average_gpu": 0.0,
                 "average_memory": 0.0,

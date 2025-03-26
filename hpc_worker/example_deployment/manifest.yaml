@@ -10,18 +10,20 @@ id_emoji: '🐼'
 license: MIT
 links: []
 maintainers: []
-name: SingleCell Classifier
+name: Test Deployment
 tags: [single-cell, RNA-seq, classification, deep-learning, transcriptomics]
 type: model
-version: 0.0.11
+version: 0.0.1
 entry_point: main.py
+# class_name: ChironModel
+class_name: DummyClass
 deployment_config:
   ray_actor_options:
-    num_gpus: 0
+    num_gpus: 1
     num_cpus: 1
     # memory: 4294967296  # 4GB RAM
-    runtime_env:
-      pip: ["torch==2.1.2", "torchvision==0.16.2"]
+    # runtime_env:
+    #   pip: ["torch==2.1.2", "torchvision==0.16.2"]
   max_ongoing_requests: 1
   max_queued_requests: 10
   autoscaling_config:

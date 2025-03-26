@@ -8,8 +8,9 @@ import time
 from typing import Dict, List, Optional, Set
 
 import ray
+from ray import serve
 
-from hpc_worker.logger import create_logger, logging_format
+from hpc_worker.utils.logger import create_logger, logging_format
 from hpc_worker.slurm_actor import SlurmActor
 
 
@@ -317,17 +318,18 @@ class RayClusterManager:
                 if not node["Resources"]:
                     self.logger.debug(f"Encountered dead worker node without worker ID")
                     assert not node["Alive"] # Dead nodes should have empty resources
-                else:
-                    # Extract worker ID from resources (dead notes have empty resources -> no worker ID)
-                    worker_id = self._node_resource_to_worker_id(node["Resources"])
 
-                    # Skip nodes if job is not running anymore
-                    worker_job_id = self.worker_job_history.get(worker_id, None)
-                    if not worker_job_id:
-                        self.logger.error(f"Worker ID '{worker_id}' not found in worker jobs")
-                    elif worker_job_id not in worker_job_ids:
-                        self.logger.debug(f"Skipping worker node '{worker_id}' with already cancelled job ID '{worker_job_id}'")
-                        continue
+                # Extract worker ID from resources (dead notes have empty resources -> no worker ID)
+                worker_id = self._node_resource_to_worker_id(node["Resources"])
+
+                # Skip nodes if job is not running anymore
+                worker_job_id = self.worker_job_history.get(worker_id, None)
+                if not worker_job_id:
+                    self.logger.error(f"Worker ID '{worker_id}' not found in worker jobs")
+                    continue
+                elif worker_job_id not in worker_job_ids:
+                    self.logger.debug(f"Skipping worker node '{worker_id}' with already cancelled job ID '{worker_job_id}'")
+                    continue
 
                 # Extract available resources
                 available_resources = available_resources_per_node.get(
@@ -394,6 +396,14 @@ class RayClusterManager:
             return
         try:
             self.logger.info("Shutting down Ray cluster...")
+            # Shutdown Serve if it was started
+            try:
+                serve.context._get_global_client()
+                self.logger.info("Shutting down Ray Serve...")
+                serve.shutdown()
+            except serve.exceptions.RayServeException:
+                pass
+
             # Disconnect client from the Ray cluster
             ray.shutdown()
 

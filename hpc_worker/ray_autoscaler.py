@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
 import ray
 from ray.util.state import list_tasks, list_actors
-from hpc_worker.logger import create_logger
+from hpc_worker.utils.logger import create_logger
 
 
 class RayAutoscaler:
@@ -190,6 +190,7 @@ class RayAutoscaler:
 
     def _scale_up(self, num_gpus: int, num_cpus: int, mem_per_cpu: int, time_limit: str):
         """Scale up the cluster by adding a new worker node."""
+        # TODO: Check if this is blocking
         success = self.ray_manager.add_worker(
             num_gpus=num_gpus,
             num_cpus=num_cpus,

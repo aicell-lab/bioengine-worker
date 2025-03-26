@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 import time
 from typing import Dict, List, Optional
-from hpc_worker.logger import create_logger
+from hpc_worker.utils.logger import create_logger
 
 
 class SlurmActor:

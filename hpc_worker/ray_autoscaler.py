@@ -19,6 +19,11 @@ class RayAutoscaler:
         self,
         ray_manager,
         logger: Optional[logging.Logger] = None,
+        # Default resource parameters
+        default_num_gpus: int = 1,
+        default_num_cpus: int = 8,
+        default_mem_per_cpu: int = 16,
+        default_time_limit: str = "12:00:00",
         # Autoscaling configuration parameters
         min_workers: int = 0,
         max_workers: int = 4,
@@ -35,6 +40,10 @@ class RayAutoscaler:
         Args:
             ray_manager: RayClusterManager instance for cluster operations
             logger: Optional logger instance
+            default_num_gpus: Default number of GPUs per worker
+            default_num_cpus: Default number of CPUs per worker
+            default_mem_per_cpu: Default memory per CPU in GB
+            default_time_limit: Default time limit for workers in HH:MM:SS format
             min_workers: Minimum number of worker nodes to maintain
             max_workers: Maximum number of worker nodes to allow
             metrics_interval_seconds: Interval for collecting metrics
@@ -62,10 +71,10 @@ class RayAutoscaler:
 
         # Store configuration
         self.autoscale_config = {
-            "default_num_gpus": 1,
-            "default_num_cpus": 8,
-            "default_mem_per_cpu": 16,
-            "default_time_limit": "12:00:00",
+            "default_num_gpus": default_num_gpus,
+            "default_num_cpus": default_num_cpus,
+            "default_mem_per_cpu": default_mem_per_cpu,
+            "default_time_limit": default_time_limit,
             "min_workers": min_workers,
             "max_workers": max_workers,
             "metrics_interval": metrics_interval_seconds,
@@ -169,13 +178,7 @@ class RayAutoscaler:
 
         return active_worker_ids, dead_worker_ids, node_metrics
 
-    def _scale_up(
-        self,
-        num_gpus: int = 1,
-        num_cpus: int = 4,
-        mem_per_cpu: int = 8,
-        time_limit: str = "4:00:00",
-    ):
+    def _scale_up(self, num_gpus: int, num_cpus: int, mem_per_cpu: int, time_limit: str):
         """Scale up the cluster by adding a new worker node."""
         success = self.ray_manager.add_worker(
             num_gpus=num_gpus,

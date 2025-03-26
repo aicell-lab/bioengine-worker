@@ -22,13 +22,13 @@ class RayAutoscaler:
         # Autoscaling configuration parameters
         min_workers: int = 0,
         max_workers: int = 4,
-        metrics_interval_seconds: int = 10,
-        gpu_idle_threshold: float = 0.1,
+        metrics_interval_seconds: int = 60,  # Higher value to reduce monitoring overhead
+        gpu_idle_threshold: float = 0.05,
         cpu_idle_threshold: float = 0.1,
-        scale_down_threshold_seconds: int = 180,
-        scale_up_cooldown_seconds: int = 60,
-        scale_down_cooldown_seconds: int = 300,
-        node_grace_period_seconds: int = 300,
+        scale_down_threshold_seconds: int = 300,  # 5 minutes of idleness before scale down
+        scale_up_cooldown_seconds: int = 120,    # 2 minutes between scale ups
+        scale_down_cooldown_seconds: int = 600,  # 10 minutes between scale downs
+        node_grace_period_seconds: int = 600,    # 10 minutes grace period for new nodes
     ):
         """Initialize the Ray autoscaler.
 
@@ -63,9 +63,9 @@ class RayAutoscaler:
         # Store configuration
         self.autoscale_config = {
             "default_num_gpus": 1,
-            "default_num_cpus": 4,
-            "default_mem_per_cpu": 8,
-            "default_time_limit": "4:00:00",
+            "default_num_cpus": 8,
+            "default_mem_per_cpu": 16,
+            "default_time_limit": "12:00:00",
             "min_workers": min_workers,
             "max_workers": max_workers,
             "metrics_interval": metrics_interval_seconds,
@@ -89,11 +89,15 @@ class RayAutoscaler:
     @property
     def pending_tasks(self) -> list:
         """Get pending tasks that need resources."""
-        pending_tasks = list_tasks(
-            address=self.ray_manager.head_node_address,
-            filters=[("state", "=", "PENDING_NODE_ASSIGNMENT")]
-        )
-        return pending_tasks
+        if ray.is_initialized():
+            pending_tasks = list_tasks(
+                address=self.ray_manager.head_node_address,
+                filters=[("state", "=", "PENDING_NODE_ASSIGNMENT")]
+            )
+            return pending_tasks
+        else:
+            self.logger.warning("Ray cluster is not running")
+            return []
 
     @property
     def n_worker_jobs(self) -> int:
@@ -267,51 +271,103 @@ class RayAutoscaler:
             for worker_id in worker_ids:
                 self.ray_manager.remove_worker(worker_id)
 
-    async def _monitoring_loop(self):
-        """Main monitoring loop for the autoscaler."""
+    def _handle_monitoring_error(self, error: Exception) -> bool:
+        """Handle monitoring loop errors and determine if monitoring should continue.
+        
+        Args:
+            error: The exception that was caught
+            
+        Returns:
+            bool: True if monitoring should continue, False if it should stop
+        """
+        if isinstance(error, (RuntimeError, ray.exceptions.RaySystemError)):
+            self.logger.error(f"Critical Ray error occurred: {error}")
+            return False
+        elif isinstance(error, ConnectionError):
+            self.logger.error(f"Connection error occurred: {error}")
+            return True
+        else:
+            self.logger.error(f"Unexpected error in monitoring loop - {type(error).__name__}: {error}")
+            return True
+
+    async def _monitoring_loop(self, max_consecutive_errors: int = 3):
+        """Main monitoring loop for the autoscaler.
+        
+        Args:
+            max_consecutive_errors: Maximum number of consecutive errors before stopping
+        """
         self.logger.debug("Autoscaler monitoring loop started")
+        consecutive_errors = 0
 
-        try:
-            while self.is_running:
-                try:
-                    # Check if Ray is still initialized
-                    if not ray.is_initialized():
-                        self.logger.error("Ray is not initialized, stopping autoscaler")
-                        await self.stop()
-                        break
+        while self.is_running:
+            try:
+                # Check if Ray is still initialized
+                if not ray.is_initialized():
+                    self.logger.error("Ray is not initialized, stopping autoscaler")
+                    break
 
-                    # Collect and analyze metrics
-                    _, dead_worker_ids, node_metrics = self._collect_metrics()
-                    self._make_scaling_decisions(node_metrics)
-                    self._cleanup_dead_nodes(dead_worker_ids)
+                # Collect and analyze metrics
+                _, dead_worker_ids, node_metrics = self._collect_metrics()
+                self._make_scaling_decisions(node_metrics)
+                self._cleanup_dead_nodes(dead_worker_ids)
 
-                    # Update node metrics
-                    self.node_metrics = node_metrics
+                # Update node metrics
+                self.node_metrics = node_metrics
+                consecutive_errors = 0  # Reset error counter on success
 
-                    # Sleep for the metrics interval
-                    await asyncio.sleep(self.autoscale_config["metrics_interval"])
-                except Exception as e:
-                    self.logger.error(f"Error in monitoring loop - {type(e).__name__}: {e}")
-                    # Add delay after errors to prevent rapid error loops
-                    await asyncio.sleep(min(self.autoscale_config["metrics_interval"], 5))
-        except asyncio.CancelledError:
-            self.logger.info("Autoscaler monitoring loop cancelled")
-            raise  # Re-raise to properly propagate cancellation
+                await asyncio.sleep(self.autoscale_config["metrics_interval"])
+
+            except asyncio.CancelledError:
+                self.logger.info("Autoscaler monitoring loop cancelled")
+                raise
+
+            except Exception as e:
+                consecutive_errors += 1
+                should_continue = self._handle_monitoring_error(e)
+                
+                if not should_continue or consecutive_errors >= max_consecutive_errors:
+                    self.logger.error(
+                        f"Stopping monitoring loop after {consecutive_errors} consecutive errors"
+                    )
+                    break
+                
+                # Exponential backoff for retries
+                retry_delay = min(
+                    self.autoscale_config["metrics_interval"] * (2 ** (consecutive_errors - 1)),
+                    30  # Max 30 seconds between retries
+                )
+                await asyncio.sleep(retry_delay)
+
+        # Ensure autoscaler stops if we break from the loop
+        if self.is_running:
+            asyncio.create_task(self.stop())
 
     async def start(self):
         """Start the autoscaler monitoring task."""
-        if self.is_running:
-            self.logger.info("Autoscaler is already running")
-            return
+        try:
+            if self.is_running:
+                self.logger.info("Autoscaler is already running")
+                return False
 
-        if not ray.is_initialized():
-            self.logger.error("Ray is not initialized, cannot start autoscaler")
-            return
+            if not ray.is_initialized():
+                raise RuntimeError("Ray is not initialized, cannot start autoscaler")
 
-        self.logger.info(f"Starting Ray autoscaler with config {self.autoscale_config}")
+            self.logger.info(f"Starting Ray autoscaler with config {self.autoscale_config}")
+            self.is_running = True
+            
+            # Create monitoring task with error handling
+            self.monitoring_task = asyncio.create_task(self._monitoring_loop())
+            self.monitoring_task.add_done_callback(
+                lambda f: self.logger.error(f"Monitoring task failed: {f.exception()}") 
+                if f.exception() else None
+            )
+            return True
 
-        self.is_running = True
-        self.monitoring_task = asyncio.create_task(self._monitoring_loop())
+        except Exception as e:
+            self.logger.error(f"Failed to start autoscaler: {e}")
+            self.is_running = False
+            self.monitoring_task = None
+            return False
 
     async def stop(self):
         """Stop the autoscaler monitoring task."""
@@ -321,16 +377,27 @@ class RayAutoscaler:
         self.logger.info("Stopping Ray autoscaler")
         self.is_running = False
 
-        # Clear statistics or perform any cleanup necessary
-        self.node_metrics.clear()
+        try:
+            # Clear statistics
+            self.node_metrics.clear()
 
-        # Cancel monitoring task
-        if self.monitoring_task:
-            self.monitoring_task.cancel()
-            try:
-                await self.monitoring_task
-            except asyncio.CancelledError:
-                pass
+            # Cancel monitoring task with timeout
+            if self.monitoring_task:
+                self.monitoring_task.cancel()
+                try:
+                    await asyncio.wait_for(self.monitoring_task, timeout=5.0)
+                except asyncio.TimeoutError:
+                    self.logger.warning("Timeout waiting for monitoring task to cancel")
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    self.logger.error(f"Error while stopping monitoring task: {e}")
+                finally:
+                    self.monitoring_task = None
+
+        except Exception as e:
+            self.logger.error(f"Error during autoscaler shutdown: {e}")
+            # Ensure monitoring_task is cleared even if there's an error
             self.monitoring_task = None
 
     def get_autoscaler_status(self, history_len: int = 5) -> dict:

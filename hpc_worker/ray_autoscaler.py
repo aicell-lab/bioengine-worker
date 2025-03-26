@@ -368,7 +368,7 @@ class RayAutoscaler:
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to start autoscaler: {e}")
+            self.logger.error(f"Failed to start autoscaler: {type(e).__name__}: {e}")
             self.is_running = False
             self.monitoring_task = None
             return False
@@ -395,12 +395,12 @@ class RayAutoscaler:
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
-                    self.logger.error(f"Error while stopping monitoring task: {e}")
+                    self.logger.error(f"Error while stopping monitoring task: {type(e).__name__}: {e}")
                 finally:
                     self.monitoring_task = None
 
         except Exception as e:
-            self.logger.error(f"Error during autoscaler shutdown: {e}")
+            self.logger.error(f"Error during autoscaler shutdown: {type(e).__name__}: {e}")
             # Ensure monitoring_task is cleared even if there's an error
             self.monitoring_task = None
 
@@ -522,6 +522,10 @@ if __name__ == "__main__":
 
     print("===== Testing Ray Autoscaler class =====", end="\n\n")
 
+    # Create RayClusterManager with test configuration
+    cluster_manager = RayClusterManager()
+    # cluster_manager.logger.setLevel(logging.DEBUG)
+
     @ray.remote(num_cpus=1, num_gpus=1)
     def test_remote():
         import time
@@ -531,10 +535,6 @@ if __name__ == "__main__":
 
     async def test_autoscaler():
         try:
-            # Create RayClusterManager with test configuration
-            cluster_manager = RayClusterManager()
-            # cluster_manager.logger.setLevel(logging.DEBUG)
-
             # Create and start the autoscaler with shorter thresholds for quicker testing
             autoscaler = RayAutoscaler(
                 cluster_manager,

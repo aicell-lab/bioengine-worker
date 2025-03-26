@@ -471,6 +471,15 @@ if __name__ == "__main__":
         with open(os.path.join(example_deployment_dir, "manifest.yaml"), "r") as f:
             deployment_manifest = yaml.safe_load(f)
 
+        
+        # Check existing deployments
+        artifacts = await artifact_manager.list()
+        deployment_name = deployment_manifest.get("name")
+        for artifact in artifacts:
+            if artifact.manifest.name == deployment_name:
+                logger.info(f"Deployment '{deployment_name}' already exists.")
+                return artifact["id"]
+
         # Add the deployment to the gallery and stage it for review
         test_artifact = await artifact_manager.create(
             manifest=deployment_manifest, version="stage"

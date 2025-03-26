@@ -6,6 +6,7 @@ from typing import Optional
 import numpy as np
 import ray
 from ray.util.state import list_tasks
+from hpc_worker.logger import create_logger
 
 
 class RayAutoscaler:
@@ -54,18 +55,6 @@ class RayAutoscaler:
             scale_down_cooldown_seconds: Minimum time between scaling down operations
             node_grace_period_seconds: Give new nodes time before considering for scale-down
         """
-        # Set up logging
-        self.logger = logger or logging.getLogger("RayAutoscaler")
-        if not logger:
-            self.logger.setLevel(logging.INFO)
-            console_handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "\033[36m%(asctime)s\033[0m - \033[32m%(name)s\033[0m - \033[1;33m%(levelname)s\033[0m - %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
-            console_handler.setFormatter(formatter)
-            self.logger.addHandler(console_handler)
-
         # Store ray manager reference
         self.ray_manager = ray_manager
 
@@ -94,6 +83,9 @@ class RayAutoscaler:
         # Background task
         self.monitoring_task = None
         self.is_running = False
+
+        # Set up logging
+        self.logger = logger or create_logger("RayAutoscaler")
 
     @property
     def pending_tasks(self) -> list:

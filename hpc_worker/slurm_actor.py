@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import time
 from typing import Dict, List, Optional
+from hpc_worker.logger import create_logger
 
 
 class SlurmActor:
@@ -25,16 +26,7 @@ class SlurmActor:
         os.makedirs(self.logs_dir, exist_ok=True)
 
         # Set up logging
-        self.logger = logger or logging.getLogger("SlurmActor")
-        if not logger:
-            self.logger.setLevel(logging.INFO)
-            console_handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "\033[36m%(asctime)s\033[0m - \033[32m%(name)s\033[0m - \033[1;33m%(levelname)s\033[0m - %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
-            console_handler.setFormatter(formatter)
-            self.logger.addHandler(console_handler)
+        self.logger = logger or create_logger("SlurmActor")
 
     def create_sbatch_script(
         self,

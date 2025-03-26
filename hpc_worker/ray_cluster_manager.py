@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Set
 
 import ray
 
+from hpc_worker.logger import create_logger
 from hpc_worker.slurm_actor import SlurmActor
 
 
@@ -77,16 +78,7 @@ class RayClusterManager:
         self.slurm_actor = SlurmActor(job_name="ray_worker")
 
         # Set up logging
-        self.logger = logger or logging.getLogger("RayClusterManager")
-        if not logger:
-            self.logger.setLevel(logging.INFO)
-            console_handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "\033[36m%(asctime)s\033[0m - \033[32m%(name)s\033[0m - \033[1;33m%(levelname)s\033[0m - %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
-            console_handler.setFormatter(formatter)
-            self.logger.addHandler(console_handler)
+        self.logger = logger or create_logger("RayClusterManager")
 
     @property
     def _ray_executable(self) -> str:
@@ -596,7 +588,7 @@ if __name__ == "__main__":
     while status != "alive":
         # Wait for worker node to appear in cluster status
         print("\033[1A\033[K", end="")
-        print("Waiting for worker node to appear in cluster status" + "." * (waited_time))
+        print("Waiting for worker node to appear in cluster status" + "." * (waited_time), end="\r")
         time.sleep(1)
         waited_time += 1
         status = ray_manager._get_worker_status(worker_id)

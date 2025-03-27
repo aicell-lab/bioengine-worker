@@ -10,6 +10,13 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update && apt-get install -y \
     git \
     build-essential \
+    curl \
+    gnupg2 \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/Debian_11/Release.key | gpg --dearmor > /etc/apt/keyrings/podman.gpg \
+    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/podman.gpg] https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/Debian_11/ /" > /etc/apt/sources.list.d/podman.list \
+    && apt-get update \
+    && apt-get install -y podman \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python packages

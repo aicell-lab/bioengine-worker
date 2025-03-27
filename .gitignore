@@ -162,6 +162,7 @@ cython_debug/
 # Personal
 *.patch
 *logs/
+*ray_sessions/
 .vscode/
 *.yaml
 *.sif

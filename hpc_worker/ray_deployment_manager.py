@@ -471,7 +471,6 @@ if __name__ == "__main__":
         with open(os.path.join(example_deployment_dir, "manifest.yaml"), "r") as f:
             deployment_manifest = yaml.safe_load(f)
 
-        
         # Check existing deployments
         artifacts = await artifact_manager.list()
         deployment_name = deployment_manifest.get("name")
@@ -512,7 +511,7 @@ if __name__ == "__main__":
     async def test_deployment_manager(server_url="https://hypha.aicell.io"):
         try:
             # Start Ray cluster
-            cluster_manager.start_cluster(force_restart=True, clean_up=True)
+            cluster_manager.start_cluster(clean_up=True)
 
             # Start autoscaler
             await autoscaler.start()

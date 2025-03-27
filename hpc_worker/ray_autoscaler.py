@@ -32,9 +32,9 @@ class RayAutoscaler:
         gpu_idle_threshold: float = 0.05,
         cpu_idle_threshold: float = 0.1,
         scale_down_threshold_seconds: int = 300,  # 5 minutes of idleness before scale down
-        scale_up_cooldown_seconds: int = 120,    # 2 minutes between scale ups
+        scale_up_cooldown_seconds: int = 120,  # 2 minutes between scale ups
         scale_down_cooldown_seconds: int = 600,  # 10 minutes between scale downs
-        node_grace_period_seconds: int = 600,    # 10 minutes grace period for new nodes
+        node_grace_period_seconds: int = 600,  # 10 minutes grace period for new nodes
     ):
         """Initialize the Ray autoscaler.
 
@@ -93,7 +93,7 @@ class RayAutoscaler:
         if ray.is_initialized():
             pending_tasks = list_tasks(
                 address=self.ray_manager.head_node_address,
-                filters=[("state", "=", "PENDING_NODE_ASSIGNMENT")]
+                filters=[("state", "=", "PENDING_NODE_ASSIGNMENT")],
             )
             if pending_tasks:
                 self.logger.debug(f"Found {len(pending_tasks)} pending task(s)")
@@ -109,7 +109,7 @@ class RayAutoscaler:
         if ray.is_initialized():
             pending_actors = list_actors(
                 address=self.ray_manager.head_node_address,
-                filters=[("state", "=", "PENDING_CREATION")]
+                filters=[("state", "=", "PENDING_CREATION")],
             )
             if pending_actors:
                 self.logger.debug(f"Found {len(pending_actors)} pending actor(s)")
@@ -163,7 +163,8 @@ class RayAutoscaler:
             # Update active status based on both GPU and CPU utilization
             if (
                 node["GPU Utilization"] >= self.autoscale_config["gpu_idle_threshold"]
-                or node["CPU Utilization"] >= self.autoscale_config["cpu_idle_threshold"]
+                or node["CPU Utilization"]
+                >= self.autoscale_config["cpu_idle_threshold"]
             ):
                 node_metrics[worker_id]["last_active_time"] = current_time
 
@@ -171,9 +172,9 @@ class RayAutoscaler:
             max_history = 100
             if len(node_metrics[worker_id]["timestamps"]) > max_history:
                 for key in ["timestamps", "gpu_util", "cpu_util", "memory_util"]:
-                    node_metrics[worker_id][key] = node_metrics[worker_id][
-                        key
-                    ][-max_history:]
+                    node_metrics[worker_id][key] = node_metrics[worker_id][key][
+                        -max_history:
+                    ]
 
         # Remove metrics for nodes that are no longer in cluster
         node_metrics_keys = list(node_metrics.keys())
@@ -182,13 +183,19 @@ class RayAutoscaler:
                 node_metrics.pop(worker_id, None)
 
         for worker_id in node_metrics.keys():
-            self.logger.debug(f"Worker '{worker_id}' has {len(node_metrics[worker_id]['timestamps'])} metric(s)")
+            self.logger.debug(
+                f"Worker '{worker_id}' has {len(node_metrics[worker_id]['timestamps'])} metric(s)"
+            )
 
-        assert len(active_worker_ids) == len(node_metrics), "Mismatch between active workers and metrics"
+        assert len(active_worker_ids) == len(
+            node_metrics
+        ), "Mismatch between active workers and metrics"
 
         return active_worker_ids, dead_worker_ids, node_metrics
 
-    def _scale_up(self, num_gpus: int, num_cpus: int, mem_per_cpu: int, time_limit: str):
+    def _scale_up(
+        self, num_gpus: int, num_cpus: int, mem_per_cpu: int, time_limit: str
+    ):
         """Scale up the cluster by adding a new worker node."""
         # TODO: Check if this is blocking
         success = self.ray_manager.add_worker(
@@ -218,12 +225,11 @@ class RayAutoscaler:
                 (current_time - self.last_scale_up_time)
                 > self.autoscale_config["scale_up_cooldown"]
                 # Not at max worker limit
-                and n_worker_jobs
-                < self.autoscale_config["max_workers"]
+                and n_worker_jobs < self.autoscale_config["max_workers"]
             )
             if not can_scale_up:
                 return
-            
+
             # Check if any pending task needs more resources than default
             num_gpus = self.autoscale_config["default_num_gpus"]
             num_cpus = self.autoscale_config["default_num_cpus"]
@@ -281,19 +287,21 @@ class RayAutoscaler:
                 success = self.ray_manager.remove_worker(longest_idle_worker)
                 if success:
                     self.last_scale_down_time = current_time
-    
+
     def _cleanup_dead_nodes(self, worker_ids: set):
         if worker_ids:
-            self.logger.info(f"Cleaning up {len(worker_ids)} dead worker(s) from cluster: {worker_ids}")
+            self.logger.info(
+                f"Cleaning up {len(worker_ids)} dead worker(s) from cluster: {worker_ids}"
+            )
             for worker_id in worker_ids:
                 self.ray_manager.remove_worker(worker_id)
 
     def _handle_monitoring_error(self, error: Exception) -> bool:
         """Handle monitoring loop errors and determine if monitoring should continue.
-        
+
         Args:
             error: The exception that was caught
-            
+
         Returns:
             bool: True if monitoring should continue, False if it should stop
         """
@@ -304,12 +312,14 @@ class RayAutoscaler:
             self.logger.error(f"Connection error occurred: {error}")
             return True
         else:
-            self.logger.error(f"Unexpected error in monitoring loop - {type(error).__name__}: {error}")
+            self.logger.error(
+                f"Unexpected error in monitoring loop - {type(error).__name__}: {error}"
+            )
             return True
 
     async def _monitoring_loop(self, max_consecutive_errors: int = 3):
         """Main monitoring loop for the autoscaler.
-        
+
         Args:
             max_consecutive_errors: Maximum number of consecutive errors before stopping
         """
@@ -341,17 +351,18 @@ class RayAutoscaler:
             except Exception as e:
                 consecutive_errors += 1
                 should_continue = self._handle_monitoring_error(e)
-                
+
                 if not should_continue or consecutive_errors >= max_consecutive_errors:
                     self.logger.error(
                         f"Stopping monitoring loop after {consecutive_errors} consecutive errors"
                     )
                     break
-                
+
                 # Exponential backoff for retries
                 retry_delay = min(
-                    self.autoscale_config["metrics_interval"] * (2 ** (consecutive_errors - 1)),
-                    30  # Max 30 seconds between retries
+                    self.autoscale_config["metrics_interval"]
+                    * (2 ** (consecutive_errors - 1)),
+                    30,  # Max 30 seconds between retries
                 )
                 await asyncio.sleep(retry_delay)
 
@@ -370,14 +381,19 @@ class RayAutoscaler:
                 self.logger.error("Ray is not initialized, cannot start autoscaler")
                 return False
 
-            self.logger.info(f"Starting Ray autoscaler with config {self.autoscale_config}")
+            self.logger.info(
+                f"Starting Ray autoscaler with config {self.autoscale_config}"
+            )
             self.is_running = True
-            
+
             # Create monitoring task with error handling
             self.monitoring_task = asyncio.create_task(self._monitoring_loop())
             self.monitoring_task.add_done_callback(
-                lambda f: self.logger.error(f"Monitoring task failed: {f.exception()}") 
-                if f.exception() else None
+                lambda f: (
+                    self.logger.error(f"Monitoring task failed: {f.exception()}")
+                    if f.exception()
+                    else None
+                )
             )
             return True
 
@@ -409,12 +425,16 @@ class RayAutoscaler:
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
-                    self.logger.error(f"Error while stopping monitoring task: {type(e).__name__}: {e}")
+                    self.logger.error(
+                        f"Error while stopping monitoring task: {type(e).__name__}: {e}"
+                    )
                 finally:
                     self.monitoring_task = None
 
         except Exception as e:
-            self.logger.error(f"Error during autoscaler shutdown: {type(e).__name__}: {e}")
+            self.logger.error(
+                f"Error during autoscaler shutdown: {type(e).__name__}: {e}"
+            )
             # Ensure monitoring_task is cleared even if there's an error
             self.monitoring_task = None
 
@@ -450,7 +470,7 @@ class RayAutoscaler:
             node_status = {}
             if node_metrics:
                 total_metrics = {"cpu": 0.0, "gpu": 0.0, "memory": 0.0}
-                
+
                 for worker_id, metrics in node_metrics.items():
                     if not metrics["timestamps"]:
                         recent_metrics["idle_workers"] += 1
@@ -460,16 +480,24 @@ class RayAutoscaler:
                     recent_slice = slice(-history_len, None)
                     recent_cpu_util = float(np.mean(metrics["cpu_util"][recent_slice]))
                     recent_gpu_util = float(np.mean(metrics["gpu_util"][recent_slice]))
-                    recent_memory_util = float(np.mean(metrics["memory_util"][recent_slice]))
+                    recent_memory_util = float(
+                        np.mean(metrics["memory_util"][recent_slice])
+                    )
 
                     total_metrics["cpu"] += recent_cpu_util
                     total_metrics["gpu"] += recent_gpu_util
                     total_metrics["memory"] += recent_memory_util
 
                     # Determine if node is idle based on current utilization
-                    cpu_is_idle = metrics["cpu_util"][-1] < self.autoscale_config["cpu_idle_threshold"]
-                    gpu_is_idle = metrics["gpu_util"][-1] < self.autoscale_config["gpu_idle_threshold"]
-                    
+                    cpu_is_idle = (
+                        metrics["cpu_util"][-1]
+                        < self.autoscale_config["cpu_idle_threshold"]
+                    )
+                    gpu_is_idle = (
+                        metrics["gpu_util"][-1]
+                        < self.autoscale_config["gpu_idle_threshold"]
+                    )
+
                     if cpu_is_idle and gpu_is_idle:
                         recent_metrics["idle_workers"] += 1
                         idle_time = current_time - metrics["last_active_time"]
@@ -478,12 +506,13 @@ class RayAutoscaler:
                         idle_time = 0
 
                     node_age = current_time - metrics["start_time"]
-                    
+
                     node_status[worker_id] = {
                         "ip_address": metrics["ip_address"],
                         "node_id": metrics["node_id"],
                         "age_seconds": int(node_age),
-                        "in_grace_period": node_age < self.autoscale_config["node_grace_period"],
+                        "in_grace_period": node_age
+                        < self.autoscale_config["node_grace_period"],
                         "idle_time_seconds": int(idle_time),
                         "cpu_is_idle": cpu_is_idle,
                         "gpu_is_idle": gpu_is_idle,
@@ -493,17 +522,27 @@ class RayAutoscaler:
                     }
 
                 # Calculate cluster-wide averages safely
-                recent_metrics["average_cpu"] = round(total_metrics["cpu"] / len(node_metrics), 3)
-                recent_metrics["average_gpu"] = round(total_metrics["gpu"] / len(node_metrics), 3)
-                recent_metrics["average_memory"] = round(total_metrics["memory"] / len(node_metrics), 3)
-
-
+                recent_metrics["average_cpu"] = round(
+                    total_metrics["cpu"] / len(node_metrics), 3
+                )
+                recent_metrics["average_gpu"] = round(
+                    total_metrics["gpu"] / len(node_metrics), 3
+                )
+                recent_metrics["average_memory"] = round(
+                    total_metrics["memory"] / len(node_metrics), 3
+                )
 
             # Calculate cooldown times
-            scale_up_cooldown = max(0, self.autoscale_config["scale_up_cooldown"] - 
-                                (current_time - self.last_scale_up_time))
-            scale_down_cooldown = max(0, self.autoscale_config["scale_down_cooldown"] - 
-                                    (current_time - self.last_scale_down_time))
+            scale_up_cooldown = max(
+                0,
+                self.autoscale_config["scale_up_cooldown"]
+                - (current_time - self.last_scale_up_time),
+            )
+            scale_down_cooldown = max(
+                0,
+                self.autoscale_config["scale_down_cooldown"]
+                - (current_time - self.last_scale_down_time),
+            )
 
             self.logger.info(
                 f"Autoscaler status: {recent_metrics['worker_count']} worker(s) "
@@ -523,7 +562,9 @@ class RayAutoscaler:
                 "nodes": node_status,
             }
         except Exception as e:
-            self.logger.error(f"Error getting autoscaler status - {type(e).__name__}: {e}")
+            self.logger.error(
+                f"Error getting autoscaler status - {type(e).__name__}: {e}"
+            )
             return {}
 
 
@@ -564,8 +605,8 @@ if __name__ == "__main__":
             # autoscaler.logger.setLevel(logging.DEBUG)
 
             # Start Ray cluster
-            cluster_manager.start_cluster(force_restart=True, clean_up=True)
-            
+            cluster_manager.start_cluster(clean_up=True)
+
             # Start autoscaler
             await autoscaler.start()
 

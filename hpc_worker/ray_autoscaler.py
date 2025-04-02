@@ -9,6 +9,7 @@ from ray.util.state import list_tasks, list_actors
 from hpc_worker.utils.logger import create_logger
 
 
+# TODO: review error handling and logging
 class RayAutoscaler:
     """Autoscaler for Ray clusters in HPC environments.
 
@@ -24,7 +25,7 @@ class RayAutoscaler:
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
         default_mem_per_cpu: int = 16,
-        default_time_limit: str = "12:00:00",
+        default_time_limit: str = "4:00:00",
         # Autoscaling configuration parameters
         min_workers: int = 0,
         max_workers: int = 4,
@@ -198,14 +199,13 @@ class RayAutoscaler:
     ):
         """Scale up the cluster by adding a new worker node."""
         # TODO: Check if this is blocking
-        success = self.ray_manager.add_worker(
+        self.ray_manager.add_worker(
             num_gpus=num_gpus,
             num_cpus=num_cpus,
             mem_per_cpu=mem_per_cpu,
             time_limit=time_limit,
         )
-        if success:
-            self.last_scale_up_time = time.time()
+        self.last_scale_up_time = time.time()
 
     def _make_scaling_decisions(self, node_metrics: dict) -> None:
         """Make scaling decisions based on resource utilization and pending tasks."""
@@ -284,9 +284,8 @@ class RayAutoscaler:
                 self.logger.info(
                     f"Scaling down worker '{longest_idle_worker}' due to inactivity for {longest_idle_time:.1f}s"
                 )
-                success = self.ray_manager.remove_worker(longest_idle_worker)
-                if success:
-                    self.last_scale_down_time = current_time
+                self.ray_manager.remove_worker(longest_idle_worker)
+                self.last_scale_down_time = current_time
 
     def _cleanup_dead_nodes(self, worker_ids: set):
         if worker_ids:
@@ -349,6 +348,7 @@ class RayAutoscaler:
                 break
 
             except Exception as e:
+                self.logger.error(f"Error in monitoring loop: {e}")
                 consecutive_errors += 1
                 should_continue = self._handle_monitoring_error(e)
 
@@ -369,6 +369,7 @@ class RayAutoscaler:
         # Ensure autoscaler stops if we break from the loop
         if self.is_running:
             asyncio.create_task(self.stop())
+
 
     async def start(self):
         """Start the autoscaler monitoring task."""
@@ -401,7 +402,7 @@ class RayAutoscaler:
             self.logger.error(f"Failed to start autoscaler: {type(e).__name__}: {e}")
             self.is_running = False
             self.monitoring_task = None
-            return False
+            raise e
 
     async def stop(self):
         """Stop the autoscaler monitoring task."""
@@ -437,8 +438,8 @@ class RayAutoscaler:
             )
             # Ensure monitoring_task is cleared even if there's an error
             self.monitoring_task = None
-
-    def get_autoscaler_status(self, history_len: int = 5) -> dict:
+            raise e
+    def get_status(self, history_len: int = 5) -> dict:
         """Get the current status of the autoscaler.
 
         Args:
@@ -565,20 +566,24 @@ class RayAutoscaler:
             self.logger.error(
                 f"Error getting autoscaler status - {type(e).__name__}: {e}"
             )
-            return {}
+            raise e
 
 
 if __name__ == "__main__":
     """Test the RayAutoscaler class with Ray Serve deployment"""
     import asyncio
     import time
+    import os
 
     from hpc_worker.ray_cluster_manager import RayClusterManager
 
     print("===== Testing Ray Autoscaler class =====", end="\n\n")
 
     # Create RayClusterManager with test configuration
-    cluster_manager = RayClusterManager()
+    cluster_manager = RayClusterManager(
+        temp_dir="/proj/aicell/ray_tmp",
+        data_dir=os.path.dirname(__file__),
+    )
     # cluster_manager.logger.setLevel(logging.DEBUG)
 
     @ray.remote(num_cpus=1, num_gpus=1)
@@ -611,7 +616,7 @@ if __name__ == "__main__":
             await autoscaler.start()
 
             # Test autoscaler status
-            autoscaler.get_autoscaler_status()
+            autoscaler.get_status()
 
             # Submit some test tasks
             obj_refs = [test_remote.remote() for _ in range(5)]
@@ -619,13 +624,14 @@ if __name__ == "__main__":
             # Observe autoscaler status for a while
             for _ in range(20):
                 await asyncio.sleep(3)
-                autoscaler.get_autoscaler_status()
+                autoscaler.get_status()
 
             results = await asyncio.gather(*obj_refs)
             print(results)
 
         except Exception as e:
             print(f"An error occurred - {type(e).__name__}: {e}")
+            raise e
         finally:
             await autoscaler.stop()
             cluster_manager.shutdown_cluster()

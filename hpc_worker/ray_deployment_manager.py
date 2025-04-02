@@ -6,6 +6,7 @@ import httpx
 from typing import Dict, Optional, Any, List
 from functools import partial
 import asyncio
+import yaml
 
 from hpc_worker.utils.logger import create_logger
 from hpc_worker.utils.format_time import format_time
@@ -39,6 +40,7 @@ class RayDeploymentManager:
         # Initialize state variables
         self.server = None
         self.artifact_manager = None
+        self.service_info = None
 
         # Set up logging
         self.logger = logger or create_logger("RayDeploymentManager")
@@ -97,7 +99,7 @@ class RayDeploymentManager:
             self.server = None
             self.artifact_manager = None
 
-            return False
+            raise e
 
     def _get_deployment_name(self, artifact_id: str) -> str:
         """Convert artifact ID to a deployment name
@@ -169,13 +171,14 @@ class RayDeploymentManager:
             self.logger.error(
                 f"Error loading deployment code for {artifact_id} - {type(e).__name__}: {e}"
             )
-            return None
+            raise e
 
     async def deploy_artifact(
         self,
         artifact_id: str,
         version=None,
         skip_update=False,
+        context: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Deploy a single artifact to Ray Serve
@@ -184,6 +187,7 @@ class RayDeploymentManager:
             artifact_id: ID of the artifact to deploy
             version: Optional version of the artifact
             skip_update: Skip updating services after deployment
+            context: Optional context for deployment
 
         Returns:
             bool: True if deployment was successful
@@ -254,9 +258,9 @@ class RayDeploymentManager:
             self.logger.error(
                 f"Error deploying {artifact_id} - {type(e).__name__}: {e}"
             )
-            return False
+            raise e
 
-    async def undeploy_artifact(self, artifact_id: str, skip_update=False) -> bool:
+    async def undeploy_artifact(self, artifact_id: str, skip_update=False, context: Optional[Dict[str, Any]] = None) -> bool:
         """Remove a deployment from Ray Serve
 
         Args:
@@ -295,7 +299,7 @@ class RayDeploymentManager:
             self.logger.error(
                 f"Error undeploying {artifact_id} - {type(e).__name__}: {e}"
             )
-            return False
+            raise e
 
     async def _update_services(self) -> bool:
         """Update Hypha services based on currently deployed models
@@ -330,7 +334,7 @@ class RayDeploymentManager:
                     self.logger.error(
                         f"Failed to get handle for '{application_name}' - {type(e).__name__}: {e}"
                     )
-                    return None
+                    raise e
 
             for deployment_name in self.deployments.keys():
                 try:
@@ -344,6 +348,7 @@ class RayDeploymentManager:
                     self.logger.error(
                         f"Failed to get handle for {deployment_name} - {type(e).__name__}: {e}"
                     )
+                    raise e
 
             # Register all model functions as a single service
             if len(service_functions) > 1:
@@ -365,15 +370,17 @@ class RayDeploymentManager:
                     f"{server_url}/{workspace}/services/{sid}/list_deployments"
                 )
                 self.logger.debug(f"Service available at: {service_url}")
+                self.service_info = service_info
 
                 return True
             else:
                 self.logger.info("No deployments to register as services")
+                self.service_info = None
                 return True
 
         except Exception as e:
             self.logger.error(f"Error updating services - {type(e).__name__}: {e}")
-            return False
+            raise e
 
     async def deploy_all_artifacts(self) -> List[str]:
         """Deploy all artifacts in the deployment collection to Ray Serve
@@ -403,6 +410,7 @@ class RayDeploymentManager:
                     self.logger.error(
                         f"Failed to deploy {artifact_id} - {type(e).__name__}: {e}"
                     )
+                    raise e
 
             # Update services after all deployments
             await self._update_services()
@@ -413,7 +421,7 @@ class RayDeploymentManager:
             self.logger.error(
                 f"Error deploying all artifacts - {type(e).__name__}: {e}"
             )
-            return deployed_artifact_ids
+            raise e
 
     async def cleanup_deployments(self) -> bool:
         """Cleanup Ray Serve deployments
@@ -434,12 +442,90 @@ class RayDeploymentManager:
                 return False
         except Exception as e:
             self.logger.error(f"Error during cleanup - {type(e).__name__}: {e}")
-            return False
+            raise e
+    
+    def get_status(self):
+        """Get the current status of the Ray Deployment Manager."""
+        return {
+            "deployments": self.deployments,
+            "service_info": self.service_info,
+        }
 
+async def create_example_deployment(artifact_manager, logger=None):
+    """Create an example deployment for testing
+
+    Args:
+        artifact_manager: Hypha artifact manager instance
+        logger: Optional logger instance
+
+    Returns:
+        str: ID of the created artifact
+    """
+    if not logger:
+        logger = create_logger("ArtifactManager")
+
+    # Get example deployment directory
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    example_deployment_dir = os.path.join(base_dir, "example_deployment")
+    with open(os.path.join(example_deployment_dir, "manifest.yaml"), "r") as f:
+        deployment_manifest = yaml.safe_load(f)
+
+    # Check existing deployments
+    artifacts = await artifact_manager.list()
+    deployment_name = deployment_manifest.get("name")
+    exists = False
+    for artifact in artifacts:
+        if artifact.manifest.name == deployment_name:
+            logger.info(f"Deployment '{deployment_name}' already exists.")
+            exists = True
+            break
+
+    if exists:
+        test_artifact = await artifact_manager.edit(
+            artifact_id=artifact.id,
+            manifest=deployment_manifest, version="stage",
+        )
+    else:
+        # Add the deployment to the gallery and stage it for review
+        test_artifact = await artifact_manager.create(
+            manifest=deployment_manifest, version="stage",
+        )
+    logger.info(f"Artifact created with ID: {test_artifact.id}")
+
+    # Upload main.py
+    upload_url = await artifact_manager.put_file(
+        test_artifact.id, file_path="main.py"
+    )
+    with open(os.path.join(example_deployment_dir, "main.py"), "r") as f:
+        file_content = f.read()
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(upload_url, data=file_content)
+        response.raise_for_status()
+        logger.info(f"Uploaded main.py to artifact")
+
+    # Upload manifest.yaml
+    upload_url = await artifact_manager.put_file(
+        test_artifact.id, file_path="manifest.yaml"
+    )
+    with open(os.path.join(example_deployment_dir, "manifest.yaml"), "r") as f:
+        file_content = f.read()
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(upload_url, data=file_content)
+        response.raise_for_status()
+        logger.info(f"Uploaded manifest.yaml to artifact")
+
+    # Commit the artifact
+    await artifact_manager.commit(
+        artifact_id=test_artifact.id,
+        version="new",
+    )
+    logger.info(f"Committed artifact")
+
+    return test_artifact.id
 
 if __name__ == "__main__":
     """Test the RayDeploymentManager functionality with a real Ray cluster and model deployment."""
-    import yaml
+    
     from hpc_worker.ray_cluster_manager import RayClusterManager
     from hpc_worker.ray_autoscaler import RayAutoscaler
     from hypha_rpc import connect_to_server, login
@@ -462,51 +548,7 @@ if __name__ == "__main__":
     )
     autoscaler.logger.setLevel(logging.DEBUG)
 
-    async def create_example_deployment(artifact_manager):
-        logger = create_logger("ArtifactManager")
-
-        # Define metadata for the new deployment
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        example_deployment_dir = os.path.join(base_dir, "example_deployment")
-        with open(os.path.join(example_deployment_dir, "manifest.yaml"), "r") as f:
-            deployment_manifest = yaml.safe_load(f)
-
-        # Check existing deployments
-        artifacts = await artifact_manager.list()
-        deployment_name = deployment_manifest.get("name")
-        for artifact in artifacts:
-            if artifact.manifest.name == deployment_name:
-                logger.info(f"Deployment '{deployment_name}' already exists.")
-                return artifact["id"]
-
-        # Add the deployment to the gallery and stage it for review
-        test_artifact = await artifact_manager.create(
-            manifest=deployment_manifest, version="stage"
-        )
-        logger.info(f"Artifact created with ID: {test_artifact.id}")
-
-        # Get the upload URL for the file
-        upload_url = await artifact_manager.put_file(
-            test_artifact.id, file_path="main.py"
-        )
-
-        # Upload the file content with timeout
-        with open(os.path.join(example_deployment_dir, "main.py"), "r") as f:
-            file_content = f.read()
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.put(upload_url, data=file_content)
-            response.raise_for_status()
-            logger.info(f"Uploaded file to artifact")
-
-        # Commit the artifact
-        await artifact_manager.commit(
-            artifact_id=test_artifact.id,
-            version="new",
-        )
-        logger.info(f"Committed artifact")
-
-        return test_artifact.id
+    
 
     async def test_deployment_manager(server_url="https://hypha.aicell.io"):
         try:
@@ -563,6 +605,7 @@ if __name__ == "__main__":
 
         except Exception as e:
             print(f"An error occurred - {type(e).__name__}: {e}")
+            raise e
         finally:
             await autoscaler.stop()
             cluster_manager.shutdown_cluster()

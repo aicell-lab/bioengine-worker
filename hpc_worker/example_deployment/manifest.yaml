@@ -15,7 +15,6 @@ tags: [single-cell, RNA-seq, classification, deep-learning, transcriptomics]
 type: model
 version: 0.0.1
 entry_point: main.py
-# class_name: ChironModel
 class_name: DummyClass
 deployment_config:
   ray_actor_options:
@@ -23,9 +22,14 @@ deployment_config:
     num_cpus: 1
     # memory: 4294967296  # 4GB RAM
     # runtime_env:
-    #   pip: ["torch==2.1.2", "torchvision==0.16.2"]
-  max_ongoing_requests: 1
-  max_queued_requests: 10
+    #   image_uri: "--tls-verify=false python:3.11.9-slim"
+      # container:
+      #   image: python:3.11.9-slim
+      #   run_options: ["--tls-verify=false"]
+      # pip: ["pandas"]
+      # pip: ["torch==2.1.2", "torchvision==0.16.2"]
+  # max_ongoing_requests: 1
+  # max_queued_requests: 10
   autoscaling_config:
     min_replicas: 1
     initial_replicas: 1

@@ -85,8 +85,8 @@ class SlurmActor:
 
                 return batch_file.name
         except Exception as e:
-            self.logger.error(f"Failed to create sbatch script - {type(e).__name__}: {e}")
-            return ""
+            self.logger.error(f"Failed to create sbatch script: {e}")
+            raise e
 
     def submit_job(self, sbatch_script: str, delete_script: bool = False) -> str:
         try:
@@ -109,13 +109,12 @@ class SlurmActor:
             if result.stdout and "Submitted batch job" in result.stdout:
                 job_id = result.stdout.strip().split()[-1]
             else:
-                self.logger.error("Failed to get job ID")
-                job_id = ""
+                raise RuntimeError(f"Failed to get job ID - stdout: {result.stdout}")
 
             return job_id
         except Exception as e:
-            self.logger.error(f"Failed to submit job - {type(e).__name__}: {e}")
-            return ""
+            self.logger.error(f"Failed to submit job: {e}")
+            raise e
 
     def get_jobs(self) -> List[str]:
         """Query SLURM for status of all jobs.
@@ -167,8 +166,8 @@ class SlurmActor:
 
             return jobs
         except Exception as e:
-            self.logger.error(f"Failed to get jobs - {type(e).__name__}: {e}")
-            return []
+            self.logger.error(f"Failed to get jobs: {e}")
+            raise e
 
     def cancel_jobs(
         self, job_ids: Optional[List[str]] = None, grace_period: Optional[int] = 30
@@ -233,8 +232,8 @@ class SlurmActor:
             )
             return cancelled_job_ids
         except Exception as e:
-            self.logger.error(f"Failed to cancel jobs - {type(e).__name__}: {e}")
-            return []
+            self.logger.error(f"Failed to cancel jobs: {e}")
+            raise e
 
 
 if __name__ == "__main__":

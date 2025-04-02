@@ -31,11 +31,14 @@ class RayClusterManager:
         node_manager_port: int = 6700,
         object_manager_port: int = 6701,
         redis_shard_port: int = 6702,
+        serve_port: int = 8100,
+        dashboard_port: int = 8269,
         ray_client_server_port: int = 10001,
         redis_password: str = None,
         temp_dir: str = "/tmp/ray",
+        data_dir: str = None,
         # Job configuration parameters
-        container_image: str = "bioengine_worker_0.1.0.sif",
+        container_image: str = "bioengine_worker_0.1.2.sif",
         further_slurm_args: List[str] = None,
         # Logger
         logger: Optional[logging.Logger] = None,
@@ -43,15 +46,20 @@ class RayClusterManager:
         """Initialize cluster manager with networking and resource configurations.
 
         Args:
-            logger: Custom logger instance. Creates default logger if None.
             head_node_ip: IP address for head node. Uses first system IP if None.
             head_node_port: Port for Ray head node and GCS server.
             node_manager_port: Base port for Ray node manager services.
             object_manager_port: Port for object manager service.
             redis_shard_port: Port for Redis sharding.
+            serve_port: Port for Ray Serve.
+            dashboard_port: Port for the dashboard.
             ray_client_server_port: Base port for Ray client services.
+            redis_password: Password for Redis server.
+            temp_dir: Temporary directory for Ray. Default is '/tmp/ray'.
+            data_dir: Data directory mounted to the container. Default is None.
             container_image: Worker container image path.
             further_slurm_args: Additional arguments for SLURM job script.
+            logger: Custom logger instance. Creates default logger if None.
         """
         # Set ray port configuration
         # Ports configuration: https://docs.ray.io/en/latest/ray-core/configure.html#ports-configurations
@@ -60,15 +68,24 @@ class RayClusterManager:
             result = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
             internal_ip = result.stdout.strip().split()[0]  # Take the first IP
 
+        if not os.path.exists(temp_dir):
+            raise ValueError(f"Temporary directory '{temp_dir}' does not exist")
+
+        if data_dir and not os.path.exists(data_dir):
+            raise ValueError(f"Data directory '{data_dir}' does not exist.")
+
         self.ray_cluster_config = {
             "head_node_ip": head_node_ip or internal_ip,
             "head_node_port": head_node_port,  # GCS server port
             "node_manager_port": node_manager_port,
             "object_manager_port": object_manager_port,
             "redis_shard_port": redis_shard_port,
+            "serve_port": serve_port,
+            "dashboard_port": dashboard_port,
             "ray_client_server_port": ray_client_server_port,
             "redis_password": redis_password or os.urandom(16).hex(),
             "temp_dir": temp_dir,
+            "data_dir": data_dir,
         }
         self.ray_start_time = None
 
@@ -124,8 +141,10 @@ class RayClusterManager:
             head_node_port = self.ray_cluster_config["head_node_port"]
             return f"{head_node_ip}:{head_node_port}"
         else:
-            self.logger.warning("Ray cluster is not running")
-            return ""
+            self.logger.error(
+                "Can not get head node address - Ray cluster is not running"
+            )
+            raise RuntimeError("Ray cluster is not running")
 
     def _find_ports(self, port: int, step: int = 1) -> int:
         """Find next available port starting from given port number.
@@ -164,6 +183,12 @@ class RayClusterManager:
         )
         self.ray_cluster_config["redis_shard_port"] = self._find_ports(
             self.ray_cluster_config["redis_shard_port"], step=100
+        )
+        self.ray_cluster_config["serve_port"] = self._find_ports(
+            self.ray_cluster_config["serve_port"], step=1
+        )
+        self.ray_cluster_config["dashboard_port"] = self._find_ports(
+            self.ray_cluster_config["dashboard_port"], step=1
         )
         self.ray_cluster_config["ray_client_server_port"] = self._find_ports(
             self.ray_cluster_config["ray_client_server_port"], step=10000
@@ -245,7 +270,7 @@ class RayClusterManager:
             self._set_cluter_ports()
 
             # Start ray as the head node with the specified parameters
-            subprocess.run(
+            result = subprocess.run(
                 [
                     self._ray_executable,
                     "start",
@@ -261,11 +286,15 @@ class RayClusterManager:
                     "--num-cpus=0",
                     "--num-gpus=0",
                     "--include-dashboard=True",
+                    f"--dashboard-port={self.ray_cluster_config['dashboard_port']}",
                     f"--redis-password={self.ray_cluster_config['redis_password']}",
                     f"--temp-dir={self.ray_cluster_config['temp_dir']}",
                 ],
                 capture_output=True,
                 check=True,
+            )
+            self.logger.debug(
+                f"Ray start command output:\n----------\n{result.stdout.decode()}"
             )
 
             # Verify the cluster is running on the correct IP and port
@@ -273,25 +302,33 @@ class RayClusterManager:
             head_node_port = self.ray_cluster_config["head_node_port"]
             address = f"{head_node_ip}:{head_node_port}"
             ray.init(address=address, logging_format=logging_format)
+            serve.start(
+                http_options={
+                    "host": "0.0.0.0",
+                    "port": self.ray_cluster_config["serve_port"],
+                },
+                # logging_config=logging_format,  # TODO: Fix logging
+            )
             self.ray_start_time = time.time()
             formatted_time = format_time(self.ray_start_time)
             start_time = formatted_time["start_time"]
             self.logger.info(
-                f"Ray cluster started successfully on '{address}' - Start time: {start_time}"
+                f"Ray cluster and Ray Serve started successfully on '{address}' - Start time: {start_time}"
             )
-
             return address
 
-        except Exception as e:
+        except subprocess.CalledProcessError as e:
             self.logger.error(
-                f"Error initializing Ray - {type(e).__name__}: {e}"
-                + f"\n{e.stderr.decode()}"
-                if hasattr(e, "stderr")
-                else ""
+                f"Ray start command failed with error code {e.returncode}:\n{e.stderr.decode()}"
             )
             if ray.is_initialized():
                 self.shutdown_cluster()
-            return ""
+            raise e
+        except Exception as e:
+            self.logger.error(f"Error initializing Ray: {e}")
+            if ray.is_initialized():
+                self.shutdown_cluster()
+            raise e
 
     def cluster_status(self) -> Dict:
         """Get current cluster state including head node and worker information.
@@ -321,23 +358,27 @@ class RayClusterManager:
 
                 if not node["Resources"]:
                     self.logger.debug(f"Encountered dead worker node without worker ID")
-                    assert not node["Alive"]  # Dead nodes should have empty resources
+                    assert not node["Alive"]
+                    # Dead nodes have empty resources -> no worker ID
+                    worker_id = None
+                else:
+                    # Extract worker ID from resources
+                    worker_id = self._node_resource_to_worker_id(node["Resources"])
 
-                # Extract worker ID from resources (dead notes have empty resources -> no worker ID)
-                worker_id = self._node_resource_to_worker_id(node["Resources"])
-
-                # Skip nodes if job is not running anymore
-                worker_job_id = self.worker_job_history.get(worker_id, None)
-                if not worker_job_id:
-                    self.logger.error(
-                        f"Worker ID '{worker_id}' not found in worker jobs"
+                    # Skip nodes if job is not running anymore
+                    worker_job_id = worker_id and self.worker_job_history.get(
+                        worker_id, None
                     )
-                    continue
-                elif worker_job_id not in worker_job_ids:
-                    self.logger.debug(
-                        f"Skipping worker node '{worker_id}' with already cancelled job ID '{worker_job_id}'"
-                    )
-                    continue
+                    if not worker_job_id:
+                        self.logger.error(
+                            f"Worker ID '{worker_id}' not found in worker jobs"
+                        )
+                        continue
+                    elif worker_job_id not in worker_job_ids:
+                        self.logger.debug(
+                            f"Skipping worker node '{worker_id}' with already cancelled job ID '{worker_job_id}'"
+                        )
+                        continue
 
                 # Extract available resources
                 available_resources = available_resources_per_node.get(
@@ -387,9 +428,8 @@ class RayClusterManager:
         except Exception as e:
             # Log only unexpected errors
             if not str(e).startswith("Could not find any running Ray instance"):
-                self.logger.error(
-                    f"Error checking ray cluster - {type(e).__name__}: {e}"
-                )
+                self.logger.error(f"Error checking ray cluster: {e}")
+            raise e
         finally:
             return output
 
@@ -428,12 +468,18 @@ class RayClusterManager:
                 self.logger.info("All Ray processes stopped successfully")
             elif "Did not find any active Ray processes." in output:
                 self.logger.info("No active Ray processes found")
-            elif re.search(r"Stopped only \d+ out of \d+ Ray processes", output):
-                self.logger.warning("Some Ray processes could not be stopped")
             else:
-                self.logger.warning(
-                    f"Unknown message during Ray shutdown:\n----------\n{output}"
+                message = re.search(
+                    r"Stopped only (\d+) out of (\d+) Ray processes within the grace period (\d+) seconds\.", output
                 )
+                if message:
+                    self.logger.warning(
+                        f"Some Ray processes could not be stopped: {message.group(0)}"
+                    )
+                else:
+                    self.logger.warning(
+                        f"Unknown message during Ray shutdown:\n----------\n{output}"
+                    )
 
             # Clean up any remaining worker jobs
             time.sleep(5)  # Wait for Ray to fully shut down
@@ -441,12 +487,11 @@ class RayClusterManager:
 
             self.logger.info("Ray cluster shut down complete")
 
-        except Exception as e:
-            self.logger.error(
-                f"Error shutting down Ray cluster - {type(e).__name__}: {e}"
-            )
+            self.ray_start_time = None
 
-        self.ray_start_time = None
+        except Exception as e:
+            self.logger.error(f"Error shutting down Ray cluster: {e}")
+            raise e
 
     def add_worker(
         self,
@@ -471,8 +516,8 @@ class RayClusterManager:
         """
         # First check if Ray cluster is running
         if not ray.is_initialized():
-            self.logger.info("Ray cluster is not running")
-            return False
+            self.logger.error("Can not add worker - Ray cluster is not running")
+            raise RuntimeError("Ray cluster is not running")
 
         try:
             # Generate unique worker ID
@@ -485,19 +530,28 @@ class RayClusterManager:
                 f"--num-cpus={num_cpus} "
                 f"--num-gpus={num_gpus} "
                 f"--resources={self._worker_id_to_node_resource_str(worker_id)} "
-                f"--temp-dir={self.ray_cluster_config['temp_dir']} "
+                f"--temp-dir=/tmp/ray "
                 f"--block"
             )
 
             # Define the apptainer command with the Ray worker command
-            # Ensure temp directory exists in command
+
+            bind_dir_flag = f"--bind {self.ray_cluster_config['temp_dir']}:/tmp/ray"
+
+            if self.ray_cluster_config["data_dir"]:
+                data_dir = self.ray_cluster_config["data_dir"]
+                self.logger.info(
+                    f"Binding data directory '{data_dir}' to container directory '/mnt'"
+                )
+                bind_dir_flag += f",{data_dir}:/mnt"
+
             apptainer_cmd = (
-                f"mkdir -p {self.ray_cluster_config['temp_dir']} && "
+                "mkdir -p /tmp/ray && "
                 f"apptainer run "
                 f"--writable-tmpfs "
                 f"--contain "
                 f"--nv "
-                f"--bind {self.ray_cluster_config['temp_dir']}:{self.ray_cluster_config['temp_dir']} "
+                f"{bind_dir_flag} "
                 f"{self.job_config['container_image']} "
                 f"{ray_worker_cmd}"
             )
@@ -527,16 +581,14 @@ class RayClusterManager:
                     f"Worker job submitted successfully. Worker ID: '{worker_id}', Job ID: {job_id}, Resources: {num_gpus} GPU(s), "
                     f"{num_cpus} CPU(s), {mem_per_cpu}G mem/CPU, {time_limit} time limit"
                 )
-
-                return True
             else:
-                return False
+                raise RuntimeError("Failed to submit worker job")
 
         except Exception as e:
-            self.logger.error(f"Error submitting worker job - {type(e).__name__}: {e}")
-            return False
+            self.logger.error(f"Error submitting worker job: {e}")
+            raise e
 
-    def remove_worker(self, worker_id: str) -> bool:
+    def remove_worker(self, worker_id: str):
         """Shut down specific worker node from Ray cluster.
 
         Args:
@@ -546,18 +598,18 @@ class RayClusterManager:
             True if worker was successfully shut down
         """
         if not ray.is_initialized():
-            self.logger.info("Ray cluster is not running")
-            return False
+            self.logger.error("Can not remove worker - Ray cluster is not running")
+            raise RuntimeError("Ray cluster is not running")
         try:
             # Check if worker id is valid
             if worker_id not in self.worker_job_history:
                 self.logger.error(f"Worker ID '{worker_id}' not found in worker jobs")
-                return False
+                raise ValueError(f"Worker ID '{worker_id}' not found in worker jobs")
 
             # Check worker status
             worker_status = self._get_worker_status(worker_id)
             if worker_status == "not_found":
-                return False
+                return
 
             # TODO: Stop all tasks on the worker node before shutting down
             # call remote function to stop all tasks using ray.shutdown()
@@ -573,15 +625,14 @@ class RayClusterManager:
                 self.logger.info(
                     f"Successfully shut down worker '{worker_id}' running on SLURM job '{job_id}'"
                 )
-                return True
             else:
-                return False
+                raise RuntimeError(
+                    f"Failed to shut down worker '{worker_id}' running on SLURM job '{job_id}'"
+                )
 
         except Exception as e:
-            self.logger.error(
-                f"Error shutting down worker {worker_id} - {type(e).__name__}: {e}"
-            )
-            return False
+            self.logger.error(f"Error shutting down worker {worker_id}: {e}")
+            raise e
 
 
 if __name__ == "__main__":
@@ -590,13 +641,14 @@ if __name__ == "__main__":
 
     # Test the class
     ray_manager = RayClusterManager(
+        temp_dir="/proj/aicell/ray_tmp",
+        data_dir=os.path.dirname(__file__),
         # further_slurm_args=["-C 'thin'"]
     )
+    ray_manager.logger.setLevel(logging.DEBUG)
 
     # Start Ray cluster
     ray_manager.start_cluster(clean_up=True)
-
-    # serve.start()
 
     # Test submitting a worker job
     assert len(ray_manager.worker_job_history) == 0
@@ -619,21 +671,32 @@ if __name__ == "__main__":
         time.sleep(1)
         waited_time += 1
         status = ray_manager._get_worker_status(worker_id)
-        
 
     # Test cluster status
     cluster_status = ray_manager.cluster_status()
     print("\n=== Cluster status ===\n", cluster_status, end="\n\n")
 
     # Test running a remote function on worker node
-    @ray.remote(num_cpus=1, num_gpus=1, runtime_env={"pip": ["hypha-rpc"]})
+    @ray.remote(
+            num_cpus=1,
+            num_gpus=1,
+            # runtime_env={"pip": ["hypha-rpc"]},
+    )
     def test_remote():
         import time
-        from hypha_rpc.sync import connect_to_server
+        import os
+        # from hypha_rpc.sync import connect_to_server
+
+        # Check tmp directory
+        assert os.path.exists("/tmp/ray"), "Temporary directory does not exist"
+
+        # Check data directory
+        num_files = len(os.listdir("/mnt"))
+        assert num_files, "Data directory is empty"
 
         time.sleep(1)
 
-        return "Successfully run a task in runtime environment on the worker node!"
+        return f"Successfully run a task in runtime environment on the worker node! Number of files in data directory: {num_files}"
 
     obj_ref = test_remote.remote()
     print(ray.get(obj_ref))

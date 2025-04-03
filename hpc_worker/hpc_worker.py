@@ -3,7 +3,6 @@ import logging
 import time
 from typing import Optional, Dict
 
-from hpc_worker.ray_cluster_manager import RayClusterManager
 from hpc_worker.ray_autoscaler import RayAutoscaler
 from hpc_worker.ray_deployment_manager import RayDeploymentManager
 from hpc_worker.utils.logger import create_logger
@@ -44,20 +43,18 @@ class HpcWorker:
         self.start_time = time.time()
 
         ray_cluster_config = ray_cluster_config or {}
-        self.ray_autoscaler_config = ray_autoscaler_config or {}
-        self.ray_deployment_manager_config = ray_deployment_manager_config or {}
+        ray_autoscaler_config = ray_autoscaler_config or {}
+        ray_deployment_manager_config = ray_deployment_manager_config or {}
 
         # Initialize component managers
-        self.cluster_manager = RayClusterManager(**ray_cluster_config)
-        self.autoscaler = RayAutoscaler(self.cluster_manager, logger=logger, **self.ray_autoscaler_config)
-        self.deployment_manager = RayDeploymentManager(logger=self.logger, **self.ray_deployment_manager_config)
+        self.autoscaler = RayAutoscaler(**ray_autoscaler_config, **ray_cluster_config)
+        self.deployment_manager = RayDeploymentManager(**ray_deployment_manager_config, autoscaler=self.autoscaler)
 
         # Initialize state
         self.server = None
         self.ray_start_time = None
 
     async def start(self):
-        self.cluster_manager.start_cluster(clean_up=True)
         await self.autoscaler.start()
         await self._connect_to_server()
         await self.deployment_manager.initialize(self.server)
@@ -116,16 +113,16 @@ class HpcWorker:
         """
         # Get status from all components
         formatted_service_time = format_time(self.start_time)
-        formatted_ray_time = format_time(self.cluster_manager.ray_start_time)
+        formatted_ray_time = format_time(self.autoscaler.cluster_manager.ray_start_time)
         status = {
             "service": {
                 "start_time": formatted_service_time["start_time"],
                 "uptime": formatted_service_time["duration_since"],
             }
         }
-        if self.cluster_manager.head_node_address:
+        if self.autoscaler.cluster_manager.head_node_address:
             status["cluster"] = {
-                "address": self.cluster_manager.head_node_address,
+                "address": self.autoscaler.cluster_manager.head_node_address,
                 "start_time": formatted_ray_time["start_time"],
                 "uptime": formatted_ray_time["duration_since"],
             }
@@ -154,8 +151,10 @@ if __name__ == "__main__":
                 token=token,
                 service_id="hpc-worker-test",
                 ray_autoscaler_config={
-                    "default_num_gpus": 1,
-                    "default_num_cpus": 3,
+                    "metrics_interval_seconds": 10,
+                    "temp_dir": "/proj/aicell/ray_tmp",
+                    "data_dir": os.path.dirname(__file__),
+                    "container_image": "/proj/aicell/users/x_nilme/autoscaler/tabula_0.1.1.sif",
                 }
             )
             hpc_worker.logger.setLevel(logging.DEBUG)
@@ -190,7 +189,8 @@ if __name__ == "__main__":
             assert deployment_name in deployments
 
         except Exception as e:
-            print(f"Test error - {type(e).__name__}: {e}")
+            print(f"Test error: {e}")
             raise e
+        
     # Run the test
     asyncio.run(test_hpc_worker())

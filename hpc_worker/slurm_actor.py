@@ -67,10 +67,16 @@ class SlurmActor:
                 echo "Date: $(date)"
                 echo "GPUs: {gpus}, CPUs: {cpus_per_task}"
                 echo "GPU info: $(nvidia-smi -L)"
+                echo "Job ID: $SLURM_JOB_ID"
                 echo "Running command: {command}"
                 echo ""
                 echo "========================================"
                 echo ""
+
+                if [ -z "$SLURM_JOB_ID" ]; then
+                    echo "SLURM_JOB_ID is not set. This script may not be running in a SLURM job."
+                    exit 1
+                fi
 
                 {command}
 
@@ -116,11 +122,11 @@ class SlurmActor:
             self.logger.error(f"Failed to submit job: {e}")
             raise e
 
-    def get_jobs(self) -> List[str]:
+    def get_jobs(self) -> Dict[str, Dict[str, str]]:
         """Query SLURM for status of all jobs.
 
         Returns:
-            List of job dictionaries with keys: job_id, name, state, runtime, time
+            Dict mapping job_id to dict containing name, state, runtime, time_limit
         """
         try:
             # Run squeue command to get all jobs for the current user
@@ -139,7 +145,7 @@ class SlurmActor:
             if len(lines) > 0 and not lines[0][0].isdigit():
                 lines = lines[1:]
 
-            jobs = []
+            jobs = {}
             for line in lines:
                 if line.strip():
                     parts = line.split()
@@ -154,15 +160,12 @@ class SlurmActor:
 
                         # Only include Ray worker jobs
                         if job_name == self.job_name:
-                            jobs.append(
-                                {
-                                    "job_id": job_id,
-                                    "name": job_name,
-                                    "state": state,
-                                    "runtime": runtime,
-                                    "time_limit": time_limit,
-                                }
-                            )
+                            jobs[job_id] = {
+                                "name": job_name,
+                                "state": state,
+                                "runtime": runtime,
+                                "time_limit": time_limit,
+                            }
 
             return jobs
         except Exception as e:
@@ -182,7 +185,7 @@ class SlurmActor:
             List of job IDs that were cancelled.
         """
         # First get all ray worker jobs
-        jobs_to_cancel = self.get_jobs()
+        jobs_to_cancel = list(self.get_jobs().keys())
 
         if not jobs_to_cancel:
             self.logger.info("No jobs found to cancel")
@@ -191,23 +194,21 @@ class SlurmActor:
         try:
             # Filter jobs if specific job_ids were provided
             if job_ids:
-                job_ids = {str(job_id) for job_id in job_ids}  # Convert to strings
                 jobs_to_cancel = [
-                    job for job in jobs_to_cancel if job["job_id"] in job_ids
+                    str(job_id) for job_id in job_ids if str(job_id) in jobs_to_cancel
                 ]
                 if not jobs_to_cancel:
-                    self.logger.info(f"No matching jobs found to cancel: {job_ids}")
-                    return []
-
-            # Get list of job IDs to cancel
-            job_ids_to_cancel = [job["job_id"] for job in jobs_to_cancel]
+                    self.logger.warning(f"No matching jobs found to cancel: {job_ids}")
+                    raise ValueError(
+                        f"No matching jobs found to cancel. Provided job IDs: {job_ids} - Running jobs: {jobs_to_cancel}"
+                    )
 
             # Cancel the jobs
             self.logger.info(
-                f"Cancelling {len(job_ids_to_cancel)} job(s): {job_ids_to_cancel}"
+                f"Cancelling {len(jobs_to_cancel)} job(s): {jobs_to_cancel}"
             )
             subprocess.run(
-                ["scancel", *job_ids_to_cancel], capture_output=True, check=True
+                ["scancel", *jobs_to_cancel], capture_output=True, check=True
             )
 
             # Check if jobs were successfully cancelled
@@ -215,22 +216,19 @@ class SlurmActor:
             while time.time() - start_time < grace_period:
                 time.sleep(1)
                 running_jobs = self.get_jobs()
-                running_job_ids = {job["job_id"] for job in running_jobs}
-
-                if not any(job_id in running_job_ids for job_id in job_ids_to_cancel):
+                if not any(job_id in running_jobs for job_id in jobs_to_cancel):
                     self.logger.info(
                         f"Successfully cancelled {len(jobs_to_cancel)} job(s)"
                     )
+                    return jobs_to_cancel
 
-                    return job_ids_to_cancel
-
-            cancelled_job_ids = [
-                job_id for job_id in job_ids_to_cancel if job_id not in running_job_ids
+            cancelled_jobs = [
+                job_id for job_id in jobs_to_cancel if job_id not in running_jobs
             ]
             self.logger.warning(
-                f"Failed to cancel all jobs within {grace_period} seconds. Cancelled jobs: {cancelled_job_ids}"
+                f"Failed to cancel all jobs within {grace_period} seconds. Cancelled jobs: {cancelled_jobs}"
             )
-            return cancelled_job_ids
+            return cancelled_jobs
         except Exception as e:
             self.logger.error(f"Failed to cancel jobs: {e}")
             raise e

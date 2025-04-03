@@ -5,11 +5,11 @@ from typing import Optional
 
 import numpy as np
 import ray
-from ray.util.state import list_tasks, list_actors
+from ray.util.state import list_actors, list_tasks
+
 from hpc_worker.utils.logger import create_logger
 
 
-# TODO: review error handling and logging
 class RayAutoscaler:
     """Autoscaler for Ray clusters in HPC environments.
 
@@ -19,8 +19,6 @@ class RayAutoscaler:
 
     def __init__(
         self,
-        ray_manager,
-        logger: Optional[logging.Logger] = None,
         # Default resource parameters
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
@@ -36,12 +34,17 @@ class RayAutoscaler:
         scale_up_cooldown_seconds: int = 120,  # 2 minutes between scale ups
         scale_down_cooldown_seconds: int = 600,  # 10 minutes between scale downs
         node_grace_period_seconds: int = 600,  # 10 minutes grace period for new nodes
+        # Logger
+        logger: Optional[logging.Logger] = None,
+        # Cluster manager configuration
+        ray_cleanup: bool = True,
+        **cluster_manager_kwargs: Optional[
+            dict
+        ],  # Additional arguments for RayClusterManager
     ):
         """Initialize the Ray autoscaler.
 
         Args:
-            ray_manager: RayClusterManager instance for cluster operations
-            logger: Optional logger instance
             default_num_gpus: Default number of GPUs per worker
             default_num_cpus: Default number of CPUs per worker
             default_mem_per_cpu: Default memory per CPU in GB
@@ -55,9 +58,13 @@ class RayAutoscaler:
             scale_up_cooldown_seconds: Minimum time between scaling up operations
             scale_down_cooldown_seconds: Minimum time between scaling down operations
             node_grace_period_seconds: Give new nodes time before considering for scale-down
+            logger: Optional logger instance
+            ray_cleanup: Whether to clean up the Ray cluster on shutdown
+            cluster_manager_kwargs: Additional arguments for RayClusterManager
         """
         # Store ray manager reference
-        self.ray_manager = ray_manager
+        self.cluster_manager = RayClusterManager(**(cluster_manager_kwargs or {}))
+        self.cluster_manager.start_cluster(clean_up=ray_cleanup)
 
         # Store configuration
         self.autoscale_config = {
@@ -77,9 +84,10 @@ class RayAutoscaler:
         }
 
         # Initialize state variables
+        self.last_time_collected_metrics = 0
+        self.node_metrics = {}  # Track per-node metrics
         self.last_scale_up_time = 0
         self.last_scale_down_time = 0
-        self.node_metrics = {}  # Track per-node metrics
 
         # Background task
         self.monitoring_task = None
@@ -93,7 +101,7 @@ class RayAutoscaler:
         """Get pending tasks that need resources."""
         if ray.is_initialized():
             pending_tasks = list_tasks(
-                address=self.ray_manager.head_node_address,
+                address=self.cluster_manager.head_node_address,
                 filters=[("state", "=", "PENDING_NODE_ASSIGNMENT")],
             )
             if pending_tasks:
@@ -109,7 +117,7 @@ class RayAutoscaler:
         """Get pending actors that need resources."""
         if ray.is_initialized():
             pending_actors = list_actors(
-                address=self.ray_manager.head_node_address,
+                address=self.cluster_manager.head_node_address,
                 filters=[("state", "=", "PENDING_CREATION")],
             )
             if pending_actors:
@@ -122,7 +130,7 @@ class RayAutoscaler:
     @property
     def n_worker_jobs(self) -> int:
         """Get number of SLURM workers in the cluster (configuring, pending or running)."""
-        return len(self.ray_manager.slurm_actor.get_jobs())
+        return len(self.cluster_manager.slurm_actor.get_jobs())
 
     def _collect_metrics(self) -> tuple:
         """Collect resource utilization metrics from worker nodes using cluster status."""
@@ -131,7 +139,7 @@ class RayAutoscaler:
 
         # Get current cluster status
         current_time = time.time()
-        cluster_status = self.ray_manager.cluster_status()
+        cluster_status = self.cluster_manager.cluster_status()
         active_nodes = cluster_status["worker_nodes"]["Alive"]
         dead_nodes = cluster_status["worker_nodes"]["Dead"]
 
@@ -196,10 +204,10 @@ class RayAutoscaler:
 
     def _scale_up(
         self, num_gpus: int, num_cpus: int, mem_per_cpu: int, time_limit: str
-    ):
+    ) -> None:
         """Scale up the cluster by adding a new worker node."""
         # TODO: Check if this is blocking
-        self.ray_manager.add_worker(
+        self.cluster_manager.add_worker(
             num_gpus=num_gpus,
             num_cpus=num_cpus,
             mem_per_cpu=mem_per_cpu,
@@ -284,39 +292,18 @@ class RayAutoscaler:
                 self.logger.info(
                     f"Scaling down worker '{longest_idle_worker}' due to inactivity for {longest_idle_time:.1f}s"
                 )
-                self.ray_manager.remove_worker(longest_idle_worker)
+                self.cluster_manager.remove_worker(longest_idle_worker)
                 self.last_scale_down_time = current_time
 
-    def _cleanup_dead_nodes(self, worker_ids: set):
+    def _cleanup_dead_nodes(self, worker_ids: set) -> None:
         if worker_ids:
             self.logger.info(
                 f"Cleaning up {len(worker_ids)} dead worker(s) from cluster: {worker_ids}"
             )
             for worker_id in worker_ids:
-                self.ray_manager.remove_worker(worker_id)
+                self.cluster_manager.remove_worker(worker_id)
 
-    def _handle_monitoring_error(self, error: Exception) -> bool:
-        """Handle monitoring loop errors and determine if monitoring should continue.
-
-        Args:
-            error: The exception that was caught
-
-        Returns:
-            bool: True if monitoring should continue, False if it should stop
-        """
-        if isinstance(error, (RuntimeError, ray.exceptions.RaySystemError)):
-            self.logger.error(f"Critical Ray error occurred: {error}")
-            return False
-        elif isinstance(error, ConnectionError):
-            self.logger.error(f"Connection error occurred: {error}")
-            return True
-        else:
-            self.logger.error(
-                f"Unexpected error in monitoring loop - {type(error).__name__}: {error}"
-            )
-            return True
-
-    async def _monitoring_loop(self, max_consecutive_errors: int = 3):
+    async def _monitoring_loop(self, max_consecutive_errors: int = 3) -> None:
         """Main monitoring loop for the autoscaler.
 
         Args:
@@ -325,6 +312,15 @@ class RayAutoscaler:
         consecutive_errors = 0
 
         while self.is_running:
+            await asyncio.sleep(1)
+            if (
+                time.time() - self.last_time_collected_metrics
+                < self.autoscale_config["metrics_interval"]
+            ):
+                continue
+
+            self.last_time_collected_metrics = time.time()
+
             try:
                 # Check if Ray is still initialized
                 if not ray.is_initialized():
@@ -341,8 +337,6 @@ class RayAutoscaler:
                 self.node_metrics = node_metrics
                 consecutive_errors = 0  # Reset error counter on success
 
-                await asyncio.sleep(self.autoscale_config["metrics_interval"])
-
             except asyncio.CancelledError:
                 self.logger.info("Autoscaler monitoring loop cancelled")
                 break
@@ -350,13 +344,12 @@ class RayAutoscaler:
             except Exception as e:
                 self.logger.error(f"Error in monitoring loop: {e}")
                 consecutive_errors += 1
-                should_continue = self._handle_monitoring_error(e)
 
-                if not should_continue or consecutive_errors >= max_consecutive_errors:
+                if consecutive_errors >= max_consecutive_errors:
                     self.logger.error(
                         f"Stopping monitoring loop after {consecutive_errors} consecutive errors"
                     )
-                    break
+                    raise e
 
                 # Exponential backoff for retries
                 retry_delay = min(
@@ -370,36 +363,25 @@ class RayAutoscaler:
         if self.is_running:
             asyncio.create_task(self.stop())
 
-
     async def start(self):
         """Start the autoscaler monitoring task."""
         try:
             if self.is_running:
                 self.logger.info("Autoscaler is already running")
-                return False
 
             if not ray.is_initialized():
                 self.logger.error("Ray is not initialized, cannot start autoscaler")
-                return False
 
             self.logger.info(
                 f"Starting Ray autoscaler with config {self.autoscale_config}"
             )
             self.is_running = True
 
-            # Create monitoring task with error handling
+            # Create monitoring task
             self.monitoring_task = asyncio.create_task(self._monitoring_loop())
-            self.monitoring_task.add_done_callback(
-                lambda f: (
-                    self.logger.error(f"Monitoring task failed: {f.exception()}")
-                    if f.exception()
-                    else None
-                )
-            )
-            return True
 
         except Exception as e:
-            self.logger.error(f"Failed to start autoscaler: {type(e).__name__}: {e}")
+            self.logger.error(f"Failed to start autoscaler: {e}")
             self.is_running = False
             self.monitoring_task = None
             raise e
@@ -426,19 +408,34 @@ class RayAutoscaler:
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
-                    self.logger.error(
-                        f"Error while stopping monitoring task: {type(e).__name__}: {e}"
-                    )
+                    self.logger.error(f"Error while stopping monitoring task: {e}")
                 finally:
                     self.monitoring_task = None
 
         except Exception as e:
-            self.logger.error(
-                f"Error during autoscaler shutdown: {type(e).__name__}: {e}"
-            )
+            self.logger.error(f"Error during autoscaler shutdown: {e}")
             # Ensure monitoring_task is cleared even if there's an error
             self.monitoring_task = None
             raise e
+
+    async def shutdown_cluster(self, grace_period: int = 30) -> None:
+        """Shut down the Ray cluster.
+
+        Args:
+            grace_period: Time in seconds to wait for tasks to finish before shutting down
+        """
+        await self.stop()
+        self.cluster_manager.shutdown_cluster(grace_period=grace_period)
+
+    async def notify(self) -> None:
+        """
+        Notify the autoscaler of a change in cluster state.
+        This method is called when the cluster state changes, such as when a new task is submitted or a node is added/removed.
+        It can be used to trigger scaling decisions or other actions based on the current state of the cluster.
+        """
+        self.logger.info("Notifying autoscaler of cluster state change")
+        self.last_time_collected_metrics = 0
+
     def get_status(self, history_len: int = 5) -> dict:
         """Get the current status of the autoscaler.
 
@@ -563,41 +560,32 @@ class RayAutoscaler:
                 "nodes": node_status,
             }
         except Exception as e:
-            self.logger.error(
-                f"Error getting autoscaler status - {type(e).__name__}: {e}"
-            )
+            self.logger.error(f"Error getting autoscaler status {e}")
             raise e
 
 
 if __name__ == "__main__":
     """Test the RayAutoscaler class with Ray Serve deployment"""
     import asyncio
-    import time
     import os
+    import time
 
     from hpc_worker.ray_cluster_manager import RayClusterManager
 
-    print("===== Testing Ray Autoscaler class =====", end="\n\n")
-
-    # Create RayClusterManager with test configuration
-    cluster_manager = RayClusterManager(
-        temp_dir="/proj/aicell/ray_tmp",
-        data_dir=os.path.dirname(__file__),
-    )
-    # cluster_manager.logger.setLevel(logging.DEBUG)
+    print("\n===== Testing Ray Autoscaler class =====\n")
 
     @ray.remote(num_cpus=1, num_gpus=1)
     def test_remote():
         import time
+        import torch
 
-        time.sleep(10)
+        time.sleep(3)
         return "Successfully run a task on the worker node!"
 
     async def test_autoscaler():
         try:
             # Create and start the autoscaler with shorter thresholds for quicker testing
             autoscaler = RayAutoscaler(
-                cluster_manager,
                 # Use shorter times for faster testing
                 default_time_limit="00:10:00",
                 max_workers=3,
@@ -606,11 +594,13 @@ if __name__ == "__main__":
                 scale_up_cooldown_seconds=10,  # 10 seconds between scale up
                 scale_down_cooldown_seconds=10,  # 10 seconds between scale down
                 node_grace_period_seconds=10,
+                # Cluster Manager parameters
+                temp_dir="/proj/aicell/ray_tmp",
+                data_dir=os.path.dirname(__file__),
+                container_image="/proj/aicell/users/x_nilme/autoscaler/tabula_0.1.1.sif",
             )
-            # autoscaler.logger.setLevel(logging.DEBUG)
-
-            # Start Ray cluster
-            cluster_manager.start_cluster(clean_up=True)
+            autoscaler.cluster_manager.logger.setLevel(logging.DEBUG)
+            autoscaler.logger.setLevel(logging.DEBUG)
 
             # Start autoscaler
             await autoscaler.start()
@@ -630,10 +620,9 @@ if __name__ == "__main__":
             print(results)
 
         except Exception as e:
-            print(f"An error occurred - {type(e).__name__}: {e}")
+            print(f"An error occurred {e}")
             raise e
         finally:
-            await autoscaler.stop()
-            cluster_manager.shutdown_cluster()
+            await autoscaler.shutdown_cluster()
 
     asyncio.run(test_autoscaler())

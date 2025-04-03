@@ -498,12 +498,11 @@ class RayClusterManager:
             mem_per_cpu: Memory (GB) allocated per CPU
             time_limit: SLURM job time limit (HH:MM:SS)
         """
-        # First check if Ray cluster is running
-        if not ray.is_initialized():
-            self.logger.error("Can not add worker - Ray cluster is not running")
-            raise RuntimeError("Ray cluster is not running")
-
         try:
+            # First check if Ray cluster is running
+            if not ray.is_initialized():
+                raise RuntimeError("Ray cluster is not running")
+        
             # Define the Ray worker command that will run inside the container
             ray_worker_cmd = (
                 "ray start "
@@ -535,7 +534,7 @@ class RayClusterManager:
             )
 
             # TODO: change back to real job submission after testing
-            print(f"\n===== Run this command in interactive SLURM job =====\n{apptainer_cmd}\n")
+            print(f"\n===== Run this command in an interactive SLURM job =====\n{apptainer_cmd}\n")
             job_id = "123456"
 
             # Create sbatch script using SlurmActor
@@ -563,7 +562,7 @@ class RayClusterManager:
                 raise RuntimeError("Failed to submit worker job")
 
         except Exception as e:
-            self.logger.error(f"Error submitting worker job: {e}")
+            self.logger.error(f"Error adding worker: {e}")
             raise e
 
     def remove_worker(self, worker_id: str, grace_period: int = 30) -> None:
@@ -575,10 +574,10 @@ class RayClusterManager:
         Returns:
             True if worker was successfully shut down
         """
-        if not ray.is_initialized():
-            self.logger.error("Can not remove worker - Ray cluster is not running")
-            raise RuntimeError("Ray cluster is not running")
         try:
+            if not ray.is_initialized():
+                raise RuntimeError("Ray cluster is not running")
+    
             # Check if worker id is valid
             if worker_id not in self.worker_job_history:
                 self.logger.error(f"Worker ID '{worker_id}' not found in worker jobs")

@@ -7,6 +7,7 @@ import numpy as np
 import ray
 from ray.util.state import list_actors, list_tasks
 
+from hpc_worker.ray_cluster_manager import RayClusterManager
 from hpc_worker.utils.logger import create_logger
 
 
@@ -370,7 +371,7 @@ class RayAutoscaler:
                 self.logger.info("Autoscaler is already running")
 
             if not ray.is_initialized():
-                self.logger.error("Ray is not initialized, cannot start autoscaler")
+                raise RuntimeError("Ray cluster is not running")
 
             self.logger.info(
                 f"Starting Ray autoscaler with config {self.autoscale_config}"
@@ -570,13 +571,12 @@ if __name__ == "__main__":
     import os
     import time
 
-    from hpc_worker.ray_cluster_manager import RayClusterManager
-
     print("\n===== Testing Ray Autoscaler class =====\n")
 
     @ray.remote(num_cpus=1, num_gpus=1)
     def test_remote():
         import time
+
         import torch
 
         time.sleep(3)

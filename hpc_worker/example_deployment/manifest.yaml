@@ -15,7 +15,7 @@ tags: [single-cell, RNA-seq, classification, deep-learning, transcriptomics]
 type: model
 version: 0.0.1
 entry_point: main.py
-class_name: DummyClass
+class_name: ChironModel
 deployment_config:
   ray_actor_options:
     num_gpus: 1

@@ -498,7 +498,7 @@ class RayClusterManager:
         num_gpus: int = 1,
         num_cpus: int = 8,
         mem_per_cpu: int = 16,
-        time_limit: str = "12:00:00",
+        time_limit: str = "6:00:00",
     ) -> bool:
         """Submit SLURM job for new Ray worker node.
 
@@ -535,9 +535,7 @@ class RayClusterManager:
             )
 
             # Define the apptainer command with the Ray worker command
-
             bind_dir_flag = f"--bind {self.ray_cluster_config['temp_dir']}:/tmp/ray"
-
             if self.ray_cluster_config["data_dir"]:
                 data_dir = self.ray_cluster_config["data_dir"]
                 self.logger.info(
@@ -546,7 +544,6 @@ class RayClusterManager:
                 bind_dir_flag += f",{data_dir}:/mnt"
 
             apptainer_cmd = (
-                "mkdir -p /tmp/ray && "
                 f"apptainer run "
                 f"--writable-tmpfs "
                 f"--contain "
@@ -637,7 +634,7 @@ class RayClusterManager:
 
 if __name__ == "__main__":
     # TODO: move this to tests
-    print("===== Testing Ray cluster class =====", end="\n\n")
+    print("\n===== Testing Ray cluster manager =====\n")
 
     # Test the class
     ray_manager = RayClusterManager(
@@ -655,21 +652,27 @@ if __name__ == "__main__":
     print("Adding a worker...")
     ray_manager.add_worker(time_limit="00:10:00")
     assert len(ray_manager.worker_job_history) == 1
-    worker_id = "w1"
+    worker_id, job_id = list(ray_manager.worker_job_history.items())[0]
 
     # Wait for worker to start
     status = ""
-    waited_time = 0
-    print("\n")  # Two empty lines
-    while status != "alive":
+    while status != "RUNNING":
         # Wait for worker node to appear in cluster status
-        print("\033[1A\033[K", end="")  # Remove logger warning message
-        print("\033[1A\033[K", end="")  # Clear previous print
-        print(
-            "Waiting for worker node to appear in cluster status" + "." * (waited_time),
-        )
-        time.sleep(1)
-        waited_time += 1
+        print("Waiting for job to start...")
+        time.sleep(3)
+        jobs = ray_manager.slurm_actor.get_jobs()
+        job_found = False
+        for job in jobs:
+            if job["job_id"] == job_id:
+                status = job["state"]
+                job_found = True
+                break
+        if not job_found:
+            raise RuntimeError(f"Job died before worker node appeared in cluster status")
+
+    while status != "alive":
+        print("Waiting for worker node to start...")
+        time.sleep(3)
         status = ray_manager._get_worker_status(worker_id)
 
     # Test cluster status
@@ -685,9 +688,11 @@ if __name__ == "__main__":
     def test_remote():
         import time
         import os
+
+        # Check if runtime environment is set up correctly
         # from hypha_rpc.sync import connect_to_server
 
-        # Check tmp directory
+        # Check Ray's temporary directory
         assert os.path.exists("/tmp/ray"), "Temporary directory does not exist"
 
         # Check data directory
@@ -696,7 +701,7 @@ if __name__ == "__main__":
 
         time.sleep(1)
 
-        return f"Successfully run a task in runtime environment on the worker node! Number of files in data directory: {num_files}"
+        return f"Successfully run a task in runtime environment on the worker node! (Number of files in data directory: {num_files})"
 
     obj_ref = test_remote.remote()
     print(ray.get(obj_ref))

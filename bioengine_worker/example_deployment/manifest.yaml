@@ -1,0 +1,45 @@
+authors:
+- {affiliation: KTH, github_user: oeway, name: Wei Ouyang}
+covers: []
+description: A deep learning model for single-cell transcriptomics analysis, designed to perform cell type classification and feature extraction from single-cell RNA sequencing data. This model has been trained on diverse cell populations and validated across multiple datasets.
+documentation: README.md
+format_version: 0.5.0
+git_repo: https://github.com/kreshuklab/go-nuclear
+id: philosophical-panda
+id_emoji: '🐼'
+license: MIT
+links: []
+maintainers: []
+name: Test Deployment
+tags: [single-cell, RNA-seq, classification, deep-learning, transcriptomics]
+type: model
+version: 0.0.1
+entry_point: main.py
+class_name: ChironModel
+deployment_config:
+  ray_actor_options:
+    num_gpus: 1
+    num_cpus: 1
+    # memory: 4294967296  # 4GB RAM
+    # runtime_env:
+    #   image_uri: "--tls-verify=false python:3.11.9-slim"
+      # container:
+      #   image: python:3.11.9-slim
+      #   run_options: ["--tls-verify=false"]
+      # pip: ["pandas"]
+      # pip: ["torch==2.1.2", "torchvision==0.16.2"]
+  # max_ongoing_requests: 1
+  # max_queued_requests: 10
+  autoscaling_config:
+    min_replicas: 1
+    initial_replicas: 1
+    max_replicas: 8
+    target_num_ongoing_requests_per_replica: 0.8
+    metrics_interval_s: 2.0
+    look_back_period_s: 10.0
+    downscale_delay_s: 300
+    upscale_delay_s: 0.0
+  health_check_period_s: 30.0
+  health_check_timeout_s: 30.0
+  graceful_shutdown_timeout_s: 300.0
+  graceful_shutdown_wait_loop_s: 2.0

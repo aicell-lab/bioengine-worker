@@ -1,5 +1,4 @@
 httpx
 hypha-rpc
-podman
 pyyaml
 ray[client,data,train,serve]==2.42.1

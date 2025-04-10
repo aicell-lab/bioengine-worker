@@ -194,19 +194,20 @@ if __name__ == "__main__":
     import os
     from hypha_rpc import connect_to_server, login
     from bioengine_worker.ray_deployment_manager import create_example_deployment
-    async def test_bioengine_worker():
+    async def test_bioengine_worker(manage_cluster=False, keep_running=True):
         try:
             # Create BioEngine worker instance
             server_url="https://hypha.aicell.io"
             token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
             bioengine_worker = BioEngineWorker(
-                workspace="ws-user-github|49943582",
+                workspace="chiron-platform",
                 server_url=server_url,
                 token=token,
                 service_id="bioengine-worker-test",
+                manage_cluster=manage_cluster,
                 ray_autoscaler_config={
                     "metrics_interval_seconds": 10,
-                    "temp_dir": "/proj/aicell/ray_tmp",
+                    "temp_dir": "/tmp/ray",
                     "data_dir": os.path.dirname(__file__),
                     "container_image": "/proj/aicell/users/x_nilme/autoscaler/tabula_0.1.1.sif",
                 }
@@ -241,6 +242,12 @@ if __name__ == "__main__":
             # Get the list of deployments
             deployments = await service_info.list_deployments()
             assert deployment_name in deployments
+
+            # Keep server running if requested
+            if keep_running:
+                print("Server running. Press Ctrl+C to stop.")
+                while True:
+                    await asyncio.sleep(1)
 
         except Exception as e:
             print(f"Test error: {e}")

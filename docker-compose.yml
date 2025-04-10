@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  # Run interactively: `docker compose run --rm bioengine_worker`
+  # Start ray cluster: `ray start --head`
+  # Test BioEngineWorker: `python bioengine_worker/worker.py`
+  bioengine_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/aicell-lab/bioengine-worker:0.1.3
+    container_name: bioengine_worker
+    volumes:
+      - ./ray_sessions:/tmp/ray
+      - ./bioengine_worker:/app/bioengine_worker
+    shm_size: 10.24gb
+    env_file:
+      - .env
+    restart: unless-stopped
+    command: /bin/bash
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    runtime: nvidia

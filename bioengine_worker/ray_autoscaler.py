@@ -7,8 +7,8 @@ import numpy as np
 import ray
 from ray.util.state import list_actors, list_tasks
 
-from hpc_worker.ray_cluster_manager import RayClusterManager
-from hpc_worker.utils.logger import create_logger
+from bioengine_worker.ray_cluster_manager import RayClusterManager
+from bioengine_worker.utils.logger import create_logger
 
 
 class RayAutoscaler:

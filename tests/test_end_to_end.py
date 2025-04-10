@@ -1,4 +1,4 @@
-"""End-to-end integration test for HPC Worker."""
+"""End-to-end integration test for BioEngine worker."""
 
 import os
 import asyncio
@@ -6,7 +6,7 @@ import tempfile
 import time
 import pytest
 import ray
-from hpc_worker.hpc_worker import HpcWorker
+from bioengine_worker.worker import BioEngineWorker
 
 @pytest.mark.end_to_end
 def test_register_and_ray_operations():
@@ -14,7 +14,7 @@ def test_register_and_ray_operations():
     
     This test will:
     1. Connect to the real Hypha server
-    2. Register the HPC worker service
+    2. Register the BioEngine worker service
     3. Start a real Ray cluster head node
     4. Test Ray cluster operations
     5. Clean up both Ray cluster and service
@@ -33,7 +33,7 @@ def test_register_and_ray_operations():
     
     try:
         # Create a worker with real parameters
-        worker = HpcWorker(
+        worker = BioEngineWorker(
             config_path=temp_file_path,
             num_gpu=1,
             dataset_paths=["/tmp"],  # Temporary path for testing

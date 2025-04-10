@@ -8,9 +8,9 @@ from functools import partial
 import asyncio
 import yaml
 
-from hpc_worker.utils.logger import create_logger
-from hpc_worker.ray_autoscaler import RayAutoscaler
-from hpc_worker.utils.format_time import format_time
+from bioengine_worker.utils.logger import create_logger
+from bioengine_worker.ray_autoscaler import RayAutoscaler
+from bioengine_worker.utils.format_time import format_time
 
 
 class RayDeploymentManager:

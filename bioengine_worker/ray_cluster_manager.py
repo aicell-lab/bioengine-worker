@@ -10,9 +10,9 @@ from typing import Dict, List, Optional
 import ray
 from ray import serve
 
-from hpc_worker.slurm_actor import SlurmActor
-from hpc_worker.utils.format_time import format_time
-from hpc_worker.utils.logger import create_logger, logging_format
+from bioengine_worker.slurm_actor import SlurmActor
+from bioengine_worker.utils.format_time import format_time
+from bioengine_worker.utils.logger import create_logger, logging_format
 
 
 # TODO: make async

@@ -7,7 +7,7 @@ import pytest
 import platform
 import subprocess
 from unittest.mock import patch
-from hpc_worker.ray_cluster_manager import RayClusterManager
+from bioengine_worker.ray_cluster_manager import RayClusterManager
 
 def is_running_in_vscode():
     """Check if test is running in VSCode's test runner."""

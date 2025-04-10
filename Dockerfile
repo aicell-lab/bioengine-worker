@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
     gnupg2 \
+    ca-certificates \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/Debian_11/Release.key | gpg --dearmor > /etc/apt/keyrings/podman.gpg \
     && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/podman.gpg] https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/Debian_11/ /" > /etc/apt/sources.list.d/podman.list \
@@ -33,7 +34,7 @@ WORKDIR /app
 
 # Copy project files
 COPY pyproject.toml /app/
-COPY ./hpc_worker /app/hpc_worker/
+COPY ./bioengine_worker /app/bioengine_worker/
 
 # Install the package
 RUN pip install .

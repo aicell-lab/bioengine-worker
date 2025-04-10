@@ -1,4 +1,4 @@
-"""Common fixtures and mocks for HPC Worker tests."""
+"""Common fixtures and mocks for BioEngine worker tests."""
 
 import os
 import sys
@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 @pytest.fixture
 def mock_ray():
     """Mock Ray module for testing."""
-    with patch('hpc_worker.ray_cluster_manager.ray') as mock_ray:
+    with patch('bioengine_worker.ray_cluster_manager.ray') as mock_ray:
         # Mock ray.is_initialized() to return False by default
         mock_ray.is_initialized.return_value = False
         
@@ -45,7 +45,7 @@ def mock_ray():
 @pytest.fixture
 def mock_subprocess():
     """Mock subprocess module for testing."""
-    with patch('hpc_worker.ray_cluster_manager.subprocess') as mock_subprocess:
+    with patch('bioengine_worker.ray_cluster_manager.subprocess') as mock_subprocess:
         # Mock successful command execution
         mock_process = MagicMock()
         mock_process.returncode = 0
@@ -106,7 +106,7 @@ def real_ray_manager():
     This allows testing with a real Ray manager when appropriate,
     but without connecting to actual Ray clusters.
     """
-    from hpc_worker.ray_cluster_manager import RayClusterManager
+    from bioengine_worker.ray_cluster_manager import RayClusterManager
     
     # Create a logger for the test
     logger = logging.getLogger("test_ray_manager")

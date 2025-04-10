@@ -7,10 +7,10 @@ from typing import Optional, Dict
 from hypha_rpc import connect_to_server
 import ray
 
-from hpc_worker.ray_autoscaler import RayAutoscaler
-from hpc_worker.ray_deployment_manager import RayDeploymentManager
-from hpc_worker.utils.logger import create_logger, logging_format
-from hpc_worker.utils.format_time import format_time
+from bioengine_worker.ray_autoscaler import RayAutoscaler
+from bioengine_worker.ray_deployment_manager import RayDeploymentManager
+from bioengine_worker.utils.logger import create_logger, logging_format
+from bioengine_worker.utils.format_time import format_time
 
 
 class BioEngineWorker:
@@ -25,7 +25,7 @@ class BioEngineWorker:
         workspace: str,
         server_url: str = "https://hypha.aicell.io",
         token: Optional[str] = None,
-        service_id: str = "hpc-worker",
+        service_id: str = "bioengine-worker",
         logger: Optional[logging.Logger] = None,
         ray_cluster_config: Optional[Dict] = None,
         ray_autoscaler_config: Optional[Dict] = None,
@@ -33,7 +33,7 @@ class BioEngineWorker:
         manage_cluster: bool = True,
         ray_init_kwargs: Optional[Dict] = None,
     ):
-        """Initialize HPC worker with component managers.
+        """Initialize BioEngine worker with component managers.
 
         Args:
             workspace: Path to the workspace directory used for cluster logs and state.
@@ -86,7 +86,7 @@ class BioEngineWorker:
         self.ray_start_time = None
 
     async def start(self):
-        """Start the HPC Worker by initializing the Ray cluster or attaching to an existing one,
+        """Start the BioEngine worker by initializing the Ray cluster or attaching to an existing one,
         connecting to the Hypha server, and initializing the deployment manager.
         
         Returns:
@@ -103,7 +103,7 @@ class BioEngineWorker:
         await self._connect_to_server()
         await self.deployment_manager.initialize(self.server)
         sid = await self._register()
-        self.logger.info(f"HPC Worker started and registered with Hypha service: {sid}")
+        self.logger.info(f"BioEngine worker started and registered with Hypha service: {sid}")
         return sid
 
     async def _connect_to_server(self) -> None:
@@ -133,7 +133,7 @@ class BioEngineWorker:
         service_info = await self.server.register_service(
             {
                 "id": self.service_id,
-                "name": "HPC Worker",
+                "name": "BioEngine worker",
                 "description": "Controls Ray cluster on HPC system",
                 "config": {"visibility": "public", "require_context": True},
                 "deploy_artifact": self.deployment_manager.deploy_artifact,
@@ -144,7 +144,7 @@ class BioEngineWorker:
         )
 
         self.logger.info(
-            f"Successfully registered HPC Worker service: {service_info.id}"
+            f"Successfully registered BioEngine worker service: {service_info.id}"
         )
         return service_info.id
 
@@ -193,17 +193,17 @@ if __name__ == "__main__":
     """Test the BioEngineWorker class functionality"""
     import os
     from hypha_rpc import connect_to_server, login
-    from hpc_worker.ray_deployment_manager import create_example_deployment
+    from bioengine_worker.ray_deployment_manager import create_example_deployment
     async def test_bioengine_worker():
         try:
-            # Create HPC worker instance
+            # Create BioEngine worker instance
             server_url="https://hypha.aicell.io"
             token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
             bioengine_worker = BioEngineWorker(
                 workspace="ws-user-github|49943582",
                 server_url=server_url,
                 token=token,
-                service_id="hpc-worker-test",
+                service_id="bioengine-worker-test",
                 ray_autoscaler_config={
                     "metrics_interval_seconds": 10,
                     "temp_dir": "/proj/aicell/ray_tmp",

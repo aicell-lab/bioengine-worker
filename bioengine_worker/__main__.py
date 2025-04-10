@@ -6,10 +6,10 @@ import sys
 import signal
 import atexit
 
-from hpc_worker.hpc_worker import HpcWorker
+from bioengine_worker.worker import BioEngineWorker
 
 # Configure logger
-logger = logging.getLogger("hpc_worker")
+logger = logging.getLogger("bioengine_worker")
 logger.setLevel(logging.INFO)
 logger.propagate = False
 console_handler = logging.StreamHandler()
@@ -47,11 +47,11 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 async def main(args):
-    """Main function to initialize and register HPC worker"""
+    """Main function to initialize and register BioEngine worker"""
     global worker
     
-    # Create HPC worker instance
-    worker = HpcWorker(
+    # Create BioEngine worker instance
+    bioengine_worker = BioEngineWorker(
         config_path=args.config_file,
         server_url=args.server_url,
         num_gpu=args.num_gpu,
@@ -61,7 +61,7 @@ async def main(args):
     )
     
     # Register worker with Hypha
-    registration_result = await worker.register()
+    registration_result = await bioengine_worker.register()
     
     if not registration_result.get("success", False):
         logger.error(f"Failed to register worker: {registration_result.get('message', 'Unknown error')}")
@@ -71,9 +71,9 @@ async def main(args):
 
 if __name__ == "__main__":
     description = """
-Register HPC worker to Chiron platform
+Register BioEngine worker to Hypha server.
 
-This script registers a HPC worker service with the Hypha server, enabling:
+This script registers a BioEngine worker service with the Hypha server, enabling:
 - Remote monitoring of worker status
 - Ray cluster management (start/stop)
 - Submitting worker jobs to the HPC system
@@ -81,13 +81,13 @@ This script registers a HPC worker service with the Hypha server, enabling:
 - Auto-scaling of resources based on workload
 
 Container execution:
-    Run in image chiron_worker_0.1.0.sif
+    Run in image bioengine_worker_0.1.0.sif
 
     Pull the image with:
-    `apptainer pull chiron_worker_0.1.0.sif docker://ghcr.io/aicell-lab/chiron-worker:0.1.0`
+    `apptainer pull bioengine_worker_0.1.0.sif docker://ghcr.io/aicell-lab/bioengine-worker:0.1.0`
 
     Run with:
-    `apptainer run --contain --nv chiron_worker_0.1.0.sif python -m hpc_worker [options]`
+    `apptainer run --contain --nv bioengine_worker_0.1.0.sif python -m bioengine_worker [options]`
 """
 
     parser = argparse.ArgumentParser(
@@ -152,7 +152,7 @@ Container execution:
             # If registration successful, keep the loop running
             loop.run_forever()
         else:
-            logger.error("Failed to initialize HPC worker, exiting.")
+            logger.error("Failed to initialize BioEngine worker, exiting.")
             sys.exit(1)
     except Exception as e:
         logger.error(f"Unhandled exception in main loop: {str(e)}")

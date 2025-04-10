@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "hpc_worker"
+name = "bioengine_worker"
 version = "0.1.0"
-description = "HPC Worker for managing Ray clusters and datasets"
+description = "BioEngine Worker for managing Ray clusters and datasets"
 requires-python = "==3.11.9"
 dependencies = [
     "hypha-rpc",

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch, call
 import pytest
 import tempfile
 
-from hpc_worker.ray_cluster_manager import RayClusterManager
+from bioengine_worker.ray_cluster_manager import RayClusterManager
 
 
 def test_ray_cluster_manager_init():

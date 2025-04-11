@@ -161,7 +161,8 @@ cython_debug/
 
 # Personal
 *.patch
-*logs/
+*slurm_logs
 *ray_sessions/
 .vscode/
 *.sif
+data/

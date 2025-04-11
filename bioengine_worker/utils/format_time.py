@@ -2,9 +2,7 @@ from datetime import datetime, timezone
 from typing import Dict
 
 
-def format_time(
-    timestamp: int, tz: timezone = timezone.utc
-) -> Dict:
+def format_time(timestamp: int, tz: timezone = timezone.utc) -> Dict:
     """Format a timestamp into human-readable format with duration
 
     Args:

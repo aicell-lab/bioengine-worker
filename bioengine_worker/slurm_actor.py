@@ -3,7 +3,9 @@ import os
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 from typing import Dict, List, Optional
+
 from bioengine_worker.utils.logger import create_logger
 
 
@@ -18,12 +20,11 @@ class SlurmActor:
 
         # Directory for SLURM logs
         if logs_dir:
-            self.logs_dir = logs_dir
+            self.logs_dir = Path(logs_dir).resolve()
         else:
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self.logs_dir = os.path.join(base_dir, "slurm_logs")
+            self.logs_dir = Path(__file__).resolve().parent.parent / "slurm_logs"
 
-        os.makedirs(self.logs_dir, exist_ok=True)
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
 
         # Set up logging
         self.logger = logger or create_logger("SlurmActor")

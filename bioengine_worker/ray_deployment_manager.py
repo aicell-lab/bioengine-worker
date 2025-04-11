@@ -1,16 +1,18 @@
+import asyncio
 import logging
 import os
-import ray
-from ray import serve
-import httpx
-from typing import Dict, Optional, Any, List
 from functools import partial
-import asyncio
-import yaml
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from bioengine_worker.utils.logger import create_logger
+import httpx
+import ray
+import yaml
+from ray import serve
+
 from bioengine_worker.ray_autoscaler import RayAutoscaler
 from bioengine_worker.utils.format_time import format_time
+from bioengine_worker.utils.logger import create_logger
 
 
 class RayDeploymentManager:
@@ -38,80 +40,103 @@ class RayDeploymentManager:
         """
         # Store parameters
         self.deployment_collection_id = deployment_collection_id
-        self.service_id = service_id
+        self._service_id = service_id
         self.autoscaler = autoscaler
 
         # Initialize state variables
         self.server = None
         self.artifact_manager = None
         self.service_info = None
+        self._deployed_artifacts = set()
 
         # Set up logging
         self.logger = logger or create_logger("RayDeploymentManager")
 
     @property
-    def deployments(self) -> Dict:
-        """Get a dictionary of currently deployed models"""
-        output = {}
-        if not ray.is_initialized():
-            self.logger.error("Can not get deployments - Ray cluster is not running")
-            raise RuntimeError("Ray cluster is not running")
-
-        serve_status = ray.serve.status()
-        for application_name, application in serve_status.applications.items():
-            formatted_time = format_time(application.last_deployed_time_s)
-            output[application_name] = {
-                "status": application.status.value,
-                "last_deployed_at": formatted_time["start_time"],
-                "duration_since": formatted_time["duration_since"],
-            }
-            deployments = application.deployments
-            for name, deployment in deployments.items():
-                output[application_name][name] = {
-                    "status": deployment.status.value,
-                    "replica_states": deployment.replica_states,
-                }
-        self.logger.debug(
-            f"Current deployments: {list(serve_status.applications.keys())}"
-        )
-        return output
-
-    async def initialize(self, server) -> None:
-        """Initialize the deployment manager with a Hypha server connection
-
-        Args:
-            server: Hypha server connection
-        """
-        try:
-            # Store server connection
-            self.server = server
-
-            # Get artifact manager service
-            self.artifact_manager = await self.server.get_service(
-                "public/artifact-manager"
+    def deployment_service_id(self) -> str:
+        if not self.service_info:
+            raise RuntimeError(
+                "No deployment service registered. Deploy an artifact first."
             )
-            self.logger.info("Successfully connected to artifact manager")
+        return self.service_info.id
+
+    async def _update_services(self) -> None:
+        """Update Hypha services based on currently deployed models"""
+        try:
+            # Ensure server connection
+            if not self.server:
+                raise RuntimeError("Hypha server connection not available")
+
+            # Create service functions for each deployment
+            service_functions = {}
+
+            # Add a list_deployments endpoint
+            async def list_deployments(context=None):
+                """List all deployments"""
+                deployments = self.get_deployments()
+                return list(deployments.keys())
+
+            service_functions["list_deployments"] = list_deployments
+
+            # Get deployment handles for each tracked deployment
+            async def create_model_function(application_name, data=None, context=None):
+                # TODO: support other functions than __call__
+                try:
+                    app_handle = serve.get_app_handle(name=application_name)
+                    return await app_handle.remote(data=data)
+                except Exception as e:
+                    self.logger.error(
+                        f"Failed to get handle for '{application_name}': {e}"
+                    )
+                    raise e
+
+            # Create a function for each deployment
+            deployments = self.get_deployments()
+            for deployment_name in deployments.keys():
+                try:
+                    service_functions[deployment_name] = partial(
+                        create_model_function, deployment_name
+                    )
+                    self.logger.info(
+                        f"Prepared model function for deployment '{deployment_name}'"
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        f"Failed to get handle for {deployment_name}: {e}"
+                    )
+                    raise e
+
+            # Register all model functions as a single service
+            if len(service_functions) > 1:
+                service_info = await self.server.register_service(
+                    {
+                        "id": self._service_id,
+                        "name": "Ray Model Services",
+                        "description": "Deployed Ray Serve models",
+                        "config": {"visibility": "public", "require_context": True},
+                        **service_functions,
+                    },
+                    {"overwrite": True},
+                )
+                self.logger.info("Successfully registered model services")
+                server_url = self.server.config.public_base_url
+                workspace, sid = service_info.id.split("/")
+                service_url = f"{server_url}/{workspace}/services/{sid}"
+                self.logger.info(f"Service available at: {service_url}")
+                self.logger.info(
+                    f"List all deployments at: {service_url}/list_deployments"
+                )
+                self.logger.info(
+                    f"Test the deployment service at: {service_url}/<deployment_name>"
+                )
+                self.service_info = service_info
+            else:
+                self.logger.info("No deployments to register as services")
+                self.service_info = None
 
         except Exception as e:
-            self.logger.error(f"Error initializing Ray Deployment Manager: {e}")
-            self.server = None
-            self.artifact_manager = None
-
+            self.logger.error(f"Error updating services: {e}")
             raise e
-
-    def _get_deployment_name(self, artifact_id: str) -> str:
-        """Convert artifact ID to a deployment name
-
-        Args:
-            artifact_id: The artifact ID to convert
-
-        Returns:
-            str: The converted deployment name
-        """
-        try:
-            return artifact_id.split("/")[1].replace("-", "_")
-        except IndexError:
-            return artifact_id.replace("-", "_")
 
     async def _load_deployment_code(
         self,
@@ -168,13 +193,52 @@ class RayDeploymentManager:
             self.logger.error(f"Error loading deployment code for {artifact_id}: {e}")
             raise e
 
+    async def initialize(self, server) -> None:
+        """Initialize the deployment manager with a Hypha server connection
+
+        Args:
+            server: Hypha server connection
+        """
+        try:
+            # Store server connection
+            self.server = server
+
+            # Get artifact manager service
+            self.artifact_manager = await self.server.get_service(
+                "public/artifact-manager"
+            )
+            self.logger.info("Successfully connected to artifact manager")
+
+        except Exception as e:
+            self.logger.error(f"Error initializing Ray Deployment Manager: {e}")
+            self.server = None
+            self.artifact_manager = None
+
+            raise e
+
+    def get_deployment_name(
+        self, artifact_id: str, context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Convert artifact ID to a deployment name
+
+        Args:
+            artifact_id: The artifact ID to convert
+
+        Returns:
+            str: The converted deployment name
+        """
+        try:
+            return artifact_id.split("/")[1].replace("-", "_")
+        except IndexError:
+            return artifact_id.replace("-", "_")
+
     async def deploy_artifact(
         self,
         artifact_id: str,
         version=None,
         skip_update=False,
         context: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    ) -> str:
         """
         Deploy a single artifact to Ray Serve
 
@@ -183,6 +247,9 @@ class RayDeploymentManager:
             version: Optional version of the artifact
             skip_update: Skip updating services after deployment
             context: Context for Hypha service
+
+        Returns:
+            str: Deployment name
         """
         try:
             # Verify client is connected to Hypha server
@@ -204,7 +271,7 @@ class RayDeploymentManager:
                 raise ValueError(
                     f"Deployment configuration not found for artifact '{artifact_id}'"
                 )
-            deployment_name = self._get_deployment_name(artifact_id)
+            deployment_name = self.get_deployment_name(artifact_id)
 
             # Load the deployment code
             class_name = manifest.get("class_name")
@@ -243,10 +310,15 @@ class RayDeploymentManager:
             # Wait for the deployment to complete
             await task
 
+            # Add the deployment to the tracked artifacts
+            self._deployed_artifacts.add(deployment_name)
+
             self.logger.info(f"Successfully deployed {artifact_id}")
 
             if not skip_update:
                 await self._update_services()
+
+            return deployment_name
 
         except Exception as e:
             self.logger.error(f"Error deploying '{artifact_id}': {e}")
@@ -274,13 +346,17 @@ class RayDeploymentManager:
             if not ray.is_initialized():
                 raise RuntimeError("Ray cluster is not running")
 
-            deployment_name = self._get_deployment_name(artifact_id)
+            deployment_name = self.get_deployment_name(artifact_id)
 
-            if deployment_name not in self.deployments.keys():
+            deployments = self.get_deployments()
+            if deployment_name not in deployments.keys():
                 raise ValueError(f"Deployment '{deployment_name}' not found")
 
             # Delete the deployment in a separate thread
             await asyncio.to_thread(serve.delete, deployment_name)
+
+            # Remove the deployment from the tracked artifacts
+            self._deployed_artifacts.discard(deployment_name)
 
             self.logger.info(f"Successfully undeployed {artifact_id}")
 
@@ -291,78 +367,34 @@ class RayDeploymentManager:
             self.logger.error(f"Error undeploying {artifact_id}: {e}")
             raise e
 
-    async def _update_services(self) -> None:
-        """Update Hypha services based on currently deployed models"""
-        try:
-            # Ensure server connection
-            if not self.server:
-                raise RuntimeError("Hypha server connection not available")
+    def get_deployments(self):
+        """Get a dictionary of currently deployed models"""
+        output = {}
+        if not ray.is_initialized():
+            self.logger.error("Can not get deployments - Ray cluster is not running")
+            raise RuntimeError("Ray cluster is not running")
 
-            # Create service functions for each deployment
-            service_functions = {}
-
-            # Add a list_deployments endpoint
-            async def list_deployments(context=None):
-                return list(self.deployments.keys())
-
-            service_functions["list_deployments"] = list_deployments
-
-            # Get deployment handles for each tracked deployment
-            async def create_model_function(application_name, data=None, context=None):
-                # TODO: support other functions than __call__
-                try:
-                    app_handle = serve.get_app_handle(name=application_name)
-                    return await app_handle.remote(data=data)
-                except Exception as e:
-                    self.logger.error(
-                        f"Failed to get handle for '{application_name}': {e}"
-                    )
-                    raise e
-
-            for deployment_name in self.deployments.keys():
-                try:
-                    service_functions[deployment_name] = partial(
-                        create_model_function, deployment_name
-                    )
-                    self.logger.info(
-                        f"Prepared model function for deployment '{deployment_name}'"
-                    )
-                except Exception as e:
-                    self.logger.error(
-                        f"Failed to get handle for {deployment_name}: {e}"
-                    )
-                    raise e
-
-            # Register all model functions as a single service
-            if len(service_functions) > 1:
-                service_info = await self.server.register_service(
-                    {
-                        "id": self.service_id,
-                        "name": "Ray Model Services",
-                        "description": "Deployed Ray Serve models",
-                        "config": {"visibility": "public", "require_context": True},
-                        **service_functions,
-                    },
-                    {"overwrite": True},
-                )
-                self.logger.info("Successfully registered  model services")
-                server_url = self.server.config.public_base_url
-                workspace = service_info.config.workspace
-                sid = service_info.id.split("/")[-1]
-                service_url = (
-                    f"{server_url}/{workspace}/services/{sid}"
-                )
-                self.logger.debug(f"Service available at: {service_url}")
-                self.logger.debug(f"List all deployments at: {service_url}/list_deployments")
-                self.logger.debug(f"Test the deployment service at: {service_url}/<deployment_name>")
-                self.service_info = service_info
-            else:
-                self.logger.info("No deployments to register as services")
-                self.service_info = None
-
-        except Exception as e:
-            self.logger.error(f"Error updating services: {e}")
-            raise e
+        serve_status = ray.serve.status()
+        for application_name, application in serve_status.applications.items():
+            if application_name not in self._deployed_artifacts:
+                # Skip Ray Serve applications that were not deployed by this manager
+                continue
+            formatted_time = format_time(application.last_deployed_time_s)
+            output[application_name] = {
+                "status": application.status.value,
+                "last_deployed_at": formatted_time["start_time"],
+                "duration_since": formatted_time["duration_since"],
+            }
+            deployments = application.deployments
+            for name, deployment in deployments.items():
+                output[application_name][name] = {
+                    "status": deployment.status.value,
+                    "replica_states": deployment.replica_states,
+                }
+        self.logger.debug(
+            f"Current deployments: {list(serve_status.applications.keys())}"
+        )
+        return output
 
     async def deploy_all_artifacts(self) -> List[str]:
         """Deploy all artifacts in the deployment collection to Ray Serve
@@ -370,7 +402,7 @@ class RayDeploymentManager:
         Returns:
             list: List of artifact IDs that were successfully deployed
         """
-        deployed_artifact_ids = []
+        deployments = []
         try:
             # Ensure artifact manager is available
             if not self.artifact_manager:
@@ -385,8 +417,10 @@ class RayDeploymentManager:
             for artifact in artifacts:
                 try:
                     artifact_id = artifact["id"]
-                    await self.deploy_artifact(artifact_id, skip_update=True)
-                    deployed_artifact_ids.append(artifact_id)
+                    deployment_name = await self.deploy_artifact(
+                        artifact_id, skip_update=True
+                    )
+                    deployments.append(deployment_name)
                 except Exception as e:
                     self.logger.error(f"Failed to deploy {artifact_id}: {e}")
                     raise e
@@ -394,7 +428,7 @@ class RayDeploymentManager:
             # Update services after all deployments
             await self._update_services()
 
-            return deployed_artifact_ids
+            return deployments
 
         except Exception as e:
             self.logger.error(f"Error deploying all artifacts: {e}")
@@ -406,28 +440,25 @@ class RayDeploymentManager:
             # Ensure Ray is initialized
             if not ray.is_initialized():
                 raise RuntimeError("Ray cluster is not running")
+            
+            self.logger.info("Cleaning up deployments...")
 
-            for deployment_name in self.deployments.keys():
+            deployments = self.get_deployments()
+            for deployment_name in deployments.keys():
                 serve.delete(deployment_name)
                 self.logger.info(f"Deleted application '{deployment_name}'")
 
-            if len(self.deployments) == 0:
+            updated_deployments = self.get_deployments()
+            if len(updated_deployments) == 0:
                 self.logger.info("Successfully cleaned up all deployments")
             else:
                 self.logger.warning(
-                    f"Failed to clean up all deployments, {len(self.deployments)} remaining."
+                    f"Failed to clean up all deployments, {len(updated_deployments)} remaining."
                 )
 
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
             raise e
-
-    def get_status(self):
-        """Get the current status of the Ray Deployment Manager."""
-        return {
-            "deployments": self.deployments,
-            "service_info": self.service_info,
-        }
 
 
 async def create_example_deployment(artifact_manager, logger=None) -> str:
@@ -444,9 +475,9 @@ async def create_example_deployment(artifact_manager, logger=None) -> str:
         logger = create_logger("ArtifactManager")
 
     # Get example deployment directory
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    example_deployment_dir = os.path.join(base_dir, "example_deployment")
-    with open(os.path.join(example_deployment_dir, "manifest.yaml"), "r") as f:
+    base_dir = Path(__file__).parent
+    example_deployment_dir = base_dir / "example_deployment"
+    with open(example_deployment_dir / "manifest.yaml", "r") as f:
         deployment_manifest = yaml.safe_load(f)
 
     # Check existing deployments
@@ -475,7 +506,7 @@ async def create_example_deployment(artifact_manager, logger=None) -> str:
 
     # Upload main.py
     upload_url = await artifact_manager.put_file(test_artifact.id, file_path="main.py")
-    with open(os.path.join(example_deployment_dir, "main.py"), "r") as f:
+    with open(example_deployment_dir / "main.py", "r") as f:
         file_content = f.read()
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.put(upload_url, data=file_content)
@@ -486,7 +517,7 @@ async def create_example_deployment(artifact_manager, logger=None) -> str:
     upload_url = await artifact_manager.put_file(
         test_artifact.id, file_path="manifest.yaml"
     )
-    with open(os.path.join(example_deployment_dir, "manifest.yaml"), "r") as f:
+    with open(example_deployment_dir / "manifest.yaml", "r") as f:
         file_content = f.read()
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.put(upload_url, data=file_content)
@@ -508,26 +539,39 @@ if __name__ == "__main__":
 
     from hypha_rpc import connect_to_server, login
 
+    from bioengine_worker.ray_cluster_manager import RayClusterManager
+
     print("\n===== Testing RayDeploymentManager =====\n")
 
     # Create and start the autoscaler with shorter thresholds for quicker testing
-    autoscaler = RayAutoscaler(
-        # Use shorter times for faster testing
-        default_time_limit="00:10:00",
-        max_workers=1,
-        metrics_interval_seconds=10,
-        # Cluster Manager parameters
-        temp_dir="/proj/aicell/ray_tmp",
-        data_dir=os.path.dirname(__file__),
-        container_image="/proj/aicell/users/x_nilme/autoscaler/tabula_0.1.1.sif",
+    cluster_manager = RayClusterManager(
+        head_num_cpus=4,
+        temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
+        data_dir=str(Path(__file__).parent.parent / "data"),
+        container_image=str(Path(__file__).parent.parent / "tabula_0.1.1.sif"),
     )
-    autoscaler.cluster_manager.logger.setLevel(logging.DEBUG)
-    autoscaler.logger.setLevel(logging.DEBUG)
+    cluster_manager.logger.setLevel(logging.DEBUG)
+    cluster_manager.start_cluster(force_clean_up=True)
 
-    async def test_deployment_manager(server_url="https://hypha.aicell.io", keep_running=False):
+    if cluster_manager.slurm_available:
+        autoscaler = RayAutoscaler(
+            cluster_manager=cluster_manager,
+            # Use shorter times for faster testing
+            default_time_limit="00:10:00",
+            max_workers=1,
+            metrics_interval_seconds=10,
+        )
+        autoscaler.logger.setLevel(logging.DEBUG)
+    else:
+        autoscaler = None
+
+    async def test_deployment_manager(
+        server_url="https://hypha.aicell.io", keep_running=False
+    ):
         try:
-            # Start autoscaler
-            await autoscaler.start()
+            if autoscaler:
+                # Start autoscaler
+                await autoscaler.start()
 
             # Create deployment manager
             deployment_manager = RayDeploymentManager(autoscaler=autoscaler)
@@ -546,11 +590,12 @@ if __name__ == "__main__":
             )
 
             # Deploy the artifact
-            await deployment_manager.deploy_artifact(artifact_id)
+            deployment_name = await deployment_manager.deploy_artifact(artifact_id)
 
             # Test registered Hypha service
-            deployment_service = await server.get_service(deployment_manager.service_id)
-            deployment_name = deployment_manager._get_deployment_name(artifact_id)
+            deployment_service = await server.get_service(
+                deployment_manager.deployment_service_id
+            )
 
             # Get the list of deployments
             deployments = await deployment_service.list_deployments()
@@ -582,7 +627,10 @@ if __name__ == "__main__":
             print(f"An error occurred: {e}")
             raise e
         finally:
-            await autoscaler.shutdown_cluster()
+            if autoscaler:
+                await autoscaler.shutdown_cluster()
+            else:
+                cluster_manager.shutdown_cluster()
 
     # Run the test
     asyncio.run(test_deployment_manager(keep_running=True))

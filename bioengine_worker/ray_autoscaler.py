@@ -20,6 +20,7 @@ class RayAutoscaler:
 
     def __init__(
         self,
+        cluster_manager: RayClusterManager,
         # Default resource parameters
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
@@ -37,11 +38,6 @@ class RayAutoscaler:
         node_grace_period_seconds: int = 600,  # 10 minutes grace period for new nodes
         # Logger
         logger: Optional[logging.Logger] = None,
-        # Cluster manager configuration
-        ray_cleanup: bool = True,
-        **cluster_manager_kwargs: Optional[
-            dict
-        ],  # Additional arguments for RayClusterManager
     ):
         """Initialize the Ray autoscaler.
 
@@ -60,12 +56,13 @@ class RayAutoscaler:
             scale_down_cooldown_seconds: Minimum time between scaling down operations
             node_grace_period_seconds: Give new nodes time before considering for scale-down
             logger: Optional logger instance
-            ray_cleanup: Whether to clean up the Ray cluster on shutdown
-            cluster_manager_kwargs: Additional arguments for RayClusterManager
         """
         # Store ray manager reference
-        self.cluster_manager = RayClusterManager(**(cluster_manager_kwargs or {}))
-        self.cluster_manager.start_cluster(clean_up=ray_cleanup)
+        self.cluster_manager = cluster_manager
+        if not ray.is_initialized():
+            raise RuntimeError(
+                "Ray is not initialized. Please start the Ray cluster first."
+            )
 
         # Store configuration
         self.autoscale_config = {
@@ -570,6 +567,7 @@ if __name__ == "__main__":
     import asyncio
     import os
     import time
+    from pathlib import Path
 
     print("\n===== Testing Ray Autoscaler class =====\n")
 
@@ -584,8 +582,16 @@ if __name__ == "__main__":
 
     async def test_autoscaler():
         try:
+            cluster_manager = RayClusterManager(
+                temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
+                data_dir=str(Path(__file__).parent.parent / "data"),
+                container_image=str(Path(__file__).parent.parent / "tabula_0.1.1.sif"),
+            )
+            cluster_manager.start_cluster(force_clean_up=True)
+
             # Create and start the autoscaler with shorter thresholds for quicker testing
             autoscaler = RayAutoscaler(
+                cluster_manager=cluster_manager,
                 # Use shorter times for faster testing
                 default_time_limit="00:10:00",
                 max_workers=3,
@@ -594,10 +600,6 @@ if __name__ == "__main__":
                 scale_up_cooldown_seconds=10,  # 10 seconds between scale up
                 scale_down_cooldown_seconds=10,  # 10 seconds between scale down
                 node_grace_period_seconds=10,
-                # Cluster Manager parameters
-                temp_dir="/proj/aicell/ray_tmp",
-                data_dir=os.path.dirname(__file__),
-                container_image="/proj/aicell/users/x_nilme/autoscaler/tabula_0.1.1.sif",
             )
             autoscaler.cluster_manager.logger.setLevel(logging.DEBUG)
             autoscaler.logger.setLevel(logging.DEBUG)

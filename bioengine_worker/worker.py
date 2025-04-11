@@ -143,7 +143,6 @@ class BioEngineWorker:
         server_url = self.server.config.public_base_url
         workspace, sid = service_info.id.split("/")
         service_url = f"{server_url}/{workspace}/services/{sid}"
-        self.logger.info(f"Service available at: {service_url}")
         self.logger.info(f"Get worker status at: {service_url}/get_status")
         self.logger.info(
             f"Get deployment service ID at: {service_url}/get_deployment_service_id"

@@ -2,8 +2,6 @@ version: '3.8'
 
 services:
   # Run interactively: `docker compose run --rm bioengine_worker`
-  # Start ray cluster: `ray start --head --disable-usage-stats`
-  # Test BioEngineWorker: `python bioengine_worker/worker.py`
   bioengine_worker:
     build:
       context: .
@@ -12,12 +10,18 @@ services:
     container_name: bioengine_worker
     volumes:
       - ./ray_sessions:/tmp/ray
-      - ./bioengine_worker:/app/bioengine_worker
+      - ./bioengine_worker/example_deployment:/app/bioengine_worker/example_deployment
+      - ./data:/app/data
     shm_size: 10.24gb
     env_file:
       - .env
     restart: unless-stopped
-    command: sh -c "ray start --head --disable-usage-stats && python bioengine_worker/worker.py"
+    command: [
+      "python", "-m", "bioengine_worker",
+      "--worker_service_id", "bioengine-worker-test",
+      "--head_num_cpus", "4",
+      "--temp_dir", "/tmp/ray",
+    ]
     deploy:
       resources:
         reservations:

@@ -122,7 +122,6 @@ class RayDeploymentManager:
                 server_url = self.server.config.public_base_url
                 workspace, sid = service_info.id.split("/")
                 service_url = f"{server_url}/{workspace}/services/{sid}"
-                self.logger.info(f"Service available at: {service_url}")
                 self.logger.info(
                     f"List all deployments at: {service_url}/list_deployments"
                 )

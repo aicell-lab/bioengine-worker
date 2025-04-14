@@ -1,8 +1,12 @@
 import asyncio
+import cloudpickle
 import logging
 import os
+import textwrap
+import inspect
+import traceback
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Literal, List
 
 import ray
 from hypha_rpc import connect_to_server
@@ -111,6 +115,83 @@ class BioEngineWorker:
             f"Connected to workspace '{self.workspace}' with client ID '{self.server.config.client_id}'"
         )
 
+    async def _execute_python_code(
+        code: str = None,
+        function_name: str = "analyze",
+        func_bytes: bytes = None,
+        mode: Literal["source", "pickle"] = "source",
+        remote_options: Dict[str, Any] = None,
+        args: List[Any] = None,
+        kwargs: Dict[str, Any] = None,
+        write_stdout: Optional[callable] = None,
+        write_stderr: Optional[callable] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> dict:
+        args = args or []
+        kwargs = kwargs or {}
+        remote_options = remote_options or {}
+
+        # Deserialize function before Ray execution
+        if mode == "pickle":
+            try:
+                user_func = cloudpickle.loads(func_bytes)
+            except Exception as e:
+                return {
+                    "error": f"Failed to unpickle function: {e}",
+                    "traceback": traceback.format_exc()
+                }
+        else:
+            exec_namespace = {}
+            exec(textwrap.dedent(code), exec_namespace)
+            user_func = exec_namespace.get(function_name)
+            if not user_func:
+                return {
+                    "error": f"Function '{function_name}' not found in source code",
+                    "available_functions": [k for k, v in exec_namespace.items() if inspect.isfunction(v)]
+                }
+
+        # The Ray task itself (pure, pickle-safe)
+        def ray_task(func, args, kwargs):
+            import io
+            import contextlib
+            import asyncio
+            import traceback
+
+            stdout_buffer = io.StringIO()
+            stderr_buffer = io.StringIO()
+
+            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+                try:
+                    result = func(*args, **kwargs)
+                    if asyncio.iscoroutine(result):
+                        result = asyncio.run(result)
+                    return {
+                        "result": result,
+                        "stdout": stdout_buffer.getvalue(),
+                        "stderr": stderr_buffer.getvalue()
+                    }
+                except Exception as e:
+                    return {
+                        "error": str(e),
+                        "traceback": traceback.format_exc(),
+                        "stdout": stdout_buffer.getvalue(),
+                        "stderr": stderr_buffer.getvalue()
+                    }
+
+        RemoteRayTask = ray.remote(**remote_options)(ray_task)
+        future = RemoteRayTask.remote(user_func, args, kwargs)
+        result = await asyncio.get_event_loop().run_in_executor(None, ray.get, future)
+
+        # Stream output to client
+        if write_stdout and result.get("stdout"):
+            for line in result["stdout"].splitlines():
+                await write_stdout(line)
+        if write_stderr and result.get("stderr"):
+            for line in result["stderr"].splitlines():
+                await write_stderr(line)
+
+        return result
+
     async def _register(self) -> None:
         """Initialize connection to Hypha and register service interface.
 
@@ -132,6 +213,7 @@ class BioEngineWorker:
                 "get_deployment_name": self.deployment_manager.get_deployment_name,
                 "get_status": self.get_status,
                 "get_deployment_service_id": lambda context: self.deployment_manager.deployment_service_id,
+                "execute_python_code": self._execute_python_code,
             },
             {"overwrite": True},
         )

@@ -1,3 +1,4 @@
+cloudpickle
 httpx
 hypha-rpc
 pyyaml

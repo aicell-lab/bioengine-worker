@@ -1,13 +1,13 @@
 import asyncio
-import cloudpickle
+import inspect
 import logging
 import os
 import textwrap
-import inspect
-import traceback
 import time
-from typing import Any, Dict, Optional, Literal, List
+import traceback
+from typing import Any, Dict, List, Literal, Optional
 
+import cloudpickle
 import ray
 from hypha_rpc import connect_to_server
 
@@ -116,6 +116,7 @@ class BioEngineWorker:
         )
 
     async def _execute_python_code(
+        self,
         code: str = None,
         function_name: str = "analyze",
         func_bytes: bytes = None,
@@ -138,7 +139,7 @@ class BioEngineWorker:
             except Exception as e:
                 return {
                     "error": f"Failed to unpickle function: {e}",
-                    "traceback": traceback.format_exc()
+                    "traceback": traceback.format_exc(),
                 }
         else:
             exec_namespace = {}
@@ -147,20 +148,25 @@ class BioEngineWorker:
             if not user_func:
                 return {
                     "error": f"Function '{function_name}' not found in source code",
-                    "available_functions": [k for k, v in exec_namespace.items() if inspect.isfunction(v)]
+                    "available_functions": [
+                        k for k, v in exec_namespace.items() if inspect.isfunction(v)
+                    ],
                 }
 
         # The Ray task itself (pure, pickle-safe)
         def ray_task(func, args, kwargs):
-            import io
-            import contextlib
             import asyncio
+            import contextlib
+            import io
             import traceback
 
             stdout_buffer = io.StringIO()
             stderr_buffer = io.StringIO()
 
-            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+            with (
+                contextlib.redirect_stdout(stdout_buffer),
+                contextlib.redirect_stderr(stderr_buffer),
+            ):
                 try:
                     result = func(*args, **kwargs)
                     if asyncio.iscoroutine(result):
@@ -168,18 +174,21 @@ class BioEngineWorker:
                     return {
                         "result": result,
                         "stdout": stdout_buffer.getvalue(),
-                        "stderr": stderr_buffer.getvalue()
+                        "stderr": stderr_buffer.getvalue(),
                     }
                 except Exception as e:
                     return {
                         "error": str(e),
                         "traceback": traceback.format_exc(),
                         "stdout": stdout_buffer.getvalue(),
-                        "stderr": stderr_buffer.getvalue()
+                        "stderr": stderr_buffer.getvalue(),
                     }
 
         RemoteRayTask = ray.remote(**remote_options)(ray_task)
         future = RemoteRayTask.remote(user_func, args, kwargs)
+        if self.autoscaler:
+            # TODO: make sure this works
+            await self.autoscaler.notify()
         result = await asyncio.get_event_loop().run_in_executor(None, ray.get, future)
 
         # Stream output to client
@@ -342,8 +351,7 @@ if __name__ == "__main__":
 
     from hypha_rpc import login
 
-    from bioengine_worker.ray_deployment_manager import \
-        create_example_deployment
+    from bioengine_worker.ray_deployment_manager import create_example_deployment
 
     async def test_bioengine_worker(keep_running=True):
         try:

@@ -297,11 +297,6 @@ def create_parser():
     # Ray Deployment Manager options
     deployment_group = parser.add_argument_group("Ray Deployment Manager Options")
     deployment_group.add_argument(
-        "--deployment_collection_id",
-        default="ray-deployments",
-        help="Artifact collection ID for deployments",
-    )
-    deployment_group.add_argument(
         "--deployment_service_id",
         default="ray-model-services",
         help="Service ID for deployed models",

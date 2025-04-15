@@ -137,7 +137,7 @@ class RayAutoscaler:
 
         # Get current cluster status
         current_time = time.time()
-        cluster_status = self.cluster_manager.cluster_status()
+        cluster_status = self.cluster_manager.get_status()
         active_nodes = cluster_status["worker_nodes"]["Alive"]
         dead_nodes = cluster_status["worker_nodes"]["Dead"]
 
@@ -205,7 +205,7 @@ class RayAutoscaler:
     ) -> None:
         """Scale up the cluster by adding a new worker node."""
         # TODO: Check if this is blocking
-        self.cluster_manager.add_worker(
+        _ = self.cluster_manager.add_worker(
             num_gpus=num_gpus,
             num_cpus=num_cpus,
             mem_per_cpu=mem_per_cpu,
@@ -317,8 +317,6 @@ class RayAutoscaler:
             ):
                 continue
 
-            self.last_time_collected_metrics = time.time()
-
             try:
                 # Check if Ray is still initialized
                 if not ray.is_initialized():
@@ -348,14 +346,10 @@ class RayAutoscaler:
                         f"Stopping monitoring loop after {consecutive_errors} consecutive errors"
                     )
                     raise e
+                
+            # Update last metrics collection time
+            self.last_time_collected_metrics = time.time()
 
-                # Exponential backoff for retries
-                retry_delay = min(
-                    self.autoscale_config["metrics_interval"]
-                    * (2 ** (consecutive_errors - 1)),
-                    30,  # Max 30 seconds between retries
-                )
-                await asyncio.sleep(retry_delay)
 
         # Ensure autoscaler stops if we break from the loop
         if self.is_running:
@@ -425,16 +419,16 @@ class RayAutoscaler:
         await self.stop()
         self.cluster_manager.shutdown_cluster(grace_period=grace_period)
 
-    async def notify(self) -> None:
+    async def notify(self, delay_s: int = 3) -> None:
         """
         Notify the autoscaler of a change in cluster state.
         This method is called when the cluster state changes, such as when a new task is submitted or a node is added/removed.
         It can be used to trigger scaling decisions or other actions based on the current state of the cluster.
         """
         self.logger.info("Notifying autoscaler of cluster state change")
-        self.last_time_collected_metrics = 0
+        self.last_time_collected_metrics = time.time() - self.autoscale_config["metrics_interval"] + delay_s
 
-    def get_status(self, history_len: int = 5) -> dict:
+    async def get_status(self, history_len: int = 5) -> dict:
         """Get the current status of the autoscaler.
 
         Args:
@@ -608,7 +602,7 @@ if __name__ == "__main__":
             await autoscaler.start()
 
             # Test autoscaler status
-            autoscaler.get_status()
+            await autoscaler.get_status()
 
             # Submit some test tasks
             obj_refs = [test_remote.remote() for _ in range(5)]
@@ -616,7 +610,7 @@ if __name__ == "__main__":
             # Observe autoscaler status for a while
             for _ in range(20):
                 await asyncio.sleep(3)
-                autoscaler.get_status()
+                await autoscaler.get_status()
 
             results = await asyncio.gather(*obj_refs)
             print(results)

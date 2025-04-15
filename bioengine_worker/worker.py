@@ -89,6 +89,7 @@ class BioEngineWorker:
         )
         self.autoscaler = None
         self.deployment_manager = RayDeploymentManager(**ray_deployment_config)
+        self.dataset_manager = None  # TODO: implement dataset manager
 
         # Internal state
         self.server = None
@@ -115,7 +116,7 @@ class BioEngineWorker:
             f"Connected to workspace '{self.workspace}' with client ID '{self.server.config.client_id}'"
         )
 
-    async def _execute_python_code(
+    async def execute_python_code(
         self,
         code: str = None,
         function_name: str = "analyze",
@@ -217,12 +218,13 @@ class BioEngineWorker:
                 "name": "BioEngine worker",
                 "description": "Controls Ray cluster on HPC system",
                 "config": {"visibility": "public", "require_context": True},
+                "get_status": self.get_status,
                 "deploy_artifact": self.deployment_manager.deploy_artifact,
                 "undeploy_artifact": self.deployment_manager.undeploy_artifact,
-                "get_deployment_name": self.deployment_manager.get_deployment_name,
-                "get_status": self.get_status,
-                "get_deployment_service_id": lambda context: self.deployment_manager.deployment_service_id,
-                "execute_python_code": self._execute_python_code,
+                "deploy_all_artifacts": self.deployment_manager.deploy_all_artifacts,
+                "cleanup_deployments": self.deployment_manager.cleanup_deployments,
+                "load_dataset": lambda dataset_id, context: "Not implemented",
+                "execute_python_code": self.execute_python_code,
             },
             {"overwrite": True},
         )
@@ -235,9 +237,7 @@ class BioEngineWorker:
         workspace, sid = service_info.id.split("/")
         service_url = f"{server_url}/{workspace}/services/{sid}"
         self.logger.info(f"Get worker status at: {service_url}/get_status")
-        self.logger.info(
-            f"Get deployment service ID at: {service_url}/get_deployment_service_id"
-        )
+        self.logger.info(f"Deploy artifact with: {service_url}/deploy_artifact?artifact_id=<artifact_id>")
 
         return service_info.id
 
@@ -267,6 +267,7 @@ class BioEngineWorker:
                     "Ray is already initialized. Please stop the existing Ray instance before starting the worker."
                 )
             try:
+                # TODO: use cluster manager to connect to existing ray cluster
                 ray.init(**self.ray_connection_kwargs)
             except Exception as e:
                 self.logger.error(f"Failed to connect to existing Ray cluster: {e}")
@@ -301,30 +302,27 @@ class BioEngineWorker:
         if ray.is_initialized():
             if self.cluster_manager:
                 # Ray started via autoscaler
-                formatted_ray_time = format_time(self.cluster_manager.ray_start_time)
-                status["cluster"] = {
-                    "head_address": self.cluster_manager.head_node_address,
-                    "start_time": formatted_ray_time["start_time"],
-                    "uptime": formatted_ray_time["duration_since"],
-                }
+                status["cluster"] = self.cluster_manager.get_status()
                 if self.autoscaler:
-                    status["cluster"]["autoscaler"] = self.autoscaler.get_status()
+                    status["cluster"]["autoscaler"] = await self.autoscaler.get_status()
                 else:
-                    status["cluster"]["autoscaler"] = "N/A"
+                    status["cluster"]["autoscaler"] = None
                     status["cluster"][
                         "note"
                     ] = "Autoscaler is only available on HPC systems."
             else:
                 # Ray connected externally
-                ray_info = ray._private.services.get_node_ip_address()
+                head_address = ray._private.services.get_node_ip_address()
                 status["cluster"] = {
-                    "address": ray_info,
+                    "head_address": head_address,
                     "start_time": "N/A",
                     "uptime": "N/A",
-                    "autoscaler": "N/A",
+                    "worker_nodes": "N/A",
+                    "autoscaler": None,
                     "note": "Connected to existing Ray cluster; no autoscaler info available.",
                 }
-            status["deployments"] = self.deployment_manager.get_deployments()
+            status["deployments"] = await self.deployment_manager.get_status()
+            status["datasets"] = [] # await self.dataset_manager.get_status()  # TODO: implement dataset manager
         else:
             status["cluster"] = "Not running"
 
@@ -400,14 +398,15 @@ if __name__ == "__main__":
             deployment_name = await worker_service.deploy_artifact(
                 artifact_id=artifact_id,
             )
+            worker_status = await worker_service.get_status()
+            assert deployment_name in worker_status["deployments"]
 
             # Test registered deployment service
-            deployment_service_id = await worker_service.get_deployment_service_id()
+            deployment_service_id = worker_status["deployments"]["service_id"]
             deployment_service = await server.get_service(deployment_service_id)
 
-            # Get the list of deployments
-            deployments = await deployment_service.list_deployments()
-            assert deployment_name in deployments
+            result = await deployment_service[deployment_name]()
+            print(result)
 
             # Keep server running if requested
             if keep_running:

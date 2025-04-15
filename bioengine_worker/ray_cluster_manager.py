@@ -123,8 +123,6 @@ class RayClusterManager:
                 "container_image": container_image,
                 "further_slurm_args": further_slurm_args or [],
             }
-            # History of SLURM job IDs for each worker
-            self.worker_job_history = []
 
             # Set up SLURM actor
             self.slurm_actor = SlurmActor(job_name="ray_worker")
@@ -235,26 +233,6 @@ class RayClusterManager:
                 break
         return worker_id
 
-    def _append_job(self, job_id: str) -> None:
-        """Append new job ID to the history.
-
-        Args:
-            job_id: Job ID to append
-
-        Raises:
-            ValueError: If job_id is not a string
-        """
-        if not self.slurm_available:
-            raise RuntimeError("SLURM is not available. '_append_job' is not available")
-
-        if not isinstance(job_id, str):
-            raise ValueError("Job ID must be a string")
-
-        self.worker_job_history.append(job_id)
-        # Keep history size limited
-        if len(self.worker_job_history) > 100:
-            self.worker_job_history.pop(0)
-
     def _get_worker_status(self, worker_id: str) -> str:
         # Check if worker node exists in cluster
         for node in ray.nodes():
@@ -360,7 +338,7 @@ class RayClusterManager:
                 self.shutdown_cluster()
             raise e
 
-    def cluster_status(self) -> Dict:
+    def get_status(self) -> Dict:
         """Get current cluster state including head node and worker information.
 
         Returns:
@@ -373,6 +351,11 @@ class RayClusterManager:
         try:
             # Get the head node address
             output["head_address"] = self.head_node_address
+
+            # Get cluster start time and uptime
+            formatted_time = format_time(self.ray_start_time)
+            output["start_time"] = formatted_time["start_time"]
+            output["uptime"] = formatted_time["duration_since"]
 
             # Get the available resources per node
             available_resources_per_node = ray.state.available_resources_per_node()
@@ -556,8 +539,7 @@ class RayClusterManager:
                 f"--address={self.head_node_address} "
                 f"--num-cpus={num_cpus} "
                 f"--num-gpus={num_gpus} "
-                # "--resources='{\\\"node:__internal_worker_${SLURM_JOB_ID}__\\\": 1}' "
-                "--resources='{\\\"node:__internal_worker_123456__\\\": 1}' "  # TODO: change back to real job id after testing
+                "--resources='{\\\"node:__internal_worker_${SLURM_JOB_ID}__\\\": 1}' "
                 "--block"
             )
 
@@ -580,33 +562,26 @@ class RayClusterManager:
                 f"{ray_worker_cmd}"
             )
 
-            # TODO: change back to real job submission after testing
-            print(
-                f"\n===== Run this command in an interactive SLURM job =====\n{apptainer_cmd}\n"
-            )
-            job_id = "123456"
-
             # Create sbatch script using SlurmActor
-            # sbatch_script = self.slurm_actor.create_sbatch_script(
-            #     command=apptainer_cmd,
-            #     gpus=num_gpus,
-            #     cpus_per_task=num_cpus,
-            #     mem_per_cpu=mem_per_cpu,
-            #     time=time_limit,
-            #     further_slurm_args=self.job_config.get("further_slurm_args"),
-            # )
+            sbatch_script = self.slurm_actor.create_sbatch_script(
+                command=apptainer_cmd,
+                gpus=num_gpus,
+                cpus_per_task=num_cpus,
+                mem_per_cpu=mem_per_cpu,
+                time=time_limit,
+                further_slurm_args=self.job_config.get("further_slurm_args"),
+            )
 
             # Submit the job
-            # job_id = self.slurm_actor.submit_job(sbatch_script, delete_script=True)
+            job_id = self.slurm_actor.submit_job(sbatch_script, delete_script=True)
 
             if job_id:
-                # Add to worker job history
-                self._append_job(job_id)
-
                 self.logger.info(
                     f"Worker job submitted successfully. Worker & Job ID: {job_id}, Resources: {num_gpus} GPU(s), "
                     f"{num_cpus} CPU(s), {mem_per_cpu}G mem/CPU, {time_limit} time limit"
                 )
+
+                return job_id  # equivalent to worker ID
             else:
                 raise RuntimeError("Failed to submit worker job")
 
@@ -633,11 +608,6 @@ class RayClusterManager:
             # Check if Ray cluster is running
             if not ray.is_initialized():
                 raise RuntimeError("Ray cluster is not running")
-
-            # Check if worker id is valid
-            if worker_id not in self.worker_job_history:
-                self.logger.error(f"Worker ID '{worker_id}' not found in worker jobs")
-                raise ValueError(f"Worker ID '{worker_id}' not found in worker jobs")
 
             # Check worker status
             worker_status = self._get_worker_status(worker_id)
@@ -682,7 +652,6 @@ class RayClusterManager:
                         break
 
             cancelled_jobs = self.slurm_actor.cancel_jobs([worker_id])
-            cancelled_jobs = ["123456"]  # TODO: remove after testing
             if cancelled_jobs == [worker_id]:
                 self.logger.info(f"Successfully removed worker '{worker_id}'")
             else:
@@ -705,7 +674,7 @@ if __name__ == "__main__":
     #     temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
     # )
     # ray_manager.start_cluster(force_clean_up=True)
-    # ray_manager.cluster_status()
+    # ray_manager.get_status()
     # ray_manager.shutdown_cluster()
 
     # Test the class
@@ -721,14 +690,11 @@ if __name__ == "__main__":
     ray_manager.start_cluster(force_clean_up=True)
 
     # Test submitting a worker job
-    assert len(ray_manager.worker_job_history) == 0
     print("Adding a worker...")
-    ray_manager.add_worker(time_limit="00:10:00")  # TODO: change back after testing
-    assert len(ray_manager.worker_job_history) == 1
-    worker_id = ray_manager.worker_job_history[0]
+    worker_id = ray_manager.add_worker(time_limit="00:30:00")
 
     # Wait for worker to start
-    status = "RUNNING"  # TODO: change back to "" after testing
+    status = ""
     while status != "RUNNING":
         # Wait for worker node to appear in cluster status
         print("Waiting for job to start...")
@@ -746,7 +712,7 @@ if __name__ == "__main__":
         status = ray_manager._get_worker_status(worker_id)
 
     # Test cluster status
-    cluster_status = ray_manager.cluster_status()
+    cluster_status = ray_manager.get_status()
     print("\n=== Cluster status ===\n", cluster_status, end="\n\n")
 
     # Test running a remote function on worker node

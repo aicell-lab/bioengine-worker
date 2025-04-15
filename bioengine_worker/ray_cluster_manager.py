@@ -542,22 +542,24 @@ class RayClusterManager:
                 "--resources='{\\\"node:__internal_worker_${SLURM_JOB_ID}__\\\": 1}' "
                 "--block"
             )
+            # ray start --address='10.81.254.11:6379' --num-cpus=8 --num-gpus=1 --resources='{"node:__internal_worker_${SLURM_JOB_ID}__": 1}' --block
 
             # Define the apptainer command with the Ray worker command
-            bind_dir_flag = f"--bind {self.ray_cluster_config['temp_dir']}:/tmp/ray"
             if self.ray_cluster_config["data_dir"]:
                 data_dir = self.ray_cluster_config["data_dir"]
                 self.logger.info(
                     f"Binding data directory '{data_dir}' to container directory '/mnt'"
                 )
-                bind_dir_flag += f",{data_dir}:/mnt"
+                bind_dir_flag = f"--bind {data_dir}:/mnt "
+            else:
+                bind_dir_flag = ""
 
             apptainer_cmd = (
                 f"apptainer run "
                 f"--writable-tmpfs "
                 f"--contain "
                 f"--nv "
-                f"{bind_dir_flag} "
+                f"{bind_dir_flag}"
                 f"{self.job_config['container_image']} "
                 f"{ray_worker_cmd}"
             )
@@ -679,9 +681,8 @@ if __name__ == "__main__":
 
     # Test the class
     ray_manager = RayClusterManager(
-        temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
         data_dir=str(Path(__file__).parent.parent / "data"),
-        container_image=str(Path(__file__).parent.parent / "tabula_0.1.1.sif"),
+        container_image=str(Path(__file__).parent.parent / "bioengine_worker_0.1.2.sif"),
         # further_slurm_args=["-C 'thin'"]
     )
     ray_manager.logger.setLevel(logging.DEBUG)

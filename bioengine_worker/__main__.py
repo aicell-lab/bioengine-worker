@@ -66,6 +66,7 @@ async def main(group_configs):
             ray_autoscaler_config=ray_autoscaler_config,
             ray_deployment_config=ray_deployment_config,
             ray_connection_kwargs=ray_connection_kwargs,
+            _debug=group_configs["options"]["debug"],
         )
 
         # Initialize worker
@@ -313,6 +314,14 @@ def create_parser():
         help="Ray namespace to use",
     )
 
+    # Others
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Set logger to debug level",
+    )
+
     return parser
 
 
@@ -322,12 +331,8 @@ def get_args_by_group(parser):
 
     group_configs = {}
     for group in parser._action_groups:
-        group_title = group.title
-        if group_title in ("positional arguments", "options"):
-            continue  # Skip standard groups
-
         group_keys = [a.dest for a in group._group_actions]
-        group_configs[group_title] = {
+        group_configs[group.title] = {
             k: args_dict[k] for k in group_keys if k in args_dict
         }
 

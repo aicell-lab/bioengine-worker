@@ -37,6 +37,7 @@ class BioEngineWorker:
         ray_autoscaler_config: Optional[Dict] = None,
         ray_deployment_config: Optional[Dict] = None,
         ray_connection_kwargs: Optional[Dict] = None,
+        _debug: bool = False,
     ):
         """Initialize BioEngine worker with component managers.
 
@@ -51,6 +52,7 @@ class BioEngineWorker:
             ray_autoscaler_config: Configuration for the RayAutoscaler component.
             ray_deployment_config: Configuration for the RayDeploymentManager component.
             ray_connection_kwargs: Optional arguments passed to `ray.init()` to connect to an existing ray cluster. If provided, disables cluster management.
+            _debug: Flag to enable debug mode. If True, sets the logger to DEBUG level.
         """
         self.workspace = workspace
         self.server_url = server_url
@@ -64,6 +66,7 @@ class BioEngineWorker:
         self._ray_autoscaler_config = ray_autoscaler_config or {}
         ray_deployment_config = ray_deployment_config or {}
         self.ray_connection_kwargs = ray_connection_kwargs or {}
+        self._debug = _debug
 
         # Inject default logging format if not already set
         if "logging_format" not in self.ray_connection_kwargs:
@@ -90,6 +93,16 @@ class BioEngineWorker:
         self.autoscaler = None
         self.deployment_manager = RayDeploymentManager(**ray_deployment_config)
         self.dataset_manager = None  # TODO: implement dataset manager
+
+        # Set debug mode if requested
+        if self._debug:
+            if self.cluster_manager:
+                self.cluster_manager.logger.setLevel(logging.DEBUG)
+            # TODO: also set autoscaler to debug mode
+            self.deployment_manager.logger.setLevel(logging.DEBUG)
+            # self.dataset_manager.logger.setLevel(logging.DEBUG)
+            self.logger.setLevel(logging.DEBUG)
+            self.logger.debug("Debug mode enabled.")
 
         # Internal state
         self.server = None
@@ -369,7 +382,7 @@ if __name__ == "__main__":
                     "metrics_interval_seconds": 10,
                     "temp_dir": "/tmp/ray",
                     "data_dir": str(Path(__file__).parent.parent / "data"),
-                    "container_image": "/proj/aicell/users/x_nilme/autoscaler/tabula_0.1.1.sif",
+                    "container_image": "/proj/aicell/users/x_nilme/autoscaler/bioengine_worker_0.1.2.sif",
                 },
             )
             bioengine_worker.logger.setLevel(logging.DEBUG)

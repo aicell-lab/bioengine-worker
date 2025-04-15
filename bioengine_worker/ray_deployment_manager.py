@@ -558,7 +558,7 @@ if __name__ == "__main__":
         head_num_cpus=4,
         temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
         data_dir=str(Path(__file__).parent.parent / "data"),
-        container_image=str(Path(__file__).parent.parent / "tabula_0.1.1.sif"),
+        container_image=str(Path(__file__).parent.parent / "bioengine_worker_0.1.2.sif"),
     )
     cluster_manager.logger.setLevel(logging.DEBUG)
     cluster_manager.start_cluster(force_clean_up=True)

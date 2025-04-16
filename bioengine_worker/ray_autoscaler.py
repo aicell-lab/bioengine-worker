@@ -577,9 +577,9 @@ if __name__ == "__main__":
     async def test_autoscaler():
         try:
             cluster_manager = RayClusterManager(
-                temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
+                ray_temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
                 data_dir=str(Path(__file__).parent.parent / "data"),
-                container_image=str(Path(__file__).parent.parent / "bioengine_worker_0.1.2.sif"),
+                image_path=str(Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.4.sif"),
             )
             cluster_manager.start_cluster(force_clean_up=True)
 

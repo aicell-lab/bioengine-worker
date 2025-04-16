@@ -1,10 +1,10 @@
 import logging
 import os
 import re
-import shutil
 import socket
 import subprocess
 import time
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import ray
@@ -36,12 +36,13 @@ class RayClusterManager:
         dashboard_port: int = 8269,
         ray_client_server_port: int = 10001,
         redis_password: str = None,
-        temp_dir: str = "/tmp/ray",
+        ray_temp_dir: str = "/tmp/ray",
         data_dir: str = None,
         head_num_cpus: int = 0,
         head_num_gpus: int = 0,
         # Job configuration parameters
-        container_image: str = "bioengine_worker_0.1.2.sif",
+        image_path: str = "./apptainer_images/bioengine-worker_0.1.4.sif",
+        slurm_logs_dir: str = None,
         further_slurm_args: List[str] = None,
         # Logger
         logger: Optional[logging.Logger] = None,
@@ -58,11 +59,12 @@ class RayClusterManager:
             dashboard_port: Port for the dashboard.
             ray_client_server_port: Base port for Ray client services.
             redis_password: Password for Redis server.
-            temp_dir: Temporary directory for Ray. Default is '/tmp/ray'.
+            ray_temp_dir: Temporary directory for Ray. Default is '/tmp/ray'.
             data_dir: Data directory mounted to the container. Default is None.
             head_num_cpus: Number of CPUs for head node if starting a local cluster (slurm_available=False).
             head_num_gpus: Number of GPUs for head node if starting a local cluster (slurm_available=False).
-            container_image: Worker container image path.
+            image_path: Worker container image path.
+            slurm_logs_dir: Directory for SLURM logs.
             further_slurm_args: Additional arguments for SLURM job script.
             logger: Custom logger instance. Creates default logger if None.
         """
@@ -75,9 +77,6 @@ class RayClusterManager:
         if not head_node_ip:
             result = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
             internal_ip = result.stdout.strip().split()[0]  # Take the first IP
-
-        if data_dir and not os.path.exists(data_dir):
-            raise ValueError(f"Data directory '{data_dir}' does not exist.")
 
         # Check number of CPUs and GPUs
         self.slurm_available = self._check_slurm_available()
@@ -107,7 +106,7 @@ class RayClusterManager:
             "dashboard_port": dashboard_port,
             "ray_client_server_port": ray_client_server_port,
             "redis_password": redis_password or os.urandom(16).hex(),
-            "temp_dir": temp_dir,
+            "ray_temp_dir": ray_temp_dir,
             "data_dir": data_dir,
             "head_num_cpus": head_num_cpus,
             "head_num_gpus": head_num_gpus,
@@ -116,16 +115,15 @@ class RayClusterManager:
 
         if self.slurm_available:
             # Set job configuration from parameters
-            if not os.path.exists(container_image):
-                raise ValueError(f"Container image '{container_image}' does not exist")
+            image_path = Path(image_path).resolve()
 
             self.job_config = {
-                "container_image": container_image,
+                "image_path": str(image_path),
                 "further_slurm_args": further_slurm_args or [],
             }
 
             # Set up SLURM actor
-            self.slurm_actor = SlurmActor(job_name="ray_worker")
+            self.slurm_actor = SlurmActor(job_name="ray_worker", logs_dir=slurm_logs_dir)
 
     @property
     def _ray_executable(self) -> str:
@@ -162,7 +160,7 @@ class RayClusterManager:
         """
         try:
             subprocess.run(
-                ["which", "sinfo"], capture_output=True, text=True, check=True
+                ["which", "sbatch"], capture_output=True, text=True, check=True
             )
             self.logger.info("SLURM is available")
             return True
@@ -296,7 +294,7 @@ class RayClusterManager:
                     "--include-dashboard=True",
                     f"--dashboard-port={self.ray_cluster_config['dashboard_port']}",
                     f"--redis-password={self.ray_cluster_config['redis_password']}",
-                    f"--temp-dir={self.ray_cluster_config['temp_dir']}",
+                    f"--temp-dir={self.ray_cluster_config['ray_temp_dir']}",
                 ],
                 capture_output=True,
                 check=True,
@@ -323,6 +321,22 @@ class RayClusterManager:
             self.logger.info(
                 f"Ray cluster and Ray Serve started successfully on '{address}' - Start time: {start_time}"
             )
+
+            # Change '<ray_temp_dir>/session_latest' symlink to use relative path instead of absolute (container) path
+            # (needed to start ray in container)
+            symlink_path = Path(self.ray_cluster_config["ray_temp_dir"]) / "session_latest"
+            if symlink_path.is_symlink():
+                # Get the target of the symlink
+                symlink_target = symlink_path.readlink()
+            else:
+                self.logger.error(f"Symlink '{symlink_path}' does not exist")
+                raise FileNotFoundError(f"Symlink '{symlink_path}' does not exist")
+            
+            relative_symlink_target = Path(symlink_target.name)
+            self.logger.debug(f"Changing symlink target from '{symlink_target}' to '{relative_symlink_target}'")
+            symlink_path.unlink()
+            symlink_path.symlink_to(relative_symlink_target)
+
             return address
 
         except subprocess.CalledProcessError as e:
@@ -555,12 +569,13 @@ class RayClusterManager:
                 bind_dir_flag = ""
 
             apptainer_cmd = (
-                f"apptainer run "
-                f"--writable-tmpfs "
-                f"--contain "
-                f"--nv "
+                "apptainer run "
+                "--contain "
+                "--writable-tmpfs "
+                "--nv "
+                "--pwd /app "
                 f"{bind_dir_flag}"
-                f"{self.job_config['container_image']} "
+                f"{self.job_config['image_path']} "
                 f"{ray_worker_cmd}"
             )
 
@@ -673,7 +688,7 @@ if __name__ == "__main__":
     # ray_manager = RayClusterManager(
     #     head_num_cpus=4,
     #     head_num_gpus=0,
-    #     temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
+    #     ray_temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
     # )
     # ray_manager.start_cluster(force_clean_up=True)
     # ray_manager.get_status()
@@ -682,10 +697,13 @@ if __name__ == "__main__":
     # Test the class
     ray_manager = RayClusterManager(
         data_dir=str(Path(__file__).parent.parent / "data"),
-        container_image=str(Path(__file__).parent.parent / "bioengine_worker_0.1.2.sif"),
+        image_path=str(
+            Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.4.sif"
+        ),
         # further_slurm_args=["-C 'thin'"]
     )
     ray_manager.logger.setLevel(logging.DEBUG)
+    ray_manager.slurm_actor.logger.setLevel(logging.DEBUG)
 
     # Start Ray cluster
     ray_manager.start_cluster(force_clean_up=True)

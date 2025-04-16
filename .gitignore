@@ -164,5 +164,5 @@ cython_debug/
 *slurm_logs
 *ray_sessions/
 .vscode/
-*.sif
+apptainer_images/
 data/

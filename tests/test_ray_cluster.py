@@ -147,7 +147,7 @@ def test_submit_worker_job_with_temp_file(mock_ray, mock_subprocess):
                 num_cpus=8,
                 mem_per_cpu=16,
                 time_limit="2:00:00",
-                container_image="test_container.sif"
+                image_path="test_container.sif"
             )
             
             # Verify job was submitted with correct parameters

@@ -63,12 +63,16 @@ class SlurmActor:
                 #SBATCH --error={self.logs_dir}/%x_%j.err
                 {further_slurm_args}
 
+                # Change to the working directory
+                cd {self.logs_dir}/..
+
                 # Print some diagnostic information
                 echo "Host: $(hostname)"
                 echo "Date: $(date)"
                 echo "GPUs: {gpus}, CPUs: {cpus_per_task}"
                 echo "GPU info: $(nvidia-smi -L)"
                 echo "Job ID: $SLURM_JOB_ID"
+                echo "Working directory: $(pwd)"
                 echo "Running command: {command}"
                 echo ""
                 echo "========================================"
@@ -89,6 +93,10 @@ class SlurmActor:
                     line = line.strip()
                     if line:
                         batch_file.write(line + "\n")
+
+                self.logger.debug(
+                    f"Created sbatch script '{batch_file.name}':\n{batch_script}"
+                )
 
                 return batch_file.name
         except Exception as e:

@@ -73,9 +73,9 @@ def test_bioengine_worker_create_config():
 
 def test_bioengine_worker_init_with_params():
     """Test initialization of BioEngineWorker with direct parameters."""
-    with tempfile.TemporaryDirectory() as temp_dir:
+    with tempfile.TemporaryDirectory() as ray_temp_dir:
         worker = BioEngineWorker(
-            config_dir=temp_dir,
+            config_dir=ray_temp_dir,
             num_gpu=2,
             dataset_paths=["/path/to/data1"],
             trusted_models=["model:1.0"],
@@ -83,7 +83,7 @@ def test_bioengine_worker_init_with_params():
         )
         
         # Verify config file was created
-        config_path = os.path.join(temp_dir, "worker_config.yaml")
+        config_path = os.path.join(ray_temp_dir, "worker_config.yaml")
         assert os.path.exists(config_path)
         
         # Load and verify config contents

@@ -226,6 +226,7 @@ class RayDeploymentManager:
         Returns:
             str: Deployment name
         """
+        self.logger.info(f"Deploying artifact '{artifact_id}'...")
         try:
             # Verify client is connected to Hypha server
             if not self.server:
@@ -312,6 +313,8 @@ class RayDeploymentManager:
             context: Context for Hypha service
             _skip_update: Skip updating services after undeployment
         """
+        self.logger.info(f"Undeploying artifact '{artifact_id}'...")
+        
         try:
             # Verify client is connected to Hypha server
             if not self.server:
@@ -410,6 +413,9 @@ class RayDeploymentManager:
         Returns:
             list: List of artifact IDs that were successfully deployed
         """
+        self.logger.info(
+            f"Deploying all artifacts in collection '{deployment_collection_id}'..."
+        )
         deployments = []
         try:
             # Ensure artifact manager is available
@@ -444,12 +450,11 @@ class RayDeploymentManager:
 
     async def cleanup_deployments(self, context: Optional[Dict[str, Any]] = None) -> None:
         """Cleanup Ray Serve deployments"""
+        self.logger.info("Cleaning up all deployments...")
         try:
             # Ensure Ray is initialized
             if not ray.is_initialized():
                 raise RuntimeError("Ray cluster is not running")
-
-            self.logger.info("Cleaning up deployments...")
 
             artifact_ids = self._deployed_artifacts.copy()
             failed_attempts = 0
@@ -556,9 +561,9 @@ if __name__ == "__main__":
     # Create and start the autoscaler with shorter thresholds for quicker testing
     cluster_manager = RayClusterManager(
         head_num_cpus=4,
-        temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
+        ray_temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
         data_dir=str(Path(__file__).parent.parent / "data"),
-        container_image=str(Path(__file__).parent.parent / "bioengine_worker_0.1.2.sif"),
+        image_path=str(Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.4.sif"),
     )
     cluster_manager.logger.setLevel(logging.DEBUG)
     cluster_manager.start_cluster(force_clean_up=True)

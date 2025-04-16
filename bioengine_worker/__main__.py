@@ -17,9 +17,16 @@ async def main(group_configs):
     """Main function to initialize and register BioEngine worker"""
     # Setup signal-aware shutdown
     stop_event = asyncio.Event()
+    is_shutting_down = False
 
     def _handle_shutdown_signal(sig_name):
+        nonlocal is_shutting_down
+        if is_shutting_down and sig_name == "SIGINT":
+            logger.info("Received second SIGINT, stopping immediately...")
+            sys.exit(1)
+        
         logger.info(f"Received {sig_name}, starting graceful shutdown...")
+        is_shutting_down = True
         stop_event.set()
 
     # Register signal handlers
@@ -127,6 +134,7 @@ def create_parser():
     cluster_group = parser.add_argument_group("Ray Cluster Manager Options")
     cluster_group.add_argument(
         "--head_node_ip",
+        type=str,
         help="IP address for head node. Uses first system IP if None",
     )
     cluster_group.add_argument(
@@ -177,13 +185,15 @@ def create_parser():
         help="Redis password for Ray cluster",
     )
     cluster_group.add_argument(
-        "--temp_dir",
+        "--ray_temp_dir",
+        type=str,
         default="/tmp/ray",
         help="Temporary directory for Ray",
     )
     cluster_group.add_argument(
         "--data_dir",
         type=str,
+        required=True,
         help="Data directory mounted to worker containers",
     )
     cluster_group.add_argument(
@@ -205,12 +215,20 @@ def create_parser():
         help="Skip cleanup of previous Ray cluster",
     )
     cluster_group.add_argument(
-        "--container_image",
-        default="bioengine_worker_0.1.2.sif",
+        "--image_path",
+        type=str,
+        default="./apptainer_images/bioengine-worker_0.1.4.sif",
         help="Worker container image path",
     )
     cluster_group.add_argument(
+        "--slurm_logs_dir",
+        type=str,
+        default="./slurm_logs",
+        help="Directory for SLURM logs",
+    )
+    cluster_group.add_argument(
         "--further_slurm_args",
+        type=str,
         nargs="+",
         help="Additional arguments for SLURM job script",
     )
@@ -237,6 +255,7 @@ def create_parser():
     )
     autoscaler_group.add_argument(
         "--default_time_limit",
+        type=str,
         default="4:00:00",
         help="Default time limit for workers",
     )
@@ -299,6 +318,7 @@ def create_parser():
     deployment_group = parser.add_argument_group("Ray Deployment Manager Options")
     deployment_group.add_argument(
         "--deployment_service_id",
+        type=str,
         default="ray-model-services",
         help="Service ID for deployed models",
     )
@@ -307,10 +327,12 @@ def create_parser():
     connection_group = parser.add_argument_group("Ray Connection Options")
     connection_group.add_argument(
         "--ray_address",
+        type=str,
         help="Address of existing Ray cluster to connect to",
     )
     connection_group.add_argument(
         "--ray_namespace",
+        type=str,
         help="Ray namespace to use",
     )
 
@@ -344,13 +366,13 @@ if __name__ == "__main__":
 Register BioEngine worker to Hypha server.
 
 Container execution:
-    Run in image bioengine_worker_0.1.0.sif
+    Run in image bioengine-worker_0.1.0.sif
 
     Pull the image with:
-    `apptainer pull bioengine_worker_0.1.0.sif docker://ghcr.io/aicell-lab/bioengine-worker:0.1.0`
+    `apptainer pull bioengine-worker_0.1.0.sif docker://ghcr.io/aicell-lab/bioengine-worker:0.1.0`
 
     Run with:
-    `apptainer run --contain --nv bioengine_worker_0.1.0.sif python -m bioengine_worker [options]`
+    `apptainer run --contain --nv bioengine-worker_0.1.0.sif python -m bioengine_worker [options]`
 """
 
     parser = create_parser()

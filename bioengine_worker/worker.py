@@ -98,6 +98,7 @@ class BioEngineWorker:
         if self._debug:
             if self.cluster_manager:
                 self.cluster_manager.logger.setLevel(logging.DEBUG)
+                self.cluster_manager.slurm_actor.logger.setLevel(logging.DEBUG)
             # TODO: also set autoscaler to debug mode
             self.deployment_manager.logger.setLevel(logging.DEBUG)
             # self.dataset_manager.logger.setLevel(logging.DEBUG)
@@ -142,6 +143,9 @@ class BioEngineWorker:
         write_stderr: Optional[callable] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> dict:
+        """Execute Python code in a Ray task."""
+        self.logger.info("Executing Python code in Ray task...")
+
         args = args or []
         kwargs = kwargs or {}
         remote_options = remote_options or {}
@@ -305,6 +309,7 @@ class BioEngineWorker:
         Returns:
             Dict containing service, cluster, autoscaler and deployment status.
         """
+        self.logger.info("Getting status of the BioEngine worker...")
         formatted_service_time = format_time(self.start_time)
         status = {
             "service": {
@@ -376,16 +381,16 @@ if __name__ == "__main__":
                 service_id="bioengine-worker-test",
                 ray_cluster_config={
                     "head_num_cpus": 4,
-                    "temp_dir": str(Path(__file__).parent.parent / "ray_sessions"),
+                    "ray_temp_dir": str(Path(__file__).parent.parent / "ray_sessions"),
                 },
                 ray_autoscaler_config={
                     "metrics_interval_seconds": 10,
-                    "temp_dir": "/tmp/ray",
+                    "ray_temp_dir": "/tmp/ray",
                     "data_dir": str(Path(__file__).parent.parent / "data"),
-                    "container_image": "/proj/aicell/users/x_nilme/autoscaler/bioengine_worker_0.1.2.sif",
+                    "image_path": "/proj/aicell/users/x_nilme/autoscaler/bioengine-worker_0.1.4.sif",
                 },
+                _debug=True,
             )
-            bioengine_worker.logger.setLevel(logging.DEBUG)
 
             # Initialize worker
             sid = await bioengine_worker.start()

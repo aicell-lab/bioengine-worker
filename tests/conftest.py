@@ -91,12 +91,12 @@ def temp_config_file():
 @pytest.fixture
 def mock_dataset():
     """Create a mock dataset with info.npz file."""
-    with tempfile.TemporaryDirectory() as temp_dir:
+    with tempfile.TemporaryDirectory() as ray_temp_dir:
         # Create mock info.npz file
         info_data = {'length': np.array([1000])}
-        np.savez(os.path.join(temp_dir, 'info.npz'), **info_data)
+        np.savez(os.path.join(ray_temp_dir, 'info.npz'), **info_data)
         
-        yield temp_dir
+        yield ray_temp_dir
 
 
 @pytest.fixture

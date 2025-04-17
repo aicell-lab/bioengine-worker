@@ -382,7 +382,7 @@ if __name__ == "__main__":
                     "metrics_interval_seconds": 10,
                     "ray_temp_dir": "/tmp/ray",
                     "data_dir": str(Path(__file__).parent.parent / "data"),
-                    "image_path": "/proj/aicell/users/x_nilme/autoscaler/bioengine-worker_0.1.4.sif",
+                    "image_path": "/proj/aicell/users/x_nilme/autoscaler/bioengine-worker_0.1.5.sif",
                 },
                 _debug=True,
             )

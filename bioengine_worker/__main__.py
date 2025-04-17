@@ -217,7 +217,7 @@ def create_parser():
     cluster_group.add_argument(
         "--image_path",
         type=str,
-        default="./apptainer_images/bioengine-worker_0.1.4.sif",
+        default="./apptainer_images/bioengine-worker_0.1.5.sif",
         help="Worker container image path",
     )
     cluster_group.add_argument(
@@ -362,18 +362,7 @@ def get_args_by_group(parser):
 
 
 if __name__ == "__main__":
-    description = """
-Register BioEngine worker to Hypha server.
-
-Container execution:
-    Run in image bioengine-worker_0.1.0.sif
-
-    Pull the image with:
-    `apptainer pull bioengine-worker_0.1.0.sif docker://ghcr.io/aicell-lab/bioengine-worker:0.1.0`
-
-    Run with:
-    `apptainer run --contain --nv bioengine-worker_0.1.0.sif python -m bioengine_worker [options]`
-"""
+    description = "Register BioEngine worker to Hypha server"
 
     parser = create_parser()
     group_configs = get_args_by_group(parser)

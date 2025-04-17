@@ -281,7 +281,6 @@ class RayDeploymentManager:
                 await asyncio.sleep(1)
                 # Notify the autoscaler of the new deployment
                 await self.autoscaler.notify()
-                # TODO: notifying works, but the application will only be deployed once awaited
 
             # Wait for the deployment to complete
             await task

@@ -182,7 +182,11 @@ chmod 777 $SLURM_LOGS_DIR
 set_arg_value "--slurm_logs" $SLURM_LOGS_DIR
 
 # DATA_DIR is needed on the SLURM worker node -> real path
-DATA_DIR=$(get_arg_value "--data_dir" "$WORKING_DIR/data")
+DATA_DIR=$(get_arg_value "--data_dir" "")
+if [[ -z "$DATA_DIR" ]]; then
+    echo "Error: the following argument is required: --data_dir"
+    exit 1
+fi
 DATA_DIR=$(realpath $DATA_DIR)
 mkdir -p "$DATA_DIR"
 # Don't set permissions for data directory
@@ -192,7 +196,10 @@ set_arg_value "--data_dir" $DATA_DIR
 
 # Check if the flag `--debug` is set
 DEBUG_MODE=$(get_arg_value "--debug" "false")
-if [[ "$DEBUG_MODE" == "true" ]]; then
+if [[ ! "$DEBUG_MODE" == "false" ]]; then
+    echo "Debug mode is enabled. Binding current working directory ($WORKING_DIR) to /app in the container."
+    echo ""
+
     # Add debug bindings
     add_bind $WORKING_DIR "/app"
 
@@ -200,16 +207,19 @@ if [[ "$DEBUG_MODE" == "true" ]]; then
     for arg in "${BIOENGINE_WORKER_ARGS[@]}"; do
         echo "  $arg"
     done
+    echo ""
 
     echo "Starting BioEngine worker with the following environment variables:"
     for env in "${ENV_VARS[@]}"; do
         echo "  $env"
     done
+    echo ""
 
     echo "Starting BioEngine worker with the following bind mounts:"
     for bind in "${BIND_OPTS[@]}"; do
         echo "  $bind"
     done
+    echo ""
 fi
 
 # Run with clean environment

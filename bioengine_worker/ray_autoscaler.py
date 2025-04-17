@@ -59,10 +59,6 @@ class RayAutoscaler:
         """
         # Store ray manager reference
         self.cluster_manager = cluster_manager
-        if not ray.is_initialized():
-            raise RuntimeError(
-                "Ray is not initialized. Please start the Ray cluster first."
-            )
 
         # Store configuration
         self.autoscale_config = {
@@ -362,7 +358,7 @@ class RayAutoscaler:
                 self.logger.info("Autoscaler is already running")
 
             if not ray.is_initialized():
-                raise RuntimeError("Ray cluster is not running")
+                raise RuntimeError("Ray cluster is not running. Please start the Ray cluster first.")
 
             self.logger.info(
                 f"Starting Ray autoscaler with config {self.autoscale_config}"

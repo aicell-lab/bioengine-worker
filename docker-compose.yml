@@ -6,7 +6,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/aicell-lab/bioengine-worker:0.1.4
+    image: ghcr.io/aicell-lab/bioengine-worker:0.1.5
     container_name: bioengine_worker
     volumes:
       - ./ray_sessions:/tmp/ray

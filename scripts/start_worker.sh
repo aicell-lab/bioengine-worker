@@ -3,6 +3,7 @@
 VERSION=0.1.4
 WORKING_DIR=$(pwd)
 
+
 # Save all arguments
 BIOENGINE_WORKER_ARGS=("$@")
 
@@ -12,6 +13,7 @@ then
     echo "Apptainer could not be found. Please install it first."
     exit 1
 fi
+
 
 # Function to get argument value
 get_arg_value() {
@@ -60,6 +62,7 @@ set_arg_value() {
     fi
 }
 
+
 # Get the path to the image
 APPTAINER_IMAGE_PATH="$(get_arg_value "--image_path" "$WORKING_DIR/apptainer_images/bioengine-worker_$VERSION.sif")"
 APPTAINER_IMAGE_PATH=$(realpath $APPTAINER_IMAGE_PATH)
@@ -93,6 +96,7 @@ if [ ! -f "$APPTAINER_IMAGE_PATH" ]; then
     fi
 fi
 
+
 # Define environment variables
 ENV_VARS=()
 add_env() {
@@ -107,7 +111,7 @@ source $WORKING_DIR/.env
 set +a
 
 # Add environment variables
-add_env "SSL_CERT_FILE" "/etc/ssl/certs/ca-certificates.crt"
+add_env "USER" "$USER"
 add_env "HYPHA_TOKEN" "$HYPHA_TOKEN"
 
 
@@ -122,68 +126,98 @@ add_bind() {
         BIND_OPTS+=("--bind=$1")
     elif [[ $# -eq 2 ]]; then
         BIND_OPTS+=("--bind=$1:$2")
+    elif [[ $# -eq 3 ]]; then
+        BIND_OPTS+=("--bind=$1:$2:$3")
+    else
+        echo "Error: Invalid number of arguments for add_bind function."
+        exit 1
     fi
 }
 
-# Add Slurm-specific bindings
-add_bind "/usr/bin/sbatch"
-add_bind "/usr/bin/squeue"
-add_bind "/usr/bin/scancel"
+# Add SLURM-specific bindings
+
+# Binaries
+add_bind $(which sinfo)
+add_bind $(which sbatch)
+add_bind $(which squeue)
+add_bind $(which scancel)
+
+# Configuration files
+add_bind "/etc/hosts"
+add_bind "/etc/localtime"
 add_bind "/etc/passwd"
 add_bind "/etc/group"
 add_bind "/etc/slurm"
-# add_bind "/etc/munge"
+add_bind "/etc/munge"
+
+# SLURM and Munge libraries
 add_bind "/usr/lib64/slurm"
 for lib in /usr/lib64/libmunge.so*; do
     add_bind "$lib"
 done
+
+# Munge sockets
 add_bind "/var/run/munge"
+# Munge key
+add_bind "/var/lib/munge"
+# Munge logs
+add_bind "/var/log/munge"
+
 
 # Add BioEngine worker bindings
-RAY_SESSION_DIR=$(get_arg_value "--ray_temp_dir" "$WORKING_DIR/ray_sessions")
+
+# RAY_SESSION_DIR is needed by the Ray head node -> container path
+RAY_SESSION_DIR=$(get_arg_value "--ray_temp_dir" "/tmp/ray/$USER")
 RAY_SESSION_DIR=$(realpath $RAY_SESSION_DIR)
 mkdir -p "$RAY_SESSION_DIR"
 chmod 777 $RAY_SESSION_DIR
 add_bind $RAY_SESSION_DIR "/tmp/ray"
-set_arg_value "--ray_temp_dir" "/tmp/ray"
+set_arg_value "--ray_temp_dir" "/tmp/ray"  
 
+# SLURM_LOGS_DIR is needed on the SLURM worker node -> real path
 SLURM_LOGS_DIR=$(get_arg_value "--slurm_logs" "$WORKING_DIR/slurm_logs")
 SLURM_LOGS_DIR=$(realpath $SLURM_LOGS_DIR)
 mkdir -p "$SLURM_LOGS_DIR"
 chmod 777 $SLURM_LOGS_DIR
 set_arg_value "--slurm_logs" $SLURM_LOGS_DIR
 
+# DATA_DIR is needed on the SLURM worker node -> real path
 DATA_DIR=$(get_arg_value "--data_dir" "$WORKING_DIR/data")
 DATA_DIR=$(realpath $DATA_DIR)
 mkdir -p "$DATA_DIR"
-add_bind $DATA_DIR "/mnt"
+# Don't set permissions for data directory
+add_bind $DATA_DIR "/data" "ro"  # Read-only
 set_arg_value "--data_dir" $DATA_DIR
 
-# TODO: >>> for debugging, remove later
-add_bind $WORKING_DIR "/app"
 
-echo "Starting BioEngine worker with the following arguments:"
-for arg in "${BIOENGINE_WORKER_ARGS[@]}"; do
-    echo "  $arg"
-done
+# Check if the flag `--debug` is set
+DEBUG_MODE=$(get_arg_value "--debug" "false")
+if [[ "$DEBUG_MODE" == "true" ]]; then
+    # Add debug bindings
+    add_bind $WORKING_DIR "/app"
 
-# echo "Starting BioEngine worker with the following environment variables:"
-# for env in "${ENV_VARS[@]}"; do
-#     echo "  $env"
-# done
+    echo "Starting BioEngine worker with the following arguments:"
+    for arg in "${BIOENGINE_WORKER_ARGS[@]}"; do
+        echo "  $arg"
+    done
 
-echo "Starting BioEngine worker with the following bind mounts:"
-for bind in "${BIND_OPTS[@]}"; do
-    echo "  $bind"
-done
-# TODO: <<<
+    echo "Starting BioEngine worker with the following environment variables:"
+    for env in "${ENV_VARS[@]}"; do
+        echo "  $env"
+    done
 
-# Run with clean environment and library path
+    echo "Starting BioEngine worker with the following bind mounts:"
+    for bind in "${BIND_OPTS[@]}"; do
+        echo "  $bind"
+    done
+fi
+
+# Run with clean environment
 apptainer exec \
-    --contain \
-    --writable-tmpfs \
+    --cleanenv \
+    --pwd /app \
     ${ENV_VARS[@]} \
     ${BIND_OPTS[@]} \
-    --pwd /app \
     "$APPTAINER_IMAGE_PATH" \
     python -m bioengine_worker "${BIOENGINE_WORKER_ARGS[@]}"
+    

@@ -59,12 +59,10 @@ class SlurmActor:
                 #SBATCH --cpus-per-task={cpus_per_task}
                 #SBATCH --mem-per-cpu={mem_per_cpu}G
                 #SBATCH --time={time}
+                #SBATCH --chdir=/home/{os.environ['USER']}
                 #SBATCH --output={self.logs_dir}/%x_%j.out
                 #SBATCH --error={self.logs_dir}/%x_%j.err
                 {further_slurm_args}
-
-                # Change to the working directory
-                cd {self.logs_dir}/..
 
                 # Print some diagnostic information
                 echo "Host: $(hostname)"
@@ -82,6 +80,10 @@ class SlurmActor:
                     echo "SLURM_JOB_ID is not set. This script may not be running in a SLURM job."
                     exit 1
                 fi
+
+                # Reset bound in paths in case of submission from a container
+                APPTAINER_BIND=
+                SINGULARITY_BIND=
 
                 {command}
 

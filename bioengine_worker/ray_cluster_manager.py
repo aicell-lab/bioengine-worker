@@ -3,6 +3,7 @@ import os
 import re
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -129,9 +130,9 @@ class RayClusterManager:
     def _ray_executable(self) -> str:
         """Get Ray executable path from PATH or Python environment."""
         # Check ray binary in python environment
-        ray_path = os.path.join(ray.__file__.split("/lib/python")[0], "bin/ray")
-        if os.path.exists(ray_path):
-            return ray_path
+        ray_path = Path(sys.executable).parent / "ray"
+        if ray_path.exists():
+            return str(ray_path)
         else:
             raise FileNotFoundError("Ray executable not found")
 
@@ -159,9 +160,7 @@ class RayClusterManager:
             True if SLURM is available, False otherwise
         """
         try:
-            subprocess.run(
-                ["which", "sbatch"], capture_output=True, text=True, check=True
-            )
+            subprocess.run(["sinfo"], capture_output=True, text=True, check=True)
             self.logger.info("SLURM is available")
             return True
         except subprocess.CalledProcessError:
@@ -562,17 +561,16 @@ class RayClusterManager:
             if self.ray_cluster_config["data_dir"]:
                 data_dir = self.ray_cluster_config["data_dir"]
                 self.logger.info(
-                    f"Binding data directory '{data_dir}' to container directory '/mnt'"
+                    f"Binding outside data directory '{data_dir}' to container directory '/data'"
                 )
-                bind_dir_flag = f"--bind {data_dir}:/mnt "
+                bind_dir_flag = f"--bind {data_dir}:/data "
             else:
                 bind_dir_flag = ""
 
             apptainer_cmd = (
                 "apptainer run "
-                "--contain "
-                "--writable-tmpfs "
                 "--nv "
+                "--cleanenv "
                 "--pwd /app "
                 f"{bind_dir_flag}"
                 f"{self.job_config['image_path']} "
@@ -751,7 +749,7 @@ if __name__ == "__main__":
         assert os.path.exists("/tmp/ray"), "Temporary directory does not exist"
 
         # Check data directory
-        num_files = len(os.listdir("/mnt"))
+        num_files = len(os.listdir("/data"))
         assert num_files, "Data directory is empty"
 
         time.sleep(1)

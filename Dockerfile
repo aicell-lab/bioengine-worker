@@ -4,7 +4,8 @@ FROM python:3.11.9-slim
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \

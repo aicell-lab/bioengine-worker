@@ -116,7 +116,7 @@ class BioEngineWorker:
             token: Token for authentication
             workspace: Workspace to connect to
         """
-        self.logger.info(f"Connecting to Hypha server at {self.server_url}")
+        self.logger.info(f"Connecting to Hypha server at {self.server_url}...")
         self.server = await connect_to_server(
             {
                 "server_url": self.server_url,

@@ -47,8 +47,12 @@ class RayClusterManager:
         further_slurm_args: List[str] = None,
         # Logger
         logger: Optional[logging.Logger] = None,
+        _debug: bool = False,
     ):
         """Initialize cluster manager with networking and resource configurations.
+
+        Ray ports configuration: https://docs.ray.io/en/latest/ray-core/configure.html#ports-configurations
+        SLURM networking caveats: https://github.com/ray-project/ray/blob/1000ae9671967994f7bfdf7b1e1399223ad4fc61/doc/source/cluster/vms/user-guides/community/slurm.rst#id22
 
         Args:
             head_node_ip: IP address for head node. Uses first system IP if None.
@@ -68,16 +72,16 @@ class RayClusterManager:
             slurm_logs_dir: Directory for SLURM logs.
             further_slurm_args: Additional arguments for SLURM job script.
             logger: Custom logger instance. Creates default logger if None.
+            _debug: Enable debug logging level.
         """
         # Set up logging
-        self.logger = logger or create_logger("RayClusterManager")
+        self.logger = logger or create_logger(
+            name="RayClusterManager",
+            level=logging.DEBUG if _debug else logging.INFO,
+        )
 
-        # Set ray port configuration
-        # Ports configuration: https://docs.ray.io/en/latest/ray-core/configure.html#ports-configurations
-        # SLURM networking caveats: https://github.com/ray-project/ray/blob/1000ae9671967994f7bfdf7b1e1399223ad4fc61/doc/source/cluster/vms/user-guides/community/slurm.rst#id22
-        if not head_node_ip:
-            result = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
-            internal_ip = result.stdout.strip().split()[0]  # Take the first IP
+        # Find and store Ray executable path
+        self._ray_exec_path = self._find_ray_executable()
 
         # Check number of CPUs and GPUs
         self.slurm_available = self._check_slurm_available()
@@ -98,7 +102,7 @@ class RayClusterManager:
             )
 
         self.ray_cluster_config = {
-            "head_node_ip": head_node_ip or internal_ip,
+            "head_node_ip": head_node_ip or self._find_internal_ip(),
             "head_node_port": head_node_port,  # GCS server port
             "node_manager_port": node_manager_port,
             "object_manager_port": object_manager_port,
@@ -124,17 +128,9 @@ class RayClusterManager:
             }
 
             # Set up SLURM actor
-            self.slurm_actor = SlurmActor(job_name="ray_worker", logs_dir=slurm_logs_dir)
-
-    @property
-    def _ray_executable(self) -> str:
-        """Get Ray executable path from PATH or Python environment."""
-        # Check ray binary in python environment
-        ray_path = Path(sys.executable).parent / "ray"
-        if ray_path.exists():
-            return str(ray_path)
-        else:
-            raise FileNotFoundError("Ray executable not found")
+            self.slurm_actor = SlurmActor(
+                job_name="ray_worker", logs_dir=slurm_logs_dir, _debug=_debug
+            )
 
     @property
     def head_node_address(self) -> str:
@@ -152,6 +148,27 @@ class RayClusterManager:
                 "Can not get head node address - Ray cluster is not running"
             )
             raise RuntimeError("Ray cluster is not running")
+
+    def _find_ray_executable(self) -> str:
+        """Find the Ray executable path.
+
+        Returns:
+            str with the path to the Ray executable
+        """
+        ray_path = Path(sys.executable).parent / "ray"
+        if not ray_path.exists():
+            raise FileNotFoundError("Ray executable not found")
+        self.logger.debug(f"Ray executable found at: {ray_path}")
+        return str(ray_path)
+
+    def _find_internal_ip(self) -> str:
+        """Find the internal IP address of the system.
+
+        Returns:
+            str with the internal IP address
+        """
+        result = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
+        return result.stdout.strip().split()[0]  # Take the first IP
 
     def _check_slurm_available(self) -> bool:
         """Check if SLURM is available on the system.
@@ -277,7 +294,7 @@ class RayClusterManager:
             # Start ray as the head node with the specified parameters
             result = subprocess.run(
                 [
-                    self._ray_executable,
+                    self._ray_exec_path,
                     "start",
                     "--head",
                     f"--num-cpus={self.ray_cluster_config['head_num_cpus']}",
@@ -323,16 +340,20 @@ class RayClusterManager:
 
             # Change '<ray_temp_dir>/session_latest' symlink to use relative path instead of absolute (container) path
             # (needed to start ray in container)
-            symlink_path = Path(self.ray_cluster_config["ray_temp_dir"]) / "session_latest"
+            symlink_path = (
+                Path(self.ray_cluster_config["ray_temp_dir"]) / "session_latest"
+            )
             if symlink_path.is_symlink():
                 # Get the target of the symlink
                 symlink_target = symlink_path.readlink()
             else:
                 self.logger.error(f"Symlink '{symlink_path}' does not exist")
                 raise FileNotFoundError(f"Symlink '{symlink_path}' does not exist")
-            
+
             relative_symlink_target = Path(symlink_target.name)
-            self.logger.debug(f"Changing symlink target from '{symlink_target}' to '{relative_symlink_target}'")
+            self.logger.debug(
+                f"Changing symlink target from '{symlink_target}' to '{relative_symlink_target}'"
+            )
             symlink_path.unlink()
             symlink_path.symlink_to(relative_symlink_target)
 
@@ -479,7 +500,7 @@ class RayClusterManager:
             # Shutdown the Ray cluster head node
             self.logger.info("Shutting down Ray cluster...")
             result = subprocess.run(
-                [self._ray_executable, "stop", f"--grace-period={grace_period}"],
+                [self._ray_exec_path, "stop", f"--grace-period={grace_period}"],
                 capture_output=True,
                 text=True,
                 check=True,

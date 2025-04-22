@@ -1,9 +1,9 @@
 import argparse
 import asyncio
-import contextlib
 import os
 import signal
 import sys
+from typing import Literal
 
 from hypha_rpc import login
 
@@ -16,25 +16,34 @@ logger = create_logger("__main__")
 async def main(group_configs):
     """Main function to initialize and register BioEngine worker"""
     # Setup signal-aware shutdown
-    stop_event = asyncio.Event()
     is_shutting_down = False
+    bioengine_worker = None
 
-    def _handle_shutdown_signal(sig_name):
-        nonlocal is_shutting_down
+    def _handle_shutdown_signal(sig_name: Literal["SIGINT", "SIGTERM"]):
+        """
+        Handle shutdown signals for graceful termination.
+
+        Args:
+            sig_name: The name of the signal received, either "SIGINT" for user interrupt (Ctrl+C) or "SIGTERM" for termination request.
+        """
+        nonlocal is_shutting_down, bioengine_worker
         if is_shutting_down and sig_name == "SIGINT":
             logger.info("Received second SIGINT, stopping immediately...")
             sys.exit(1)
-        
-        logger.info(f"Received {sig_name}, starting graceful shutdown...")
+
+        logger.info(
+            f"Received {sig_name}, starting graceful shutdown. Press Ctrl+C again to force exit."
+        )
         is_shutting_down = True
-        stop_event.set()
+
+        if bioengine_worker:
+            # TODO: when running in Apptainer, the container’s overlay filesystem is torn down before the graceful shutdown completes -> results in OSError [Errno 107] because executables like Ray or scancel are not found
+            asyncio.create_task(bioengine_worker.cleanup())
 
     # Register signal handlers
     loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGINT, _handle_shutdown_signal, "SIGINT")
     loop.add_signal_handler(signal.SIGTERM, _handle_shutdown_signal, "SIGTERM")
-
-    bioengine_worker = None
 
     try:
         # Get Hypha configuration
@@ -79,26 +88,12 @@ async def main(group_configs):
         # Initialize worker
         await bioengine_worker.start()
 
-        # Start the server in the background
-        serve_task = asyncio.create_task(bioengine_worker.serve())
-
         # Wait until shutdown is triggered
-        await stop_event.wait()
-
-        # Wait for the server task to complete (it should run forever, so we just cancel it when done)
-        serve_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await serve_task
+        await bioengine_worker.serve()
 
     except Exception as e:
         logger.error(f"Exception in main: {str(e)}")
         raise
-    finally:
-        if bioengine_worker:
-            try:
-                await bioengine_worker.cleanup()
-            except Exception as cleanup_err:
-                logger.error(f"Error during cleanup: {str(cleanup_err)}")
 
 
 def create_parser():

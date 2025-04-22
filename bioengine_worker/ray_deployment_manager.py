@@ -28,6 +28,7 @@ class RayDeploymentManager:
         autoscaler: Optional[RayAutoscaler] = None,
         # Logger
         logger: Optional[logging.Logger] = None,
+        _debug: bool = False,
     ):
         """Initialize the Ray Deployment Manager
 
@@ -35,7 +36,14 @@ class RayDeploymentManager:
             service_id: ID to use for the Hypha service exposing deployed models
             autoscaler: Optional RayAutoscaler instance
             logger: Optional logger instance
+            _debug: Enable debug logging
         """
+        # Set up logging
+        self.logger = logger or create_logger(
+            name="RayDeploymentManager",
+            level=logging.DEBUG if _debug else logging.INFO,
+        )
+
         # Store parameters
         self._service_id = service_id
         self.autoscaler = autoscaler
@@ -45,9 +53,6 @@ class RayDeploymentManager:
         self.artifact_manager = None
         self.service_info = None
         self._deployed_artifacts = set()
-
-        # Set up logging
-        self.logger = logger or create_logger("RayDeploymentManager")
 
     async def _update_services(self) -> None:
         """Update Hypha services based on currently deployed models"""
@@ -313,7 +318,7 @@ class RayDeploymentManager:
             _skip_update: Skip updating services after undeployment
         """
         self.logger.info(f"Undeploying artifact '{artifact_id}'...")
-        
+
         try:
             # Verify client is connected to Hypha server
             if not self.server:
@@ -338,7 +343,7 @@ class RayDeploymentManager:
                 raise RuntimeError(
                     f"Failed to undeploy '{deployment_name}'. It still exists."
                 )
-            
+
             # Remove the deployment from the tracked artifacts
             self._deployed_artifacts.discard(artifact_id)
 
@@ -401,7 +406,7 @@ class RayDeploymentManager:
     async def deploy_all_artifacts(
         self,
         deployment_collection_id: str = "ray-deployments",
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         """Deploy all artifacts in the deployment collection to Ray Serve
 
@@ -447,7 +452,9 @@ class RayDeploymentManager:
             self.logger.error(f"Error deploying all artifacts: {e}")
             raise e
 
-    async def cleanup_deployments(self, context: Optional[Dict[str, Any]] = None) -> None:
+    async def cleanup_deployments(
+        self, context: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Cleanup Ray Serve deployments"""
         self.logger.info("Cleaning up all deployments...")
         try:
@@ -562,7 +569,9 @@ if __name__ == "__main__":
         head_num_cpus=4,
         ray_temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
         data_dir=str(Path(__file__).parent.parent / "data"),
-        image_path=str(Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.5.sif"),
+        image_path=str(
+            Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.5.sif"
+        ),
     )
     cluster_manager.logger.setLevel(logging.DEBUG)
     cluster_manager.start_cluster(force_clean_up=True)

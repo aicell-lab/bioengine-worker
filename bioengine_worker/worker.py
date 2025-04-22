@@ -52,13 +52,16 @@ class BioEngineWorker:
             ray_autoscaler_config: Configuration for the RayAutoscaler component.
             ray_deployment_config: Configuration for the RayDeploymentManager component.
             ray_connection_kwargs: Optional arguments passed to `ray.init()` to connect to an existing ray cluster. If provided, disables cluster management.
-            _debug: Flag to enable debug mode. If True, sets the logger to DEBUG level.
+            _debug: Enable debug logging.
         """
         self.workspace = workspace
         self.server_url = server_url
         self._token = token
         self.service_id = service_id
-        self.logger = logger or create_logger("BioEngineWorker")
+        self.logger = logger or create_logger(
+            name="BioEngineWorker",
+            level=logging.DEBUG if _debug else logging.INFO,
+        )
         self.start_time = time.time()
 
         ray_cluster_config = ray_cluster_config or {}
@@ -88,27 +91,25 @@ class BioEngineWorker:
 
         manage_cluster = not bool(ray_connection_kwargs)
         if manage_cluster:
-            self.cluster_manager = RayClusterManager(**ray_cluster_config)
-            self.autoscaler = RayAutoscaler(cluster_manager=self.cluster_manager, **ray_autoscaler_config)
+            self.cluster_manager = RayClusterManager(
+                **ray_cluster_config, _debug=_debug
+            )
+            self.autoscaler = RayAutoscaler(
+                cluster_manager=self.cluster_manager,
+                **ray_autoscaler_config,
+                _debug=_debug,
+            )
         else:
             self.cluster_manager = None
             self.autoscaler = None
-        self.deployment_manager = RayDeploymentManager(**ray_deployment_config, autoscaler=self.autoscaler)
+        self.deployment_manager = RayDeploymentManager(
+            **ray_deployment_config, autoscaler=self.autoscaler, _debug=_debug
+        )
         self.dataset_manager = None  # TODO: implement dataset manager
-
-        # Set debug mode if requested
-        if self._debug:
-            if manage_cluster:
-                self.cluster_manager.logger.setLevel(logging.DEBUG)
-                self.cluster_manager.slurm_actor.logger.setLevel(logging.DEBUG)
-                self.autoscaler.logger.setLevel(logging.DEBUG)
-            self.deployment_manager.logger.setLevel(logging.DEBUG)
-            # self.dataset_manager.logger.setLevel(logging.DEBUG)
-            self.logger.setLevel(logging.DEBUG)
-            self.logger.debug("Debug mode enabled.")
 
         # Internal state
         self.server = None
+        self.serve_event = None
 
     async def _connect_to_server(self) -> None:
         """Connect to Hypha server using provided URL.
@@ -155,6 +156,7 @@ class BioEngineWorker:
                 "cleanup_deployments": self.deployment_manager.cleanup_deployments,
                 "load_dataset": lambda dataset_id, context: "Not implemented",
                 "execute_python_code": self.execute_python_code,
+                "cleanup": self.cleanup,
             },
             {"overwrite": True},
         )
@@ -167,7 +169,9 @@ class BioEngineWorker:
         workspace, sid = service_info.id.split("/")
         service_url = f"{server_url}/{workspace}/services/{sid}"
         self.logger.info(f"Get worker status at: {service_url}/get_status")
-        self.logger.info(f"Deploy artifact with: {service_url}/deploy_artifact?artifact_id=<artifact_id>")
+        self.logger.info(
+            f"Deploy artifact with: {service_url}/deploy_artifact?artifact_id=<artifact_id>"
+        )
 
         return service_info.id
 
@@ -206,9 +210,30 @@ class BioEngineWorker:
 
     async def serve(self) -> None:
         """Keep the BioEngine worker running and serving requests."""
-        if not self.server:
+        if not self.server or not ray.is_initialized():
             raise RuntimeError("Server not initialized. Call start() first.")
-        await self.server.serve()
+
+        self.serve_event = asyncio.Event()
+        await self.serve_event.wait()
+
+    async def cleanup(self, context: Optional[Dict[str, Any]] = None) -> None:
+        """Clean up resources and stop the Ray cluster if managed by this worker."""
+        if ray.is_initialized():
+            self.logger.info("Cleaning up resources...")
+
+            await self.deployment_manager.cleanup_deployments()
+
+            if self.autoscaler:
+                await self.autoscaler.shutdown_cluster()
+            elif self.cluster_manager:
+                self.cluster_manager.shutdown_cluster()
+
+            self.logger.info("Worker cleanup complete.")
+        else:
+            self.logger.warning("Ray is not initialized. No cleanup needed.")
+
+        # Signal the serve loop to exit
+        self.serve_event.set()
 
     async def get_status(self, context: Optional[Dict[str, Any]] = None) -> Dict:
         """Get comprehensive status of the Ray cluster or connected Ray instance.
@@ -247,12 +272,13 @@ class BioEngineWorker:
                     "note": "Connected to existing Ray cluster; no autoscaler info available.",
                 }
             status["deployments"] = await self.deployment_manager.get_status()
-            status["datasets"] = [] # await self.dataset_manager.get_status()  # TODO: implement dataset manager
+            # TODO: implement dataset manager
+            status["datasets"] = []  # await self.dataset_manager.get_status()
         else:
             status["cluster"] = "Not running"
 
         return status
-    
+
     async def execute_python_code(
         self,
         code: str = None,
@@ -341,19 +367,6 @@ class BioEngineWorker:
 
         return result
 
-    async def cleanup(self) -> None:
-        """Clean up resources and stop the Ray cluster if managed by this worker."""
-        self.logger.info("Cleaning up resources...")
-
-        await self.deployment_manager.cleanup_deployments()
-
-        if self.autoscaler:
-            await self.autoscaler.shutdown_cluster()
-        elif self.cluster_manager:
-            self.cluster_manager.shutdown_cluster()
-
-        self.logger.info("Worker cleanup complete.")
-
 
 if __name__ == "__main__":
     """Test the BioEngineWorker class functionality"""
@@ -376,13 +389,16 @@ if __name__ == "__main__":
                 service_id="bioengine-worker-test",
                 ray_cluster_config={
                     "head_num_cpus": 4,
-                    "ray_temp_dir": str(Path(__file__).parent.parent / "ray_sessions"),
+                    "ray_temp_dir": f"/tmp/ray/{os.environ['USER']}",
+                    "data_dir": str(Path(__file__).parent.parent / "data"),
+                    "image_path": str(
+                        Path(__file__).parent.parent
+                        / "apptainer_images"
+                        / "bioengine-worker_0.1.5.sif"
+                    ),
                 },
                 ray_autoscaler_config={
                     "metrics_interval_seconds": 10,
-                    "ray_temp_dir": "/tmp/ray",
-                    "data_dir": str(Path(__file__).parent.parent / "data"),
-                    "image_path": "/proj/aicell/users/x_nilme/autoscaler/bioengine-worker_0.1.5.sif",
                 },
                 _debug=True,
             )

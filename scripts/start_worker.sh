@@ -226,8 +226,10 @@ fi
 apptainer exec \
     --cleanenv \
     --pwd /app \
-    ${ENV_VARS[@]} \
-    ${BIND_OPTS[@]} \
+    "${ENV_VARS[@]}" \
+    "${BIND_OPTS[@]}" \
     "$APPTAINER_IMAGE_PATH" \
     python -m bioengine_worker "${BIOENGINE_WORKER_ARGS[@]}"
     
+
+# curl https://hypha.aicell.io/chiron-platform/services/bioengine-worker/cleanup

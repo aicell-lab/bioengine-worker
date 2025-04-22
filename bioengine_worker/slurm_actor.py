@@ -15,7 +15,15 @@ class SlurmActor:
         job_name: str,
         logs_dir: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
+        _debug: bool = False,
     ):
+        # Set up logging
+        self.logger = logger or create_logger(
+            name="SlurmActor",
+            level=logging.DEBUG if _debug else logging.INFO,
+        )
+
+        # Set SLURM job name
         self.job_name = job_name
 
         # Directory for SLURM logs
@@ -25,9 +33,6 @@ class SlurmActor:
             self.logs_dir = Path(__file__).resolve().parent.parent / "slurm_logs"
 
         self.logs_dir.mkdir(parents=True, exist_ok=True)
-
-        # Set up logging
-        self.logger = logger or create_logger("SlurmActor")
 
     def create_sbatch_script(
         self,

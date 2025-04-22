@@ -38,6 +38,7 @@ class RayAutoscaler:
         node_grace_period_seconds: int = 600,  # 10 minutes grace period for new nodes
         # Logger
         logger: Optional[logging.Logger] = None,
+        _debug: bool = False,
     ):
         """Initialize the Ray autoscaler.
 
@@ -56,7 +57,14 @@ class RayAutoscaler:
             scale_down_cooldown_seconds: Minimum time between scaling down operations
             node_grace_period_seconds: Give new nodes time before considering for scale-down
             logger: Optional logger instance
+            _debug: Enable debug logging
         """
+        # Set up logging
+        self.logger = logger or create_logger(
+            name="RayAutoscaler",
+            level=logging.DEBUG if _debug else logging.INFO,
+        )
+
         # Store ray manager reference
         self.cluster_manager = cluster_manager
 
@@ -86,9 +94,6 @@ class RayAutoscaler:
         # Background task
         self.monitoring_task = None
         self.is_running = False
-
-        # Set up logging
-        self.logger = logger or create_logger("RayAutoscaler")
 
     @property
     def pending_tasks(self) -> list:
@@ -342,10 +347,9 @@ class RayAutoscaler:
                         f"Stopping monitoring loop after {consecutive_errors} consecutive errors"
                     )
                     raise e
-                
+
             # Update last metrics collection time
             self.last_time_collected_metrics = time.time()
-
 
         # Ensure autoscaler stops if we break from the loop
         if self.is_running:
@@ -358,7 +362,9 @@ class RayAutoscaler:
                 self.logger.info("Autoscaler is already running")
 
             if not ray.is_initialized():
-                raise RuntimeError("Ray cluster is not running. Please start the Ray cluster first.")
+                raise RuntimeError(
+                    "Ray cluster is not running. Please start the Ray cluster first."
+                )
 
             self.logger.info(
                 f"Starting Ray autoscaler with config {self.autoscale_config}"
@@ -422,7 +428,9 @@ class RayAutoscaler:
         It can be used to trigger scaling decisions or other actions based on the current state of the cluster.
         """
         self.logger.info("Notifying autoscaler of cluster state change")
-        self.last_time_collected_metrics = time.time() - self.autoscale_config["metrics_interval"] + delay_s
+        self.last_time_collected_metrics = (
+            time.time() - self.autoscale_config["metrics_interval"] + delay_s
+        )
 
     async def get_status(self, history_len: int = 5) -> dict:
         """Get the current status of the autoscaler.
@@ -575,7 +583,10 @@ if __name__ == "__main__":
             cluster_manager = RayClusterManager(
                 ray_temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
                 data_dir=str(Path(__file__).parent.parent / "data"),
-                image_path=str(Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.5.sif"),
+                image_path=str(
+                    Path(__file__).parent.parent
+                    / "apptainer_images/bioengine-worker_0.1.5.sif"
+                ),
             )
             cluster_manager.start_cluster(force_clean_up=True)
 

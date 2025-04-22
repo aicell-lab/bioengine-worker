@@ -592,6 +592,7 @@ class RayClusterManager:
                 "apptainer run "
                 "--nv "
                 "--cleanenv "
+                "--env=\"SLURM_JOB_ID\"=\"$SLURM_JOB_ID\" "
                 "--pwd /app "
                 f"{bind_dir_flag}"
                 f"{self.job_config['image_path']} "

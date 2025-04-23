@@ -42,7 +42,7 @@ class RayClusterManager:
         head_num_cpus: int = 0,
         head_num_gpus: int = 0,
         # Job configuration parameters
-        image_path: str = "./apptainer_images/bioengine-worker_0.1.5.sif",
+        image_path: str = "./apptainer_images/bioengine-worker_0.1.6.sif",
         slurm_logs_dir: str = None,
         further_slurm_args: List[str] = None,
         # Logger
@@ -180,7 +180,7 @@ class RayClusterManager:
             subprocess.run(["sinfo"], capture_output=True, text=True, check=True)
             self.logger.info("SLURM is available")
             return True
-        except subprocess.CalledProcessError:
+        except FileNotFoundError:
             self.logger.info("SLURM is not available")
             return False
 
@@ -708,7 +708,7 @@ if __name__ == "__main__":
     # ray_manager = RayClusterManager(
     #     head_num_cpus=4,
     #     head_num_gpus=0,
-    #     ray_temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
+    #     ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
     # )
     # ray_manager.start_cluster(force_clean_up=True)
     # ray_manager.get_status()
@@ -716,14 +716,14 @@ if __name__ == "__main__":
 
     # Test the class
     ray_manager = RayClusterManager(
+        ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
         data_dir=str(Path(__file__).parent.parent / "data"),
         image_path=str(
-            Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.5.sif"
+            Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.6.sif"
         ),
         # further_slurm_args=["-C 'thin'"]
+        _debug=True,
     )
-    ray_manager.logger.setLevel(logging.DEBUG)
-    ray_manager.slurm_actor.logger.setLevel(logging.DEBUG)
 
     # Start Ray cluster
     ray_manager.start_cluster(force_clean_up=True)

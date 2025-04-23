@@ -6,19 +6,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/aicell-lab/bioengine-worker:0.1.5
+    image: ghcr.io/aicell-lab/bioengine-worker:0.1.6
     container_name: bioengine_worker
     volumes:
-      - ./ray_sessions:/tmp/ray
-      - ./bioengine_worker/example_deployment:/app/bioengine_worker/example_deployment
-      - ./data:/app/data
+      - /tmp/ray/${USER}:/tmp/ray/
+      - ./data:/data
     shm_size: 10.24gb
     env_file:
       - .env
     restart: unless-stopped
     command: [
       "python", "-m", "bioengine_worker",
+      "--data_dir", "/data",
       "--worker_service_id", "bioengine-worker-test",
+      "--head_num_gpus", "1",
       "--head_num_cpus", "4",
       "--ray_temp_dir", "/tmp/ray",
     ]

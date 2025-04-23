@@ -94,11 +94,14 @@ class BioEngineWorker:
             self.cluster_manager = RayClusterManager(
                 **ray_cluster_config, _debug=_debug
             )
-            self.autoscaler = RayAutoscaler(
-                cluster_manager=self.cluster_manager,
-                **ray_autoscaler_config,
-                _debug=_debug,
-            )
+            if self.cluster_manager.slurm_available:
+                self.autoscaler = RayAutoscaler(
+                    cluster_manager=self.cluster_manager,
+                    **ray_autoscaler_config,
+                    _debug=_debug,
+                )
+            else:
+                self.autoscaler = None
         else:
             self.cluster_manager = None
             self.autoscaler = None
@@ -394,7 +397,7 @@ if __name__ == "__main__":
                     "image_path": str(
                         Path(__file__).parent.parent
                         / "apptainer_images"
-                        / "bioengine-worker_0.1.5.sif"
+                        / "bioengine-worker_0.1.6.sif"
                     ),
                 },
                 ray_autoscaler_config={
@@ -440,8 +443,7 @@ if __name__ == "__main__":
             # Keep server running if requested
             if keep_running:
                 print("Server running. Press Ctrl+C to stop.")
-                while True:
-                    await asyncio.sleep(1)
+                await server.serve()
 
         except Exception as e:
             print(f"Test error: {e}")

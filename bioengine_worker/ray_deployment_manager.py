@@ -567,13 +567,13 @@ if __name__ == "__main__":
     # Create and start the autoscaler with shorter thresholds for quicker testing
     cluster_manager = RayClusterManager(
         head_num_cpus=4,
-        ray_temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
+        ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
         data_dir=str(Path(__file__).parent.parent / "data"),
         image_path=str(
-            Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.5.sif"
+            Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.6.sif"
         ),
+        _debug=True,
     )
-    cluster_manager.logger.setLevel(logging.DEBUG)
     cluster_manager.start_cluster(force_clean_up=True)
 
     if cluster_manager.slurm_available:
@@ -583,8 +583,8 @@ if __name__ == "__main__":
             default_time_limit="00:10:00",
             max_workers=1,
             metrics_interval_seconds=10,
+            _debug=True,
         )
-        autoscaler.logger.setLevel(logging.DEBUG)
     else:
         autoscaler = None
 
@@ -597,8 +597,7 @@ if __name__ == "__main__":
                 await autoscaler.start()
 
             # Create deployment manager
-            deployment_manager = RayDeploymentManager(autoscaler=autoscaler)
-            deployment_manager.logger.setLevel(logging.DEBUG)
+            deployment_manager = RayDeploymentManager(autoscaler=autoscaler, _debug=True)
 
             # Connect to Hypha server using token from environment
             token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
@@ -632,8 +631,7 @@ if __name__ == "__main__":
             # Keep server running if requested
             if keep_running:
                 print("Server running. Press Ctrl+C to stop.")
-                while True:
-                    await asyncio.sleep(1)
+                await server.serve()
 
             # Undeploy the test artifact
             await deployment_manager.undeploy_artifact(artifact_id)

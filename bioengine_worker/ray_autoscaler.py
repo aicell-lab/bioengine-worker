@@ -581,12 +581,13 @@ if __name__ == "__main__":
     async def test_autoscaler():
         try:
             cluster_manager = RayClusterManager(
-                ray_temp_dir=str(Path(__file__).parent.parent / "ray_sessions"),
+                ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
                 data_dir=str(Path(__file__).parent.parent / "data"),
                 image_path=str(
                     Path(__file__).parent.parent
-                    / "apptainer_images/bioengine-worker_0.1.5.sif"
+                    / "apptainer_images/bioengine-worker_0.1.6.sif"
                 ),
+                _debug=True,
             )
             cluster_manager.start_cluster(force_clean_up=True)
 
@@ -601,9 +602,8 @@ if __name__ == "__main__":
                 scale_up_cooldown_seconds=10,  # 10 seconds between scale up
                 scale_down_cooldown_seconds=10,  # 10 seconds between scale down
                 node_grace_period_seconds=10,
+                _debug=True,
             )
-            autoscaler.cluster_manager.logger.setLevel(logging.DEBUG)
-            autoscaler.logger.setLevel(logging.DEBUG)
 
             # Start autoscaler
             await autoscaler.start()

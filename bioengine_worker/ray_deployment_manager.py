@@ -24,7 +24,7 @@ class RayDeploymentManager:
 
     def __init__(
         self,
-        service_id: str = "ray-model-services",
+        service_id: str = "bioengine-worker-deployments",
         autoscaler: Optional[RayAutoscaler] = None,
         # Logger
         logger: Optional[logging.Logger] = None,
@@ -80,15 +80,12 @@ class RayDeploymentManager:
                 service_functions[deployment_name] = partial(
                     create_model_function, deployment_name
                 )
-                self.logger.info(
-                    f"Prepared model function for deployment '{deployment_name}'"
-                )
 
             # Register all model functions as a single service
             service_info = await self.server.register_service(
                 {
                     "id": self._service_id,
-                    "name": "Ray Model Services",
+                    "name": "BioEngine Worker Deployments",
                     "description": "Deployed Ray Serve models",
                     "config": {"visibility": "public", "require_context": True},
                     **service_functions,
@@ -96,13 +93,14 @@ class RayDeploymentManager:
                 {"overwrite": True},
             )
             if len(service_functions) > 0:
-                self.logger.info("Successfully registered model services")
+                self.logger.info("Successfully registered deployment service")
                 server_url = self.server.config.public_base_url
                 workspace, sid = service_info.id.split("/")
                 service_url = f"{server_url}/{workspace}/services/{sid}"
-                self.logger.info(
-                    f"Test the deployment service at: {service_url}/<deployment_name>"
-                )
+                for deployment_name in service_functions.keys():
+                    self.logger.info(
+                        f"Access the deployment service at: {service_url}/{deployment_name}"
+                    )
                 self.service_info = service_info
             else:
                 self.logger.info("No deployments to register as services")
@@ -597,7 +595,9 @@ if __name__ == "__main__":
                 await autoscaler.start()
 
             # Create deployment manager
-            deployment_manager = RayDeploymentManager(autoscaler=autoscaler, _debug=True)
+            deployment_manager = RayDeploymentManager(
+                autoscaler=autoscaler, _debug=True
+            )
 
             # Connect to Hypha server using token from environment
             token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})

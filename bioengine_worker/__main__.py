@@ -52,6 +52,10 @@ async def main(group_configs):
         if not token:
             token = await login({"server_url": hypha_config["server_url"]})
 
+        # Get Dataset Manager configuration
+        dataset_config = group_configs["Dataset Manager Options"]
+        dataset_config["service_id"] = dataset_config.pop("dataset_service_id")
+
         # Get Ray Cluster Manager configuration
         ray_cluster_config = group_configs["Ray Cluster Manager Options"]
         clean_up_previous_cluster = not ray_cluster_config.pop("skip_cleanup")
@@ -77,6 +81,7 @@ async def main(group_configs):
             server_url=hypha_config["server_url"],
             token=token,
             service_id=hypha_config["worker_service_id"],
+            dataset_config=dataset_config,
             ray_cluster_config=ray_cluster_config,
             clean_up_previous_cluster=clean_up_previous_cluster,
             ray_autoscaler_config=ray_autoscaler_config,
@@ -123,6 +128,21 @@ def create_parser():
         "--worker_service_id",
         default="bioengine-worker",
         help="Service ID for the worker",
+    )
+
+    # Dataset Manager options
+    dataset_group = parser.add_argument_group("Dataset Manager Options")
+    dataset_group.add_argument(
+        "--data_dir",
+        type=str,
+        required=True,
+        help="Data directory served by the dataset manager",
+    )
+    dataset_group.add_argument(
+        "--dataset_service_id",
+        type=str,
+        default="bioengine-worker-files",
+        help="Service ID for the dataset manager",
     )
 
     # Ray Cluster Manager options
@@ -184,12 +204,6 @@ def create_parser():
         type=str,
         default="/tmp/ray",
         help="Temporary directory for Ray",
-    )
-    cluster_group.add_argument(
-        "--data_dir",
-        type=str,
-        required=True,
-        help="Data directory mounted to worker containers",
     )
     cluster_group.add_argument(
         "--head_num_cpus",
@@ -314,7 +328,7 @@ def create_parser():
     deployment_group.add_argument(
         "--deployment_service_id",
         type=str,
-        default="ray-model-services",
+        default="bioengine-worker-deployments",
         help="Service ID for deployed models",
     )
 

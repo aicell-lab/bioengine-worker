@@ -11,6 +11,7 @@ import cloudpickle
 import ray
 from hypha_rpc import connect_to_server
 
+from bioengine_worker.dataset_manager import DatasetManager
 from bioengine_worker.ray_autoscaler import RayAutoscaler
 from bioengine_worker.ray_cluster_manager import RayClusterManager
 from bioengine_worker.ray_deployment_manager import RayDeploymentManager
@@ -31,12 +32,13 @@ class BioEngineWorker:
         server_url: str = "https://hypha.aicell.io",
         token: Optional[str] = None,
         service_id: str = "bioengine-worker",
-        logger: Optional[logging.Logger] = None,
+        dataset_config: Optional[Dict] = None,
         ray_cluster_config: Optional[Dict] = None,
         clean_up_previous_cluster: bool = True,
         ray_autoscaler_config: Optional[Dict] = None,
         ray_deployment_config: Optional[Dict] = None,
         ray_connection_kwargs: Optional[Dict] = None,
+        logger: Optional[logging.Logger] = None,
         _debug: bool = False,
     ):
         """Initialize BioEngine worker with component managers.
@@ -46,12 +48,13 @@ class BioEngineWorker:
             server_url: URL of the Hypha server to register the worker with.
             token: Optional authentication token for the Hypha server.
             service_id: Service ID used when registering with the Hypha server.
-            logger: Optional custom logger. If not provided, a default logger will be created.
+            dataset_config: Optional configuration for data management.
             ray_cluster_config: Configuration for RayClusterManager component.
             clean_up_previous_cluster: Flag to indicate whether to cleanup of previous Ray cluster.
             ray_autoscaler_config: Configuration for the RayAutoscaler component.
             ray_deployment_config: Configuration for the RayDeploymentManager component.
             ray_connection_kwargs: Optional arguments passed to `ray.init()` to connect to an existing ray cluster. If provided, disables cluster management.
+            logger: Optional custom logger. If not provided, a default logger will be created.
             _debug: Enable debug logging.
         """
         self.workspace = workspace
@@ -64,7 +67,13 @@ class BioEngineWorker:
         )
         self.start_time = time.time()
 
+        dataset_config = dataset_config or {}
         ray_cluster_config = ray_cluster_config or {}
+        ray_cluster_config.setdefault("data_dir", dataset_config["data_dir"])
+        if not ray_cluster_config.get("data_dir") == dataset_config["data_dir"]:
+            raise ValueError(
+                "RayClusterManager data_dir must match DatasetManager data_dir."
+            )
         self._clean_up = clean_up_previous_cluster
         ray_autoscaler_config = ray_autoscaler_config or {}
         ray_deployment_config = ray_deployment_config or {}
@@ -108,7 +117,7 @@ class BioEngineWorker:
         self.deployment_manager = RayDeploymentManager(
             **ray_deployment_config, autoscaler=self.autoscaler, _debug=_debug
         )
-        self.dataset_manager = None  # TODO: implement dataset manager
+        self.dataset_manager = DatasetManager(**dataset_config, _debug=_debug)
 
         # Internal state
         self.server = None
@@ -153,12 +162,13 @@ class BioEngineWorker:
                 "description": "Controls Ray cluster on HPC system",
                 "config": {"visibility": "public", "require_context": True},
                 "get_status": self.get_status,
+                "load_dataset": self.dataset_manager.load_dataset,
+                "close_dataset": self.dataset_manager.close_dataset,
+                "execute_python_code": self.execute_python_code,
                 "deploy_artifact": self.deployment_manager.deploy_artifact,
                 "undeploy_artifact": self.deployment_manager.undeploy_artifact,
                 "deploy_all_artifacts": self.deployment_manager.deploy_all_artifacts,
                 "cleanup_deployments": self.deployment_manager.cleanup_deployments,
-                "load_dataset": lambda dataset_id, context: "Not implemented",
-                "execute_python_code": self.execute_python_code,
                 "cleanup": self.cleanup,
             },
             {"overwrite": True},
@@ -208,6 +218,7 @@ class BioEngineWorker:
         # Connect to the Hypha server and register the service
         await self._connect_to_server()
         await self.deployment_manager.initialize(self.server)
+        await self.dataset_manager.initialize(self.server)
         sid = await self._register()
         return sid
 
@@ -275,8 +286,7 @@ class BioEngineWorker:
                     "note": "Connected to existing Ray cluster; no autoscaler info available.",
                 }
             status["deployments"] = await self.deployment_manager.get_status()
-            # TODO: implement dataset manager
-            status["datasets"] = []  # await self.dataset_manager.get_status()
+            status["datasets"] = await self.dataset_manager.get_status()
         else:
             status["cluster"] = "Not running"
 
@@ -390,10 +400,12 @@ if __name__ == "__main__":
                 server_url=server_url,
                 token=token,
                 service_id="bioengine-worker-test",
+                dataset_config={
+                    "data_dir": str(Path(__file__).parent.parent / "data"),
+                },
                 ray_cluster_config={
                     "head_num_cpus": 4,
                     "ray_temp_dir": f"/tmp/ray/{os.environ['USER']}",
-                    "data_dir": str(Path(__file__).parent.parent / "data"),
                     "image_path": str(
                         Path(__file__).parent.parent
                         / "apptainer_images"

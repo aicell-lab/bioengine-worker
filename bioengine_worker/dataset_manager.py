@@ -1,0 +1,285 @@
+import logging
+import os
+from pathlib import Path
+from typing import Optional, Dict, Any
+
+import yaml
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+
+from bioengine_worker.utils.logger import create_logger
+
+
+class DatasetManager:
+    def __init__(
+        self,
+        data_dir: str,
+        service_id: str = "bioengine-worker-datasets",
+        # Logger
+        logger: Optional[logging.Logger] = None,
+        _debug: bool = False,
+    ):
+
+        # Set up logging
+        self.logger = logger or create_logger(
+            name="DatasetManager",
+            level=logging.DEBUG if _debug else logging.INFO,
+        )
+
+        # Load dataset info
+        self._datasets = self._load_dataset_info(data_dir)
+
+        # Initialize state variables
+        self._service_id_base = service_id
+        self.loaded_datasets = {}
+        self.server = None
+
+    @property
+    def datasets(self) -> Dict[str, Dict]:
+        """Return the list of datasets."""
+        return {
+            dataset_id: {
+                key: value
+                for key, value in dataset_info.items()
+                if not key.startswith("_")
+            }
+            for dataset_id, dataset_info in self._datasets.items()
+        }
+
+    def _load_dataset_info(self, data_dir) -> Dict[str, Dict]:
+        """Read and parse a manifest.yaml file."""
+        try:
+            data_dir = Path(data_dir).resolve()
+            if not data_dir.exists():
+                self.logger.error(f"Data directory {data_dir} does not exist.")
+                raise ValueError(f"Data directory {data_dir} does not exist.")
+
+            manifest_file = data_dir / "manifest.yml"
+            if not manifest_file.exists():
+                self.logger.error(f"Manifest file not found: {manifest_file}")
+                raise ValueError(f"Manifest file not found: {manifest_file}")
+
+            with open(manifest_file, "r") as f:
+                manifest = yaml.safe_load(f)
+            datasets = {}
+            for dataset_id, dataset_info in manifest["datasets"].items():
+                dataset_path = data_dir / f"{dataset_id}.zarr"
+                if dataset_path.exists():
+                    datasets[dataset_id] = {
+                        **dataset_info,
+                        "_path": dataset_path,
+                    }
+                else:
+                    self.logger.warning(f"Dataset path {dataset_path} does not exist.")
+
+            return datasets
+
+        except Exception as e:
+            self.logger.error(f"Error loading dataset info: {e}")
+            raise e
+
+    def _define_app(self, dataset_id: str) -> FastAPI:
+        """Define the FastAPI app for serving files."""
+        app = FastAPI()
+
+        # Enable CORS for all origins — you can restrict this to specific domains
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],  # Or restrict to your frontend domain
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=[
+                "Content-Range",
+                "Content-Length",
+                "Accept-Ranges",
+                "Accept-encoding",
+                "Connection",
+            ],  # <- important
+        )
+
+        @app.get("/")
+        async def root():
+            return {dataset_id: self.datasets[dataset_id]}
+
+        @app.get("/files/{path:path}")
+        async def serve_file(path: str, request: Request):
+            file_path = self._datasets[dataset_id]["_path"] / path
+            if not file_path.exists() or not file_path.is_file():
+                raise HTTPException(status_code=404, detail="File not found")
+
+            file_size = file_path.stat().st_size
+            range_header = request.headers.get("range")
+
+            def file_stream(start: int = 0, end: Optional[int] = None):
+                with open(file_path, "rb") as f:
+                    f.seek(start)
+                    remaining = (end - start + 1) if end is not None else None
+                    while True:
+                        chunk_size = 1024 * 1024  # 1MB
+                        if remaining is not None:
+                            chunk_size = min(chunk_size, remaining)
+                            if chunk_size <= 0:
+                                break
+                        data = f.read(chunk_size)
+                        if not data:
+                            break
+                        if remaining is not None:
+                            remaining -= len(data)
+                        yield data
+
+            if range_header:
+                try:
+                    range_value = range_header.replace("bytes=", "").split("-")
+                    start = int(range_value[0])
+                    end = int(range_value[1]) if range_value[1] else file_size - 1
+                    if start > end or end >= file_size:
+                        raise ValueError()
+                except Exception:
+                    raise HTTPException(status_code=416, detail="Invalid Range header")
+                content_length = end - start + 1
+                return StreamingResponse(
+                    file_stream(start, end),
+                    status_code=206,
+                    headers={
+                        "Content-Range": f"bytes {start}-{end}/{file_size}",
+                        "Accept-Ranges": "bytes",
+                        "Content-Length": str(content_length),
+                        "Content-Type": "application/octet-stream",
+                    },
+                )
+
+            # Full file
+            return StreamingResponse(
+                file_stream(),
+                headers={
+                    "Content-Length": str(file_size),
+                    "Content-Type": "application/octet-stream",
+                    "Accept-Ranges": "bytes",
+                },
+            )
+
+        return app
+
+    def _get_service_url(self, sid) -> str:
+        server_url = self.server.config.public_base_url
+        workspace, sid = sid.split("/")
+        service_url = f"{server_url}/{workspace}/apps/{sid}"
+        return service_url
+
+    async def _register_service(self, dataset_id) -> None:
+        """Register the data service to the Hypha server."""
+        # Define the app for streaming files from the dataset
+        dataset_app = self._define_app(dataset_id)
+
+        # Hypha ASGI service integration
+        async def serve_fastapi(args, context=None):
+            scope = args["scope"]
+            self.logger.debug(
+                f'{context["user"]["id"]} - {scope["client"]} - {scope["method"]} - {scope["path"]}'
+            )
+            await dataset_app(args["scope"], args["receive"], args["send"])
+
+        dataset_service_id = f"{self._service_id_base}-{dataset_id}"
+        service_info = await self.server.register_service(
+            {
+                "id": dataset_service_id,
+                "name": "BioEngine Worker Files",
+                "description": "Streaming files from BioEngine Worker",
+                "type": "asgi",
+                "serve": serve_fastapi,
+                "config": {"visibility": "public", "require_context": True},
+            }
+        )
+        service_info["url"] = self._get_service_url(service_info.id)
+        self.loaded_datasets[dataset_id] = service_info
+
+        self.logger.info(
+            f"Successfully registered data service for dataset '{dataset_id}'"
+        )
+        self.logger.info(f"Access the app at: {service_info['url']}")
+
+    async def initialize(self, server) -> None:
+        """Initialize the dataset manager with a Hypha server connection
+
+        Args:
+            server: Hypha server connection
+        """
+        self.server = server
+
+    async def load_dataset(self, dataset_id, context=None) -> Dict[str, Any]:
+        """Load a dataset by ID."""
+        try:
+            if dataset_id not in self._datasets.keys():
+                raise ValueError(f"Dataset '{dataset_id}' not available.")
+            if dataset_id in self.loaded_datasets:
+                self.logger.info(f"Dataset {dataset_id} is already open.")
+                return self.loaded_datasets[dataset_id]["url"]
+
+            await self._register_service(dataset_id)
+
+            return self.loaded_datasets[dataset_id]["url"]
+        except Exception as e:
+            self.logger.error(f"Error loading dataset {dataset_id}: {e}")
+            raise e
+
+    async def close_dataset(self, dataset_id, context=None) -> Dict[str, str]:
+        """Close a dataset by ID."""
+        try:
+            if dataset_id not in self._datasets.keys():
+                raise ValueError(f"Dataset '{dataset_id}' not available.")
+            if dataset_id not in self.loaded_datasets:
+                self.logger.info(f"Dataset {dataset_id} is not loaded.")
+                raise ValueError(f"Dataset '{dataset_id}' is not loaded.")
+
+            service_info = self.loaded_datasets[dataset_id]
+            await self.server.unregister_service(service_info["id"])
+            self.loaded_datasets.pop(dataset_id)
+            self.logger.info(f"Successfully unregistered dataset '{dataset_id}'")
+            return f"Dataset '{dataset_id}' closed."
+        except Exception as e:
+            self.logger.error(f"Error closing dataset {dataset_id}: {e}")
+            raise e
+
+    async def get_status(self) -> Dict[str, dict]:
+        """Get the status of the dataset manager."""
+        return {
+            "available_datasets": self.datasets,
+            "loaded_datasets": self.loaded_datasets,
+        }
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    from hypha_rpc import connect_to_server, login
+
+    async def test_dataset_manager(
+        server_url="https://hypha.aicell.io", keep_running=False
+    ):
+        # Connect to Hypha server using token from environment
+        token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
+        server = await connect_to_server({"server_url": server_url, "token": token})
+
+        # Initialize DatasetManager
+        data_dir = Path(__file__).parent.parent / "data"
+        dataset_manager = DatasetManager(
+            data_dir=str(data_dir),
+            _debug=True,
+        )
+        dataset_manager.initialize(server)
+
+        await dataset_manager.load_dataset("blood")
+        await dataset_manager.load_dataset("liver")
+        await dataset_manager.close_dataset("liver")
+
+        # Print status
+        status = await dataset_manager.get_status()
+        print("Status:", status)
+
+        if keep_running:
+            await server.serve()
+
+    # Run the test function
+    asyncio.run(test_dataset_manager(keep_running=True))

@@ -588,6 +588,7 @@ class RayClusterManager:
             else:
                 bind_dir_flag = ""
 
+            # TODO: check if --env works with double quotes in single quotes (without backslashes)
             apptainer_cmd = (
                 "apptainer run "
                 "--nv "

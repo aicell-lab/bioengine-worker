@@ -99,16 +99,35 @@ if __name__ == "__main__":
     from hypha_rpc import login
 
     server_url = "https://hypha.aicell.io"
-    dataset_url = "https://hypha.aicell.io/chiron-platform/apps/bioengine-worker-test-datasets-blood"
-    file = "filter_24.zarr"
+    workspace = "chiron-platform"
+    service_id = "bioengine-worker"
+    dataset_id = "blood"
+
+    service_url = f"{server_url}/{workspace}/services/{service_id}/load_dataset?dataset_id={dataset_id}"
 
     async def test_http_zarr_store():
         token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
+        header = {} # {"Authorization": f"Bearer {token}"}
 
-        # Example usage
+        # Load dataset
+        async with aiohttp.ClientSession() as session:
+            async with session.get(service_url, headers=header) as response:
+                response.raise_for_status()
+                dataset_url = await response.json()
+        print("Dataset url:", dataset_url)
+
+        # Get dataset info
+        async with aiohttp.ClientSession() as session:
+            async with session.get(dataset_url, headers=header) as response:
+                response.raise_for_status()
+                dataset_info = await response.json()
+        print("Dataset info:", dataset_info)
+
+        # Access a file from the dataset
+        file_name = list(dataset_info["blood"]["files"].keys())[0]
         store = HttpZarrStore(
-            base_url=f"{dataset_url}/files/{file}/",
-            headers={"Authorization": f"Bearer {token}"},
+            base_url=f"{dataset_url}/files/{file_name}/",
+            headers=header,
         )
 
         # # `read_lazy` or `zarr.open_group` depending on your use

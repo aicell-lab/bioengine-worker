@@ -78,32 +78,28 @@ class BioEngineWorker:
         ray_autoscaler_config = ray_autoscaler_config or {}
         ray_deployment_config = ray_deployment_config or {}
         self.ray_connection_kwargs = ray_connection_kwargs or {}
+        manage_cluster = not bool(ray_connection_kwargs)
         self._debug = _debug
 
-        # Inject default logging format if not already set
-        if "logging_format" not in self.ray_connection_kwargs:
-            self.ray_connection_kwargs["logging_format"] = logging_format
-        else:
-            self.logger.warning(
-                f"Overriding default Ray logging_format. Provided format: {self.ray_connection_kwargs['logging_format']!r}"
-            )
-
         # Initialize component managers
-        if "cluster_manager" in ray_autoscaler_config:
-            raise ValueError(
-                "RayAutoscaler config should not contain 'cluster_manager' key."
-            )
-        if "autoscaler" in ray_deployment_config:
-            raise ValueError(
-                "RayDeploymentManager config should not contain 'autoscaler' key."
-            )
-
-        manage_cluster = not bool(ray_connection_kwargs)
         if manage_cluster:
+            # Inject default logging format if not already set
+            if "logging_format" not in self.ray_connection_kwargs:
+                self.ray_connection_kwargs["logging_format"] = logging_format
+            else:
+                self.logger.warning(
+                    f"Overriding default Ray logging_format. Provided format: {self.ray_connection_kwargs['logging_format']!r}"
+                )
+
             self.cluster_manager = RayClusterManager(
                 **ray_cluster_config, _debug=_debug
             )
             if self.cluster_manager.slurm_available:
+                if "cluster_manager" in ray_autoscaler_config:
+                    self.logger.warning(
+                        "RayAutoscaler config should not contain 'cluster_manager' key."
+                    )
+                    del ray_autoscaler_config["cluster_manager"]
                 self.autoscaler = RayAutoscaler(
                     cluster_manager=self.cluster_manager,
                     **ray_autoscaler_config,
@@ -112,8 +108,17 @@ class BioEngineWorker:
             else:
                 self.autoscaler = None
         else:
+            self.logger.info(
+                "Ray connection kwargs provided. Skipping cluster management."
+            )
             self.cluster_manager = None
             self.autoscaler = None
+
+        if "autoscaler" in ray_deployment_config:
+            self.logger.warning(
+                "RayDeploymentManager config should not contain 'autoscaler' key."
+            )
+            del ray_deployment_config["autoscaler"]
         self.deployment_manager = RayDeploymentManager(
             **ray_deployment_config, autoscaler=self.autoscaler, _debug=_debug
         )

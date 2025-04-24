@@ -72,7 +72,7 @@ async def main(group_configs):
         # Get Ray Connection options
         ray_connection_kwargs = group_configs["Ray Connection Options"]
         ray_connection_kwargs = {
-            k: v for k, v in ray_connection_kwargs.items() if v is not None
+            k.replace("ray_", ""): v for k, v in ray_connection_kwargs.items() if v is not None
         }
 
         # Create BioEngine worker instance

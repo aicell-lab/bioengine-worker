@@ -51,27 +51,48 @@ class DatasetManager:
         """Read and parse a manifest.yaml file."""
         try:
             data_dir = Path(data_dir).resolve()
-            if not data_dir.exists():
-                self.logger.error(f"Data directory {data_dir} does not exist.")
-                raise ValueError(f"Data directory {data_dir} does not exist.")
-
-            manifest_file = data_dir / "manifest.yml"
-            if not manifest_file.exists():
-                self.logger.error(f"Manifest file not found: {manifest_file}")
-                raise ValueError(f"Manifest file not found: {manifest_file}")
-
-            with open(manifest_file, "r") as f:
-                manifest = yaml.safe_load(f)
             datasets = {}
-            for dataset_id, dataset_info in manifest["datasets"].items():
-                dataset_path = data_dir / f"{dataset_id}.zarr"
-                if dataset_path.exists():
-                    datasets[dataset_id] = {
-                        **dataset_info,
-                        "_path": dataset_path,
-                    }
-                else:
-                    self.logger.warning(f"Dataset path {dataset_path} does not exist.")
+
+            for dataset_path in data_dir.iterdir():
+                if not dataset_path.is_dir():
+                    continue
+
+                manifest_file = dataset_path / "manifest.yml"
+                if not manifest_file.exists():
+                    self.logger.warning(
+                        f"Manifest file not found in {dataset_path}. Skipping dataset."
+                    )
+                    continue
+            
+                with open(manifest_file, "r") as f:
+                    manifest = yaml.safe_load(f)
+
+            
+                dataset_id = dataset_path.name
+                datasets[dataset_id] = {
+                    **manifest,
+                    "_path": dataset_path,
+                }
+
+                # Check if all data files exist
+                for data_file, attributes in manifest["files"].items():
+                    data_file_path = dataset_path / data_file
+                    if not data_file_path.suffix == ".zarr":
+                        self.logger.warning(
+                            f"Data file {data_file_path} is not a .zarr file. Skipping dataset."
+                        )
+                    elif not data_file_path.exists() or not data_file_path.is_dir():
+                        self.logger.warning(
+                            f"Data file {data_file_path} does not exist or is not a directory. Skipping dataset."
+                        )
+                    elif "n_samples" not in attributes.keys():
+                        self.logger.warning(
+                            f"Data file {data_file_path} does not have 'n_samples' in the manifest. Skipping dataset."
+                        )
+                    else:
+                        continue
+                    datasets.pop(dataset_id)
+                    break
 
             return datasets
 
@@ -268,7 +289,7 @@ if __name__ == "__main__":
             data_dir=str(data_dir),
             _debug=True,
         )
-        dataset_manager.initialize(server)
+        await dataset_manager.initialize(server)
 
         await dataset_manager.load_dataset("blood")
         await dataset_manager.load_dataset("liver")

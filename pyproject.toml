@@ -6,11 +6,11 @@ build-backend = "hatchling.build"
 name = "bioengine_worker"
 version = "0.1.7"
 description = "BioEngine Worker for managing Ray clusters and datasets"
-requires-python = "==3.11.9"
+requires-python = ">=3.9"
 dependencies = [
     "cloudpickle",
     "httpx",
-    "hypha-rpc",
+    "hypha-rpc>=0.20.48",
     "pyyaml",
     "ray[client,serve]>=2.42.1",
 ]

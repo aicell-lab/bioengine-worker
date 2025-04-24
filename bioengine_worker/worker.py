@@ -249,8 +249,6 @@ class BioEngineWorker:
                 await self.autoscaler.shutdown_cluster()
             elif self.cluster_manager:
                 self.cluster_manager.shutdown_cluster()
-
-            self.logger.info("Worker cleanup complete.")
         else:
             self.logger.warning("Ray is not initialized. No cleanup needed.")
 
@@ -419,7 +417,7 @@ if __name__ == "__main__":
                     "image_path": str(
                         Path(__file__).parent.parent
                         / "apptainer_images"
-                        / "bioengine-worker_0.1.6.sif"
+                        / "bioengine-worker_0.1.7.sif"
                     ),
                 },
                 ray_autoscaler_config={

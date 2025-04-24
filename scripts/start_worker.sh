@@ -1,8 +1,7 @@
 # !/bin/bash
 
-VERSION=0.1.6
+VERSION=0.1.7
 WORKING_DIR=$(pwd)
-
 
 # Save all arguments
 BIOENGINE_WORKER_ARGS=("$@")
@@ -222,6 +221,25 @@ if [[ ! "$DEBUG_MODE" == "false" ]]; then
     echo ""
 fi
 
+# Cleanup function
+cleanup() {
+    echo "Making sure the Ray head node is stopped..."
+    apptainer exec "$APPTAINER_IMAGE_PATH" ray stop --force
+    echo "Cleaning up any remaining Ray worker jobs..."
+    WORKER_JOB_IDS=$(squeue -u $USER -n "ray_worker" -h -o "%i")
+    if [[ -n "$WORKER_JOB_IDS" ]]; then
+        while read -r jobid; do
+            scancel $jobid
+        done <<< "$WORKER_JOB_IDS"
+        echo "All Ray worker jobs have been successfully canceled."
+    else
+        echo "No Ray worker jobs found to cancel."
+    fi
+}
+
+# Set trap to ensure cleanup runs on script exit (normal or abnormal)
+trap cleanup EXIT
+
 # Run with clean environment
 apptainer exec \
     --cleanenv \
@@ -230,6 +248,3 @@ apptainer exec \
     "${BIND_OPTS[@]}" \
     "$APPTAINER_IMAGE_PATH" \
     python -m bioengine_worker "${BIOENGINE_WORKER_ARGS[@]}"
-    
-
-# curl https://hypha.aicell.io/chiron-platform/services/bioengine-worker/cleanup

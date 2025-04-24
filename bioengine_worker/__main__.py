@@ -228,7 +228,7 @@ def create_parser():
     cluster_group.add_argument(
         "--image_path",
         type=str,
-        default="./apptainer_images/bioengine-worker_0.1.6.sif",
+        default="./apptainer_images/bioengine-worker_0.1.7.sif",
         help="Worker container image path",
     )
     cluster_group.add_argument(

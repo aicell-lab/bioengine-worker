@@ -1,5 +1,6 @@
 -r requirements.txt
 anndata==0.12.0rc1
+black
 dask
 gdown
 xarray

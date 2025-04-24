@@ -2,4 +2,4 @@ cloudpickle
 httpx
 hypha-rpc
 pyyaml
-ray[client,data,train,serve]==2.42.1
+ray[client,serve]==2.42.1

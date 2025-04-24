@@ -63,11 +63,10 @@ class DatasetManager:
                         f"Manifest file not found in {dataset_path}. Skipping dataset."
                     )
                     continue
-            
+
                 with open(manifest_file, "r") as f:
                     manifest = yaml.safe_load(f)
 
-            
                 dataset_id = dataset_path.name
                 datasets[dataset_id] = {
                     **manifest,
@@ -229,7 +228,7 @@ class DatasetManager:
         """
         self.server = server
 
-    async def load_dataset(self, dataset_id, context=None) -> Dict[str, Any]:
+    async def load_dataset(self, dataset_id, context=None) -> str:
         """Load a dataset by ID."""
         try:
             if dataset_id not in self._datasets.keys():
@@ -245,7 +244,7 @@ class DatasetManager:
             self.logger.error(f"Error loading dataset {dataset_id}: {e}")
             raise e
 
-    async def close_dataset(self, dataset_id, context=None) -> Dict[str, str]:
+    async def close_dataset(self, dataset_id, context=None) -> str:
         """Close a dataset by ID."""
         try:
             if dataset_id not in self._datasets.keys():
@@ -287,13 +286,15 @@ if __name__ == "__main__":
         data_dir = Path(__file__).parent.parent / "data"
         dataset_manager = DatasetManager(
             data_dir=str(data_dir),
+            service_id="bioengine-worker-test-datasets",
             _debug=True,
         )
         await dataset_manager.initialize(server)
 
-        await dataset_manager.load_dataset("blood")
-        await dataset_manager.load_dataset("liver")
-        await dataset_manager.close_dataset("liver")
+        dataset_url = await dataset_manager.load_dataset("blood")
+        print("Dataset URL:", dataset_url)
+        _ = await dataset_manager.load_dataset("liver")
+        _ = await dataset_manager.close_dataset("liver")
 
         # Print status
         status = await dataset_manager.get_status()

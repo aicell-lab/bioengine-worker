@@ -1,0 +1,6 @@
+-r requirements.txt
+anndata==0.12.0rc1
+dask
+gdown
+xarray
+zarr

@@ -186,7 +186,10 @@ class BioEngineWorker:
         server_url = self.server.config.public_base_url
         workspace, sid = service_info.id.split("/")
         service_url = f"{server_url}/{workspace}/services/{sid}"
-        self.logger.info(f"Get worker status at: {service_url}/get_status")
+        self.logger.info(f"Get worker status with: {service_url}/get_status")
+        self.logger.info(
+            f"Open a dataset for streaming with: {service_url}/load_dataset?dataset_id=<dataset_id>"
+        )
         self.logger.info(
             f"Deploy artifact with: {service_url}/deploy_artifact?artifact_id=<artifact_id>"
         )
@@ -391,6 +394,7 @@ if __name__ == "__main__":
     import os
     from pathlib import Path
 
+    import aiohttp
     from hypha_rpc import login
 
     from bioengine_worker.ray_deployment_manager import create_example_deployment
@@ -407,6 +411,7 @@ if __name__ == "__main__":
                 service_id="bioengine-worker-test",
                 dataset_config={
                     "data_dir": str(Path(__file__).parent.parent / "data"),
+                    "service_id": "bioengine-worker-test-datasets",
                 },
                 ray_cluster_config={
                     "head_num_cpus": 4,
@@ -419,6 +424,9 @@ if __name__ == "__main__":
                 },
                 ray_autoscaler_config={
                     "metrics_interval_seconds": 10,
+                },
+                ray_deployment_config={
+                    "service_id": "bioengine-worker-test-deployments",
                 },
                 _debug=True,
             )
@@ -440,10 +448,23 @@ if __name__ == "__main__":
             status = await worker_service.get_status()
             print("\nInitial status:", status)
 
+            # Try accessing the dataset manager
+            dataset_url = await worker_service.load_dataset(dataset_id="blood")
+            print("Dataset URL:", dataset_url)
+
+            # Get dataset info
+            headers = {"Authorization": f"Bearer {token}"}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(dataset_url, headers=headers) as response:
+                    response.raise_for_status()
+                    dataset_info = await response.json()
+            print("Dataset info:", dataset_info)
+
+            # Test deploying an artifact
             artifact_id = await create_example_deployment(
                 bioengine_worker.deployment_manager.artifact_manager
             )
-            # Test deploying an artifact
+
             deployment_name = await worker_service.deploy_artifact(
                 artifact_id=artifact_id,
             )

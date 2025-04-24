@@ -58,8 +58,5 @@ coverage.xml
 .env
 .env.*
 
-# Ray
-ray_sessions/
-
 # Data
 data/

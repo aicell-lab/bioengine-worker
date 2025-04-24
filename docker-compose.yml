@@ -6,7 +6,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/aicell-lab/bioengine-worker:0.1.6
+    image: ghcr.io/aicell-lab/bioengine-worker:0.1.7
     container_name: bioengine_worker
     volumes:
       - /tmp/ray/${USER}:/tmp/ray/
@@ -19,6 +19,8 @@ services:
       "python", "-m", "bioengine_worker",
       "--data_dir", "/data",
       "--worker_service_id", "bioengine-worker-test",
+      "--dataset_service_id", "bioengine-worker-test-datasets",
+      "--deployment_service_id", "bioengine-worker-test-deployments",
       "--head_num_gpus", "1",
       "--head_num_cpus", "4",
       "--ray_temp_dir", "/tmp/ray",

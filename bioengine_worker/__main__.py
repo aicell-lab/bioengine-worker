@@ -72,7 +72,9 @@ async def main(group_configs):
         # Get Ray Connection options
         ray_connection_kwargs = group_configs["Ray Connection Options"]
         ray_connection_kwargs = {
-            k.replace("ray_", ""): v for k, v in ray_connection_kwargs.items() if v is not None
+            k.replace("ray_", ""): v
+            for k, v in ray_connection_kwargs.items()
+            if v is not None
         }
 
         # Create BioEngine worker instance
@@ -141,7 +143,7 @@ def create_parser():
     dataset_group.add_argument(
         "--dataset_service_id",
         type=str,
-        default="bioengine-worker-files",
+        default="bioengine-worker-datasets",
         help="Service ID for the dataset manager",
     )
 

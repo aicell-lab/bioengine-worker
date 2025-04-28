@@ -28,6 +28,7 @@ class RayDeploymentManager:
         autoscaler: Optional[RayAutoscaler] = None,
         # Logger
         logger: Optional[logging.Logger] = None,
+        log_file: Optional[str] = None,
         _debug: bool = False,
     ):
         """Initialize the Ray Deployment Manager
@@ -42,6 +43,7 @@ class RayDeploymentManager:
         self.logger = logger or create_logger(
             name="RayDeploymentManager",
             level=logging.DEBUG if _debug else logging.INFO,
+            log_file=log_file,
         )
 
         # Store parameters
@@ -468,9 +470,7 @@ class RayDeploymentManager:
                 except Exception as e:
                     failed_attempts += 1
 
-            if failed_attempts == 0:
-                self.logger.info("Successfully cleaned up all deployments")
-            else:
+            if failed_attempts != 0:
                 self.logger.warning(
                     f"Failed to clean up all deployments, {failed_attempts} remaining."
                 )
@@ -566,10 +566,10 @@ if __name__ == "__main__":
     cluster_manager = RayClusterManager(
         head_num_cpus=4,
         ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
-        data_dir=str(Path(__file__).parent.parent / "data"),
-        image_path=str(
+        image=str(
             Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.7.sif"
         ),
+        worker_data_dir=str(Path(__file__).parent.parent / "data"),
         _debug=True,
     )
     cluster_manager.start_cluster(force_clean_up=True)

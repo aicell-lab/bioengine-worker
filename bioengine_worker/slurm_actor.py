@@ -13,26 +13,24 @@ class SlurmActor:
     def __init__(
         self,
         job_name: str,
-        logs_dir: Optional[str] = None,
+        slurm_logs_dir: Optional[str] = "logs",
         logger: Optional[logging.Logger] = None,
+        log_file: Optional[str] = None,
         _debug: bool = False,
     ):
         # Set up logging
         self.logger = logger or create_logger(
             name="SlurmActor",
             level=logging.DEBUG if _debug else logging.INFO,
+            log_file=log_file,
         )
 
         # Set SLURM job name
         self.job_name = job_name
 
         # Directory for SLURM logs
-        if logs_dir:
-            self.logs_dir = Path(logs_dir).resolve()
-        else:
-            self.logs_dir = Path(__file__).resolve().parent.parent / "slurm_logs"
-
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.slurm_logs_dir = Path(slurm_logs_dir).resolve()
+        self.slurm_logs_dir.mkdir(parents=True, exist_ok=True)
 
     def create_sbatch_script(
         self,
@@ -65,8 +63,8 @@ class SlurmActor:
                 #SBATCH --mem-per-cpu={mem_per_cpu}G
                 #SBATCH --time={time}
                 #SBATCH --chdir=/home/{os.environ['USER']}
-                #SBATCH --output={self.logs_dir}/%x_%j.out
-                #SBATCH --error={self.logs_dir}/%x_%j.err
+                #SBATCH --output={self.slurm_logs_dir}/%x_%j.out
+                #SBATCH --error={self.slurm_logs_dir}/%x_%j.err
                 {further_slurm_args}
 
                 # Print some diagnostic information

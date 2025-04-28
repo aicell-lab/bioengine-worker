@@ -3,14 +3,14 @@ import asyncio
 import os
 import signal
 import sys
+import time
+from pathlib import Path
 from typing import Literal
 
 from hypha_rpc import login
 
 from bioengine_worker.utils.logger import create_logger
 from bioengine_worker.worker import BioEngineWorker
-
-logger = create_logger("__main__")
 
 
 async def main(group_configs):
@@ -83,12 +83,14 @@ async def main(group_configs):
             server_url=hypha_config["server_url"],
             token=token,
             service_id=hypha_config["worker_service_id"],
+            mode=group_configs["options"]["mode"],
             dataset_config=dataset_config,
             ray_cluster_config=ray_cluster_config,
             clean_up_previous_cluster=clean_up_previous_cluster,
             ray_autoscaler_config=ray_autoscaler_config,
             ray_deployment_config=ray_deployment_config,
             ray_connection_kwargs=ray_connection_kwargs,
+            log_file=group_configs["options"]["log_file"],
             _debug=group_configs["options"]["debug"],
         )
 
@@ -110,25 +112,37 @@ def create_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
+    parser.add_argument(
+        "--mode",
+        default="slurm",
+        type=str,
+        choices=["slurm", "single-machine", "connect"],
+        help="Mode of operation: 'slurm' for managing a Ray cluster with SLURM jobs, 'single-machine' for local Ray cluster, 'connect' for connecting to an existing Ray cluster.",
+    )
+
     # Hypha related options
     hypha_group = parser.add_argument_group("Hypha Options")
     hypha_group.add_argument(
         "--workspace",
         default="chiron-platform",
+        type=str,
         help="Hypha workspace to connect to",
     )
     hypha_group.add_argument(
         "--server_url",
         default="https://hypha.aicell.io",
+        type=str,
         help="URL of the Hypha server",
     )
     hypha_group.add_argument(
         "--token",
+        type=str,
         help="Authentication token for Hypha server",
     )
     hypha_group.add_argument(
         "--worker_service_id",
         default="bioengine-worker",
+        type=str,
         help="Service ID for the worker",
     )
 
@@ -226,16 +240,21 @@ def create_parser():
         help="Skip cleanup of previous Ray cluster",
     )
     cluster_group.add_argument(
-        "--image_path",
-        type=str,
+        "--image",
         default="./apptainer_images/bioengine-worker_0.1.7.sif",
-        help="Worker container image path",
+        type=str,
+        help="Worker image for SLURM job",
+    )
+    cluster_group.add_argument(
+        "--worker_data_dir",
+        type=str,
+        help="Data directory mounted to the container when starting a worker",
     )
     cluster_group.add_argument(
         "--slurm_logs_dir",
+        default="./logs",
         type=str,
-        default="./slurm_logs",
-        help="Directory for SLURM logs",
+        help="Directory for SLURM job logs",
     )
     cluster_group.add_argument(
         "--further_slurm_args",
@@ -248,80 +267,80 @@ def create_parser():
     autoscaler_group = parser.add_argument_group("Ray Autoscaler Options")
     autoscaler_group.add_argument(
         "--default_num_gpus",
-        type=int,
         default=1,
+        type=int,
         help="Default number of GPUs per worker",
     )
     autoscaler_group.add_argument(
         "--default_num_cpus",
-        type=int,
         default=8,
+        type=int,
         help="Default number of CPUs per worker",
     )
     autoscaler_group.add_argument(
         "--default_mem_per_cpu",
-        type=int,
         default=16,
+        type=int,
         help="Default memory per CPU in GB",
     )
     autoscaler_group.add_argument(
         "--default_time_limit",
-        type=str,
         default="4:00:00",
+        type=str,
         help="Default time limit for workers",
     )
     autoscaler_group.add_argument(
         "--min_workers",
-        type=int,
         default=0,
+        type=int,
         help="Minimum number of worker nodes",
     )
     autoscaler_group.add_argument(
         "--max_workers",
-        type=int,
         default=4,
+        type=int,
         help="Maximum number of worker nodes",
     )
     autoscaler_group.add_argument(
         "--metrics_interval_seconds",
-        type=int,
         default=60,
+        type=int,
         help="Interval for collecting metrics",
     )
     autoscaler_group.add_argument(
         "--gpu_idle_threshold",
-        type=float,
         default=0.05,
+        type=float,
         help="GPU utilization threshold for idle nodes",
     )
     autoscaler_group.add_argument(
         "--cpu_idle_threshold",
-        type=float,
         default=0.1,
+        type=float,
         help="CPU utilization threshold for idle nodes",
     )
     autoscaler_group.add_argument(
         "--scale_down_threshold_seconds",
-        type=int,
         default=300,
+        type=int,
         help="Time threshold before scaling down idle nodes",
     )
     autoscaler_group.add_argument(
         "--scale_up_cooldown_seconds",
-        type=int,
         default=120,
+        type=int,
         help="Cooldown period before scaling up",
     )
     autoscaler_group.add_argument(
         "--scale_down_cooldown_seconds",
-        type=int,
         default=600,
+        type=int,
         help="Cooldown period before scaling down",
     )
     autoscaler_group.add_argument(
         "--node_grace_period_seconds",
-        type=int,
         default=600,
+        type=int,
         help="Grace period before considering a node for scaling down",
     )
 
@@ -329,8 +348,8 @@ def create_parser():
     deployment_group = parser.add_argument_group("Ray Deployment Manager Options")
     deployment_group.add_argument(
         "--deployment_service_id",
-        type=str,
         default="bioengine-worker-deployments",
+        type=str,
         help="Service ID for deployed models",
     )
 
@@ -348,6 +367,13 @@ def create_parser():
     )
 
     # Others
+    parser.add_argument(
+        "--logs_dir",
+        default="./logs",
+        type=str,
+        help="Directory for logs",
+    )
+
     parser.add_argument(
         "--debug",
         action="store_true",
@@ -377,6 +403,12 @@ if __name__ == "__main__":
 
     parser = create_parser()
     group_configs = get_args_by_group(parser)
+
+    # Set up logging
+    logs_dir = Path(group_configs["options"].get("logs_dir")).resolve()
+    log_file = logs_dir / f"bioengine_worker_{time.strftime('%Y%m%d_%H%M%S')}.log"
+    group_configs["options"]["log_file"] = log_file
+    logger = create_logger("__main__", log_file=log_file)
 
     try:
         asyncio.run(main(group_configs))

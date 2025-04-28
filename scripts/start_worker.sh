@@ -177,36 +177,41 @@ fi
 
 # Add BioEngine worker bindings
 
-# If mode either SLURM or single-node:
-if [[ "$MODE" == "slurm" || "$MODE" == "single-node" ]]; then
-    # RAY_SESSION_DIR is needed by the Ray head node -> container path
-    RAY_SESSION_DIR=$(get_arg_value "--ray_temp_dir" "/tmp/ray/$USER")
-    RAY_SESSION_DIR=$(realpath $RAY_SESSION_DIR)
-    mkdir -p "$RAY_SESSION_DIR"
-    chmod 777 $RAY_SESSION_DIR
-    add_bind $RAY_SESSION_DIR "/tmp/ray"
-    set_arg_value "--ray_temp_dir" "/tmp/ray"
-fi
+# LOGS_DIR is needed by the BioEngine logger -> container path
+LOGS_DIR=$(get_arg_value "--logs_dir" "$WORKING_DIR/logs")
+LOGS_DIR=$(realpath $LOGS_DIR)
+add_bind $LOGS_DIR "/app/logs"
+set_arg_value "--logs_dir" "/app/logs"
 
-# SLURM_LOGS_DIR is needed on the SLURM worker node -> real path
-SLURM_LOGS_DIR=$(get_arg_value "--slurm_logs" "$WORKING_DIR/slurm_logs")
-SLURM_LOGS_DIR=$(realpath $SLURM_LOGS_DIR)
-mkdir -p "$SLURM_LOGS_DIR"
-chmod 777 $SLURM_LOGS_DIR
-set_arg_value "--slurm_logs" $SLURM_LOGS_DIR
-
-# DATA_DIR is needed on the SLURM worker node -> real path
+# DATA_DIR is needed on by the DatasetManager -> container path
 DATA_DIR=$(get_arg_value "--data_dir" "")
 if [[ -z "$DATA_DIR" ]]; then
     echo "Error: the following argument is required: --data_dir"
     exit 1
 fi
 DATA_DIR=$(realpath $DATA_DIR)
-mkdir -p "$DATA_DIR"
-# Don't set permissions for data directory
 add_bind $DATA_DIR "/data" "ro"  # Read-only
-set_arg_value "--data_dir" $DATA_DIR
+set_arg_value "--data_dir" /data
 
+
+# If mode either SLURM or single-node:
+if [[ "$MODE" == "slurm" || "$MODE" == "single-node" ]]; then
+    # RAY_SESSION_DIR is needed by the Ray head node -> container path
+    RAY_SESSION_DIR=$(get_arg_value "--ray_temp_dir" "/tmp/ray/$USER")
+    RAY_SESSION_DIR=$(realpath $RAY_SESSION_DIR)
+    add_bind $RAY_SESSION_DIR "/tmp/ray"
+    set_arg_value "--ray_temp_dir" "/tmp/ray"
+
+    # WORKER_DATA_DIR is needed on the SLURM worker node -> real path
+    WORKER_DATA_DIR=$(get_arg_value "--worker_data_dir" $DATA_DIR)
+    WORKER_DATA_DIR=$(realpath $WORKER_DATA_DIR)
+    set_arg_value "--worker_data_dir" $WORKER_DATA_DIR
+
+    # SLURM_LOGS_DIR is needed on the SLURM worker node -> real path
+    SLURM_LOGS_DIR=$(get_arg_value "--slurm_logs_dir" "$WORKING_DIR/logs")
+    SLURM_LOGS_DIR=$(realpath $SLURM_LOGS_DIR)
+    set_arg_value "--slurm_logs_dir" $SLURM_LOGS_DIR
+fi
 
 # Check if the flag `--debug` is set
 DEBUG_MODE=$(get_arg_value "--debug" "false")

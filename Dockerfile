@@ -30,11 +30,5 @@ COPY . .
 # Install the package
 RUN pip install .
 
-# Create a non-root user
-RUN useradd -m -u 1000 bioengine_worker && \
-    chown -R bioengine_worker:bioengine_worker .
-
-USER bioengine_worker
-
 # Use the start script as the entrypoint and forward arguments
 CMD [ "/bin/bash" ]

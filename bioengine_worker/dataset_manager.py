@@ -1,7 +1,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 import yaml
 from fastapi import FastAPI, HTTPException, Request
@@ -18,6 +18,7 @@ class DatasetManager:
         service_id: str = "bioengine-worker-datasets",
         # Logger
         logger: Optional[logging.Logger] = None,
+        log_file: Optional[str] = None,
         _debug: bool = False,
     ):
 
@@ -25,6 +26,7 @@ class DatasetManager:
         self.logger = logger or create_logger(
             name="DatasetManager",
             level=logging.DEBUG if _debug else logging.INFO,
+            log_file=log_file,
         )
 
         # Load dataset info

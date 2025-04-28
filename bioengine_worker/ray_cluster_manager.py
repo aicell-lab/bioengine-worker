@@ -6,14 +6,14 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 import ray
 from ray import serve
 
 from bioengine_worker.slurm_actor import SlurmActor
 from bioengine_worker.utils.format_time import format_time
-from bioengine_worker.utils.logger import create_logger, logging_format
+from bioengine_worker.utils.logger import create_logger, stream_logging_format
 
 
 # TODO: make async
@@ -28,6 +28,7 @@ class RayClusterManager:
     def __init__(
         self,
         # Ray cluster configuration parameters
+        mode: Literal["slurm", "single-machine"] = "slurm",
         head_node_ip: str = None,
         head_node_port: int = 6379,
         node_manager_port: int = 6700,
@@ -38,15 +39,16 @@ class RayClusterManager:
         ray_client_server_port: int = 10001,
         redis_password: str = None,
         ray_temp_dir: str = "/tmp/ray",
-        data_dir: str = None,
         head_num_cpus: int = 0,
         head_num_gpus: int = 0,
         # Job configuration parameters
-        image_path: str = "./apptainer_images/bioengine-worker_0.1.7.sif",
-        slurm_logs_dir: str = None,
+        image: str = "./apptainer_images/bioengine-worker_0.1.7.sif",
+        worker_data_dir: str = None,
+        slurm_logs_dir: str = "logs",
         further_slurm_args: List[str] = None,
         # Logger
         logger: Optional[logging.Logger] = None,
+        log_file: Optional[str] = None,
         _debug: bool = False,
     ):
         """Initialize cluster manager with networking and resource configurations.
@@ -65,35 +67,49 @@ class RayClusterManager:
             ray_client_server_port: Base port for Ray client services.
             redis_password: Password for Redis server.
             ray_temp_dir: Temporary directory for Ray. Default is '/tmp/ray'.
-            data_dir: Data directory mounted to the container. Default is None.
-            head_num_cpus: Number of CPUs for head node if starting a local cluster (slurm_available=False).
-            head_num_gpus: Number of GPUs for head node if starting a local cluster (slurm_available=False).
-            image_path: Worker container image path.
-            slurm_logs_dir: Directory for SLURM logs.
-            further_slurm_args: Additional arguments for SLURM job script.
+            head_num_cpus: Number of CPUs for head node if starting a local cluster (mode="single-machine").
+            head_num_gpus: Number of GPUs for head node if starting a local cluster (mode="single-machine").
+            image: Worker container image path.
+            worker_data_dir: Data directory mounted to the container when starting a worker (mode="slurm").
+            slurm_logs_dir: Directory for SLURM logs (mode="slurm").
+            further_slurm_args: Additional arguments for SLURM job script (mode="slurm").
             logger: Custom logger instance. Creates default logger if None.
+            log_file: File for logging output.
             _debug: Enable debug logging level.
         """
         # Set up logging
         self.logger = logger or create_logger(
             name="RayClusterManager",
             level=logging.DEBUG if _debug else logging.INFO,
+            log_file=log_file,
         )
 
         # Find and store Ray executable path
         self._ray_exec_path = self._find_ray_executable()
 
+        # Check if SLURM is available
+        if mode == "slurm":
+            slurm_available = self._check_slurm_available()
+            if not slurm_available:
+                mode = "single-machine"
+                self.logger.warning(
+                    "SLURM is not available. Switching to single-machine mode."
+                )
+        elif mode != "single-machine":
+            raise ValueError(
+                f"Invalid mode '{mode}'. Supported modes are 'slurm' and 'single-machine'."
+            )
+
         # Check number of CPUs and GPUs
-        self.slurm_available = self._check_slurm_available()
-        if self.slurm_available:
+        if mode == "slurm":
             if head_num_cpus:
                 self.logger.warning(
-                    "Ignoring head_num_cpus setting since SLURM is available - will be set to 0"
+                    "Ignoring head_num_cpus setting in 'SLURM' mode - will be set to 0"
                 )
                 head_num_cpus = 0
             if head_num_gpus:
                 self.logger.warning(
-                    "Ignoring head_num_gpus setting since SLURM is available - will be set to 0"
+                    "Ignoring head_num_gpus setting in 'SLURM' mode - will be set to 0"
                 )
                 head_num_gpus = 0
         elif head_num_cpus <= 0 and head_num_gpus <= 0:
@@ -102,6 +118,7 @@ class RayClusterManager:
             )
 
         self.ray_cluster_config = {
+            "mode": mode,
             "head_node_ip": head_node_ip or self._find_internal_ip(),
             "head_node_port": head_node_port,  # GCS server port
             "node_manager_port": node_manager_port,
@@ -111,25 +128,28 @@ class RayClusterManager:
             "dashboard_port": dashboard_port,
             "ray_client_server_port": ray_client_server_port,
             "redis_password": redis_password or os.urandom(16).hex(),
-            "ray_temp_dir": ray_temp_dir,
-            "data_dir": data_dir,
+            "ray_temp_dir": Path(ray_temp_dir).resolve(),
             "head_num_cpus": head_num_cpus,
             "head_num_gpus": head_num_gpus,
         }
         self.ray_start_time = None
 
-        if self.slurm_available:
+        if mode == "slurm":
             # Set job configuration from parameters
-            image_path = Path(image_path).resolve()
+            image_path = Path(image).resolve()
 
             self.job_config = {
-                "image_path": str(image_path),
+                "image": str(image_path),
+                "data_dir": worker_data_dir,
                 "further_slurm_args": further_slurm_args or [],
             }
 
             # Set up SLURM actor
             self.slurm_actor = SlurmActor(
-                job_name="ray_worker", logs_dir=slurm_logs_dir, _debug=_debug
+                job_name="ray_worker",
+                slurm_logs_dir=slurm_logs_dir,
+                log_file=log_file,
+                _debug=_debug,
             )
 
     @property
@@ -161,15 +181,6 @@ class RayClusterManager:
         self.logger.debug(f"Ray executable found at: {ray_path}")
         return str(ray_path)
 
-    def _find_internal_ip(self) -> str:
-        """Find the internal IP address of the system.
-
-        Returns:
-            str with the internal IP address
-        """
-        result = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
-        return result.stdout.strip().split()[0]  # Take the first IP
-
     def _check_slurm_available(self) -> bool:
         """Check if SLURM is available on the system.
 
@@ -183,6 +194,15 @@ class RayClusterManager:
         except FileNotFoundError:
             self.logger.info("SLURM is not available")
             return False
+
+    def _find_internal_ip(self) -> str:
+        """Find the internal IP address of the system.
+
+        Returns:
+            str with the internal IP address
+        """
+        result = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
+        return result.stdout.strip().split()[0]  # Take the first IP
 
     def _find_ports(self, port: int, step: int = 1) -> int:
         """Find next available port starting from given port number.
@@ -323,13 +343,13 @@ class RayClusterManager:
             head_node_ip = self.ray_cluster_config["head_node_ip"]
             head_node_port = self.ray_cluster_config["head_node_port"]
             address = f"{head_node_ip}:{head_node_port}"
-            ray.init(address=address, logging_format=logging_format)
+            ray.init(address=address, logging_format=stream_logging_format)
             serve.start(
                 http_options={
                     "host": "0.0.0.0",
                     "port": self.ray_cluster_config["serve_port"],
                 },
-                # logging_config=logging_format,  # TODO: Fix logging
+                # logging_config=stream_logging_format,  # TODO: Fix logging
             )
             self.ray_start_time = time.time()
             formatted_time = format_time(self.ray_start_time)
@@ -395,7 +415,7 @@ class RayClusterManager:
             available_resources_per_node = ray.state.available_resources_per_node()
 
             # Get the list of running jobs
-            if self.slurm_available:
+            if self.ray_cluster_config["mode"] == "slurm":
                 running_jobs = self.slurm_actor.get_jobs().keys()
 
             # Get the status of all worker nodes
@@ -403,7 +423,7 @@ class RayClusterManager:
                 # Skip the head node
                 if (
                     "node:__internal_head__" in node["Resources"].keys()
-                    and self.slurm_available
+                    and self.ray_cluster_config["mode"] == "slurm"
                 ):
                     continue
 
@@ -417,7 +437,10 @@ class RayClusterManager:
                     worker_id = self._node_resource_to_worker_id(node["Resources"])
 
                     # Skip nodes if job is not running anymore
-                    if self.slurm_available and worker_id not in running_jobs:
+                    if (
+                        self.ray_cluster_config["mode"] == "slurm"
+                        and worker_id not in running_jobs
+                    ):
                         self.logger.debug(
                             f"Skipping worker node '{node['NodeID']}' with already cancelled job ID '{worker_id}'"
                         )
@@ -527,7 +550,7 @@ class RayClusterManager:
 
             # Clean up any remaining worker jobs
             time.sleep(5)  # Wait for Ray to fully shut down
-            if self.slurm_available:
+            if self.ray_cluster_config["mode"] == "slurm":
                 self.slurm_actor.cancel_jobs(grace_period=grace_period)
 
             self.logger.info("Ray cluster shut down complete")
@@ -568,9 +591,9 @@ class RayClusterManager:
         """
         try:
             # Check if SLURM is available
-            if not self.slurm_available:
+            if self.ray_cluster_config["mode"] == "single-machine":
                 raise RuntimeError(
-                    "SLURM is not available. Adding a worker is not possible"
+                    "Adding a worker is not possible in single-machine mode"
                 )
 
             # Check if Ray cluster is running
@@ -589,8 +612,8 @@ class RayClusterManager:
             # ray start --address='10.81.254.11:6379' --num-cpus=8 --num-gpus=1 --resources='{"node:__internal_worker_${SLURM_JOB_ID}__": 1}' --block
 
             # Define the apptainer command with the Ray worker command
-            if self.ray_cluster_config["data_dir"]:
-                data_dir = self.ray_cluster_config["data_dir"]
+            if self.job_config["data_dir"]:
+                data_dir = self.job_config["data_dir"]
                 self.logger.info(
                     f"Binding outside data directory '{data_dir}' to container directory '/data'"
                 )
@@ -605,7 +628,7 @@ class RayClusterManager:
                 '--env="SLURM_JOB_ID"="$SLURM_JOB_ID" '
                 "--pwd /app "
                 f"{bind_dir_flag}"
-                f"{self.job_config['image_path']} "
+                f"{self.job_config['image']} "
                 f"{ray_worker_cmd}"
             )
 
@@ -647,9 +670,9 @@ class RayClusterManager:
         """
         try:
             # Check if SLURM is available
-            if not self.slurm_available:
+            if self.ray_cluster_config["mode"] == "single-machine":
                 raise RuntimeError(
-                    "SLURM is not available. Removing a worker is not possible"
+                    "Removing a worker is not possible in single-machine mode"
                 )
 
             # Check if Ray cluster is running
@@ -727,10 +750,10 @@ if __name__ == "__main__":
     # Test the class
     ray_manager = RayClusterManager(
         ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
-        data_dir=str(Path(__file__).parent.parent / "data"),
-        image_path=str(
+        image=str(
             Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.7.sif"
         ),
+        worker_data_dir=str(Path(__file__).parent.parent / "data"),
         # further_slurm_args=["-C 'thin'"]
         _debug=True,
     )

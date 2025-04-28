@@ -8,6 +8,7 @@ services:
       dockerfile: Dockerfile
     image: ghcr.io/aicell-lab/bioengine-worker:0.1.7
     container_name: bioengine_worker
+    user: ${UID}:${GID}
     volumes:
       - /tmp/ray/${USER}:/tmp/ray/
       - ./data:/data

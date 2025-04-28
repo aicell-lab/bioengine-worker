@@ -107,7 +107,7 @@ if __name__ == "__main__":
 
     async def test_http_zarr_store():
         token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
-        header = {} # {"Authorization": f"Bearer {token}"}
+        header = {}  # {"Authorization": f"Bearer {token}"}
 
         # Load dataset
         async with aiohttp.ClientSession() as session:

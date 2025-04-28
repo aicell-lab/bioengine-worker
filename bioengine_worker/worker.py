@@ -16,7 +16,7 @@ from bioengine_worker.ray_autoscaler import RayAutoscaler
 from bioengine_worker.ray_cluster_manager import RayClusterManager
 from bioengine_worker.ray_deployment_manager import RayDeploymentManager
 from bioengine_worker.utils.format_time import format_time
-from bioengine_worker.utils.logger import create_logger, logging_format
+from bioengine_worker.utils.logger import create_logger, stream_logging_format
 
 
 class BioEngineWorker:
@@ -32,6 +32,7 @@ class BioEngineWorker:
         server_url: str = "https://hypha.aicell.io",
         token: Optional[str] = None,
         service_id: str = "bioengine-worker",
+        mode: Literal["slurm", "single-machine", "connect"] = "slurm",
         dataset_config: Optional[Dict] = None,
         ray_cluster_config: Optional[Dict] = None,
         clean_up_previous_cluster: bool = True,
@@ -39,6 +40,7 @@ class BioEngineWorker:
         ray_deployment_config: Optional[Dict] = None,
         ray_connection_kwargs: Optional[Dict] = None,
         logger: Optional[logging.Logger] = None,
+        log_file: Optional[str] = None,
         _debug: bool = False,
     ):
         """Initialize BioEngine worker with component managers.
@@ -55,6 +57,7 @@ class BioEngineWorker:
             ray_deployment_config: Configuration for the RayDeploymentManager component.
             ray_connection_kwargs: Optional arguments passed to `ray.init()` to connect to an existing ray cluster. If provided, disables cluster management.
             logger: Optional custom logger. If not provided, a default logger will be created.
+            log_file: File for logging output.
             _debug: Enable debug logging.
         """
         self.workspace = workspace
@@ -64,69 +67,97 @@ class BioEngineWorker:
         self.logger = logger or create_logger(
             name="BioEngineWorker",
             level=logging.DEBUG if _debug else logging.INFO,
+            log_file=log_file,
         )
-        self.start_time = time.time()
+        self.start_time = None
 
-        dataset_config = dataset_config or {}
-        ray_cluster_config = ray_cluster_config or {}
-        ray_cluster_config.setdefault("data_dir", dataset_config["data_dir"])
-        if not ray_cluster_config.get("data_dir") == dataset_config["data_dir"]:
-            raise ValueError(
-                "RayClusterManager data_dir must match DatasetManager data_dir."
-            )
-        self._clean_up = clean_up_previous_cluster
-        ray_autoscaler_config = ray_autoscaler_config or {}
-        ray_deployment_config = ray_deployment_config or {}
-        self.ray_connection_kwargs = ray_connection_kwargs or {}
-        manage_cluster = not bool(ray_connection_kwargs)
+        self.mode = mode
+        self.cluster_manager = None
+        self.autoscaler = None
         self._debug = _debug
-
-        # Initialize component managers
-        if manage_cluster:
-            # Inject default logging format if not already set
-            if "logging_format" not in self.ray_connection_kwargs:
-                self.ray_connection_kwargs["logging_format"] = logging_format
-            else:
-                self.logger.warning(
-                    f"Overriding default Ray logging_format. Provided format: {self.ray_connection_kwargs['logging_format']!r}"
-                )
-
-            self.cluster_manager = RayClusterManager(
-                **ray_cluster_config, _debug=_debug
-            )
-            if self.cluster_manager.slurm_available:
-                if "cluster_manager" in ray_autoscaler_config:
-                    self.logger.warning(
-                        "RayAutoscaler config should not contain 'cluster_manager' key."
-                    )
-                    del ray_autoscaler_config["cluster_manager"]
-                self.autoscaler = RayAutoscaler(
-                    cluster_manager=self.cluster_manager,
-                    **ray_autoscaler_config,
-                    _debug=_debug,
-                )
-            else:
-                self.autoscaler = None
-        else:
-            self.logger.info(
-                "Ray connection kwargs provided. Skipping cluster management."
-            )
-            self.cluster_manager = None
-            self.autoscaler = None
-
-        if "autoscaler" in ray_deployment_config:
-            self.logger.warning(
-                "RayDeploymentManager config should not contain 'autoscaler' key."
-            )
-            del ray_deployment_config["autoscaler"]
-        self.deployment_manager = RayDeploymentManager(
-            **ray_deployment_config, autoscaler=self.autoscaler, _debug=_debug
-        )
-        self.dataset_manager = DatasetManager(**dataset_config, _debug=_debug)
-
-        # Internal state
         self.server = None
         self.serve_event = None
+
+        # Initialize component managers depending on the mode
+        if self.mode in ["slurm", "single-machine"]:
+            ray_cluster_config = ray_cluster_config or {}
+            ray_cluster_config = self._set_parameter(
+                ray_cluster_config, "mode", self.mode
+            )
+            ray_cluster_config.setdefault("worker_data_dir", dataset_config["data_dir"])
+            ray_cluster_config = self._set_parameter(
+                ray_cluster_config, "log_file", log_file
+            )
+            ray_cluster_config = self._set_parameter(
+                ray_cluster_config, "_debug", _debug
+            )
+            self.cluster_manager = RayClusterManager(**ray_cluster_config)
+            self.mode = self.cluster_manager.ray_cluster_config["mode"]
+            self._clean_up = clean_up_previous_cluster
+
+            if self.mode == "slurm":
+                ray_autoscaler_config = ray_autoscaler_config or {}
+                ray_autoscaler_config = self._set_parameter(
+                    ray_autoscaler_config, "cluster_manager", self.cluster_manager
+                )
+                ray_autoscaler_config = self._set_parameter(
+                    ray_autoscaler_config, "log_file", log_file
+                )
+                ray_autoscaler_config = self._set_parameter(
+                    ray_autoscaler_config, "_debug", _debug
+                )
+                self.autoscaler = RayAutoscaler(**ray_autoscaler_config)
+            else:
+                self.autoscaler = None
+
+        elif self.mode == "connect":
+            # Mode to connect to an existing Ray cluster
+            self.ray_connection_kwargs = ray_connection_kwargs or {}
+            self._set_parameter(
+                self.ray_connection_kwargs, "logging_format", stream_logging_format
+            )
+
+            if not "address" in self.ray_connection_kwargs:
+                raise ValueError("Ray connection mode requires a provided address!")
+
+            self.logger.info(
+                "Connecting to existing Ray cluster. Skipping cluster management."
+            )
+        else:
+            raise ValueError(
+                f"Invalid mode '{self.mode}'. Choose from 'slurm', 'single-machine', or 'connect'."
+            )
+
+        ray_deployment_config = ray_deployment_config or {}
+        ray_deployment_config = self._set_parameter(
+            ray_deployment_config, "autoscaler", self.autoscaler
+        )
+        ray_deployment_config = self._set_parameter(
+            ray_deployment_config, "log_file", log_file
+        )
+        ray_deployment_config = self._set_parameter(
+            ray_deployment_config, "_debug", _debug
+        )
+        self.deployment_manager = RayDeploymentManager(**ray_deployment_config)
+
+        dataset_config = dataset_config or {}
+        dataset_config = self._set_parameter(dataset_config, "log_file", log_file)
+        dataset_config = self._set_parameter(dataset_config, "_debug", _debug)
+        self.dataset_manager = DatasetManager(**dataset_config)
+
+    def _set_parameter(
+        self,
+        kwargs: Dict[str, Any],
+        key: str,
+        value: Any,
+    ) -> dict:
+        if key in kwargs and kwargs[key] != value:
+            self.logger.warning(
+                f"Overwriting provided {key} value: {kwargs[key]!r} -> {value!r}"
+            )
+        kwargs[key] = value
+
+        return kwargs
 
     async def _connect_to_server(self) -> None:
         """Connect to Hypha server using provided URL.
@@ -203,14 +234,9 @@ class BioEngineWorker:
         Returns:
             The service ID assigned after successful registration with Hypha.
         """
-        if self.cluster_manager:
-            # Start the Ray cluster
-            self.cluster_manager.start_cluster(force_clean_up=self._clean_up)
+        self.start_time = time.time()
 
-            # If running on a HPC system, use the RayAutoscaler to manage the Ray cluster
-            if self.cluster_manager.slurm_available:
-                await self.autoscaler.start()
-        else:
+        if self.mode == "connect":
             # Connect to an existing Ray cluster
             if ray.is_initialized():
                 raise RuntimeError(
@@ -222,12 +248,20 @@ class BioEngineWorker:
                 self.logger.error(f"Failed to connect to existing Ray cluster: {e}")
                 raise
             self.logger.info("Connected to existing Ray cluster.")
+        else:
+            # Start the Ray cluster
+            self.cluster_manager.start_cluster(force_clean_up=self._clean_up)
+
+            # If running on a HPC system, use the RayAutoscaler to manage the Ray cluster
+            if self.mode == "slurm":
+                await self.autoscaler.start()
 
         # Connect to the Hypha server and register the service
         await self._connect_to_server()
         await self.deployment_manager.initialize(self.server)
         await self.dataset_manager.initialize(self.server)
         sid = await self._register()
+
         return sid
 
     async def serve(self) -> None:
@@ -245,9 +279,9 @@ class BioEngineWorker:
 
             await self.deployment_manager.cleanup_deployments()
 
-            if self.autoscaler:
+            if self.mode == "slurm":
                 await self.autoscaler.shutdown_cluster()
-            elif self.cluster_manager:
+            elif self.mode == "single-machine":
                 self.cluster_manager.shutdown_cluster()
         else:
             self.logger.warning("Ray is not initialized. No cleanup needed.")
@@ -270,17 +304,7 @@ class BioEngineWorker:
             }
         }
         if ray.is_initialized():
-            if self.cluster_manager:
-                # Ray started via autoscaler
-                status["cluster"] = self.cluster_manager.get_status()
-                if self.autoscaler:
-                    status["cluster"]["autoscaler"] = await self.autoscaler.get_status()
-                else:
-                    status["cluster"]["autoscaler"] = None
-                    status["cluster"][
-                        "note"
-                    ] = "Autoscaler is only available on HPC systems."
-            else:
+            if self.mode == "connect":
                 # Ray connected externally
                 head_address = ray._private.services.get_node_ip_address()
                 status["cluster"] = {
@@ -291,10 +315,21 @@ class BioEngineWorker:
                     "autoscaler": None,
                     "note": "Connected to existing Ray cluster; no autoscaler info available.",
                 }
+            else:
+                # Ray started internally
+                status["cluster"] = self.cluster_manager.get_status()
+                if self.mode == "slurm":
+                    # Get autoscaler status if in SLURM mode
+                    status["cluster"]["autoscaler"] = await self.autoscaler.get_status()
+                else:
+                    status["cluster"]["autoscaler"] = None
+                    status["cluster"][
+                        "note"
+                    ] = "Autoscaler is only available in 'slurm' mode."
             status["deployments"] = await self.deployment_manager.get_status()
             status["datasets"] = await self.dataset_manager.get_status()
         else:
-            status["cluster"] = "Not running"
+            status["cluster"] = "Not connected to any Ray cluster."
 
         return status
 
@@ -372,7 +407,7 @@ class BioEngineWorker:
 
         RemoteRayTask = ray.remote(**remote_options)(ray_task)
         future = RemoteRayTask.remote(user_func, args, kwargs)
-        if self.autoscaler:
+        if self.mode == "slurm":
             await self.autoscaler.notify()
         result = await asyncio.get_event_loop().run_in_executor(None, ray.get, future)
 
@@ -414,7 +449,7 @@ if __name__ == "__main__":
                 ray_cluster_config={
                     "head_num_cpus": 4,
                     "ray_temp_dir": f"/tmp/ray/{os.environ['USER']}",
-                    "image_path": str(
+                    "image": str(
                         Path(__file__).parent.parent
                         / "apptainer_images"
                         / "bioengine-worker_0.1.7.sif"

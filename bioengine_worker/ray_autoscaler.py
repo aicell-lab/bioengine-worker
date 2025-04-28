@@ -38,6 +38,7 @@ class RayAutoscaler:
         node_grace_period_seconds: int = 600,  # 10 minutes grace period for new nodes
         # Logger
         logger: Optional[logging.Logger] = None,
+        log_file: Optional[str] = None,
         _debug: bool = False,
     ):
         """Initialize the Ray autoscaler.
@@ -57,12 +58,14 @@ class RayAutoscaler:
             scale_down_cooldown_seconds: Minimum time between scaling down operations
             node_grace_period_seconds: Give new nodes time before considering for scale-down
             logger: Optional logger instance
+            log_file: File for logging output
             _debug: Enable debug logging
         """
         # Set up logging
         self.logger = logger or create_logger(
             name="RayAutoscaler",
             level=logging.DEBUG if _debug else logging.INFO,
+            log_file=log_file,
         )
 
         # Store ray manager reference
@@ -582,11 +585,11 @@ if __name__ == "__main__":
         try:
             cluster_manager = RayClusterManager(
                 ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
-                data_dir=str(Path(__file__).parent.parent / "data"),
-                image_path=str(
+                image=str(
                     Path(__file__).parent.parent
                     / "apptainer_images/bioengine-worker_0.1.7.sif"
                 ),
+                worker_data_dir=str(Path(__file__).parent.parent / "data"),
                 _debug=True,
             )
             cluster_manager.start_cluster(force_clean_up=True)

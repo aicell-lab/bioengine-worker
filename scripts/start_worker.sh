@@ -180,6 +180,7 @@ fi
 # LOGS_DIR is needed by the BioEngine logger -> container path
 LOGS_DIR=$(get_arg_value "--logs_dir" "$WORKING_DIR/logs")
 LOGS_DIR=$(realpath $LOGS_DIR)
+mkdir -p $LOGS_DIR
 add_bind $LOGS_DIR "/app/logs"
 set_arg_value "--logs_dir" "/app/logs"
 

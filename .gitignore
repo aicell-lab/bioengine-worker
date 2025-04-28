@@ -160,9 +160,7 @@ dmypy.json
 cython_debug/
 
 # Personal
-*.patch
-*slurm_logs
-*ray_sessions/
 .vscode/
 apptainer_images/
-data
+logs/
+data/

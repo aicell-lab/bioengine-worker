@@ -241,14 +241,14 @@ def create_parser():
     )
     cluster_group.add_argument(
         "--image",
-        default="./apptainer_images/bioengine-worker_0.1.7.sif",
+        default="./apptainer_images/bioengine-worker_0.1.8.sif",
         type=str,
         help="Worker image for SLURM job",
     )
     cluster_group.add_argument(
         "--worker_data_dir",
         type=str,
-        help="Data directory mounted to the container when starting a worker",
+        help="Data directory mounted to the container when starting a worker. If not set, the data_dir will be used.",
     )
     cluster_group.add_argument(
         "--slurm_logs_dir",

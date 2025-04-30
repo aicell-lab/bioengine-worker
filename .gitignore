@@ -164,3 +164,4 @@ cython_debug/
 apptainer_images/
 logs/
 data/
+ray_sessions/

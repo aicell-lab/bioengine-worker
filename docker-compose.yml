@@ -11,7 +11,8 @@ services:
     user: "${UID}:${GID}"  # add UID and GID to .env file if not found
     # user: "nobody:nogroup"
     volumes:
-      - /tmp/ray/${USER}:/tmp/ray/
+      # - /tmp/ray/${USER}:/tmp/ray/
+      - ./ray_sessions:/tmp/ray/
       - ./data:/data
       - ./logs:/app/logs
     shm_size: 10.24gb

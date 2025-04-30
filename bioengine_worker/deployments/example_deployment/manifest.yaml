@@ -10,7 +10,7 @@ id_emoji: '🐼'
 license: MIT
 links: []
 maintainers: []
-name: Test Deployment
+name: Example Deployment
 tags: [single-cell, RNA-seq, classification, deep-learning, transcriptomics]
 type: model
 version: 0.0.1

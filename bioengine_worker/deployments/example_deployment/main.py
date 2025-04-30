@@ -1,12 +1,3 @@
-class DummyClass(object):
-    def __init__(self):
-        self.iteration = 0
-
-    async def __call__(self, data=None):
-        self.iteration += 1
-        return {"message": "Hello World!", "iteration": self.iteration}
-
-
 class ChironModel(object):
     def __init__(self):
         self.model = None

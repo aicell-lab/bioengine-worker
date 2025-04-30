@@ -430,7 +430,7 @@ if __name__ == "__main__":
     import aiohttp
     from hypha_rpc import login
 
-    from bioengine_worker.ray_deployment_manager import create_example_deployment
+    from bioengine_worker.ray_deployment_manager import create_artifact
 
     async def test_bioengine_worker(keep_running=True):
         try:
@@ -494,8 +494,10 @@ if __name__ == "__main__":
             print("Dataset info:", dataset_info)
 
             # Test deploying an artifact
-            artifact_id = await create_example_deployment(
-                bioengine_worker.deployment_manager.artifact_manager
+            artifact_id = await create_artifact(
+                artifact_manager=bioengine_worker.deployment_manager.artifact_manager,
+                deployment_dir=Path(__file__).parent / "deployments" / "example_deployment",
+                parent_id="ray-deployments",
             )
 
             deployment_name = await worker_service.deploy_artifact(

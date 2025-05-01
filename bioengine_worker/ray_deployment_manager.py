@@ -7,12 +7,10 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 import ray
-import yaml
 from ray import serve
 
 from bioengine_worker.ray_autoscaler import RayAutoscaler
-from bioengine_worker.utils.format_time import format_time
-from bioengine_worker.utils.logger import create_logger
+from bioengine_worker.utils import create_logger, format_time
 
 
 class RayDeploymentManager:
@@ -480,91 +478,6 @@ class RayDeploymentManager:
             raise e
 
 
-async def create_artifact(
-    artifact_manager,
-    deployment_dir: str,
-    parent_id: str = None,
-) -> str:
-    """Create an deployment artifact in Hypha
-
-    Args:
-        artifact_manager: Hypha artifact manager instance
-        path_to_artifact: Path to the artifact directory
-        logger: Optional logger instance
-
-    Returns:
-        str: ID of the created artifact
-    """
-    logger = create_logger("ArtifactManager")
-
-    # Get the deployment manifest and content
-    with open(deployment_dir / "manifest.yaml", "r") as f:
-        deployment_manifest = yaml.safe_load(f)
-
-    entry_point = deployment_manifest.get("entry_point", "main.py")
-    with open(deployment_dir / entry_point, "r") as f:
-        deployment_content = f.read()
-
-    # Check existing deployments
-    deployment_alias = deployment_manifest["name"].lower().replace(" ", "-")
-    all_artifacts = []
-    for artifact in await artifact_manager.list():
-        if artifact.type == "collection":
-            all_artifacts.extend(await artifact_manager.list(parent_id=artifact.id))
-        else:
-            all_artifacts.append(artifact)
-
-    exists = False
-    for artifact in all_artifacts:
-        if artifact.alias == deployment_alias:
-            logger.info(f"Deployment '{deployment_alias}' already exists.")
-            exists = True
-            break
-
-    if exists:
-        # Edit the existing deployment and stage it for review
-        artifact = await artifact_manager.edit(
-            artifact_id=artifact.id,
-            manifest=deployment_manifest,
-            type=deployment_manifest.get("type", "generic"),
-            version="stage",
-        )
-        logger.info(f"Artifact edited with ID: {artifact.id}")
-    else:
-        # Add the deployment to the gallery and stage it for review
-        artifact = await artifact_manager.create(
-            alias=deployment_alias,
-            parent_id=parent_id,
-            manifest=deployment_manifest,
-            type=deployment_manifest.get("type", "generic"),
-            version="stage",
-        )
-        logger.info(f"Artifact created with ID: {artifact.id}")
-
-    # Upload manifest.yaml
-    upload_url = await artifact_manager.put_file(artifact.id, file_path="manifest.yaml")
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.put(upload_url, data=deployment_manifest)
-        response.raise_for_status()
-        logger.info(f"Uploaded manifest.yaml to artifact")
-
-    # Upload the entry point
-    upload_url = await artifact_manager.put_file(artifact.id, file_path=entry_point)
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.put(upload_url, data=deployment_content)
-        response.raise_for_status()
-        logger.info(f"Uploaded {entry_point} to artifact")
-
-    # Commit the artifact
-    await artifact_manager.commit(
-        artifact_id=artifact.id,
-        version="new",
-    )
-    logger.info(f"Committed artifact")
-
-    return artifact.id
-
-
 if __name__ == "__main__":
     """Test the RayDeploymentManager functionality with a real Ray cluster and model deployment."""
 
@@ -619,14 +532,8 @@ if __name__ == "__main__":
             # Initialize deployment manager
             await deployment_manager.initialize(server)
 
-            # Upload the example deployment code to Hypha as a new artifact
-            artifact_id = await create_artifact(
-                artifact_manager=deployment_manager.artifact_manager,
-                deployment_dir=Path(__file__).parent / "deployments" / "example_deployment",
-                parent_id="ray-deployments",
-            )
-
-            # Deploy the artifact
+            # Deploy the example deployment
+            artifact_id = "example-deployment"
             deployment_name = await deployment_manager.deploy_artifact(artifact_id)
 
             deployment_status = await deployment_manager.get_status()

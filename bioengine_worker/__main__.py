@@ -9,7 +9,7 @@ from typing import Literal
 
 from hypha_rpc import login
 
-from bioengine_worker.utils.logger import create_logger
+from bioengine_worker.utils import create_logger
 from bioengine_worker.worker import BioEngineWorker
 
 

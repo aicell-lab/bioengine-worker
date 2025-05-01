@@ -5,3 +5,4 @@ dask
 gdown
 xarray
 zarr
+-e .

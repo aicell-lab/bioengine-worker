@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from bioengine_worker.utils.logger import create_logger
+from bioengine_worker.utils import create_logger
 
 
 class SlurmActor:

@@ -6,15 +6,9 @@ class CellposeFinetune(object):
     def __init__(self):
         pass
 
-    async def _download_data(self, download_url):
-        """Write data to a zip file"""
-        import tempfile
+    async def _download_data(self, data_dir, download_url):
         import httpx
         import zipfile
-        from pathlib import Path
-
-        # Create a temporary directory to save the downloaded file
-        data_dir = Path(tempfile.mkdtemp())
 
         # Define the path to save the downloaded zip file
         zip_file_path = data_dir / "data.zip"
@@ -54,7 +48,6 @@ class CellposeFinetune(object):
         return image_annotation_pairs
     
     def _prepare_training_data(self, image_annotation_pairs):
-        """Prepare training data from image and annotation pairs"""
         import numpy as np
 
         # Get all indices of the list
@@ -153,9 +146,8 @@ class CellposeFinetune(object):
     
     async def _upload_finetuned_model(self, model_path, model_url):
         import httpx
-        from pathlib import Path
 
-        model_content = Path(model_path).read_bytes()
+        model_content = model_path.read_bytes()
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.put(model_url, content=model_content)
             response.raise_for_status()
@@ -175,33 +167,40 @@ class CellposeFinetune(object):
             learning_rate: Learning rate for training, default is 0.000001
             weight_decay: Weight decay for training, default is 0.0001
         """
-        image_dir = await self._download_data(data["data_url"])
-        image_annotation_pairs = self._find_image_annotation_pairs(image_dir)
-        train_files, train_labels_files, test_files, test_labels_files = self._prepare_training_data(image_annotation_pairs)
-        model, model_path, channels = self._train_cellpose(
-            train_files=train_files,
-            train_labels_files=train_labels_files,
-            test_files=test_files,
-            test_labels_files=test_labels_files,
-            initial_model=data["initial_model"],  # ["cyto", "cyto3", "nuclei", "tissuenet_cp3", "livecell_cp3", "yeast_PhC_cp3", "yeast_BF_cp3", "bact_phase_cp3", "bact_fluor_cp3", "deepbacs_cp3", "None"]
-            train_channel=data.get("train_channel", "Grayscale"),  # "Grayscale", "Red", "Green", "Blue"
-            second_train_channel=data.get("second_train_channel", "Grayscale"),
-            n_epochs=data.get("n_epochs", 10),
-            learning_rate=data.get("learning_rate", 0.000001),
-            weight_decay=data.get("weight_decay", 0.0001),
-        )
-        ap = self._evaluate_cellpose(
-            model,
-            channels,
-            test_files,
-            test_labels_files
-        )
-        await self._upload_finetuned_model(
-            model_path,
-            data["finetuned_model_url"],
-        )
+        import tempfile
+        from pathlib import Path
 
-        return ap
+        # Create a temporary directory to save the downloaded file
+        with tempfile.TemporaryDirectory() as data_dir:
+            data_dir = Path(data_dir)
+
+            image_dir = await self._download_data(data_dir, data["data_url"])  # TODO: replace this with HttpZarrStore from artifact manager (https://docs.amun.ai/#/artifact-manager?id=endpoint-2-workspaceartifactsartifact_aliaszip-fileszip_file_pathpathpathpath)
+            image_annotation_pairs = self._find_image_annotation_pairs(image_dir)
+            train_files, train_labels_files, test_files, test_labels_files = self._prepare_training_data(image_annotation_pairs)
+            model, model_path, channels = self._train_cellpose(
+                train_files=train_files,
+                train_labels_files=train_labels_files,
+                test_files=test_files,
+                test_labels_files=test_labels_files,
+                initial_model=data["initial_model"],  # ["cyto", "cyto3", "nuclei", "tissuenet_cp3", "livecell_cp3", "yeast_PhC_cp3", "yeast_BF_cp3", "bact_phase_cp3", "bact_fluor_cp3", "deepbacs_cp3", "None"]
+                train_channel=data.get("train_channel", "Grayscale"),  # "Grayscale", "Red", "Green", "Blue"
+                second_train_channel=data.get("second_train_channel", "Grayscale"),
+                n_epochs=data.get("n_epochs", 10),
+                learning_rate=data.get("learning_rate", 0.000001),
+                weight_decay=data.get("weight_decay", 0.0001),
+            )
+            ap = self._evaluate_cellpose(
+                model,
+                channels,
+                test_files,
+                test_labels_files
+            )
+            await self._upload_finetuned_model(
+                Path(model_path),
+                data["finetuned_model_url"],
+            )
+
+            return ap
     
 
 if __name__ == "__main__":

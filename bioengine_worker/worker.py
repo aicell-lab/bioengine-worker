@@ -15,8 +15,7 @@ from bioengine_worker.dataset_manager import DatasetManager
 from bioengine_worker.ray_autoscaler import RayAutoscaler
 from bioengine_worker.ray_cluster_manager import RayClusterManager
 from bioengine_worker.ray_deployment_manager import RayDeploymentManager
-from bioengine_worker.utils.format_time import format_time
-from bioengine_worker.utils.logger import create_logger, stream_logging_format
+from bioengine_worker.utils import create_logger, format_time, stream_logging_format
 
 
 class BioEngineWorker:
@@ -430,8 +429,6 @@ if __name__ == "__main__":
     import aiohttp
     from hypha_rpc import login
 
-    from bioengine_worker.ray_deployment_manager import create_artifact
-
     async def test_bioengine_worker(keep_running=True):
         try:
             # Create BioEngine worker instance
@@ -494,12 +491,7 @@ if __name__ == "__main__":
             print("Dataset info:", dataset_info)
 
             # Test deploying an artifact
-            artifact_id = await create_artifact(
-                artifact_manager=bioengine_worker.deployment_manager.artifact_manager,
-                deployment_dir=Path(__file__).parent / "deployments" / "example_deployment",
-                parent_id="ray-deployments",
-            )
-
+            artifact_id = "example-deployment"
             deployment_name = await worker_service.deploy_artifact(
                 artifact_id=artifact_id,
             )

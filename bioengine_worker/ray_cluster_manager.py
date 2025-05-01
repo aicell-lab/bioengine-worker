@@ -12,8 +12,8 @@ import ray
 from ray import serve
 
 from bioengine_worker.slurm_actor import SlurmActor
-from bioengine_worker.utils.format_time import format_time
-from bioengine_worker.utils.logger import create_logger, stream_logging_format
+from bioengine_worker.utils import format_time
+from bioengine_worker.utils import create_logger, stream_logging_format
 
 
 # TODO: make async

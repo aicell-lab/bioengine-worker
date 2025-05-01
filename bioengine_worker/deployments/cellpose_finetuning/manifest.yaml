@@ -10,7 +10,7 @@ id_emoji: '🧬'
 license: MIT
 links: []
 maintainers: []
-name: Cellpose v2 Fine-Tuning Deployment
+name: Cellpose Fine-Tuning
 tags: [cell-segmentation, deep-learning, biomedical-imaging, fine-tuning]
 type: model
 version: 0.0.1

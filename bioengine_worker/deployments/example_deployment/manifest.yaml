@@ -22,11 +22,6 @@ deployment_config:
     num_cpus: 1
     # memory: 4294967296  # 4GB RAM
     runtime_env:
-    #   image_uri: "--tls-verify=false python:3.11.9-slim"
-      # container:
-      #   image: python:3.11.9-slim
-      #   run_options: ["--tls-verify=false"]
-      # pip: ["pandas"]
       pip: ["torch==2.1.2"]
   max_ongoing_requests: 1
   max_queued_requests: 10

@@ -30,5 +30,4 @@ COPY . .
 # Install the package
 RUN pip install .
 
-# Use the start script as the entrypoint and forward arguments
 CMD [ "/bin/bash" ]

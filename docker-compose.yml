@@ -22,6 +22,7 @@ services:
     command: [
       "python", "-m", "bioengine_worker",
       "--mode", "single-machine",
+      "--workspace", "chiron-platform",
       "--data_dir", "/data",
       "--head_num_gpus", "1",
       "--head_num_cpus", "4",

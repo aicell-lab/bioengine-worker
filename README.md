@@ -161,9 +161,45 @@ An example deployment can be found in [`bioengine_worker/deployments/example_dep
 
 A dataset consists of a folder in the specified data directory containing a manifest file and the corresponding zarr files.
 
-First, call `load_dataset` from the worker service, which will register an ASGI app that can be used to stream the dataset with a [`HttpZarrStore`](bioengine_worker/http_zarr_store.py).
+#### Dataset Structure
+```
+example_dataset/
+├── data_file_1.zarr/
+│   └── ...
+├── data_file_2.zarr/
+│   └── ...
+└── manifest.yml
+```
 
-Close the dataset with `close_dataset` when you're done.
+#### Manifest File Format
+The `manifest.yml` file defines the dataset metadata and files:
+```yaml
+description: "This is an example dataset"
+files:
+  data_file_1.zarr:  # Note: filename must match actual file
+    description: "Example file 1"
+    version: "1.0.0"
+  data_file_2.zarr:
+    description: "Example file 2"
+    version: "1.0.0"
+```
+
+#### Working with Datasets
+
+1. **Load the dataset** by calling `load_dataset` from the worker service:
+   ```python
+   dataset_id = "example_dataset"
+   await worker_service.load_dataset(dataset_id)
+   ```
+   
+   This registers an ASGI app that enables streaming the dataset using the `HttpZarrStore`.
+
+2. **Access the dataset** in your code using the provided HTTP interface.
+
+3. **Release resources** when finished:
+   ```python
+   await worker_service.close_dataset(dataset_id)
+   ```
 
 ### Accessing other datasets
 

@@ -7,10 +7,13 @@ WORKING_DIR=$(pwd)
 # Save all arguments
 BIOENGINE_WORKER_ARGS=("$@")
 
-# Check if Apptainer is installed
-if ! command -v apptainer &> /dev/null
-then
-    echo "Apptainer could not be found. Please install it first."
+# Check if Apptainer or Singularity is installed
+if command -v apptainer &> /dev/null; then
+    CONTAINER_CMD="apptainer"
+elif command -v singularity &> /dev/null; then
+    CONTAINER_CMD="singularity"
+else
+    echo "Neither Apptainer nor Singularity could be found. Please install one of them first."
     exit 1
 fi
 
@@ -91,7 +94,7 @@ if [ ! -f "$IMAGE_PATH" ]; then
         echo "Pulling image $DOCKER_IMAGE..."
         IMAGE_DIR=$(dirname "$IMAGE_PATH")
         mkdir -p $IMAGE_DIR
-        apptainer pull $IMAGE_PATH docker://$DOCKER_IMAGE
+        $CONTAINER_CMD pull $IMAGE_PATH docker://$DOCKER_IMAGE
         if [[ $? -eq 0 ]]; then
             echo "Successfully pulled $DOCKER_IMAGE to $IMAGE_PATH"
         else
@@ -245,7 +248,7 @@ fi
 # Cleanup function
 cleanup() {
     echo "Making sure the Ray head node is stopped..."
-    apptainer exec "$IMAGE_PATH" ray stop --force
+    $CONTAINER_CMD exec "$IMAGE_PATH" ray stop --force
 
     # If running in SLURM mode, cancel any remaining SLURM jobs
     if [[ "$MODE" == "slurm" ]]; then
@@ -266,7 +269,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Run with clean environment
-apptainer exec \
+$CONTAINER_CMD exec \
     --cleanenv \
     --pwd /app \
     "${ENV_VARS[@]}" \

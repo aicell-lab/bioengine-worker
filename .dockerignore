@@ -36,7 +36,7 @@ ENV/
 .gitignore
 
 # Docker
-Dockerfile
+*Dockerfile
 .dockerignore
 docker-compose.yml
 
@@ -54,9 +54,17 @@ coverage.xml
 
 # Misc
 .DS_Store
+logs/
 *.log
 .env
 .env.*
 
+# Ray
+ray_sessions/
+
 # Data
 data/
+
+# Notebooks
+notebooks/
+*.ipynb

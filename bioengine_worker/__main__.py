@@ -48,7 +48,7 @@ async def main(group_configs):
     try:
         # Get Hypha configuration
         hypha_config = group_configs["Hypha Options"]
-        token = hypha_config["token"] or os.environ["HYPHA_TOKEN"]
+        token = hypha_config["token"] or os.environ.get("HYPHA_TOKEN")
         if not token:
             token = await login({"server_url": hypha_config["server_url"]})
 

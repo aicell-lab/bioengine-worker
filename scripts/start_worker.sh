@@ -117,15 +117,20 @@ add_env() {
     fi
 }
 
-# Export environment variables from .env file
-set -a
-source $WORKING_DIR/.env
-set +a
+# Export environment variables from .env file if it exists
+if [ -f "$WORKING_DIR/.env" ]; then
+    set -a
+    source $WORKING_DIR/.env
+    set +a
+fi
 
 # Add environment variables
 add_env "USER" "$USER"
-add_env "HYPHA_TOKEN" "$HYPHA_TOKEN"
 
+# Add Hypha token if available
+if [ -n "$HYPHA_TOKEN" ]; then
+    add_env "HYPHA_TOKEN" "$HYPHA_TOKEN"
+fi
 
 # Define bind options
 BIND_OPTS=()

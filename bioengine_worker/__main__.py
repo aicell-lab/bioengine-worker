@@ -241,7 +241,7 @@ def create_parser():
     )
     cluster_group.add_argument(
         "--image",
-        default="./apptainer_images/bioengine-worker_0.1.8.sif",
+        default="./apptainer_images/bioengine-worker_0.1.9.sif",
         type=str,
         help="Worker image for SLURM job",
     )

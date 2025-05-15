@@ -449,7 +449,7 @@ if __name__ == "__main__":
                     "image": str(
                         Path(__file__).parent.parent
                         / "apptainer_images"
-                        / "bioengine-worker_0.1.8.sif"
+                        / "bioengine-worker_0.1.9.sif"
                     ),
                 },
                 ray_autoscaler_config={

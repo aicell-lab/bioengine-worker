@@ -42,7 +42,7 @@ class RayClusterManager:
         head_num_cpus: int = 0,
         head_num_gpus: int = 0,
         # Job configuration parameters
-        image: str = "./apptainer_images/bioengine-worker_0.1.8.sif",
+        image: str = "./apptainer_images/bioengine-worker_0.1.10.sif",
         worker_data_dir: str = None,
         slurm_logs_dir: str = "logs",
         further_slurm_args: List[str] = None,
@@ -751,7 +751,7 @@ if __name__ == "__main__":
     ray_manager = RayClusterManager(
         ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
         image=str(
-            Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.8.sif"
+            Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.10.sif"
         ),
         worker_data_dir=str(Path(__file__).parent.parent / "data"),
         # further_slurm_args=["-C 'thin'"]

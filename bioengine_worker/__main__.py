@@ -124,7 +124,6 @@ def create_parser():
     hypha_group = parser.add_argument_group("Hypha Options")
     hypha_group.add_argument(
         "--workspace",
-        default="chiron-platform",
         type=str,
         help="Hypha workspace to connect to",
     )
@@ -241,7 +240,7 @@ def create_parser():
     )
     cluster_group.add_argument(
         "--image",
-        default="./apptainer_images/bioengine-worker_0.1.8.sif",
+        default="./apptainer_images/bioengine-worker_0.1.10.sif",
         type=str,
         help="Worker image for SLURM job",
     )

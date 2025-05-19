@@ -11,7 +11,7 @@ from bioengine_worker.utils import create_logger
 
 
 async def create_artifact(
-    deployment_dir: str, parent_id: str, server_url: str, workspace: str, token: str
+    deployment_dir: str, parent_id: str, server_url: str, workspace: str = None, token: str = None
 ) -> str:
     """Create an deployment artifact in Hypha
 
@@ -115,16 +115,15 @@ if __name__ == "__main__":
         help="Parent ID for the artifact",
     )
     parser.add_argument(
-        "--workspace",
-        default="chiron-platform",
-        type=str,
-        help="Hypha workspace to connect to",
-    )
-    parser.add_argument(
         "--server_url",
         default="https://hypha.aicell.io",
         type=str,
         help="URL of the Hypha server",
+    )
+    parser.add_argument(
+        "--workspace",
+        type=str,
+        help="Hypha workspace to connect to",
     )
     parser.add_argument(
         "--token",

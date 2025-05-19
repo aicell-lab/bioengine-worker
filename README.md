@@ -15,7 +15,7 @@ The BioEngine worker comes in containerized form as Docker or Apptainer image.
 
 ### Docker (for workstations or K8s)
 
-A prebuilt Docker image is available under `ghcr.io/aicell-lab/bioengine-worker:0.1.8` (change the version if needed, see [all the versions](https://github.com/orgs/aicell-lab/packages/container/package/bioengine-worker)).
+A prebuilt Docker image is available under `ghcr.io/aicell-lab/bioengine-worker:0.1.10` (change the version if needed, see [all the versions](https://github.com/orgs/aicell-lab/packages/container/package/bioengine-worker)).
 
 To make use of the predefined settings, clone this Github repository and run `docker compose up --build`.
 
@@ -31,7 +31,7 @@ By default, the BioEngine worker will start a local Ray cluster with the provide
 
 An overview of all tags for the BioEngine worker can be accessed via:
 ```bash
-docker run --rm ghcr.io/aicell-lab/bioengine-worker:0.1.8 python -m bioengine_worker --help
+docker run --rm ghcr.io/aicell-lab/bioengine-worker:0.1.10 python -m bioengine_worker --help
 ```
 
 To run as your own user, the variables `UID` and `GID` are required. If not set, `export` them before running docker compose with `export UID=$(id -u)` and `export GID=$(id -g)` or add them to your `.env` file.
@@ -204,3 +204,21 @@ files:
 ### Accessing other datasets
 
 All other files that are not zarr and have no manifest.yml file will be accessible under `/data` from `execute_python_code` or from deployed models.
+
+
+### Build a multi-arch docker image
+
+To build a multi-arch docker image, you can use the `buildx` command. This requires Docker Buildx to be installed and set up on your system.
+```bash
+docker buildx create --use --name multiarch-builder
+docker buildx inspect multiarch-builder --bootstrap
+```
+This ensures you're using a builder that supports multiple platforms.
+
+To build the image, run the following command:
+```bash
+docker buildx build \
+    --platform linux/amd64,linux/arm64 \
+    -t ghcr.io/aicell-lab/bioengine-worker:0.1.10 \
+    --push .
+```

@@ -86,6 +86,7 @@ class RayDeploymentManager:
                 {
                     "id": self._service_id,
                     "name": "BioEngine Worker Deployments",
+                    "type": "ray-deployment",
                     "description": "Deployed Ray Serve models",
                     "config": {"visibility": "public", "require_context": True},
                     **service_functions,
@@ -493,7 +494,7 @@ if __name__ == "__main__":
         head_num_gpus=1,
         ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
         image=str(
-            Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.8.sif"
+            Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.10.sif"
         ),
         worker_data_dir=str(Path(__file__).parent.parent / "data"),
         _debug=True,

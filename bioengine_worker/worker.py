@@ -27,7 +27,7 @@ class BioEngineWorker:
 
     def __init__(
         self,
-        workspace: str,
+        workspace: str = None,
         server_url: str = "https://hypha.aicell.io",
         token: Optional[str] = None,
         service_id: str = "bioengine-worker",
@@ -45,7 +45,7 @@ class BioEngineWorker:
         """Initialize BioEngine worker with component managers.
 
         Args:
-            workspace: Hypha workspace to connect to.
+            workspace: Hypha workspace to connect to. Defaults to user's workspace.
             server_url: URL of the Hypha server to register the worker with.
             token: Optional authentication token for the Hypha server.
             service_id: Service ID used when registering with the Hypha server.
@@ -194,6 +194,7 @@ class BioEngineWorker:
             {
                 "id": self.service_id,
                 "name": "BioEngine worker",
+                "type": "bioengine-worker",
                 "description": "Controls Ray cluster on HPC system",
                 "config": {"visibility": "public", "require_context": True},
                 "get_status": self.get_status,
@@ -449,7 +450,7 @@ if __name__ == "__main__":
                     "image": str(
                         Path(__file__).parent.parent
                         / "apptainer_images"
-                        / "bioengine-worker_0.1.8.sif"
+                        / "bioengine-worker_0.1.10.sif"
                     ),
                 },
                 ray_autoscaler_config={

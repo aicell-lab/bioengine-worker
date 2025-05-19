@@ -587,7 +587,7 @@ if __name__ == "__main__":
                 ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
                 image=str(
                     Path(__file__).parent.parent
-                    / "apptainer_images/bioengine-worker_0.1.8.sif"
+                    / "apptainer_images/bioengine-worker_0.1.10.sif"
                 ),
                 worker_data_dir=str(Path(__file__).parent.parent / "data"),
                 _debug=True,

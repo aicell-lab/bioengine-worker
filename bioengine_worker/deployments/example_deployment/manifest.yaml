@@ -1,10 +1,10 @@
 authors:
-- {affiliation: KTH, github_user: oeway, name: Wei Ouyang}
+- {affiliation: KTH, github_user: nilsmechtel, name: Nils Mechtel}
 covers: []
 description: A deep learning model for single-cell transcriptomics analysis, designed to perform cell type classification and feature extraction from single-cell RNA sequencing data. This model has been trained on diverse cell populations and validated across multiple datasets.
 documentation: README.md
 format_version: 0.5.0
-git_repo: https://github.com/kreshuklab/go-nuclear
+git_repo: https://github.com/bioimage-io/bioengine
 id: philosophical-panda
 id_emoji: '🐼'
 license: MIT
@@ -15,14 +15,23 @@ tags: [single-cell, RNA-seq, classification, deep-learning, transcriptomics]
 type: model
 version: 0.0.1
 entry_point: main.py
-class_name: ChironModel
+class_name: ExampleModel
 deployment_config:
-  ray_actor_options:
-    num_gpus: 1
-    num_cpus: 1
-    # memory: 4294967296  # 4GB RAM
-    runtime_env:
-      pip: ["torch==2.1.2"]
+  modes:
+    gpu:
+      ray_actor_options:
+        num_gpus: 1
+        num_cpus: 1
+        # memory: 4294967296  # 4GB RAM
+        runtime_env:
+          pip: ["torch==2.1.2"]
+    cpu:
+      ray_actor_options:
+        num_gpus: 0
+        num_cpus: 1
+        # memory: 4294967296  # 4GB RAM
+        runtime_env:
+          pip: ["torch==2.1.2"]
   max_ongoing_requests: 1
   max_queued_requests: 10
   autoscaling_config:

@@ -3,6 +3,7 @@ class CellposeFinetune(object):
     Based on cellpose 2.0 finetune notebook:
     https://colab.research.google.com/github/MouseLand/cellpose/blob/main/notebooks/run_cellpose_2.ipynb#scrollTo=Q7c7V4yEqDc_
     """
+
     def __init__(self):
         pass
 
@@ -23,7 +24,9 @@ class CellposeFinetune(object):
             zip_ref.extractall(data_dir)
 
         # List all folders that do not start with _
-        folders = [f for f in data_dir.iterdir() if f.is_dir() and not f.name.startswith("_")]
+        folders = [
+            f for f in data_dir.iterdir() if f.is_dir() and not f.name.startswith("_")
+        ]
         assert len(folders) == 1, "Expected exactly one folder in the data directory."
 
         return folders[0]
@@ -46,7 +49,7 @@ class CellposeFinetune(object):
             image_annotation_pairs.append((image_file, annotation_file))
 
         return image_annotation_pairs
-    
+
     def _prepare_training_data(self, image_annotation_pairs):
         import numpy as np
 
@@ -69,7 +72,7 @@ class CellposeFinetune(object):
         test_labels_files = [image_annotation_pairs[i][1] for i in test_indices]
 
         return train_files, train_labels_files, test_files, test_labels_files
-    
+
     def _train_cellpose(
         self,
         train_files,
@@ -95,7 +98,9 @@ class CellposeFinetune(object):
         }
         channels = [
             channels_lut[train_channel],  # Channel to use for training
-            channels_lut[second_train_channel],  # Second training channel (if applicable)
+            channels_lut[
+                second_train_channel
+            ],  # Second training channel (if applicable)
         ]
 
         new_model_path = train.train_seg(
@@ -112,11 +117,11 @@ class CellposeFinetune(object):
             nimg_per_epoch=1,
             save_path=train_files[0].parent,
             model_name=f"finetuned_{initial_model}",
-            min_train_masks=1
+            min_train_masks=1,
         )[0]
 
         return model, new_model_path, channels
-    
+
     def _evaluate_cellpose(self, model, channels, test_files, test_labels_files):
         from tifffile import imread
         from cellpose import metrics
@@ -127,23 +132,21 @@ class CellposeFinetune(object):
 
         # diameter of labels in training images
         # use model diameter if user diameter is 0
-        diameter=0
-        diameter = model.diam_labels if diameter==0 else diameter
+        diameter = 0
+        diameter = model.diam_labels if diameter == 0 else diameter
         diam_labels = model.diam_labels.item()
 
         # run model on test images
-        masks = model.eval(
-            test_data,
-            channels=channels,
-            diameter=diam_labels
-        )[0]
+        masks = model.eval(test_data, channels=channels, diameter=diam_labels)[0]
 
         # check performance using ground truth labels
-        ap = metrics.average_precision(test_labels, masks, threshold=[0.5, 0.75, 0.9])[0]
+        ap = metrics.average_precision(test_labels, masks, threshold=[0.5, 0.75, 0.9])[
+            0
+        ]
 
         # precision at different IOU thresholds
         return {str(t): p for t, p in zip([0.5, 0.75, 0.9], ap.mean(axis=0))}
-    
+
     async def _upload_finetuned_model(self, model_path, model_url):
         import httpx
 
@@ -174,34 +177,37 @@ class CellposeFinetune(object):
         with tempfile.TemporaryDirectory() as data_dir:
             data_dir = Path(data_dir)
 
-            image_dir = await self._download_data(data_dir, data["data_url"])  # TODO: replace this with HttpZarrStore from artifact manager (https://docs.amun.ai/#/artifact-manager?id=endpoint-2-workspaceartifactsartifact_aliaszip-fileszip_file_pathpathpathpath)
+            image_dir = await self._download_data(
+                data_dir, data["data_url"]
+            )  # TODO: replace this with HttpZarrStore from artifact manager (https://docs.amun.ai/#/artifact-manager?id=endpoint-2-workspaceartifactsartifact_aliaszip-fileszip_file_pathpathpathpath)
             image_annotation_pairs = self._find_image_annotation_pairs(image_dir)
-            train_files, train_labels_files, test_files, test_labels_files = self._prepare_training_data(image_annotation_pairs)
+            train_files, train_labels_files, test_files, test_labels_files = (
+                self._prepare_training_data(image_annotation_pairs)
+            )
             model, model_path, channels = self._train_cellpose(
                 train_files=train_files,
                 train_labels_files=train_labels_files,
                 test_files=test_files,
                 test_labels_files=test_labels_files,
-                initial_model=data["initial_model"],  # ["cyto", "cyto3", "nuclei", "tissuenet_cp3", "livecell_cp3", "yeast_PhC_cp3", "yeast_BF_cp3", "bact_phase_cp3", "bact_fluor_cp3", "deepbacs_cp3", "None"]
-                train_channel=data.get("train_channel", "Grayscale"),  # "Grayscale", "Red", "Green", "Blue"
+                initial_model=data[
+                    "initial_model"
+                ],  # ["cyto", "cyto3", "nuclei", "tissuenet_cp3", "livecell_cp3", "yeast_PhC_cp3", "yeast_BF_cp3", "bact_phase_cp3", "bact_fluor_cp3", "deepbacs_cp3", "None"]
+                train_channel=data.get(
+                    "train_channel", "Grayscale"
+                ),  # "Grayscale", "Red", "Green", "Blue"
                 second_train_channel=data.get("second_train_channel", "Grayscale"),
                 n_epochs=data.get("n_epochs", 10),
                 learning_rate=data.get("learning_rate", 0.000001),
                 weight_decay=data.get("weight_decay", 0.0001),
             )
-            ap = self._evaluate_cellpose(
-                model,
-                channels,
-                test_files,
-                test_labels_files
-            )
+            ap = self._evaluate_cellpose(model, channels, test_files, test_labels_files)
             await self._upload_finetuned_model(
                 Path(model_path),
                 data["finetuned_model_url"],
             )
 
             return ap
-    
+
 
 if __name__ == "__main__":
     import os
@@ -211,10 +217,12 @@ if __name__ == "__main__":
     from hypha_rpc import connect_to_server, login
 
     async def test_model():
-        server_url="https://hypha.aicell.io"
-        workspace="chiron-platform"
+        server_url = "https://hypha.aicell.io"
+        workspace = "chiron-platform"
         token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
-        server = await connect_to_server({"server_url": server_url, "token": token, "workspace": workspace})
+        server = await connect_to_server(
+            {"server_url": server_url, "token": token, "workspace": workspace}
+        )
 
         artifact_manager = await server.get_service("public/artifact-manager")
 
@@ -223,7 +231,7 @@ if __name__ == "__main__":
             "description": "An annotated dataset for Cellpose finetuning",
             "type": "data",
         }
-        parent_id = "chiron-platform/collection"
+        parent_id = f"{workspace}/collection"
 
         # Check existing deployments
         deployment_alias = dataset_manifest["name"].lower().replace(" ", "-")
@@ -261,11 +269,15 @@ if __name__ == "__main__":
             print(f"Artifact created with ID: {artifact.id}")
 
         # Load the dataset content
-        data_path = Path("__file__").parent.parent.parent / "data" / "hpa_demo" / "data.zip"
+        data_path = (
+            Path("__file__").parent.parent.parent / "data" / "hpa_demo" / "data.zip"
+        )
         dataset_content = data_path.read_bytes()
 
         # Upload manifest.yaml
-        upload_url = await artifact_manager.put_file(artifact.id, file_path="manifest.yaml")
+        upload_url = await artifact_manager.put_file(
+            artifact.id, file_path="manifest.yaml"
+        )
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.put(upload_url, data=dataset_manifest)
             response.raise_for_status()
@@ -287,7 +299,7 @@ if __name__ == "__main__":
         model_manifest = {
             "name": "Finetuned Cellpose model",
             "description": "Finetuned model for Cellpose cyto3",
-            "type": "model"
+            "type": "model",
         }
         model_artifact = await artifact_manager.create(
             parent_id=parent_id,
@@ -295,7 +307,9 @@ if __name__ == "__main__":
             type=model_manifest.get("type"),
             version="stage",
         )
-        finetuned_model_url = await artifact_manager.put_file(model_artifact.id, file_path="hpa_finetuned_cyto3")
+        finetuned_model_url = await artifact_manager.put_file(
+            model_artifact.id, file_path="hpa_finetuned_cyto3"
+        )
 
         data = {
             "data_url": data_url,

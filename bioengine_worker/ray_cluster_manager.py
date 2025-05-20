@@ -11,6 +11,7 @@ from typing import Dict, List, Literal, Optional
 import ray
 from ray import serve
 
+from bioengine_worker import __version__
 from bioengine_worker.slurm_actor import SlurmActor
 from bioengine_worker.utils import format_time
 from bioengine_worker.utils import create_logger, stream_logging_format
@@ -42,9 +43,9 @@ class RayClusterManager:
         head_num_cpus: int = 0,
         head_num_gpus: int = 0,
         # Job configuration parameters
-        image: str = "./apptainer_images/bioengine-worker_0.1.10.sif",
+        image: str = f"./apptainer_images/bioengine-worker_{__version__}.sif",
         worker_data_dir: str = None,
-        slurm_logs_dir: str = "logs",
+        slurm_log_dir: str = None,
         further_slurm_args: List[str] = None,
         # Logger
         logger: Optional[logging.Logger] = None,
@@ -71,7 +72,7 @@ class RayClusterManager:
             head_num_gpus: Number of GPUs for head node if starting a local cluster (mode="single-machine").
             image: Worker container image path.
             worker_data_dir: Data directory mounted to the container when starting a worker (mode="slurm").
-            slurm_logs_dir: Directory for SLURM logs (mode="slurm").
+            slurm_log_dir: Directory for SLURM logs (mode="slurm").
             further_slurm_args: Additional arguments for SLURM job script (mode="slurm").
             logger: Custom logger instance. Creates default logger if None.
             log_file: File for logging output.
@@ -135,6 +136,10 @@ class RayClusterManager:
         self.ray_start_time = None
 
         if mode == "slurm":
+            # Check if SLURM logs directory is set
+            if slurm_log_dir is None:
+                raise ValueError("SLURM logs directory must be set in 'slurm' mode")
+
             # Set job configuration from parameters
             image_path = Path(image).resolve()
 
@@ -147,7 +152,7 @@ class RayClusterManager:
             # Set up SLURM actor
             self.slurm_actor = SlurmActor(
                 job_name="ray_worker",
-                slurm_logs_dir=slurm_logs_dir,
+                slurm_log_dir=slurm_log_dir,
                 log_file=log_file,
                 _debug=_debug,
             )
@@ -739,6 +744,7 @@ if __name__ == "__main__":
     print("\n===== Testing Ray cluster manager =====\n")
 
     # ray_manager = RayClusterManager(
+    #     mode="single-machine",
     #     head_num_cpus=4,
     #     head_num_gpus=0,
     #     ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
@@ -749,11 +755,14 @@ if __name__ == "__main__":
 
     # Test the class
     ray_manager = RayClusterManager(
+        mode="slurm",
         ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
         image=str(
-            Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.10.sif"
+            Path(__file__).parent.parent
+            / f"apptainer_images/bioengine-worker_{__version__}.sif"
         ),
         worker_data_dir=str(Path(__file__).parent.parent / "data"),
+        slurm_log_dir=str(Path(__file__).parent.parent / "logs"),
         # further_slurm_args=["-C 'thin'"]
         _debug=True,
     )

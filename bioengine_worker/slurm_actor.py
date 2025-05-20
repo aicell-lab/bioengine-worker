@@ -13,7 +13,7 @@ class SlurmActor:
     def __init__(
         self,
         job_name: str,
-        slurm_logs_dir: Optional[str] = "logs",
+        slurm_log_dir: str = "logs",
         logger: Optional[logging.Logger] = None,
         log_file: Optional[str] = None,
         _debug: bool = False,
@@ -29,8 +29,8 @@ class SlurmActor:
         self.job_name = job_name
 
         # Directory for SLURM logs
-        self.slurm_logs_dir = Path(slurm_logs_dir).resolve()
-        self.slurm_logs_dir.mkdir(parents=True, exist_ok=True)
+        self.slurm_log_dir = Path(slurm_log_dir).resolve()
+        self.slurm_log_dir.mkdir(parents=True, exist_ok=True)
 
     def create_sbatch_script(
         self,
@@ -63,8 +63,8 @@ class SlurmActor:
                 #SBATCH --mem-per-cpu={mem_per_cpu}G
                 #SBATCH --time={time}
                 #SBATCH --chdir=/home/{os.environ['USER']}
-                #SBATCH --output={self.slurm_logs_dir}/%x_%j.out
-                #SBATCH --error={self.slurm_logs_dir}/%x_%j.err
+                #SBATCH --output={self.slurm_log_dir}/%x_%j.out
+                #SBATCH --error={self.slurm_log_dir}/%x_%j.err
                 {further_slurm_args}
 
                 # Print some diagnostic information

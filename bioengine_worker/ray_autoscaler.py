@@ -7,6 +7,7 @@ import numpy as np
 import ray
 from ray.util.state import list_actors, list_tasks
 
+from bioengine_worker import __version__
 from bioengine_worker.ray_cluster_manager import RayClusterManager
 from bioengine_worker.utils import create_logger
 
@@ -587,9 +588,10 @@ if __name__ == "__main__":
                 ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
                 image=str(
                     Path(__file__).parent.parent
-                    / "apptainer_images/bioengine-worker_0.1.10.sif"
+                    / f"apptainer_images/bioengine-worker_{__version__}.sif"
                 ),
                 worker_data_dir=str(Path(__file__).parent.parent / "data"),
+                slurm_log_dir=str(Path(__file__).parent.parent / "logs"),
                 _debug=True,
             )
             cluster_manager.start_cluster(force_clean_up=True)

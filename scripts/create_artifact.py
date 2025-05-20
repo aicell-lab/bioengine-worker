@@ -103,9 +103,8 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--deployment_dir",
-        default="/data/nmechtel/autoscaler/bioengine_worker/deployments/example_deployment",
         type=Path,
-        # required=True,
+        required=True,
         help="Path to the deployment directory",
     )
     parser.add_argument(

@@ -9,6 +9,7 @@ import httpx
 import ray
 from ray import serve
 
+from bioengine_worker import __version__
 from bioengine_worker.ray_autoscaler import RayAutoscaler
 from bioengine_worker.utils import create_logger, format_time
 
@@ -214,7 +215,8 @@ class RayDeploymentManager:
     async def deploy_artifact(
         self,
         artifact_id: str,
-        version=None,
+        mode: str = None,
+        version: str = None,
         context: Optional[Dict[str, Any]] = None,
         _skip_update=False,
     ) -> str:
@@ -267,6 +269,24 @@ class RayDeploymentManager:
             if not model:
                 raise ValueError(
                     f"Failed to load model class '{class_name}' from artifact {artifact_id}"
+                )
+
+            # Check if different modes are supported
+            modes = deployment_config.pop("modes", None)
+            if modes:
+                mode_key = mode or list(modes.keys())[0]
+                mode_key = mode_key.lower()
+                if mode_key not in modes:
+                    raise ValueError(
+                        f"Mode '{mode_key}' not found in artifact '{artifact_id}'"
+                    )
+
+                # Update deployment config with the selected mode
+                for key, value in modes[mode_key].items():
+                    deployment_config[key] = value
+
+                self.logger.info(
+                    f"Using mode '{mode_key}' for deployment '{artifact_id}'"
                 )
 
             # Create the Ray Serve deployment
@@ -494,9 +514,11 @@ if __name__ == "__main__":
         head_num_gpus=1,
         ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
         image=str(
-            Path(__file__).parent.parent / "apptainer_images/bioengine-worker_0.1.10.sif"
+            Path(__file__).parent.parent
+            / f"apptainer_images/bioengine-worker_{__version__}.sif"
         ),
         worker_data_dir=str(Path(__file__).parent.parent / "data"),
+        slurm_log_dir=str(Path(__file__).parent.parent / "logs"),
         _debug=True,
     )
     cluster_manager.start_cluster(force_clean_up=True)

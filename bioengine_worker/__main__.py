@@ -9,6 +9,7 @@ from typing import Literal
 
 from hypha_rpc import login
 
+from bioengine_worker import __version__
 from bioengine_worker.utils import create_logger
 from bioengine_worker.worker import BioEngineWorker
 
@@ -150,7 +151,6 @@ def create_parser():
     dataset_group.add_argument(
         "--data_dir",
         type=str,
-        required=True,
         help="Data directory served by the dataset manager",
     )
     dataset_group.add_argument(
@@ -240,7 +240,7 @@ def create_parser():
     )
     cluster_group.add_argument(
         "--image",
-        default="./apptainer_images/bioengine-worker_0.1.10.sif",
+        default=f"./apptainer_images/bioengine-worker_{__version__}.sif",
         type=str,
         help="Worker image for SLURM job",
     )
@@ -250,8 +250,7 @@ def create_parser():
         help="Data directory mounted to the container when starting a worker. If not set, the data_dir will be used.",
     )
     cluster_group.add_argument(
-        "--slurm_logs_dir",
-        default="./logs",
+        "--slurm_log_dir",
         type=str,
         help="Directory for SLURM job logs",
     )
@@ -367,8 +366,7 @@ def create_parser():
 
     # Others
     parser.add_argument(
-        "--logs_dir",
-        default="./logs",
+        "--log_dir",
         type=str,
         help="Directory for logs",
     )
@@ -404,8 +402,11 @@ if __name__ == "__main__":
     group_configs = get_args_by_group(parser)
 
     # Set up logging
-    logs_dir = Path(group_configs["options"].get("logs_dir")).resolve()
-    log_file = logs_dir / f"bioengine_worker_{time.strftime('%Y%m%d_%H%M%S')}.log"
+    if group_configs["options"].get("log_dir"):
+        log_dir = Path(group_configs["options"].get("log_dir")).resolve()
+        log_file = log_dir / f"bioengine_worker_{time.strftime('%Y%m%d_%H%M%S')}.log"
+    else:
+        log_file = None
     group_configs["options"]["log_file"] = log_file
     logger = create_logger("__main__", log_file=log_file)
 

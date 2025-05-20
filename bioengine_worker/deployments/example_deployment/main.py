@@ -1,4 +1,4 @@
-class ChironModel(object):
+class ExampleModel(object):
     def __init__(self):
         self.model = None
         self.iteration = 0

@@ -5,12 +5,14 @@ import os
 import textwrap
 import time
 import traceback
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 import cloudpickle
 import ray
 from hypha_rpc import connect_to_server
 
+from bioengine_worker import __version__
 from bioengine_worker.dataset_manager import DatasetManager
 from bioengine_worker.ray_autoscaler import RayAutoscaler
 from bioengine_worker.ray_cluster_manager import RayClusterManager
@@ -78,12 +80,17 @@ class BioEngineWorker:
         self.serve_event = None
 
         # Initialize component managers depending on the mode
+        dataset_config = dataset_config or {}
         if self.mode in ["slurm", "single-machine"]:
             ray_cluster_config = ray_cluster_config or {}
             ray_cluster_config = self._set_parameter(
                 ray_cluster_config, "mode", self.mode
             )
-            ray_cluster_config.setdefault("worker_data_dir", dataset_config["data_dir"])
+            ray_cluster_config.setdefault(
+                "worker_data_dir", dataset_config.get("data_dir")
+            )
+            log_dir = Path(log_file).parent if log_file else None
+            ray_cluster_config.setdefault("slurm_log_dir", log_dir)
             ray_cluster_config = self._set_parameter(
                 ray_cluster_config, "log_file", log_file
             )
@@ -139,7 +146,6 @@ class BioEngineWorker:
         )
         self.deployment_manager = RayDeploymentManager(**ray_deployment_config)
 
-        dataset_config = dataset_config or {}
         dataset_config = self._set_parameter(dataset_config, "log_file", log_file)
         dataset_config = self._set_parameter(dataset_config, "_debug", _debug)
         self.dataset_manager = DatasetManager(**dataset_config)
@@ -176,6 +182,8 @@ class BioEngineWorker:
         )
         if not self.server:
             raise ValueError("Failed to connect to Hypha server")
+
+        self.workspace = self.server.config.workspace
         self.logger.info(
             f"Connected to workspace '{self.workspace}' with client ID '{self.server.config.client_id}'"
         )
@@ -209,23 +217,14 @@ class BioEngineWorker:
             },
             {"overwrite": True},
         )
+        sid = service_info.id
 
+        self.logger.info(f"BioEngine worker service registered with ID '{sid}'")
         self.logger.info(
-            f"Successfully registered BioEngine worker service: {service_info.id}"
+            f"Manage BioEngine worker at: https://dev.bioimage.io/#/bioengine?service_id={sid}"
         )
 
-        server_url = self.server.config.public_base_url
-        workspace, sid = service_info.id.split("/")
-        service_url = f"{server_url}/{workspace}/services/{sid}"
-        self.logger.info(f"Get worker status with: {service_url}/get_status")
-        self.logger.info(
-            f"Open a dataset for streaming with: {service_url}/load_dataset?dataset_id=<dataset_id>"
-        )
-        self.logger.info(
-            f"Deploy artifact with: {service_url}/deploy_artifact?artifact_id=<artifact_id>"
-        )
-
-        return service_info.id
+        return sid
 
     async def start(self) -> str:
         """Start the BioEngine worker by initializing the Ray cluster or attaching to an existing one,
@@ -424,9 +423,6 @@ class BioEngineWorker:
 
 if __name__ == "__main__":
     """Test the BioEngineWorker class functionality"""
-    import os
-    from pathlib import Path
-
     import aiohttp
     from hypha_rpc import login
 
@@ -450,7 +446,7 @@ if __name__ == "__main__":
                     "image": str(
                         Path(__file__).parent.parent
                         / "apptainer_images"
-                        / "bioengine-worker_0.1.10.sif"
+                        / f"bioengine-worker_{__version__}.sif"
                     ),
                 },
                 ray_autoscaler_config={

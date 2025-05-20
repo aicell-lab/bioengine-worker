@@ -20,8 +20,8 @@ def create_logger(
     logger.addHandler(console_handler)
 
     if log_file:
-        logs_dir = Path(log_file).resolve().parent
-        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_dir = Path(log_file).resolve().parent
+        log_dir.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(log_file)
         formatter = logging.Formatter(fmt=file_logging_format, datefmt=date_format)
         file_handler.setFormatter(formatter)

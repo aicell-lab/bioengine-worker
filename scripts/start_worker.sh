@@ -1,6 +1,6 @@
 # !/bin/bash
 
-VERSION=0.1.10
+VERSION=0.1.11
 DEFAULT_IMAGE="ghcr.io/aicell-lab/bioengine-worker:$VERSION"
 WORKING_DIR=$(pwd)
 
@@ -185,23 +185,20 @@ fi
 
 # Add BioEngine worker bindings
 
-# LOGS_DIR is needed by the BioEngine logger -> container path
-LOGS_DIR=$(get_arg_value "--logs_dir" "$WORKING_DIR/logs")
-LOGS_DIR=$(realpath $LOGS_DIR)
-mkdir -p $LOGS_DIR
-add_bind $LOGS_DIR "/app/logs"
-set_arg_value "--logs_dir" "/app/logs"
+# LOG_DIR is needed by the BioEngine logger -> container path
+LOG_DIR=$(get_arg_value "--log_dir" "$WORKING_DIR/logs")
+LOG_DIR=$(realpath $LOG_DIR)
+mkdir -p $LOG_DIR
+add_bind $LOG_DIR "/app/logs"
+set_arg_value "--log_dir" "/app/logs"
 
 # DATA_DIR is needed on by the DatasetManager -> container path
 DATA_DIR=$(get_arg_value "--data_dir" "")
-if [[ -z "$DATA_DIR" ]]; then
-    echo "Error: the following argument is required: --data_dir"
-    exit 1
+if [[ -n "$DATA_DIR" ]]; then
+    DATA_DIR=$(realpath $DATA_DIR)
+    add_bind $DATA_DIR "/data" "ro"  # Read-only
+    set_arg_value "--data_dir" /data
 fi
-DATA_DIR=$(realpath $DATA_DIR)
-add_bind $DATA_DIR "/data" "ro"  # Read-only
-set_arg_value "--data_dir" /data
-
 
 # If mode either SLURM or single-node:
 if [[ "$MODE" == "slurm" || "$MODE" == "single-node" ]]; then
@@ -213,13 +210,15 @@ if [[ "$MODE" == "slurm" || "$MODE" == "single-node" ]]; then
 
     # WORKER_DATA_DIR is needed on the SLURM worker node -> real path
     WORKER_DATA_DIR=$(get_arg_value "--worker_data_dir" $DATA_DIR)
-    WORKER_DATA_DIR=$(realpath $WORKER_DATA_DIR)
-    set_arg_value "--worker_data_dir" $WORKER_DATA_DIR
+    if [[ -n "$WORKER_DATA_DIR" ]]; then
+        WORKER_DATA_DIR=$(realpath $WORKER_DATA_DIR)
+        set_arg_value "--worker_data_dir" $WORKER_DATA_DIR
+    fi
 
-    # SLURM_LOGS_DIR is needed on the SLURM worker node -> real path
-    SLURM_LOGS_DIR=$(get_arg_value "--slurm_logs_dir" "$WORKING_DIR/logs")
-    SLURM_LOGS_DIR=$(realpath $SLURM_LOGS_DIR)
-    set_arg_value "--slurm_logs_dir" $SLURM_LOGS_DIR
+    # SLURM_LOG_DIR is needed on the SLURM worker node -> real path
+    SLURM_LOG_DIR=$(get_arg_value "--slurm_log_dir" "$WORKING_DIR/logs")
+    SLURM_LOG_DIR=$(realpath $SLURM_LOG_DIR)
+    set_arg_value "--slurm_log_dir" $SLURM_LOG_DIR
 fi
 
 # Check if the flag `--debug` is set

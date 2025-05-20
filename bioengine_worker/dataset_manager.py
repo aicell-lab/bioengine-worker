@@ -14,7 +14,7 @@ from bioengine_worker.utils import create_logger
 class DatasetManager:
     def __init__(
         self,
-        data_dir: str,
+        data_dir: str = None,
         service_id: str = "bioengine-worker-datasets",
         # Logger
         logger: Optional[logging.Logger] = None,
@@ -39,7 +39,9 @@ class DatasetManager:
 
     @property
     def datasets(self) -> Dict[str, Dict]:
-        """Return the list of datasets."""
+        """Return the datasets without the internal attributes."""
+        if not self._datasets:
+            return {}
         return {
             dataset_id: {
                 key: value
@@ -51,6 +53,8 @@ class DatasetManager:
 
     def _load_dataset_info(self, data_dir) -> Dict[str, Dict]:
         """Read and parse a manifest.yaml file."""
+        if data_dir is None:
+            return {}
         try:
             data_dir = Path(data_dir).resolve()
             datasets = {}

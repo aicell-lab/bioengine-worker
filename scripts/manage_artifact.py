@@ -10,8 +10,13 @@ from hypha_rpc import connect_to_server, login
 from bioengine_worker.utils import create_logger
 
 
-async def create_artifact(
-    deployment_dir: str, parent_id: str, server_url: str, workspace: str = None, token: str = None
+async def manage_artifact(
+    deployment_dir: str,
+    parent_id: str,
+    server_url: str,
+    workspace: str = None,
+    token: str = None,
+    delete: bool = False,
 ) -> str:
     """Create an deployment artifact in Hypha
 
@@ -26,7 +31,7 @@ async def create_artifact(
     logger = create_logger("ArtifactManager")
 
     # Connect to Hypha and get artifact manager
-    token = token or os.environ["HYPHA_TOKEN"]
+    token = token or os.environ.get("HYPHA_TOKEN")
     if not token:
         token = await login({"server_url": server_url})
     server = await connect_to_server(
@@ -48,12 +53,30 @@ async def create_artifact(
         deployment_manifest = yaml.safe_load(f)
     logger.info("Deployment manifest loaded")
 
-    entry_point = deployment_manifest.get("entry_point", "main.py")
-    with open(deployment_dir / entry_point, "r") as f:
-        deployment_content = f.read()
-    logger.info(f"Deployment content loaded from {entry_point}")
+    deployment_alias = deployment_manifest["id"]
+    invalid = any(
+        [
+            not deployment_alias.islower(),
+            "_" in deployment_alias,
+            not deployment_alias.replace("-", "_").isidentifier(),
+        ]
+    )
+    if invalid:
+        raise ValueError(
+            f"Invalid deployment id: '{deployment_alias}'. Please use lowercase letters, numbers, and hyphens only."
+        )
+    if delete is True:
+        await artifact_manager.delete(artifact_id=deployment_alias)
+        if "/" not in deployment_alias:
+            deployment_alias = f"{server.config.workspace}/{deployment_alias}"
+        logger.info(f"Artifact {deployment_alias} deleted")
+        return
 
-    deployment_alias = deployment_manifest["name"].lower().replace(" ", "-")
+    python_file = deployment_manifest.get("python_file", "main.py")
+    with open(deployment_dir / python_file, "r") as f:
+        deployment_content = f.read()
+    logger.info(f"Deployment content loaded from {python_file}")
+
     try:
         # Edit the existing deployment and stage it for review
         artifact = await artifact_manager.edit(
@@ -81,11 +104,11 @@ async def create_artifact(
         logger.info(f"Uploaded manifest.yaml to artifact")
 
     # Upload the entry point
-    upload_url = await artifact_manager.put_file(artifact.id, file_path=entry_point)
+    upload_url = await artifact_manager.put_file(artifact.id, file_path=python_file)
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.put(upload_url, data=deployment_content)
         response.raise_for_status()
-        logger.info(f"Uploaded {entry_point} to artifact")
+        logger.info(f"Uploaded {python_file} to artifact")
 
     # Commit the artifact
     await artifact_manager.commit(
@@ -129,15 +152,21 @@ if __name__ == "__main__":
         type=str,
         help="Authentication token for Hypha server",
     )
+    parser.add_argument(
+        "--delete",
+        action="store_true",
+        help="Delete the artifact instead of creating or updating it",
+    )
 
     args = parser.parse_args()
 
     asyncio.run(
-        create_artifact(
+        manage_artifact(
             deployment_dir=args.deployment_dir,
             parent_id=args.parent_id,
             server_url=args.server_url,
             workspace=args.workspace,
             token=args.token,
+            delete=args.delete,
         )
     )

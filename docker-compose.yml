@@ -6,15 +6,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/aicell-lab/bioengine-worker:0.1.11
+    image: ghcr.io/aicell-lab/bioengine-worker:0.1.12
     container_name: bioengine_worker
     user: "${UID}:${GID}"  # add UID and GID to .env file if not found
     # user: "nobody:nogroup"
     volumes:
       - ./ray_sessions:/tmp/ray/
-      # - /tmp/ray/${USER}:/tmp/ray/
       - ./data:/data
       - ./logs:/app/logs
+      - ./bioimageio_models:/app/bioimageio_models
     shm_size: 10.24gb
     env_file:
       - .env

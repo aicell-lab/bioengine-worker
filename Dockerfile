@@ -28,6 +28,6 @@ RUN pip install --no-cache-dir -U pip && \
 COPY . .
 
 # Install the package
-RUN pip install .
+RUN pip install --no-cache-dir .
 
 CMD [ "/bin/bash" ]

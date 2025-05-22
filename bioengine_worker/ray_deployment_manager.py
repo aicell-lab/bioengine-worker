@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 import ray
 from ray import serve
+import numpy as np
 
 from bioengine_worker import __version__
 from bioengine_worker.ray_autoscaler import RayAutoscaler
@@ -53,7 +54,7 @@ class RayDeploymentManager:
         self.server = None
         self.artifact_manager = None
         self.service_info = None
-        self._deployed_artifacts = set()
+        self._deployed_artifacts = {}
 
     async def _update_services(self) -> None:
         """Update Hypha services based on currently deployed models"""
@@ -66,11 +67,29 @@ class RayDeploymentManager:
             deployments = await self._get_deployment_names()
             service_functions = {}
 
-            async def create_model_function(application_name, data=None, context=None):
-                # TODO: support other functions than __call__
+            async def create_deployment_function(
+                application_name, method, *args, context=None, **kwargs
+            ):
                 try:
+                    # TODO: add user authorization
+                    user = context.get("user") if context else None
+                    self.logger.info(
+                        f"User {user['id']} is calling deployment '{application_name}' with method '{method}'"
+                    )
                     app_handle = serve.get_app_handle(name=application_name)
-                    return await app_handle.remote(data=data)
+
+                    # Recursively put args and kwargs into ray object storage
+                    args = [
+                        ray.put(arg) if isinstance(arg, np.ndarray) else arg
+                        for arg in args
+                    ]
+                    kwargs = {
+                        k: ray.put(v) if isinstance(v, np.ndarray) else v
+                        for k, v in kwargs.items()
+                    }
+
+                    result = await getattr(app_handle, method).remote(*args, **kwargs)
+                    return result
                 except Exception as e:
                     self.logger.error(
                         f"Failed to call deployment '{application_name}': {e}"
@@ -78,9 +97,21 @@ class RayDeploymentManager:
                     raise e
 
             for deployment_name in deployments:
-                service_functions[deployment_name] = partial(
-                    create_model_function, deployment_name
+                artifact_id = await self._get_artifact_id_from_deployment_name(
+                    deployment_name
                 )
+                manifest = self._deployed_artifacts[artifact_id]
+                service_functions[deployment_name] = {}
+                class_config = manifest["deployment_class"]
+                if class_config.get("exposed_methods"):
+                    for method in class_config["exposed_methods"].keys():
+                        service_functions[deployment_name][method] = partial(
+                            create_deployment_function, deployment_name, method
+                        )
+                else:
+                    service_functions[deployment_name] = partial(
+                        create_deployment_function, deployment_name, "__call__"
+                    )
 
             # Register all model functions as a single service
             service_info = await self.server.register_service(
@@ -114,34 +145,28 @@ class RayDeploymentManager:
 
     async def _load_deployment_code(
         self,
-        class_name: str,
+        class_config: dict,
         artifact_id: str,
         version=None,
-        file_path: str = "main.py",
         timeout: int = 30,
     ) -> Any:
         """Load and execute deployment code from an artifact directly in memory
 
         Args:
-            class_name: Name of the class to load from the deployment code
+            class_config: Configuration for the class to load
             artifact_id: ID of the artifact
             version: Optional version of the artifact
-            file_path: Path to the file within the artifact (default: main.py)
             timeout: Timeout in seconds for network requests (default: 30)
 
         Returns:
             Any: The loaded class or None if not found
         """
         try:
-            # Ensure artifact manager is available
-            if not self.artifact_manager:
-                raise RuntimeError(
-                    "Artifact manager not initialized. Call initialize() first."
-                )
-
             # Get download URL for the file
             download_url = await self.artifact_manager.get_file(
-                artifact_id=artifact_id, version=version, file_path=file_path
+                artifact_id=artifact_id,
+                version=version,
+                file_path=class_config["python_file"],
             )
 
             # Download the file content with timeout
@@ -154,14 +179,33 @@ class RayDeploymentManager:
             safe_globals = {}
             # Execute the code in a sandboxed environment
             exec(code_content, safe_globals)
-            if class_name not in safe_globals:
-                self.logger.error(f"{class_name} not found in {artifact_id}")
-                return None
+            if class_config["class_name"] not in safe_globals:
+                raise ValueError(
+                    f"{class_config['class_name']} not found in {artifact_id}"
+                )
+            model = safe_globals[class_config["class_name"]]
+            if not model:
+                raise RuntimeError(
+                    f"Error loading {class_config['class_name']} from {artifact_id}"
+                )
 
-            model = safe_globals.get(class_name)
-            if model:
-                self.logger.info(f"Loaded class '{class_name}' from {artifact_id}")
-                return model
+            if "multiplexed" in class_config:
+                # Add @serve.multiplexed decorator to specified class method
+                method_name = class_config["multiplexed"]["method_name"]
+                max_num_models_per_replica = class_config["multiplexed"][
+                    "max_num_models_per_replica"
+                ]
+
+                orig_method = getattr(model, method_name)
+                decorated_method = serve.multiplexed(
+                    orig_method, max_num_models_per_replica=max_num_models_per_replica
+                )
+                setattr(model, method_name, decorated_method)
+
+            self.logger.info(
+                f"Loaded class '{class_config['class_name']}' from {artifact_id}"
+            )
+            return model
 
         except Exception as e:
             self.logger.error(f"Error loading deployment code for {artifact_id}: {e}")
@@ -189,6 +233,22 @@ class RayDeploymentManager:
             for artifact_id in self._deployed_artifacts
         }
 
+    async def _get_artifact_id_from_deployment_name(
+        self, deployment_name: str
+    ) -> Optional[str]:
+        """Get the artifact ID from a deployment name
+
+        Args:
+            deployment_name: The deployment name to convert
+
+        Returns:
+            str: The converted artifact ID
+        """
+        for artifact_id in self._deployed_artifacts.keys():
+            if self._get_deployment_name(artifact_id) == deployment_name:
+                return artifact_id
+        return None
+
     async def initialize(self, server) -> None:
         """Initialize the deployment manager with a Hypha server connection
 
@@ -212,6 +272,12 @@ class RayDeploymentManager:
 
             raise e
 
+    async def create_artifact(self, artifact_id: str, files: List[dict]) -> None:
+        """
+        Create a deployment artifact
+        """
+        raise NotImplementedError
+
     async def deploy_artifact(
         self,
         artifact_id: str,
@@ -232,44 +298,45 @@ class RayDeploymentManager:
         Returns:
             str: Deployment name
         """
-        self.logger.info(f"Deploying artifact '{artifact_id}'...")
         try:
             # Verify client is connected to Hypha server
             if not self.server:
-                raise RuntimeError("Hypha server connection not available")
+                raise RuntimeError(
+                    "Hypha server connection not available. Call initialize() first."
+                )
+
+            # Ensure artifact manager is available
+            if not self.artifact_manager:
+                raise RuntimeError(
+                    "Artifact manager not initialized. Call initialize() first."
+                )
 
             # Verify Ray is initialized
             if not ray.is_initialized():
-                raise RuntimeError("Ray cluster is not running")
+                raise RuntimeError(
+                    "Ray cluster is not running. Call initialize() first."
+                )
+
+            if "/" not in artifact_id:
+                artifact_id = f"{self.server.config.workspace}/{artifact_id}"
+            self.logger.info(f"Deploying artifact '{artifact_id}'...")
 
             # Read the manifest to get deployment configuration
             artifact = await self.artifact_manager.read(artifact_id, version=version)
-            manifest = artifact.get("manifest")
-            if not manifest:
-                raise ValueError(f"Manifest not found for artifact '{artifact_id}'")
+            manifest = artifact["manifest"]
 
-            deployment_config = manifest.get("deployment_config")
-            if not deployment_config:
-                raise ValueError(
-                    f"Deployment configuration not found for artifact '{artifact_id}'"
-                )
+            # Get the deployment configuration
+            deployment_config = manifest["deployment_config"]
 
             # Load the deployment code
-            class_name = manifest.get("class_name")
-            if not class_name:
-                raise ValueError(f"Class name not found for artifact '{artifact_id}'")
-            deployment_config["name"] = class_name
+            class_config = manifest["deployment_class"]
+            deployment_config["name"] = class_config["class_name"]
 
             model = await self._load_deployment_code(
-                class_name,
+                class_config,
                 artifact_id,
                 version=version,
-                file_path=manifest.get("entry_point", "main.py"),
             )
-            if not model:
-                raise ValueError(
-                    f"Failed to load model class '{class_name}' from artifact {artifact_id}"
-                )
 
             # Check if different modes are supported
             modes = deployment_config.pop("modes", None)
@@ -310,7 +377,7 @@ class RayDeploymentManager:
             await task
 
             # Add the deployment to the tracked artifacts
-            self._deployed_artifacts.add(artifact_id)
+            self._deployed_artifacts[artifact_id] = manifest
 
             self.logger.info(f"Successfully deployed {artifact_id}")
 
@@ -364,7 +431,7 @@ class RayDeploymentManager:
                 )
 
             # Remove the deployment from the tracked artifacts
-            self._deployed_artifacts.discard(artifact_id)
+            del self._deployed_artifacts[artifact_id]
 
             self.logger.info(f"Successfully undeployed {artifact_id}")
 
@@ -399,7 +466,7 @@ class RayDeploymentManager:
 
         for application_name, application in serve_status.applications.items():
             found = False
-            for artifact_id in self._deployed_artifacts:
+            for artifact_id in self._deployed_artifacts.keys():
                 if self._get_deployment_name(artifact_id) == application_name:
                     found = True
                     break
@@ -481,7 +548,7 @@ class RayDeploymentManager:
             if not ray.is_initialized():
                 raise RuntimeError("Ray cluster is not running")
 
-            artifact_ids = self._deployed_artifacts.copy()
+            artifact_ids = list(self._deployed_artifacts.keys())
             failed_attempts = 0
             for artifact_id in artifact_ids:
                 try:
@@ -549,7 +616,9 @@ if __name__ == "__main__":
             )
 
             # Connect to Hypha server using token from environment
-            token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
+            token = os.environ.get("HYPHA_TOKEN") or await login(
+                {"server_url": server_url}
+            )
             server = await connect_to_server({"server_url": server_url, "token": token})
 
             # Initialize deployment manager
@@ -567,10 +636,10 @@ if __name__ == "__main__":
             deployment_service = await server.get_service(deployment_service_id)
 
             # Call the deployed model
-            response = await deployment_service[deployment_name]()
+            response = await deployment_service[deployment_name]["ping"]()
             deployment_manager.logger.info(f"Response from deployed model: {response}")
 
-            response = await deployment_service[deployment_name]()
+            response = await deployment_service[deployment_name]["train"]()
             deployment_manager.logger.info(f"Response from deployed model: {response}")
 
             # Keep server running if requested

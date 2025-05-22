@@ -155,7 +155,7 @@ class CellposeFinetune(object):
             response = await client.put(model_url, content=model_content)
             response.raise_for_status()
 
-    async def __call__(self, data=None):
+    async def train(self, data=None):
         """
         Runs Cellpose v2 finetuning
 

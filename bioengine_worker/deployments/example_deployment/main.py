@@ -2,7 +2,8 @@ class ExampleModel(object):
     def __init__(self):
         pass
 
-    async def _get_model(self, model_id):
+    async def _get_model(self, model_id: str):
+        """Load the model. The parameter `model_id` is required for a `ray.serve.multiplexed` method"""
         import torch.nn as nn
 
         # Initialize transformer directly
@@ -16,12 +17,10 @@ class ExampleModel(object):
 
         return model
 
-    async def ping(self):
-        return {
-            "message": "pong",
-        }
+    async def ping(self) -> str:
+        return "pong"
 
-    async def train(self, model_id="dummy", data=None):
+    async def train(self, model_id="dummy", data=None) -> dict:
         import torch
         import torch.nn as nn
         import torch.optim as optim

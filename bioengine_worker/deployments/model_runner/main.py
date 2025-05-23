@@ -7,8 +7,8 @@ import numpy as np
 class ModelRunner:
     def __init__(self, cache_n_models: int = 10):
         import os
-
-        self.cache_dir = Path("bioimageio_models").resolve()
+        
+        self.cache_dir = Path(os.environ["BIOENGINE_CACHE_PATH"]).resolve() / "bioimageio_models"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         bioimageio_cache_path = self.cache_dir / ".cache"
         bioimageio_cache_path.mkdir(parents=True, exist_ok=True)
@@ -29,7 +29,6 @@ class ModelRunner:
             save_bioimageio_package_as_folder(model_id, output_path=str(model_path))
         )
 
-    # @serve.multiplexed(max_num_models_per_replica=1)
     async def _get_model(self, model_id: str):
         import shutil
 

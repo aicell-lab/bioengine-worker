@@ -1,7 +1,7 @@
 authors:
 - {affiliation: KTH, github_user: nilsmechtel, name: Nils Mechtel}
 covers: []
-description: Inference deployment for BioImage.IO models
+description: Inference deployment for BioImage.IO models.
 documentation: ''
 format_version: 0.5.0
 git_repo: ''
@@ -24,21 +24,39 @@ deployment_class:
     get_model_rdf: {}
     infer: {}
 deployment_config:
-  ray_actor_options:
-    num_gpus: 1
-    num_cpus: 1
-    # memory: 4294967296  # 4GB RAM
-    runtime_env:
-      uv: [
-          "torch==2.5.1",
-          "torchvision==0.20.1",
-          "tensorflow==2.16.1",
-          "onnxruntime==1.20.1",
-          "bioimageio.core==0.8.0",
-          "xarray==2025.1.2", # this is needed for bioimageio.core
-          "hypha-rpc"
-      ]
-  max_ongoing_requests: 1
+  modes:
+    # First key is default. If no mode is specified, GPU will be used.
+    gpu:
+      ray_actor_options:
+        num_gpus: 1
+        num_cpus: 1
+        # memory: 4294967296  # 4GB RAM
+        runtime_env:
+          uv: [
+              "torch==2.5.1",
+              "torchvision==0.20.1",
+              "tensorflow==2.16.1",
+              "onnxruntime==1.20.1",
+              "bioimageio.core==0.8.0",
+              "xarray==2025.1.2", # this is needed for bioimageio.core
+              "hypha-rpc"
+          ]
+    cpu:
+      ray_actor_options:
+        num_gpus: 0
+        num_cpus: 1
+        # memory: 4294967296  # 4GB RAM
+        runtime_env:
+          uv: [
+              "torch==2.5.1",
+              "torchvision==0.20.1",
+              "tensorflow==2.16.1",
+              "onnxruntime==1.20.1",
+              "bioimageio.core==0.8.0",
+              "xarray==2025.1.2", # this is needed for bioimageio.core
+              "hypha-rpc"
+          ]
+  max_ongoing_requests: 1  # Needs to be 1 for GPU
   max_queued_requests: 10
   autoscaling_config:
     min_replicas: 1

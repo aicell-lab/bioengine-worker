@@ -159,9 +159,9 @@ cython_debug/
 .vscode/
 
 # BioEngine
-.vscode/
+.cache/
+bioimageio_models/
+ray_sessions/
 apptainer_images/
 logs/
 data/
-ray_sessions/
-bioimageio_models/

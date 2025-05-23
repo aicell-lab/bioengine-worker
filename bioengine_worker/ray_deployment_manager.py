@@ -25,6 +25,7 @@ class RayDeploymentManager:
     def __init__(
         self,
         service_id: str = "bioengine-worker-deployments",
+        deployment_working_dir: str = None,
         autoscaler: Optional[RayAutoscaler] = None,
         # Logger
         logger: Optional[logging.Logger] = None,
@@ -35,6 +36,7 @@ class RayDeploymentManager:
 
         Args:
             service_id: ID to use for the Hypha service exposing deployed models
+            deployment_working_dir: Working directory for Ray Serve deployments. If not set, defaults to current working directory.
             autoscaler: Optional RayAutoscaler instance
             logger: Optional logger instance
             _debug: Enable debug logging
@@ -49,6 +51,7 @@ class RayDeploymentManager:
         # Store parameters
         self._service_id = service_id
         self.autoscaler = autoscaler
+        self.deployment_working_dir = deployment_working_dir or os.getcwd()
 
         # Initialize state variables
         self.server = None
@@ -68,15 +71,15 @@ class RayDeploymentManager:
             service_functions = {}
 
             async def create_deployment_function(
-                application_name, method, *args, context=None, **kwargs
+                deployment_name, method, *args, context=None, **kwargs
             ):
                 try:
                     # TODO: add user authorization
                     user = context.get("user") if context else None
                     self.logger.info(
-                        f"User {user['id']} is calling deployment '{application_name}' with method '{method}'"
+                        f"User {user['id']} is calling deployment '{deployment_name}' with method '{method}'"
                     )
-                    app_handle = serve.get_app_handle(name=application_name)
+                    app_handle = serve.get_app_handle(name=deployment_name)
 
                     # Recursively put args and kwargs into ray object storage
                     args = [
@@ -92,7 +95,7 @@ class RayDeploymentManager:
                     return result
                 except Exception as e:
                     self.logger.error(
-                        f"Failed to call deployment '{application_name}': {e}"
+                        f"Failed to call deployment '{deployment_name}': {e}"
                     )
                     raise e
 
@@ -356,6 +359,10 @@ class RayDeploymentManager:
                     f"Using mode '{mode_key}' for deployment '{artifact_id}'"
                 )
 
+            # Add cache path to deployment config environment
+            env_vars = deployment_config["ray_actor_options"]["runtime_env"].setdefault("env_vars", {})
+            env_vars["BIOENGINE_CACHE_PATH"] = str(self.deployment_working_dir)
+
             # Create the Ray Serve deployment
             model_deployment = serve.deployment(**deployment_config)(model)
 
@@ -374,6 +381,7 @@ class RayDeploymentManager:
                 await self.autoscaler.notify()
 
             # Wait for the deployment to complete
+            # TODO: add possibility to cancel the deployment
             await task
 
             # Add the deployment to the tracked artifacts
@@ -464,28 +472,27 @@ class RayDeploymentManager:
             f"Current deployments: {list(serve_status.applications.keys())}"
         )
 
-        for application_name, application in serve_status.applications.items():
+        for deployment_name, application in serve_status.applications.items():
             found = False
             for artifact_id in self._deployed_artifacts.keys():
-                if self._get_deployment_name(artifact_id) == application_name:
+                if self._get_deployment_name(artifact_id) == deployment_name:
                     found = True
                     break
             if not found:
                 # Skip Ray Serve applications that were not deployed by this manager
                 continue
             formatted_time = format_time(application.last_deployed_time_s)
-            output[application_name] = {
+            if len(application.deployments) > 1:
+                raise NotImplementedError
+            class_name = self._deployed_artifacts[artifact_id]["deployment_class"]["class_name"]
+            deployment = application.deployments[class_name]
+            output[deployment_name] = {
                 "artifact_id": artifact_id,
-                "status": application.status.value,
                 "last_deployed_at": formatted_time["start_time"],
                 "duration_since": formatted_time["duration_since"],
+                "status": deployment.status.value,
+                "replica_states": deployment.replica_states,
             }
-            deployments = application.deployments
-            for name, deployment in deployments.items():
-                output[application_name][name] = {
-                    "status": deployment.status.value,
-                    "replica_states": deployment.replica_states,
-                }
 
         return output
 

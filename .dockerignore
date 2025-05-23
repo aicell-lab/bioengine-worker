@@ -65,6 +65,7 @@ ray_sessions/
 # Data
 data/
 bioimageio_models/
+.cache/
 
 # Notebooks
 notebooks/

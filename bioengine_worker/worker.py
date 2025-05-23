@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 import cloudpickle
 import ray
-from hypha_rpc import connect_to_server
+from hypha_rpc import connect_to_server, login
 
 from bioengine_worker import __version__
 from bioengine_worker.dataset_manager import DatasetManager
@@ -40,6 +40,7 @@ class BioEngineWorker:
         ray_autoscaler_config: Optional[Dict] = None,
         ray_deployment_config: Optional[Dict] = None,
         ray_connection_kwargs: Optional[Dict] = None,
+        cache_dir: str = "/tmp",
         logger: Optional[logging.Logger] = None,
         log_file: Optional[str] = None,
         _debug: bool = False,
@@ -61,108 +62,132 @@ class BioEngineWorker:
             log_file: File for logging output.
             _debug: Enable debug logging.
         """
-        self.workspace = workspace
-        self.server_url = server_url
-        self._token = token
-        self.service_id = service_id
         self.logger = logger or create_logger(
             name="BioEngineWorker",
             level=logging.DEBUG if _debug else logging.INFO,
             log_file=log_file,
         )
-        self.start_time = None
+        try:
+            self.workspace = workspace
+            self.server_url = server_url
+            self._token = token or os.environ.get("HYPHA_TOKEN")
+            self.service_id = service_id
 
-        self.mode = mode
-        self.cluster_manager = None
-        self.autoscaler = None
-        self._debug = _debug
-        self.server = None
-        self.serve_event = None
+            self.start_time = None
 
-        # Initialize component managers depending on the mode
-        dataset_config = dataset_config or {}
-        if self.mode in ["slurm", "single-machine"]:
-            ray_cluster_config = ray_cluster_config or {}
-            ray_cluster_config = self._set_parameter(
-                ray_cluster_config, "mode", self.mode
-            )
-            ray_cluster_config.setdefault(
-                "worker_data_dir", dataset_config.get("data_dir")
-            )
-            log_dir = Path(log_file).parent if log_file else None
-            ray_cluster_config.setdefault("slurm_log_dir", log_dir)
-            ray_cluster_config = self._set_parameter(
-                ray_cluster_config, "log_file", log_file
-            )
-            ray_cluster_config = self._set_parameter(
-                ray_cluster_config, "_debug", _debug
-            )
-            self.cluster_manager = RayClusterManager(**ray_cluster_config)
-            self.mode = self.cluster_manager.ray_cluster_config["mode"]
-            self._clean_up = clean_up_previous_cluster
+            self.mode = mode
+            self.cluster_manager = None
+            self.autoscaler = None
+            self._debug = _debug
+            self.server = None
+            self.serve_event = None
+            cache_dir = Path(cache_dir).resolve()
+            # os.environ["TMPDIR"] = str(cache_dir)
 
-            if self.mode == "slurm":
-                ray_autoscaler_config = ray_autoscaler_config or {}
-                ray_autoscaler_config = self._set_parameter(
-                    ray_autoscaler_config, "cluster_manager", self.cluster_manager
+            # Initialize component managers depending on the mode
+            dataset_config = dataset_config or {}
+            if self.mode in ["slurm", "single-machine"]:
+                # Set parameters for RayClusterManager
+                ray_cluster_config = ray_cluster_config or {}
+                # Overwrite existing 'mode', 'log_file', and '_debug' parameters if provided
+                self._set_parameter(ray_cluster_config, "mode", self.mode)
+                self._set_parameter(ray_cluster_config, "log_file", log_file)
+                self._set_parameter(ray_cluster_config, "_debug", _debug)
+                # Set default 'ray_temp_dir', 'worker_data_dir', and 'slurm_log_dir' if not provided
+                self._set_parameter(
+                    ray_cluster_config,
+                    "ray_temp_dir",
+                    cache_dir / "ray_sessions",
+                    overwrite=False,
                 )
-                ray_autoscaler_config = self._set_parameter(
-                    ray_autoscaler_config, "log_file", log_file
+                self._set_parameter(
+                    ray_cluster_config,
+                    "worker_data_dir",
+                    dataset_config.get("data_dir"),
+                    overwrite=False,
                 )
-                ray_autoscaler_config = self._set_parameter(
-                    ray_autoscaler_config, "_debug", _debug
+                log_dir = Path(log_file).parent if log_file else None
+                self._set_parameter(
+                    ray_cluster_config, "slurm_log_dir", log_dir, overwrite=False
                 )
-                self.autoscaler = RayAutoscaler(**ray_autoscaler_config)
+
+                # Initialize RayClusterManager and update mode
+                self.cluster_manager = RayClusterManager(**ray_cluster_config)
+                self.mode = self.cluster_manager.ray_cluster_config["mode"]
+
+                # Set cluster cleanup flag
+                self._clean_up = clean_up_previous_cluster
+
+                if self.mode == "slurm":
+                    # Set parameters for RayAutoscaler
+                    ray_autoscaler_config = ray_autoscaler_config or {}
+                    self._set_parameter(
+                        ray_autoscaler_config, "cluster_manager", self.cluster_manager
+                    )
+                    self._set_parameter(ray_autoscaler_config, "log_file", log_file)
+                    self._set_parameter(ray_autoscaler_config, "_debug", _debug)
+                    # Initialize RayAutoscaler
+                    self.autoscaler = RayAutoscaler(**ray_autoscaler_config)
+                else:
+                    self.autoscaler = None
+
+            elif self.mode == "connect":
+                # Set parameters for connecting to an existing Ray cluster
+                self.ray_connection_kwargs = ray_connection_kwargs or {}
+                self._set_parameter(
+                    self.ray_connection_kwargs, "logging_format", stream_logging_format
+                )
+
+                if not "address" in self.ray_connection_kwargs:
+                    raise ValueError("Ray connection mode requires a provided address!")
+
+                self.logger.info(
+                    "Connecting to existing Ray cluster. Skipping cluster management."
+                )
             else:
-                self.autoscaler = None
+                raise ValueError(
+                    f"Invalid mode '{self.mode}'. Choose from 'slurm', 'single-machine', or 'connect'."
+                )
 
-        elif self.mode == "connect":
-            # Mode to connect to an existing Ray cluster
-            self.ray_connection_kwargs = ray_connection_kwargs or {}
+            # Set parameters for RayDeploymentManager
+            ray_deployment_config = ray_deployment_config or {}
             self._set_parameter(
-                self.ray_connection_kwargs, "logging_format", stream_logging_format
+                ray_deployment_config,
+                "deployment_working_dir",
+                cache_dir,
+                overwrite=False,
             )
+            self._set_parameter(ray_deployment_config, "autoscaler", self.autoscaler)
+            self._set_parameter(ray_deployment_config, "log_file", log_file)
+            self._set_parameter(ray_deployment_config, "_debug", _debug)
+            # Initialize RayDeploymentManager
+            self.deployment_manager = RayDeploymentManager(**ray_deployment_config)
 
-            if not "address" in self.ray_connection_kwargs:
-                raise ValueError("Ray connection mode requires a provided address!")
-
-            self.logger.info(
-                "Connecting to existing Ray cluster. Skipping cluster management."
-            )
-        else:
-            raise ValueError(
-                f"Invalid mode '{self.mode}'. Choose from 'slurm', 'single-machine', or 'connect'."
-            )
-
-        ray_deployment_config = ray_deployment_config or {}
-        ray_deployment_config = self._set_parameter(
-            ray_deployment_config, "autoscaler", self.autoscaler
-        )
-        ray_deployment_config = self._set_parameter(
-            ray_deployment_config, "log_file", log_file
-        )
-        ray_deployment_config = self._set_parameter(
-            ray_deployment_config, "_debug", _debug
-        )
-        self.deployment_manager = RayDeploymentManager(**ray_deployment_config)
-
-        dataset_config = self._set_parameter(dataset_config, "log_file", log_file)
-        dataset_config = self._set_parameter(dataset_config, "_debug", _debug)
-        self.dataset_manager = DatasetManager(**dataset_config)
+            # Set parameters for DatasetManager
+            self._set_parameter(dataset_config, "log_file", log_file)
+            self._set_parameter(dataset_config, "_debug", _debug)
+            # Initialize DatasetManager
+            self.dataset_manager = DatasetManager(**dataset_config)
+        except Exception as e:
+            self.logger.error(f"Error initializing BioEngineWorker: {e}")
+            raise
 
     def _set_parameter(
         self,
         kwargs: Dict[str, Any],
         key: str,
         value: Any,
+        overwrite: bool = True,
     ) -> dict:
-        if key in kwargs and kwargs[key] != value:
-            self.logger.warning(
-                f"Overwriting provided {key} value: {kwargs[key]!r} -> {value!r}"
-            )
-        kwargs[key] = value
-
-        return kwargs
+        if overwrite:
+            if key in kwargs and kwargs[key] != value:
+                self.logger.warning(
+                    f"Overwriting provided {key} value: {kwargs[key]!r} -> {value!r}"
+                )
+            kwargs[key] = value
+        else:
+            if key not in kwargs or kwargs[key] is None:
+                kwargs[key] = value
 
     async def _connect_to_server(self) -> None:
         """Connect to Hypha server using provided URL.
@@ -173,6 +198,8 @@ class BioEngineWorker:
             workspace: Workspace to connect to
         """
         self.logger.info(f"Connecting to Hypha server at {self.server_url}...")
+        if not self._token:
+            self._token = await login({"server_url": self.server_url})
         self.server = await connect_to_server(
             {
                 "server_url": self.server_url,
@@ -424,7 +451,6 @@ class BioEngineWorker:
 if __name__ == "__main__":
     """Test the BioEngineWorker class functionality"""
     import aiohttp
-    from hypha_rpc import login
 
     async def test_bioengine_worker(keep_running=True):
         try:

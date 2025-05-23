@@ -1,7 +1,7 @@
 authors:
 - {affiliation: KTH, github_user: nilsmechtel, name: Nils Mechtel}
 covers: []
-description: Example deployment model for BioEngine
+description: Example deployment model for BioEngine.
 documentation: README.md
 format_version: 0.5.0
 git_repo: https://github.com/bioimage-io/bioengine
@@ -20,7 +20,7 @@ deployment_class:
     # This is a multiplexed deployment, meaning that multiple models can be loaded
     # Note: Only works for async methods; method requires exactly one argument: model_id
     method_name: _get_model
-    max_num_models_per_replica: 2
+    max_num_models_per_replica: 1
   exposed_methods:
     ping: {}
     train: {}
@@ -40,12 +40,12 @@ deployment_config:
         # memory: 4294967296  # 4GB RAM
         runtime_env:
           uv: ["torch==2.1.2"]
-  max_ongoing_requests: 1
+  max_ongoing_requests: 1  # Needs to be 1 for GPU
   max_queued_requests: 10
   autoscaling_config:
     min_replicas: 1
     initial_replicas: 1
-    max_replicas: 8
+    max_replicas: 2
     target_num_ongoing_requests_per_replica: 0.8
     metrics_interval_s: 2.0
     look_back_period_s: 10.0

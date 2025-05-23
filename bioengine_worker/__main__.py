@@ -7,8 +7,6 @@ import time
 from pathlib import Path
 from typing import Literal
 
-from hypha_rpc import login
-
 from bioengine_worker import __version__
 from bioengine_worker.utils import create_logger
 from bioengine_worker.worker import BioEngineWorker
@@ -49,9 +47,7 @@ async def main(group_configs):
     try:
         # Get Hypha configuration
         hypha_config = group_configs["Hypha Options"]
-        token = hypha_config["token"] or os.environ.get("HYPHA_TOKEN")
-        if not token:
-            token = await login({"server_url": hypha_config["server_url"]})
+        
 
         # Get Dataset Manager configuration
         dataset_config = group_configs["Dataset Manager Options"]
@@ -82,7 +78,7 @@ async def main(group_configs):
         bioengine_worker = BioEngineWorker(
             workspace=hypha_config["workspace"],
             server_url=hypha_config["server_url"],
-            token=token,
+            token=hypha_config["token"],
             service_id=hypha_config["worker_service_id"],
             mode=group_configs["options"]["mode"],
             dataset_config=dataset_config,
@@ -91,6 +87,7 @@ async def main(group_configs):
             ray_autoscaler_config=ray_autoscaler_config,
             ray_deployment_config=ray_deployment_config,
             ray_connection_kwargs=ray_connection_kwargs,
+            cache_dir=group_configs["options"]["cache_dir"],
             log_file=group_configs["options"]["log_file"],
             _debug=group_configs["options"]["debug"],
         )
@@ -119,6 +116,26 @@ def create_parser():
         type=str,
         choices=["slurm", "single-machine", "connect"],
         help="Mode of operation: 'slurm' for managing a Ray cluster with SLURM jobs, 'single-machine' for local Ray cluster, 'connect' for connecting to an existing Ray cluster.",
+    )
+
+    parser.add_argument(
+        "--log_dir",
+        type=str,
+        help="Directory for logs. This should be a mounted directory if running in container.",
+    )
+
+    parser.add_argument(
+        "--cache_dir",
+        type=str,
+        default="/tmp",
+        help="Directory for caching data. This should be a mounted directory if running in container.",
+    )
+
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Set logger to debug level",
     )
 
     # Hypha related options
@@ -151,7 +168,7 @@ def create_parser():
     dataset_group.add_argument(
         "--data_dir",
         type=str,
-        help="Data directory served by the dataset manager",
+        help="Data directory served by the dataset manager. This should be a mounted directory if running in container.",
     )
     dataset_group.add_argument(
         "--dataset_service_id",
@@ -217,8 +234,7 @@ def create_parser():
     cluster_group.add_argument(
         "--ray_temp_dir",
         type=str,
-        default="/tmp/ray",
-        help="Temporary directory for Ray",
+        help="Temporary directory for Ray. If not set, defaults to '<cache_dir>/ray_sessions'. This should be a mounted directory if running in container.",
     )
     cluster_group.add_argument(
         "--head_num_cpus",
@@ -252,7 +268,7 @@ def create_parser():
     cluster_group.add_argument(
         "--slurm_log_dir",
         type=str,
-        help="Directory for SLURM job logs",
+        help="Directory for SLURM job logs. If not set, the log_dir will be used.",
     )
     cluster_group.add_argument(
         "--further_slurm_args",
@@ -350,6 +366,11 @@ def create_parser():
         type=str,
         help="Service ID for deployed models",
     )
+    deployment_group.add_argument(
+        "--deployment_working_dir",
+        type=str,
+        help="Working directory for Ray Serve deployments. If not set, defaults to cache_dir. This should be a mounted directory if running in container.",
+    )
 
     # Ray Connection options
     connection_group = parser.add_argument_group("Ray Connection Options")
@@ -362,20 +383,6 @@ def create_parser():
         "--ray_namespace",
         type=str,
         help="Ray namespace to use",
-    )
-
-    # Others
-    parser.add_argument(
-        "--log_dir",
-        type=str,
-        help="Directory for logs",
-    )
-
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        default=False,
-        help="Set logger to debug level",
     )
 
     return parser

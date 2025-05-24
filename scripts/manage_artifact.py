@@ -12,7 +12,6 @@ from bioengine_worker.utils import create_logger
 
 async def manage_artifact(
     deployment_dir: str,
-    parent_id: str,
     server_url: str,
     workspace: str = None,
     token: str = None,
@@ -53,43 +52,64 @@ async def manage_artifact(
         deployment_manifest = yaml.safe_load(f)
     logger.info("Deployment manifest loaded")
 
-    deployment_alias = deployment_manifest["id"]
+    artifact_id = deployment_manifest["id"]
     invalid = any(
         [
-            not deployment_alias.islower(),
-            "_" in deployment_alias,
-            not deployment_alias.replace("-", "_").isidentifier(),
+            not artifact_id.islower(),
+            "_" in artifact_id,
+            not artifact_id.replace("-", "_").isidentifier(),
         ]
     )
     if invalid:
         raise ValueError(
-            f"Invalid deployment id: '{deployment_alias}'. Please use lowercase letters, numbers, and hyphens only."
+            f"Invalid deployment id: '{artifact_id}'. Please use lowercase letters, numbers, and hyphens only."
         )
+    
+    workspace = server.config.workspace
+    artifact_id = artifact_id if "/" in artifact_id else f"{workspace}/{artifact_id}"
+    
     if delete is True:
-        await artifact_manager.delete(artifact_id=deployment_alias)
-        if "/" not in deployment_alias:
-            deployment_alias = f"{server.config.workspace}/{deployment_alias}"
-        logger.info(f"Artifact {deployment_alias} deleted")
+        try:
+            await artifact_manager.delete(artifact_id=artifact_id)
+            logger.info(f"Artifact {artifact_id} deleted")
+        except Exception as e:
+            logger.error(f"Failed to delete artifact {artifact_id}: {e}")
         return
-
-    python_file = deployment_manifest.get("python_file", "main.py")
-    with open(deployment_dir / python_file, "r") as f:
-        deployment_content = f.read()
-    logger.info(f"Deployment content loaded from {python_file}")
 
     try:
         # Edit the existing deployment and stage it for review
         artifact = await artifact_manager.edit(
-            artifact_id=deployment_alias,
+            artifact_id=artifact_id,
             manifest=deployment_manifest,
             type=deployment_manifest.get("type", "generic"),
             version="stage",
         )
     except:
+        artifact_workspace = artifact_id.split("/")[0]
+        collection_id = f"{artifact_workspace}/bioengine-apps"
+        try:
+            await artifact_manager.list(collection_id)
+        except Exception as e:
+            expected_error = f'KeyError: "Artifact with ID \'{collection_id}\' does not exist."'
+            if str(e).strip().endswith(expected_error):
+                logger.info(f"Collection '{collection_id}' does not exist. Creating it.")
+
+            collection_manifest = {
+                "name": "BioEngine Apps",
+                "description": "A collection of Ray deployments for the BioEngine.",
+            }
+            collection = await artifact_manager.create(
+                alias=collection_id,
+                type="collection",
+                manifest=collection_manifest,
+                config={"permissions": {"*": "r", "@": "r+"}}
+            )
+            logger.info(f"Bioengine Apps collection created with ID: {collection.id}")
+
         # Add the deployment to the gallery and stage it for review
         artifact = await artifact_manager.create(
-            alias=deployment_alias,
-            parent_id=parent_id,
+            alias=artifact_id,
+            parent_id=collection_id,
             manifest=deployment_manifest,
             type=deployment_manifest.get("type", "generic"),
             version="stage",
@@ -104,6 +124,11 @@ async def manage_artifact(
         logger.info(f"Uploaded manifest.yaml to artifact")
 
     # Upload the entry point
+    python_file = deployment_manifest.get("python_file", "main.py")
+    with open(deployment_dir / python_file, "r") as f:
+        deployment_content = f.read()
+    logger.info(f"Deployment content loaded from {python_file}")
+
     upload_url = await artifact_manager.put_file(artifact.id, file_path=python_file)
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.put(upload_url, data=deployment_content)
@@ -129,12 +154,6 @@ if __name__ == "__main__":
         type=Path,
         required=True,
         help="Path to the deployment directory",
-    )
-    parser.add_argument(
-        "--parent_id",
-        default="ray-deployments",
-        type=str,
-        help="Parent ID for the artifact",
     )
     parser.add_argument(
         "--server_url",
@@ -163,7 +182,6 @@ if __name__ == "__main__":
     asyncio.run(
         manage_artifact(
             deployment_dir=args.deployment_dir,
-            parent_id=args.parent_id,
             server_url=args.server_url,
             workspace=args.workspace,
             token=args.token,

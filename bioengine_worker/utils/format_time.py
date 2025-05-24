@@ -34,5 +34,5 @@ def format_time(timestamp: int, tz: timezone = timezone.utc) -> Dict:
 
     return {
         "start_time": start_time.strftime("%Y/%m/%d %H:%M:%S") + f" ({tz})",
-        "duration_since": " ".join(duration_parts) if duration_parts else "0s",
+        "uptime": " ".join(duration_parts) if duration_parts else "0s",
     }

@@ -316,6 +316,9 @@ class RayClusterManager:
             # Check and set cluster ports
             self._set_cluster_ports()
 
+            # Make sure the temporary directory exists (triggers better error message than Ray)
+            self.ray_cluster_config["ray_temp_dir"].mkdir(parents=True, exist_ok=True)
+
             # Start ray as the head node with the specified parameters
             result = subprocess.run(
                 [
@@ -413,8 +416,9 @@ class RayClusterManager:
 
             # Get cluster start time and uptime
             formatted_time = format_time(self.ray_start_time)
+            output["start_time_s"] = self.ray_start_time
             output["start_time"] = formatted_time["start_time"]
-            output["uptime"] = formatted_time["duration_since"]
+            output["uptime"] = formatted_time["uptime"]
 
             # Get the available resources per node
             available_resources_per_node = ray.state.available_resources_per_node()

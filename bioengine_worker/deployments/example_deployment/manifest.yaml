@@ -22,8 +22,12 @@ deployment_class:
     method_name: _get_model
     max_num_models_per_replica: 1
   exposed_methods:
-    ping: {}
-    train: {}
+    ping:
+      authorized_users: "*"
+      description: "Ping the model to check if it is alive."
+    train:
+      authorized_users: "*"
+      description: "Train the model with the given data."
 deployment_config:
   modes:
     cpu:

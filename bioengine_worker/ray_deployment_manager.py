@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -58,93 +59,21 @@ class RayDeploymentManager:
         self.artifact_manager = None
         self.service_info = None
         self._deployed_artifacts = {}
+        self._deployment_tasks = {}
+        self._undeploying_artifacts = set()
 
-    async def _update_services(self) -> None:
-        """Update Hypha services based on currently deployed models"""
-        try:
-            # Ensure server connection
-            if not self.server:
-                raise RuntimeError("Hypha server connection not available")
+    async def _get_full_artifact_id(self, artifact_id: str) -> str:
+        """Convert artifact ID to a full artifact ID
 
-            # Create service functions for each deployment
-            deployments = await self._get_deployment_names()
-            service_functions = {}
+        Args:
+            artifact_id: The artifact ID to convert
 
-            async def create_deployment_function(
-                deployment_name, method, *args, context=None, **kwargs
-            ):
-                try:
-                    # TODO: add user authorization
-                    user = context.get("user") if context else None
-                    self.logger.info(
-                        f"User {user['id']} is calling deployment '{deployment_name}' with method '{method}'"
-                    )
-                    app_handle = serve.get_app_handle(name=deployment_name)
-
-                    # Recursively put args and kwargs into ray object storage
-                    args = [
-                        ray.put(arg) if isinstance(arg, np.ndarray) else arg
-                        for arg in args
-                    ]
-                    kwargs = {
-                        k: ray.put(v) if isinstance(v, np.ndarray) else v
-                        for k, v in kwargs.items()
-                    }
-
-                    result = await getattr(app_handle, method).remote(*args, **kwargs)
-                    return result
-                except Exception as e:
-                    self.logger.error(
-                        f"Failed to call deployment '{deployment_name}': {e}"
-                    )
-                    raise e
-
-            for deployment_name in deployments:
-                artifact_id = await self._get_artifact_id_from_deployment_name(
-                    deployment_name
-                )
-                manifest = self._deployed_artifacts[artifact_id]
-                service_functions[deployment_name] = {}
-                class_config = manifest["deployment_class"]
-                if class_config.get("exposed_methods"):
-                    for method in class_config["exposed_methods"].keys():
-                        service_functions[deployment_name][method] = partial(
-                            create_deployment_function, deployment_name, method
-                        )
-                else:
-                    service_functions[deployment_name] = partial(
-                        create_deployment_function, deployment_name, "__call__"
-                    )
-
-            # Register all model functions as a single service
-            service_info = await self.server.register_service(
-                {
-                    "id": self._service_id,
-                    "name": "BioEngine Worker Deployments",
-                    "type": "ray-deployment",
-                    "description": "Deployed Ray Serve models",
-                    "config": {"visibility": "public", "require_context": True},
-                    **service_functions,
-                },
-                {"overwrite": True},
-            )
-            if len(service_functions) > 0:
-                self.logger.info("Successfully registered deployment service")
-                server_url = self.server.config.public_base_url
-                workspace, sid = service_info.id.split("/")
-                service_url = f"{server_url}/{workspace}/services/{sid}"
-                for deployment_name in service_functions.keys():
-                    self.logger.info(
-                        f"Access the deployment service at: {service_url}/{deployment_name}"
-                    )
-                self.service_info = service_info
-            else:
-                self.logger.info("No deployments to register as services")
-                self.service_info = None
-
-        except Exception as e:
-            self.logger.error(f"Error updating services: {e}")
-            raise e
+        Returns:
+            str: The converted full artifact ID
+        """
+        if "/" not in artifact_id:
+            return f"{self.server.config.workspace}/{artifact_id}"
+        return artifact_id
 
     async def _load_deployment_code(
         self,
@@ -152,6 +81,7 @@ class RayDeploymentManager:
         artifact_id: str,
         version=None,
         timeout: int = 30,
+        _local: bool = True,  # TODO: set this parameter to False after testing
     ) -> Any:
         """Load and execute deployment code from an artifact directly in memory
 
@@ -165,18 +95,32 @@ class RayDeploymentManager:
             Any: The loaded class or None if not found
         """
         try:
-            # Get download URL for the file
-            download_url = await self.artifact_manager.get_file(
-                artifact_id=artifact_id,
-                version=version,
-                file_path=class_config["python_file"],
-            )
+            if _local:
+                # Load the file content from local path
+                deployment = artifact_id.split("/")[1].replace("-", "_")
+                local_deployments_dir = Path(__file__).parent.resolve() / "deployments"
+                local_path = (
+                    local_deployments_dir / deployment / class_config["python_file"]
+                )
+                if not local_path.exists():
+                    raise FileNotFoundError(
+                        f"Local deployment file not found: {local_path}"
+                    )
+                with open(local_path, "r") as f:
+                    code_content = f.read()
+            else:
+                # Get download URL for the file
+                download_url = await self.artifact_manager.get_file(
+                    artifact_id=artifact_id,
+                    version=version,
+                    file_path=class_config["python_file"],
+                )
 
-            # Download the file content with timeout
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.get(download_url)
-                response.raise_for_status()
-                code_content = response.text
+                # Download the file content with timeout
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.get(download_url)
+                    response.raise_for_status()
+                    code_content = response.text
 
             # Create a restricted globals dictionary for sandboxed execution
             safe_globals = {}
@@ -214,43 +158,89 @@ class RayDeploymentManager:
             self.logger.error(f"Error loading deployment code for {artifact_id}: {e}")
             raise e
 
-    def _get_deployment_name(
-        self, artifact_id: str, context: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """Convert artifact ID to a deployment name
-
-        Args:
-            artifact_id: The artifact ID to convert
-
-        Returns:
-            str: The converted deployment name
-        """
+    async def _update_services(self) -> None:
+        """Update Hypha services based on currently deployed models"""
         try:
-            return artifact_id.split("/")[1].replace("-", "_")
-        except IndexError:
-            return artifact_id.replace("-", "_")
+            # Ensure server connection
+            if not self.server:
+                raise RuntimeError("Hypha server connection not available")
 
-    async def _get_deployment_names(self) -> Dict[str, Any]:
-        return {
-            self._get_deployment_name(artifact_id)
-            for artifact_id in self._deployed_artifacts
-        }
+            if not self._deployed_artifacts:
+                self.logger.info("No deployments to register as services")
+                self.service_info = None
+                return
 
-    async def _get_artifact_id_from_deployment_name(
-        self, deployment_name: str
-    ) -> Optional[str]:
-        """Get the artifact ID from a deployment name
+            async def create_deployment_function(
+                deployment_name, method, *args, context=None, **kwargs
+            ):
+                try:
+                    # TODO: add user authorization
+                    user_id = context["user"]["id"] if context else "anonymous"
+                    self.logger.info(
+                        f"User {user_id} is calling deployment '{deployment_name}' with method '{method}'"
+                    )
+                    app_handle = serve.get_app_handle(name=deployment_name)
 
-        Args:
-            deployment_name: The deployment name to convert
+                    # Recursively put args and kwargs into ray object storage
+                    args = [
+                        ray.put(arg) if isinstance(arg, np.ndarray) else arg
+                        for arg in args
+                    ]
+                    kwargs = {
+                        k: ray.put(v) if isinstance(v, np.ndarray) else v
+                        for k, v in kwargs.items()
+                    }
 
-        Returns:
-            str: The converted artifact ID
-        """
-        for artifact_id in self._deployed_artifacts.keys():
-            if self._get_deployment_name(artifact_id) == deployment_name:
-                return artifact_id
-        return None
+                    result = await getattr(app_handle, method).remote(*args, **kwargs)
+                    return result
+                except Exception as e:
+                    self.logger.error(
+                        f"Failed to call deployment '{deployment_name}': {e}"
+                    )
+                    raise e
+
+            # Create service functions for each deployment
+            service_functions = {}
+            for deployment_info in self._deployed_artifacts.values():
+                deployment_name = deployment_info["deployment_name"]
+                service_functions[deployment_name] = {}
+                class_config = deployment_info["deployment_class"]
+                exposed_methods = class_config.get("exposed_methods", {})
+                if exposed_methods:
+                    for method in exposed_methods.keys():
+                        service_functions[deployment_name][method] = partial(
+                            create_deployment_function, deployment_name, method
+                        )
+                else:
+                    service_functions[deployment_name] = partial(
+                        create_deployment_function, deployment_name, "__call__"
+                    )
+
+            # Register all model functions as a single service
+            service_info = await self.server.register_service(
+                {
+                    "id": self._service_id,
+                    "name": "BioEngine Worker Deployments",
+                    "type": "ray-deployment",
+                    "description": "Deployed Ray Serve models",
+                    "config": {"visibility": "public", "require_context": True},
+                    **service_functions,
+                },
+                {"overwrite": True},
+            )
+            self.logger.info("Successfully registered deployment service")
+            server_url = self.server.config.public_base_url
+            workspace, sid = service_info.id.split("/")
+            service_url = f"{server_url}/{workspace}/services/{sid}"
+            for deployment_name in service_functions.keys():
+                self.logger.info(
+                    f"Access the deployment service at: {service_url}/{deployment_name}"
+                )
+            self.service_info = service_info
+
+        except Exception as e:
+            self.logger.error(f"Error updating services: {e}")
+            raise e
 
     async def initialize(self, server) -> None:
         """Initialize the deployment manager with a Hypha server connection
@@ -272,7 +262,6 @@ class RayDeploymentManager:
             self.logger.error(f"Error initializing Ray Deployment Manager: {e}")
             self.server = None
             self.artifact_manager = None
-
             raise e
 
     async def create_artifact(self, artifact_id: str, files: List[dict]) -> None:
@@ -280,6 +269,19 @@ class RayDeploymentManager:
         Create a deployment artifact
         """
         raise NotImplementedError
+
+        if not self.server:
+            raise RuntimeError(
+                "Hypha server connection not available. Call initialize() first."
+            )
+
+        # Ensure artifact manager is available
+        if not self.artifact_manager:
+            raise RuntimeError(
+                "Artifact manager not initialized. Call initialize() first."
+            )
+
+        artifact_id = await self._get_full_artifact_id(artifact_id)
 
     async def deploy_artifact(
         self,
@@ -320,8 +322,14 @@ class RayDeploymentManager:
                     "Ray cluster is not running. Call initialize() first."
                 )
 
-            if "/" not in artifact_id:
-                artifact_id = f"{self.server.config.workspace}/{artifact_id}"
+            artifact_id = await self._get_full_artifact_id(artifact_id)
+
+            if artifact_id in self._deployed_artifacts:
+                self.logger.info(
+                    f"Artifact '{artifact_id}' is already deployed. Skipping deployment."
+                )
+                return artifact_id
+
             self.logger.info(f"Deploying artifact '{artifact_id}'...")
 
             # Read the manifest to get deployment configuration
@@ -329,17 +337,10 @@ class RayDeploymentManager:
             manifest = artifact["manifest"]
 
             # Get the deployment configuration
+            deployment_name = artifact_id.replace("/", "_").replace("-", "_")
             deployment_config = manifest["deployment_config"]
-
-            # Load the deployment code
             class_config = manifest["deployment_class"]
             deployment_config["name"] = class_config["class_name"]
-
-            model = await self._load_deployment_code(
-                class_config,
-                artifact_id,
-                version=version,
-            )
 
             # Check if different modes are supported
             modes = deployment_config.pop("modes", None)
@@ -359,44 +360,90 @@ class RayDeploymentManager:
                     f"Using mode '{mode_key}' for deployment '{artifact_id}'"
                 )
 
+            # Add default ray_actor_options if not present
+            ray_actor_options = deployment_config.setdefault("ray_actor_options", {})
+            ray_actor_options.setdefault("num_cpus", 1)
+            ray_actor_options.setdefault("num_gpus", 0)
+
             # Add cache path to deployment config environment
-            env_vars = deployment_config["ray_actor_options"]["runtime_env"].setdefault("env_vars", {})
+            runtime_env = ray_actor_options.setdefault("runtime_env", {})
+            env_vars = runtime_env.setdefault("env_vars", {})
             env_vars["BIOENGINE_CACHE_PATH"] = str(self.deployment_working_dir)
+
+            # Load the deployment code
+            model = await self._load_deployment_code(
+                class_config,
+                artifact_id,
+                version=version,
+            )
 
             # Create the Ray Serve deployment
             model_deployment = serve.deployment(**deployment_config)(model)
 
             # Bind the arguments to the deployment and return an Application
-            app = model_deployment.bind()
+            kwargs = class_config.get("kwargs", {})
+            app = model_deployment.bind(**kwargs)
 
-            # Deploy the application in a separate thread to avoid blocking
-            deployment_name = self._get_deployment_name(artifact_id)
-            task = asyncio.to_thread(
-                serve.run, app, name=deployment_name, route_prefix=None
-            )
+            # Store the deployment information first so it's available to other tasks
+            self._deployed_artifacts[artifact_id] = {
+                "deployment_name": deployment_name,
+                "deployment_class": class_config,
+                "resources": {
+                    "num_cpus": deployment_config["ray_actor_options"]["num_cpus"],
+                    "num_gpus": deployment_config["ray_actor_options"]["num_gpus"],
+                },
+            }
+
+            # Deploy the application in a separate task to avoid blocking
+            async def deploy_task():
+                try:
+                    self.logger.info(f"Started deployment process for artifact '{artifact_id}'")
+                    await asyncio.to_thread(
+                        serve.run, app, name=deployment_name, route_prefix=None
+                    )
+
+                    # Check if the deployment was successful
+                    serve_status = serve.status()
+                    if deployment_name in serve_status.applications.keys():
+                        self.logger.info(
+                            f"Successfully completed deployment of artifact '{artifact_id}'"
+                        )
+                        # Update services if not skipped
+                        if not _skip_update:
+                            await self._update_services()
+                    else:
+                        self.logger.error(
+                            f"Deployment of artifact '{artifact_id}' failed. Deployment name '{deployment_name}' not found in serve status."
+                        )
+                        self._deployed_artifacts.pop(artifact_id, None)
+
+                except asyncio.CancelledError:
+                    self.logger.info(f"Deployment of artifact '{artifact_id}' was cancelled")
+                except Exception as e:
+                    self.logger.error(f"Error during deployment of artifact '{artifact_id}': {e}")
+
+            # Create and start the deployment task
+            task = asyncio.create_task(deploy_task(), name=f"deploy-{artifact_id}")
+            
+            # Store the task with a strong reference to prevent garbage collection
+            self._deployment_tasks[artifact_id] = task
+
+            # Notify the autoscaler of the new deployment after a short delay
             if self.autoscaler:
-                # Wait for the deployment to be ready
+                # Wait a moment for the deployment to start initializing
                 await asyncio.sleep(1)
-                # Notify the autoscaler of the new deployment
+                # Notify the autoscaler
                 await self.autoscaler.notify()
 
-            # Wait for the deployment to complete
-            # TODO: add possibility to cancel the deployment
+            # Wait for the deployment task to complete
             await task
-
-            # Add the deployment to the tracked artifacts
-            self._deployed_artifacts[artifact_id] = manifest
-
-            self.logger.info(f"Successfully deployed {artifact_id}")
-
-            if not _skip_update:
-                await self._update_services()
-
-            return deployment_name
 
         except Exception as e:
             self.logger.error(f"Error deploying '{artifact_id}': {e}")
             raise e
+        finally:
+            # Clean up the deployment task reference
+            self._deployment_tasks.pop(artifact_id, None)
 
     async def undeploy_artifact(
         self,
@@ -411,44 +458,85 @@ class RayDeploymentManager:
             context: Context for Hypha service
             _skip_update: Skip updating services after undeployment
         """
-        self.logger.info(f"Undeploying artifact '{artifact_id}'...")
-
         try:
             # Verify client is connected to Hypha server
             if not self.server:
-                raise RuntimeError("Hypha server connection not available")
+                raise RuntimeError(
+                    "Hypha server connection not available. Call initialize() first."
+                )
+
+            # Ensure artifact manager is available
+            if not self.artifact_manager:
+                raise RuntimeError(
+                    "Artifact manager not initialized. Call initialize() first."
+                )
 
             # Verify Ray is initialized
             if not ray.is_initialized():
-                raise RuntimeError("Ray cluster is not running")
-
-            deployment_name = self._get_deployment_name(artifact_id)
-
-            deployments = await self._get_deployment_names()
-            if deployment_name not in deployments:
-                raise ValueError(f"Deployment '{deployment_name}' not found")
-
-            # Delete the deployment in a separate thread
-            await asyncio.to_thread(serve.delete, deployment_name)
-
-            # Check if the deployment was successfully undeployed
-            serve_status = serve.status()
-            if deployment_name in serve_status.applications.keys():
                 raise RuntimeError(
-                    f"Failed to undeploy '{deployment_name}'. It still exists."
+                    "Ray cluster is not running. Call initialize() first."
                 )
+                    
+            artifact_id = await self._get_full_artifact_id(artifact_id)
 
-            # Remove the deployment from the tracked artifacts
-            del self._deployed_artifacts[artifact_id]
+            # Check if artifact exists in deployed artifacts
+            if artifact_id not in self._deployed_artifacts:
+                self.logger.warning(
+                    f"Artifact '{artifact_id}' is not deployed. Skipping undeployment."
+                )
+                return
 
+            # Check if artifact is already being undeployed
+            if artifact_id in self._undeploying_artifacts:
+                self.logger.info(
+                    f"Artifact '{artifact_id}' is already being undeployed. Skipping duplicate request."
+                )
+                return
+
+            self.logger.info(f"Undeploying artifact '{artifact_id}'...")
+            self._undeploying_artifacts.add(artifact_id)
+
+            # Check if there's an ongoing deployment task for this artifact
+            deployment_task = self._deployment_tasks.get(artifact_id)
+            if deployment_task and not deployment_task.done():
+                # Cancel the task
+                self.logger.info(f"Cancelling ongoing deployment for '{artifact_id}'")
+                deployment_task.cancel()
+
+                # Wait for the task to finish or be cancelled
+                try:
+                    await asyncio.wait_for(deployment_task, timeout=5)
+                except asyncio.TimeoutError:
+                    self.logger.warning(
+                        f"Deployment task for '{artifact_id}' did not finish in time"
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        f"Error waiting for deployment task cancellation: {e}"
+                    )
+
+            # Delete the deployment asynchronously
+            deployment_name = self._deployed_artifacts[artifact_id]["deployment_name"]
+            try:
+                await asyncio.to_thread(serve.delete, deployment_name)
+            except Exception as delete_err:
+                self.logger.error(f"Error deleting deployment {deployment_name}: {delete_err}")
+                raise delete_err
+                
+            # Remove the artifact from deployed artifacts
+            self._deployed_artifacts.pop(artifact_id, None)
             self.logger.info(f"Successfully undeployed {artifact_id}")
 
             if not _skip_update:
                 await self._update_services()
 
         except Exception as e:
-            self.logger.error(f"Failed to undeploy {artifact_id}: {e}")
+            self.logger.error(f"Error undeploying '{artifact_id}': {e}")
             raise e
+        finally:
+            # Clean up the undeploying artifacts reference
+            self._undeploying_artifacts.discard(artifact_id)
+
 
     async def get_status(self) -> Dict[str, Any]:
         """Get a dictionary of currently deployed models"""
@@ -461,44 +549,53 @@ class RayDeploymentManager:
             output["service_id"] = self.service_info.id
         else:
             output["service_id"] = None
-            output["note"] = (
-                "No deployment service registered. Deploy an artifact first."
-            )
 
-            return output
-
-        serve_status = serve.status()  # TODO: run async
+        # Get status of actively running deployments
+        serve_status = serve.status()
         self.logger.debug(
             f"Current deployments: {list(serve_status.applications.keys())}"
         )
 
-        for deployment_name, application in serve_status.applications.items():
-            found = False
-            for artifact_id in self._deployed_artifacts.keys():
-                if self._get_deployment_name(artifact_id) == deployment_name:
-                    found = True
-                    break
-            if not found:
-                # Skip Ray Serve applications that were not deployed by this manager
+        if not serve_status.applications:
+            output["note"] = "Currently no artifacts are deployed."
+            return output
+
+        for artifact_id in list(self._deployed_artifacts.keys()):
+            deployment_name = self._deployed_artifacts[artifact_id]["deployment_name"]
+            if deployment_name not in serve_status.applications:
+                # ? Clean up if deployment is not found
+                self.logger.warning(
+                    f"Deployment '{deployment_name}' for artifact '{artifact_id}' not found in Ray Serve status."
+                )
+                # del self._deployed_artifacts[artifact_id]
                 continue
+
+            application = serve_status.applications[deployment_name]
             formatted_time = format_time(application.last_deployed_time_s)
             if len(application.deployments) > 1:
                 raise NotImplementedError
-            class_name = self._deployed_artifacts[artifact_id]["deployment_class"]["class_name"]
-            deployment = application.deployments[class_name]
-            output[deployment_name] = {
-                "artifact_id": artifact_id,
-                "last_deployed_at": formatted_time["start_time"],
-                "duration_since": formatted_time["duration_since"],
-                "status": deployment.status.value,
-                "replica_states": deployment.replica_states,
+
+            class_config = self._deployed_artifacts[artifact_id]["deployment_class"]
+            class_methods = class_config.get("exposed_methods", {})
+            class_name = class_config["class_name"]
+            deployment = application.deployments.get(class_name)
+            resources = self._deployed_artifacts[artifact_id]["resources"]
+            output[artifact_id] = {
+                "deployment_name": deployment_name,
+                "available_methods": list(class_methods.keys()),
+                "start_time_s": application.last_deployed_time_s,
+                "start_time": formatted_time["start_time"],
+                "uptime": formatted_time["uptime"],
+                "status": application.status.value,
+                "replica_states": deployment.replica_states if deployment else None,
+                "resources": resources,
             }
 
         return output
 
     async def deploy_all_artifacts(
         self,
-        deployment_collection_id: str = "ray-deployments",
+        deployment_collection_id: str = "bioengine-apps",
         context: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         """Deploy all artifacts in the deployment collection to Ray Serve
@@ -513,7 +610,6 @@ class RayDeploymentManager:
         self.logger.info(
             f"Deploying all artifacts in collection '{deployment_collection_id}'..."
         )
-        deployments = []
         try:
             # Ensure artifact manager is available
             if not self.artifact_manager:
@@ -528,18 +624,13 @@ class RayDeploymentManager:
             for artifact in artifacts:
                 try:
                     artifact_id = artifact["id"]
-                    deployment_name = await self.deploy_artifact(
-                        artifact_id, _skip_update=True
-                    )
-                    deployments.append(deployment_name)
+                    await self.deploy_artifact(artifact_id, _skip_update=True)
                 except Exception as e:
                     self.logger.error(f"Failed to deploy {artifact_id}: {e}")
                     raise e
 
             # Update services after all deployments
             await self._update_services()
-
-            return deployments
 
         except Exception as e:
             self.logger.error(f"Error deploying all artifacts: {e}")
@@ -562,6 +653,22 @@ class RayDeploymentManager:
                     await self.undeploy_artifact(artifact_id)
                 except Exception as e:
                     failed_attempts += 1
+                    self.logger.error(f"Failed to undeploy {artifact_id}: {e}")
+
+            # Cancel any remaining deployment tasks
+            pending_tasks = []
+            for artifact_id, task in list(self._deployment_tasks.items()):
+                if not task.done():
+                    pending_tasks.append(task)
+                    task.cancel()
+            
+            # Wait for all tasks to complete or be cancelled
+            if pending_tasks:
+                self.logger.warning(f"Cancelling {len(pending_tasks)} remaining deployment tasks")
+                try:
+                    await asyncio.wait(pending_tasks, timeout=5)
+                except Exception as e:
+                    self.logger.error(f"Error waiting for tasks to cancel: {e}")
 
             if failed_attempts != 0:
                 self.logger.warning(
@@ -633,16 +740,17 @@ if __name__ == "__main__":
 
             # Deploy the example deployment
             artifact_id = "example-deployment"
-            deployment_name = await deployment_manager.deploy_artifact(artifact_id)
+            await deployment_manager.deploy_artifact(artifact_id)
 
             deployment_status = await deployment_manager.get_status()
-            assert deployment_name in deployment_status
+            assert artifact_id in deployment_status
 
             # Test registered Hypha service
             deployment_service_id = deployment_status["service_id"]
             deployment_service = await server.get_service(deployment_service_id)
 
             # Call the deployed model
+            deployment_name = deployment_status[artifact_id]["deployment_name"]
             response = await deployment_service[deployment_name]["ping"]()
             deployment_manager.logger.info(f"Response from deployed model: {response}")
 

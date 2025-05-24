@@ -231,7 +231,7 @@ class BioEngineWorker:
                 "name": "BioEngine worker",
                 "type": "bioengine-worker",
                 "description": "Controls Ray cluster on HPC system",
-                "config": {"visibility": "public", "require_context": True},
+                "config": {"visibility": "public", "require_context": True},  # TODO: make private
                 "get_status": self.get_status,
                 "load_dataset": self.dataset_manager.load_dataset,
                 "close_dataset": self.dataset_manager.close_dataset,
@@ -321,12 +321,14 @@ class BioEngineWorker:
         Returns:
             Dict containing service, cluster, autoscaler and deployment status.
         """
-        self.logger.info("Getting status of the BioEngine worker...")
+        user_id = context["user"]["id"] if context else "anonymous"
+        self.logger.debug(f"User {user_id} is getting status of the BioEngine worker")
         formatted_service_time = format_time(self.start_time)
         status = {
             "service": {
+                "start_time_s": self.start_time, 
                 "start_time": formatted_service_time["start_time"],
-                "uptime": formatted_service_time["duration_since"],
+                "uptime": formatted_service_time["uptime"],
             }
         }
         if ray.is_initialized():
@@ -335,6 +337,7 @@ class BioEngineWorker:
                 head_address = ray._private.services.get_node_ip_address()
                 status["cluster"] = {
                     "head_address": head_address,
+                    "start_time_s": "N/A",
                     "start_time": "N/A",
                     "uptime": "N/A",
                     "worker_nodes": "N/A",

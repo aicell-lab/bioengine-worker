@@ -82,7 +82,7 @@ class BioEngineWorker:
             self.server = None
             self.serve_event = None
             cache_dir = Path(cache_dir).resolve()
-            # os.environ["TMPDIR"] = str(cache_dir)
+            os.environ["TMPDIR"] = str(cache_dir)
 
             # Initialize component managers depending on the mode
             dataset_config = dataset_config or {}
@@ -231,7 +231,10 @@ class BioEngineWorker:
                 "name": "BioEngine worker",
                 "type": "bioengine-worker",
                 "description": "Controls Ray cluster on HPC system",
-                "config": {"visibility": "public", "require_context": True},  # TODO: make private
+                "config": {
+                    "visibility": "public",
+                    "require_context": True,
+                },  # TODO: make private
                 "get_status": self.get_status,
                 "load_dataset": self.dataset_manager.load_dataset,
                 "close_dataset": self.dataset_manager.close_dataset,
@@ -326,7 +329,7 @@ class BioEngineWorker:
         formatted_service_time = format_time(self.start_time)
         status = {
             "service": {
-                "start_time_s": self.start_time, 
+                "start_time_s": self.start_time,
                 "start_time": formatted_service_time["start_time"],
                 "uptime": formatted_service_time["uptime"],
             }

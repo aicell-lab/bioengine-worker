@@ -158,6 +158,17 @@ class RayDeploymentManager:
             self.logger.error(f"Error loading deployment code for {artifact_id}: {e}")
             raise e
 
+    async def _create_deployment_name(self, artifact_id: str) -> str:
+        deployment_name = artifact_id.lower()
+        for char in ["|", "/", "-", "."]:
+            deployment_name = deployment_name.replace(char, "_")
+        if not deployment_name.isidentifier():
+            raise ValueError(
+                f"Artifact ID '{artifact_id}' can not be automatically converted to a "
+                f"valid deployment name ('{deployment_name}' is not a valid identifier)."
+            )
+        return deployment_name
+
     async def _update_services(self) -> None:
         """Update Hypha services based on currently deployed models"""
         try:
@@ -337,7 +348,7 @@ class RayDeploymentManager:
             manifest = artifact["manifest"]
 
             # Get the deployment configuration
-            deployment_name = artifact_id.replace("/", "_").replace("-", "_")
+            deployment_name = await self._create_deployment_name(artifact_id)
             deployment_config = manifest["deployment_config"]
             class_config = manifest["deployment_class"]
             deployment_config["name"] = class_config["class_name"]
@@ -397,7 +408,9 @@ class RayDeploymentManager:
             # Deploy the application in a separate task to avoid blocking
             async def deploy_task():
                 try:
-                    self.logger.info(f"Started deployment process for artifact '{artifact_id}'")
+                    self.logger.info(
+                        f"Started deployment process for artifact '{artifact_id}'"
+                    )
                     await asyncio.to_thread(
                         serve.run, app, name=deployment_name, route_prefix=None
                     )
@@ -418,13 +431,17 @@ class RayDeploymentManager:
                         self._deployed_artifacts.pop(artifact_id, None)
 
                 except asyncio.CancelledError:
-                    self.logger.info(f"Deployment of artifact '{artifact_id}' was cancelled")
+                    self.logger.info(
+                        f"Deployment of artifact '{artifact_id}' was cancelled"
+                    )
                 except Exception as e:
-                    self.logger.error(f"Error during deployment of artifact '{artifact_id}': {e}")
+                    self.logger.error(
+                        f"Error during deployment of artifact '{artifact_id}': {e}"
+                    )
 
             # Create and start the deployment task
             task = asyncio.create_task(deploy_task(), name=f"deploy-{artifact_id}")
-            
+
             # Store the task with a strong reference to prevent garbage collection
             self._deployment_tasks[artifact_id] = task
 
@@ -476,7 +493,7 @@ class RayDeploymentManager:
                 raise RuntimeError(
                     "Ray cluster is not running. Call initialize() first."
                 )
-                    
+
             artifact_id = await self._get_full_artifact_id(artifact_id)
 
             # Check if artifact exists in deployed artifacts
@@ -520,9 +537,11 @@ class RayDeploymentManager:
             try:
                 await asyncio.to_thread(serve.delete, deployment_name)
             except Exception as delete_err:
-                self.logger.error(f"Error deleting deployment {deployment_name}: {delete_err}")
+                self.logger.error(
+                    f"Error deleting deployment {deployment_name}: {delete_err}"
+                )
                 raise delete_err
-                
+
             # Remove the artifact from deployed artifacts
             self._deployed_artifacts.pop(artifact_id, None)
             self.logger.info(f"Successfully undeployed {artifact_id}")
@@ -536,7 +555,6 @@ class RayDeploymentManager:
         finally:
             # Clean up the undeploying artifacts reference
             self._undeploying_artifacts.discard(artifact_id)
-
 
     async def get_status(self) -> Dict[str, Any]:
         """Get a dictionary of currently deployed models"""
@@ -661,10 +679,12 @@ class RayDeploymentManager:
                 if not task.done():
                     pending_tasks.append(task)
                     task.cancel()
-            
+
             # Wait for all tasks to complete or be cancelled
             if pending_tasks:
-                self.logger.warning(f"Cancelling {len(pending_tasks)} remaining deployment tasks")
+                self.logger.warning(
+                    f"Cancelling {len(pending_tasks)} remaining deployment tasks"
+                )
                 try:
                     await asyncio.wait(pending_tasks, timeout=5)
                 except Exception as e:

@@ -17,7 +17,7 @@ services:
     shm_size: 10.24gb
     env_file:
       - .env
-    restart: unless-stopped
+    restart: "no"
     command: [
       "python", "-m", "bioengine_worker",
       "--mode", "single-machine",

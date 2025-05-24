@@ -47,7 +47,6 @@ async def main(group_configs):
     try:
         # Get Hypha configuration
         hypha_config = group_configs["Hypha Options"]
-        
 
         # Get Dataset Manager configuration
         dataset_config = group_configs["Dataset Manager Options"]

@@ -7,8 +7,10 @@ import numpy as np
 class ModelRunner:
     def __init__(self, cache_n_models: int = 10):
         import os
-        
-        self.cache_dir = Path(os.environ["BIOENGINE_CACHE_PATH"]).resolve() / "bioimageio_models"
+
+        self.cache_dir = (
+            Path(os.environ["BIOENGINE_CACHE_PATH"]).resolve() / "bioimageio_models"
+        )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         bioimageio_cache_path = self.cache_dir / ".cache"
         bioimageio_cache_path.mkdir(parents=True, exist_ok=True)

@@ -18,7 +18,9 @@ deployment_class:
   python_file: main.py
   class_name: CellposeFinetune
   exposed_methods:
-    train: {}
+    train:
+      authorized_users: "*"
+      description: "Fine-tune the Cellpose v2 model with the provided training data."
 deployment_config:
   modes:
     gpu:

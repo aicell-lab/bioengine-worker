@@ -12,7 +12,7 @@ dependencies = [
     "httpx",
     "hypha-rpc>=0.20.48",
     "pyyaml",
-    "ray[client,serve]>=2.42.1",
+    "ray[client,serve]==2.33.0",
 ]
 
 [project.optional-dependencies]

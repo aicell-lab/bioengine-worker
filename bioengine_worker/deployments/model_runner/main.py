@@ -155,6 +155,8 @@ if __name__ == "__main__":
     from kaibu_utils import fetch_image
 
     async def test_model():
+        os.environ["BIOENGINE_CACHE_PATH"] = str(Path(".cache").resolve())
+
         model_runner = ModelRunner()
 
         model_id = "creative-panda"  # choose different bioimage.io model

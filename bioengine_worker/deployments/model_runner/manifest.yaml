@@ -29,6 +29,12 @@ deployment_class:
     infer:
       authorized_users: "*"
       description: "Run inference on the model with the given data."
+    validate:
+      authorized_users: "*"
+      description: "Validate a model RDF against the BioImage.IO schema."
+    test:
+      authorized_users: "*"
+      description: "Run a test on the model to check if it is working correctly."
 deployment_config:
   modes:
     # First key is default. If no mode is specified, GPU will be used.

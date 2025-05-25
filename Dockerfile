@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir -U pip && \
 # Copy all project files
 COPY . .
 
-# Install the package
+# Install the bioengine_worker package
 RUN pip install --no-cache-dir .
 
 CMD [ "/bin/bash" ]

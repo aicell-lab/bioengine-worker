@@ -72,9 +72,7 @@ class BioEngineWorker:
             self.server_url = server_url
             self._token = token or os.environ.get("HYPHA_TOKEN")
             self.service_id = service_id
-
             self.start_time = None
-
             self.mode = mode
             self.cluster_manager = None
             self.autoscaler = None
@@ -82,11 +80,12 @@ class BioEngineWorker:
             self.server = None
             self.serve_event = None
             cache_dir = Path(cache_dir).resolve()
-            os.environ["TMPDIR"] = str(cache_dir)
 
             # Initialize component managers depending on the mode
             dataset_config = dataset_config or {}
             if self.mode in ["slurm", "single-machine"]:
+                os.environ["TMPDIR"] = str(cache_dir)
+
                 # Set parameters for RayClusterManager
                 ray_cluster_config = ray_cluster_config or {}
                 # Overwrite existing 'mode', 'log_file', and '_debug' parameters if provided
@@ -152,10 +151,7 @@ class BioEngineWorker:
             # Set parameters for RayDeploymentManager
             ray_deployment_config = ray_deployment_config or {}
             self._set_parameter(
-                ray_deployment_config,
-                "deployment_working_dir",
-                cache_dir,
-                overwrite=False,
+                ray_deployment_config, "deployment_cache_dir", cache_dir, overwrite=False
             )
             self._set_parameter(ray_deployment_config, "autoscaler", self.autoscaler)
             self._set_parameter(ray_deployment_config, "log_file", log_file)

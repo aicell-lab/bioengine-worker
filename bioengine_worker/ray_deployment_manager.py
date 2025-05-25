@@ -26,7 +26,7 @@ class RayDeploymentManager:
     def __init__(
         self,
         service_id: str = "bioengine-worker-deployments",
-        deployment_working_dir: str = None,
+        deployment_cache_dir: str = "/tmp",
         autoscaler: Optional[RayAutoscaler] = None,
         # Logger
         logger: Optional[logging.Logger] = None,
@@ -37,7 +37,7 @@ class RayDeploymentManager:
 
         Args:
             service_id: ID to use for the Hypha service exposing deployed models
-            deployment_working_dir: Working directory for Ray Serve deployments. If not set, defaults to current working directory.
+            deployment_cache_dir: Caching directory used in Ray Serve deployments
             autoscaler: Optional RayAutoscaler instance
             logger: Optional logger instance
             _debug: Enable debug logging
@@ -52,7 +52,7 @@ class RayDeploymentManager:
         # Store parameters
         self._service_id = service_id
         self.autoscaler = autoscaler
-        self.deployment_working_dir = deployment_working_dir or os.getcwd()
+        self.deployment_cache_dir = deployment_cache_dir
 
         # Initialize state variables
         self.server = None
@@ -182,13 +182,31 @@ class RayDeploymentManager:
                 return
 
             async def create_deployment_function(
-                deployment_name, method, *args, context=None, **kwargs
+                deployment_name,
+                method_name,
+                authorized_users,
+                *args,
+                context=None,
+                **kwargs,
             ):
                 try:
-                    # TODO: add user authorization
-                    user_id = context["user"]["id"] if context else "anonymous"
+                    user = (
+                        context["user"]
+                        if context
+                        else {"id": "anonymous", "email": "anonymous"}
+                    )
+
+                    if (
+                        authorized_users != "*"
+                        and user["id"] not in authorized_users
+                        and user["email"] not in authorized_users
+                    ):
+                        msg = f"User {user['id']} is not authorized to call deployment '{deployment_name}'"
+                        self.logger.warning(msg)
+                        raise PermissionError(msg)
+
                     self.logger.info(
-                        f"User {user_id} is calling deployment '{deployment_name}' with method '{method}'"
+                        f"User {user['id']} is calling deployment '{deployment_name}' with method '{method_name}'"
                     )
                     app_handle = serve.get_app_handle(name=deployment_name)
 
@@ -202,7 +220,9 @@ class RayDeploymentManager:
                         for k, v in kwargs.items()
                     }
 
-                    result = await getattr(app_handle, method).remote(*args, **kwargs)
+                    result = await getattr(app_handle, method_name).remote(
+                        *args, **kwargs
+                    )
                     return result
                 except Exception as e:
                     self.logger.error(
@@ -218,13 +238,19 @@ class RayDeploymentManager:
                 class_config = deployment_info["deployment_class"]
                 exposed_methods = class_config.get("exposed_methods", {})
                 if exposed_methods:
-                    for method in exposed_methods.keys():
-                        service_functions[deployment_name][method] = partial(
-                            create_deployment_function, deployment_name, method
+                    for method_name, method_config in exposed_methods.items():
+                        service_functions[deployment_name][method_name] = partial(
+                            create_deployment_function,
+                            deployment_name=deployment_name,
+                            method_name=method_name,
+                            authorized_users=method_config.get("authorized_users", "*"),
                         )
                 else:
                     service_functions[deployment_name] = partial(
-                        create_deployment_function, deployment_name, "__call__"
+                        create_deployment_function,
+                        deployment_name=deployment_name,
+                        method_name="__call__",
+                        authorized_users="*",
                     )
 
             # Register all model functions as a single service
@@ -379,7 +405,7 @@ class RayDeploymentManager:
             # Add cache path to deployment config environment
             runtime_env = ray_actor_options.setdefault("runtime_env", {})
             env_vars = runtime_env.setdefault("env_vars", {})
-            env_vars["BIOENGINE_CACHE_PATH"] = str(self.deployment_working_dir)
+            env_vars["BIOENGINE_CACHE_PATH"] = str(self.deployment_cache_dir)
 
             # Load the deployment code
             model = await self._load_deployment_code(

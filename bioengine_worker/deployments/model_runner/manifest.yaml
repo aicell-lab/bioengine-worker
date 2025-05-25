@@ -21,7 +21,7 @@ deployment_class:
     # This is a multiplexed deployment, meaning that multiple models can be loaded
     # Note: Only works for async methods; method requires exactly one argument: model_id
     method_name: _get_model
-    max_num_models_per_replica: 1
+    max_num_models_per_replica: 5
   exposed_methods:
     get_model_rdf:
       authorized_users: "*"

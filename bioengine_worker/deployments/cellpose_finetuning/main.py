@@ -1,3 +1,11 @@
+import os
+import tempfile
+import zipfile
+from pathlib import Path
+
+import numpy as np
+
+
 class CellposeFinetune(object):
     """
     Based on cellpose 2.0 finetune notebook:
@@ -5,11 +13,14 @@ class CellposeFinetune(object):
     """
 
     def __init__(self):
-        pass
+        self.cache_dir = (
+            Path(os.environ["BIOENGINE_CACHE_PATH"]).resolve() / "cellpose_finetune"
+        )
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["CELLPOSE_LOCAL_MODELS_PATH"] = str(self.cache_dir)
 
     async def _download_data(self, data_dir, download_url):
         import httpx
-        import zipfile
 
         # Define the path to save the downloaded zip file
         zip_file_path = data_dir / "data.zip"
@@ -51,8 +62,6 @@ class CellposeFinetune(object):
         return image_annotation_pairs
 
     def _prepare_training_data(self, image_annotation_pairs):
-        import numpy as np
-
         # Get all indices of the list
         all_indices = np.arange(len(image_annotation_pairs))
 
@@ -103,7 +112,7 @@ class CellposeFinetune(object):
             ],  # Second training channel (if applicable)
         ]
 
-        new_model_path = train.train_seg(
+        new_model_path, train_losses, test_losses = train.train_seg(
             model.net,
             train_files=train_files,
             train_labels_files=train_labels_files,
@@ -118,13 +127,13 @@ class CellposeFinetune(object):
             save_path=train_files[0].parent,
             model_name=f"finetuned_{initial_model}",
             min_train_masks=1,
-        )[0]
+        )
 
-        return model, new_model_path, channels
+        return model, channels, new_model_path, train_losses, test_losses
 
     def _evaluate_cellpose(self, model, channels, test_files, test_labels_files):
-        from tifffile import imread
         from cellpose import metrics
+        from tifffile import imread
 
         # get files (during training, test_data is transformed so we will load it again)
         test_data = [imread(image_path) for image_path in test_files]
@@ -155,36 +164,51 @@ class CellposeFinetune(object):
             response = await client.put(model_url, content=model_content)
             response.raise_for_status()
 
-    async def train(self, data=None):
+    async def train(self, data: dict):
         """
         Runs Cellpose v2 finetuning
 
         Args:
-            data_url: Presigned URL of the data to download
-            finetuned_model_url: Presigned URL to upload the finetuned model
-            initial_model: Initial model to use for finetuning (not used if "model_url" is given)
-            model_url: Presigned URL to download checkpoint from (optional)  # TODO: implement
-            train_channel: Channel to use for training, default is "Grayscale"
-            second_train_channel: Second training channel (if applicable)
-            n_epochs: Number of epochs for training, default is 10
-            learning_rate: Learning rate for training, default is 0.000001
-            weight_decay: Weight decay for training, default is 0.0001
+            data: Dictionary containing the following keys:
+                - data_download_url: Presigned URL of the data to download
+                - model_upload_url: Presigned URL to upload the finetuned model
+                - initial_model: Initial model to use for finetuning (not used if 'model_download_url' is given)
+
+            Additional optional keys:
+                - model_download_url: Presigned URL to download checkpoint from (optional)  # TODO: implement
+                - train_channel: Channel to use for training, default is "Grayscale"
+                - second_train_channel: Second training channel (if applicable)
+                - n_epochs: Number of epochs for training, default is 10
+                - learning_rate: Learning rate for training, default is 0.000001
+                - weight_decay: Weight decay for training, default is 0.0001
         """
-        import tempfile
-        from pathlib import Path
+        # Check if the required keys are present in the data dictionary
+        required_keys = [
+            "data_download_url",
+            "model_upload_url",
+            "initial_model",
+        ]
+        for key in required_keys:
+            if key not in data:
+                raise ValueError(f"Missing required key: {key} in data dictionary.")
+
+        if "model_download_url" in data:
+            raise NotImplementedError(
+                "Starting from a model checkpoint is not implemented yet."
+            )
 
         # Create a temporary directory to save the downloaded file
-        with tempfile.TemporaryDirectory() as data_dir:
+        with tempfile.TemporaryDirectory(dir=self.cache_dir) as data_dir:
             data_dir = Path(data_dir)
 
             image_dir = await self._download_data(
-                data_dir, data["data_url"]
+                data_dir, data["data_download_url"]
             )  # TODO: replace this with HttpZarrStore from artifact manager (https://docs.amun.ai/#/artifact-manager?id=endpoint-2-workspaceartifactsartifact_aliaszip-fileszip_file_pathpathpathpath)
             image_annotation_pairs = self._find_image_annotation_pairs(image_dir)
             train_files, train_labels_files, test_files, test_labels_files = (
                 self._prepare_training_data(image_annotation_pairs)
             )
-            model, model_path, channels = self._train_cellpose(
+            model, channels, model_path, train_losses, test_losses = self._train_cellpose(
                 train_files=train_files,
                 train_labels_files=train_labels_files,
                 test_files=test_files,
@@ -200,125 +224,102 @@ class CellposeFinetune(object):
                 learning_rate=data.get("learning_rate", 0.000001),
                 weight_decay=data.get("weight_decay", 0.0001),
             )
+            
             ap = self._evaluate_cellpose(model, channels, test_files, test_labels_files)
+
             await self._upload_finetuned_model(
                 Path(model_path),
-                data["finetuned_model_url"],
+                data["model_upload_url"],
             )
 
-            return ap
+            return {
+                "train_losses": train_losses,
+                "test_losses": test_losses,
+                "final_average_precision": ap,
+            }
 
 
 if __name__ == "__main__":
-    import os
-    from pathlib import Path
-    import httpx
     import asyncio
+
     from hypha_rpc import connect_to_server, login
 
     async def test_model():
-        server_url = "https://hypha.aicell.io"
-        workspace = "chiron-platform"
-        token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
-        server = await connect_to_server(
-            {"server_url": server_url, "token": token, "workspace": workspace}
+        os.environ["BIOENGINE_CACHE_PATH"] = str(
+            Path("__file__").parent.parent.parent.parent / ".cache"
         )
+        server_url = "https://hypha.aicell.io"
+        token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
+        server = await connect_to_server({"server_url": server_url, "token": token})
 
         artifact_manager = await server.get_service("public/artifact-manager")
 
-        dataset_manifest = {
-            "name": "HPA Demo",
-            "description": "An annotated dataset for Cellpose finetuning",
-            "type": "data",
-        }
-        parent_id = f"{workspace}/collection"
+        workspace = server.config.workspace
+        collection_id = f"{workspace}/bioimageio-colab"
+        data_artifact_alias = "hpa-demo"
+        model_artifact_alias = "cellpose-cyto3-hpa-finetuned"
 
-        # Check existing deployments
-        deployment_alias = dataset_manifest["name"].lower().replace(" ", "-")
-        all_artifacts = []
-        for artifact in await artifact_manager.list():
-            if artifact.type == "collection":
-                all_artifacts.extend(await artifact_manager.list(parent_id=artifact.id))
-            else:
-                all_artifacts.append(artifact)
-
-        exists = False
-        for artifact in all_artifacts:
-            if artifact.alias == deployment_alias:
-                exists = True
-                break
-
-        if exists:
-            # Edit the existing deployment and stage it for review
-            artifact = await artifact_manager.edit(
-                artifact_id=artifact.id,
-                manifest=dataset_manifest,
-                type=dataset_manifest.get("type"),
-                version="stage",
-            )
-            print(f"Artifact edited with ID: {artifact.id}")
-        else:
-            # Add the deployment to the gallery and stage it for review
-            artifact = await artifact_manager.create(
-                alias=deployment_alias,
-                parent_id=parent_id,
-                manifest=dataset_manifest,
-                type=dataset_manifest.get("type"),
-                version="stage",
-            )
-            print(f"Artifact created with ID: {artifact.id}")
-
-        # Load the dataset content
-        data_path = (
-            Path("__file__").parent.parent.parent / "data" / "hpa_demo" / "data.zip"
-        )
-        dataset_content = data_path.read_bytes()
-
-        # Upload manifest.yaml
-        upload_url = await artifact_manager.put_file(
-            artifact.id, file_path="manifest.yaml"
-        )
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.put(upload_url, data=dataset_manifest)
-            response.raise_for_status()
-            print(f"Uploaded manifest.yaml to artifact")
-
-        # Upload the entry point
-        upload_url = await artifact_manager.put_file(artifact.id, file_path="data.zip")
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.put(upload_url, data=dataset_content)
-            response.raise_for_status()
-            print(f"Uploaded data.zip to artifact")
-
-        cellpose_finetuning = CellposeFinetune()
-
-        data_url = await artifact_manager.get_file(
-            artifact_id="hpa-demo", file_path="data.zip"
-        )
-
+        # Create an artifact for the fine-tuned Cellpose model
         model_manifest = {
             "name": "Finetuned Cellpose model",
             "description": "Finetuned model for Cellpose cyto3",
             "type": "model",
         }
-        model_artifact = await artifact_manager.create(
-            parent_id=parent_id,
-            manifest=model_manifest,
-            type=model_manifest.get("type"),
-            version="stage",
+
+        try:
+            model_artifact = await artifact_manager.create(
+                alias=model_artifact_alias,
+                parent_id=collection_id,
+                manifest=model_manifest,
+                type=model_manifest["type"],
+                version="stage",
+            )
+        except:
+            model_artifact_id = f"{workspace}/{model_artifact_alias}"
+            answer = input(
+                f"Artifact {model_artifact_id} already exists. Do you want to overwrite it? (y/n): "
+            )
+            if answer.lower() != "y":
+                raise RuntimeError(
+                    f"Artifact {model_artifact_id} already exists and will not be overwritten."
+                )
+
+            # Overwrite the existing artifact
+            model_artifact = await artifact_manager.edit(
+                artifact_id=f"{workspace}/{model_artifact_alias}",
+                manifest=model_manifest,
+                type=model_manifest["type"],
+                version="stage",
+            )
+
+        # Create presigned URLs for data download and model upload
+        data_download_url = await artifact_manager.get_file(
+            artifact_id=f"{workspace}/{data_artifact_alias}", file_path="data.zip"
         )
-        finetuned_model_url = await artifact_manager.put_file(
-            model_artifact.id, file_path="hpa_finetuned_cyto3"
+
+        finetuned_model = model_artifact_alias.replace("-", "_")
+        model_upload_url = await artifact_manager.put_file(
+            model_artifact.id, file_path=finetuned_model
         )
 
         data = {
-            "data_url": data_url,
-            "finetuned_model_url": finetuned_model_url,
+            "data_download_url": data_download_url,
+            "model_upload_url": model_upload_url,
             "initial_model": "cyto3",
         }
 
-        ap = await cellpose_finetuning(data)
+        # Run the finetuning process
+        cellpose_finetuning = CellposeFinetune()
 
-        print(f"Average precision at iou threshold 0.5 = {ap['0.5']:.3f}")
+        output = await cellpose_finetuning.train(data)
+
+        print(f"Average precision at iou threshold 0.5: {output['final_average_precision']['0.5']:.3f}")
+
+        # Commit the artifact
+        await artifact_manager.commit(
+            artifact_id=model_artifact.id,
+            version="new",
+        )
+        print(f"Committed artifact with ID: {model_artifact.id}")
 
     asyncio.run(test_model())

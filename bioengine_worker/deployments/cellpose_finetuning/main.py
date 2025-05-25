@@ -61,12 +61,11 @@ class CellposeFinetune(object):
 
         return image_annotation_pairs
 
-    def _prepare_training_data(self, image_annotation_pairs):
+    def _prepare_training_data(self, image_annotation_pairs, train_ratio):
         # Get all indices of the list
         all_indices = np.arange(len(image_annotation_pairs))
 
         # Define the split ratio (e.g., 80% train, 20% test)
-        train_ratio = 0.8
         train_size = int(len(all_indices) * train_ratio)
 
         # Randomly shuffle and split indices
@@ -138,6 +137,7 @@ class CellposeFinetune(object):
         # get files (during training, test_data is transformed so we will load it again)
         test_data = [imread(image_path) for image_path in test_files]
         test_labels = [imread(image_path) for image_path in test_labels_files]
+        n_evaluations=len(test_data)
 
         # diameter of labels in training images
         # use model diameter if user diameter is 0
@@ -148,13 +148,20 @@ class CellposeFinetune(object):
         # run model on test images
         masks = model.eval(test_data, channels=channels, diameter=diam_labels)[0]
 
+        predictions = [
+            (test_data[i], test_labels[i], masks[i])
+            for i in range(min(len(test_data), 3))
+        ]
+
         # check performance using ground truth labels
         ap = metrics.average_precision(test_labels, masks, threshold=[0.5, 0.75, 0.9])[
             0
         ]
 
         # precision at different IOU thresholds
-        return {str(t): p for t, p in zip([0.5, 0.75, 0.9], ap.mean(axis=0))}
+        ap = {str(t): p for t, p in zip([0.5, 0.75, 0.9], ap.mean(axis=0))}
+
+        return n_evaluations, predictions, ap
 
     async def _upload_finetuned_model(self, model_path, model_url):
         import httpx
@@ -178,6 +185,7 @@ class CellposeFinetune(object):
                 - model_download_url: Presigned URL to download checkpoint from (optional)  # TODO: implement
                 - train_channel: Channel to use for training, default is "Grayscale"
                 - second_train_channel: Second training channel (if applicable)
+                - train_ratio: Ratio of training data, default is 0.8
                 - n_epochs: Number of epochs for training, default is 10
                 - learning_rate: Learning rate for training, default is 0.000001
                 - weight_decay: Weight decay for training, default is 0.0001
@@ -206,8 +214,14 @@ class CellposeFinetune(object):
             )  # TODO: replace this with HttpZarrStore from artifact manager (https://docs.amun.ai/#/artifact-manager?id=endpoint-2-workspaceartifactsartifact_aliaszip-fileszip_file_pathpathpathpath)
             image_annotation_pairs = self._find_image_annotation_pairs(image_dir)
             train_files, train_labels_files, test_files, test_labels_files = (
-                self._prepare_training_data(image_annotation_pairs)
+                self._prepare_training_data(
+                    image_annotation_pairs=image_annotation_pairs,
+                    train_ratio=data.get("train_ratio", 0.8)
+                )
             )
+            # Evaluate initial model
+            # n_evaluations, initial_predictions, initial_ap = self._evaluate_cellpose(model, channels, test_files, test_labels_files)
+
             model, channels, model_path, train_losses, test_losses = self._train_cellpose(
                 train_files=train_files,
                 train_labels_files=train_labels_files,
@@ -225,7 +239,8 @@ class CellposeFinetune(object):
                 weight_decay=data.get("weight_decay", 0.0001),
             )
             
-            ap = self._evaluate_cellpose(model, channels, test_files, test_labels_files)
+            # Evaluate finetuned model
+            _, finetuned_predictions, finetuned_ap = self._evaluate_cellpose(model, channels, test_files, test_labels_files)
 
             await self._upload_finetuned_model(
                 Path(model_path),
@@ -235,7 +250,11 @@ class CellposeFinetune(object):
             return {
                 "train_losses": train_losses,
                 "test_losses": test_losses,
-                "final_average_precision": ap,
+                # "n_evaluations": n_evaluations,
+                # "initial_predictions": initial_predictions,
+                "finetuned_predictions": finetuned_predictions,
+                # "initial_average_precision": initial_ap,
+                "final_average_precision": finetuned_ap,
             }
 
 

@@ -31,7 +31,7 @@ deployment_config:
         runtime_env:
           uv: [
             "cellpose==3.1.1.1",
-            "numpy<=1.26.4",
+            "numpy==1.26.4",
             "httpx",
             "tifffile",
           ]

@@ -82,13 +82,13 @@ async def manage_artifact(
             artifact_id=artifact_id,
             manifest=deployment_manifest,
             type=deployment_manifest.get("type", "generic"),
-            version="stage",
+            stage=True,
         )
     except:
         artifact_workspace = artifact_id.split("/")[0]
         collection_id = f"{artifact_workspace}/bioengine-apps"
         try:
-            await artifact_manager.list(collection_id)
+            await artifact_manager.read(collection_id)
         except Exception as e:
             expected_error = f'KeyError: "Artifact with ID \'{collection_id}\' does not exist."'
             if str(e).strip().endswith(expected_error):
@@ -112,7 +112,7 @@ async def manage_artifact(
             parent_id=collection_id,
             manifest=deployment_manifest,
             type=deployment_manifest.get("type", "generic"),
-            version="stage",
+            stage=True,
         )
         logger.info(f"Artifact created with ID: {artifact.id}")
 
@@ -138,7 +138,6 @@ async def manage_artifact(
     # Commit the artifact
     await artifact_manager.commit(
         artifact_id=artifact.id,
-        version="new",
     )
     logger.info(f"Committed artifact with ID: {artifact.id}")
 

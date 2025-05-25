@@ -238,6 +238,7 @@ class BioEngineWorker:
                 "load_dataset": self.dataset_manager.load_dataset,
                 "close_dataset": self.dataset_manager.close_dataset,
                 "execute_python_code": self.execute_python_code,
+                "create_artifact": self.deployment_manager.create_artifact,
                 "deploy_artifact": self.deployment_manager.deploy_artifact,
                 "undeploy_artifact": self.deployment_manager.undeploy_artifact,
                 "deploy_all_artifacts": self.deployment_manager.deploy_all_artifacts,

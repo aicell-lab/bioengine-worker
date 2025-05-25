@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 import os
 from functools import partial
@@ -9,6 +10,7 @@ import httpx
 import ray
 from ray import serve
 import numpy as np
+import yaml
 
 from bioengine_worker import __version__
 from bioengine_worker.ray_autoscaler import RayAutoscaler
@@ -300,12 +302,19 @@ class RayDeploymentManager:
             self.artifact_manager = None
             raise e
 
-    async def create_artifact(self, artifact_id: str, files: List[dict]) -> None:
+    async def create_artifact(self, files: List[dict], artifact_id: str = None) -> str:
         """
         Create a deployment artifact
-        """
-        raise NotImplementedError
 
+        Args:
+            files: List of file dictionaries with 'name', 'content', and 'type' keys
+                   type can be 'text' or 'base64'
+            artifact_id: Optional artifact ID. If provided, will edit existing artifact.
+                        If not provided, will create new artifact.
+
+        Returns:
+            str: The artifact ID of the created/updated artifact
+        """
         if not self.server:
             raise RuntimeError(
                 "Hypha server connection not available. Call initialize() first."
@@ -317,7 +326,135 @@ class RayDeploymentManager:
                 "Artifact manager not initialized. Call initialize() first."
             )
 
-        artifact_id = await self._get_full_artifact_id(artifact_id)
+        # Find the manifest file to extract metadata
+        manifest_file = None
+        for file in files:
+            if file["name"].lower() in ["manifest.yaml"]:
+                manifest_file = file
+                break
+
+        if not manifest_file:
+            raise ValueError("No manifest file found in files list. Expected 'manifest.yaml'")
+
+        # Parse the manifest
+        if manifest_file["type"] == "text":
+            manifest_content = manifest_file["content"]
+        else:
+            # Remove `data:...` prefix from the base64 content
+            if manifest_file["content"].startswith("data:"):
+                manifest_content = manifest_file["content"].split(",")[1]
+            # Decode base64 content
+            manifest_content = base64.b64decode(manifest_content).decode('utf-8')
+            # remove data:... prefix from the base64 content
+            if manifest_content.startswith("data:"):
+                manifest_content = manifest_content.split(",")[1]
+        
+        deployment_manifest = yaml.safe_load(manifest_content)
+
+        # Validate artifact ID from manifest if not provided
+        if artifact_id is None:
+            if "id" not in deployment_manifest:
+                raise ValueError("No artifact_id provided and no 'id' field found in manifest")
+            artifact_id = deployment_manifest["id"]
+
+        # Validate artifact ID format
+        invalid = any([
+            not artifact_id.islower(),
+            "_" in artifact_id,
+            not artifact_id.replace("-", "_").isidentifier(),
+        ])
+        if invalid:
+            raise ValueError(
+                f"Invalid artifact id: '{artifact_id}'. Please use lowercase letters, numbers, and hyphens only."
+            )
+
+        # Get full artifact ID with workspace
+        workspace = self.server.config.workspace
+        full_artifact_id = artifact_id if "/" in artifact_id else f"{workspace}/{artifact_id}"
+
+        try:
+            # Try to edit existing artifact
+            self.logger.info(f"Attempting to edit existing artifact '{full_artifact_id}'")
+            artifact = await self.artifact_manager.edit(
+                artifact_id=full_artifact_id,
+                manifest=deployment_manifest,
+                type=deployment_manifest.get("type", "generic"),
+                stage=True,
+            )
+            self.logger.info(f"Successfully edited existing artifact '{full_artifact_id}'")
+        except Exception as e:
+            # If edit fails, create new artifact
+            self.logger.info(f"Edit failed ({e}), creating new artifact '{full_artifact_id}'")
+            
+            # Ensure the bioengine-apps collection exists
+            artifact_workspace = full_artifact_id.split("/")[0]
+            collection_id = f"{artifact_workspace}/bioengine-apps"
+            
+            try:
+                await self.artifact_manager.read(collection_id)
+            except Exception as collection_error:
+                expected_error = f'KeyError: "Artifact with ID \'{collection_id}\' does not exist."'
+                if str(collection_error).strip().endswith(expected_error):
+                    self.logger.info(f"Collection '{collection_id}' does not exist. Creating it.")
+                    
+                    collection_manifest = {
+                        "name": "BioEngine Apps",
+                        "description": "A collection of Ray deployments for the BioEngine.",
+                    }
+                    collection = await self.artifact_manager.create(
+                        alias=collection_id,
+                        type="collection",
+                        manifest=collection_manifest,
+                        config={"permissions": {"*": "r", "@": "r+"}}
+                    )
+                    self.logger.info(f"Bioengine Apps collection created with ID: {collection.id}")
+
+            # Create new artifact
+            artifact = await self.artifact_manager.create(
+                alias=full_artifact_id,
+                parent_id=collection_id,
+                manifest=deployment_manifest,
+                type=deployment_manifest.get("type", "generic"),
+                stage=True,
+            )
+            self.logger.info(f"Artifact created with ID: {artifact.id}")
+
+        # Upload all files
+        for file in files:
+            file_name = file["name"]
+            file_content = file["content"]
+            file_type = file["type"]
+
+            self.logger.info(f"Uploading file '{file_name}' to artifact")
+
+            # Get upload URL
+            upload_url = await self.artifact_manager.put_file(artifact.id, file_path=file_name)
+
+            # Prepare content for upload
+            if file_type == "text":
+                upload_data = file_content
+            elif file_type == "base64":
+                # Decode base64 content for binary files
+                upload_data = base64.b64decode(file_content)
+            else:
+                raise ValueError(f"Unsupported file type '{file_type}'. Expected 'text' or 'base64'")
+
+            # Upload the file
+            async with httpx.AsyncClient(timeout=30) as client:
+                if file_type == "text":
+                    response = await client.put(upload_url, data=upload_data)
+                else:
+                    response = await client.put(upload_url, content=upload_data)
+                response.raise_for_status()
+                self.logger.info(f"Successfully uploaded '{file_name}' to artifact")
+
+        # Commit the artifact
+        await self.artifact_manager.commit(
+            artifact_id=artifact.id,
+        )
+        self.logger.info(f"Committed artifact with ID: {artifact.id}")
+
+        return artifact.id
 
     async def deploy_artifact(
         self,

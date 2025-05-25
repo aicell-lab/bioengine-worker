@@ -272,7 +272,7 @@ if __name__ == "__main__":
                 parent_id=collection_id,
                 manifest=model_manifest,
                 type=model_manifest["type"],
-                version="stage",
+                stage=True,
             )
         except:
             model_artifact_id = f"{workspace}/{model_artifact_alias}"
@@ -289,7 +289,7 @@ if __name__ == "__main__":
                 artifact_id=f"{workspace}/{model_artifact_alias}",
                 manifest=model_manifest,
                 type=model_manifest["type"],
-                version="stage",
+                stage=True,
             )
 
         # Create presigned URLs for data download and model upload
@@ -318,7 +318,6 @@ if __name__ == "__main__":
         # Commit the artifact
         await artifact_manager.commit(
             artifact_id=model_artifact.id,
-            version="new",
         )
         print(f"Committed artifact with ID: {model_artifact.id}")
 

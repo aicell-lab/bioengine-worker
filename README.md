@@ -116,6 +116,7 @@ The worker service provides the following functions:
 - `load_dataset(dataset_id)`
 - `close_dataset(dataset_id)`
 - `execute_python_code(...)`
+- `create_artifact(files, artifact_id)`
 - `deploy_artifact(artifact_id)`
 - `undeploy_artifact(artifact_id)`
 - `deploy_all_artifacts(deployment_collection_id)`

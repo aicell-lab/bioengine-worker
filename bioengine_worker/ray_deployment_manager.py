@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 import os
 from functools import partial
@@ -9,6 +10,7 @@ import httpx
 import ray
 from ray import serve
 import numpy as np
+import yaml
 
 from bioengine_worker import __version__
 from bioengine_worker.ray_autoscaler import RayAutoscaler
@@ -300,12 +302,19 @@ class RayDeploymentManager:
             self.artifact_manager = None
             raise e
 
-    async def create_artifact(self, artifact_id: str, files: List[dict]) -> None:
+    async def create_artifact(self, files: List[dict], artifact_id: str = None) -> str:
         """
         Create a deployment artifact
-        """
-        raise NotImplementedError
 
+        Args:
+            files: List of file dictionaries with 'name', 'content', and 'type' keys
+                   type can be 'text' or 'base64'
+            artifact_id: Optional artifact ID. If provided, will edit existing artifact.
+                        If not provided, will create new artifact.
+
+        Returns:
+            str: The artifact ID of the created/updated artifact
+        """
         if not self.server:
             raise RuntimeError(
                 "Hypha server connection not available. Call initialize() first."
@@ -317,7 +326,135 @@ class RayDeploymentManager:
                 "Artifact manager not initialized. Call initialize() first."
             )
 
-        artifact_id = await self._get_full_artifact_id(artifact_id)
+        # Find the manifest file to extract metadata
+        manifest_file = None
+        for file in files:
+            if file["name"].lower() in ["manifest.yaml"]:
+                manifest_file = file
+                break
+
+        if not manifest_file:
+            raise ValueError("No manifest file found in files list. Expected 'manifest.yaml'")
+
+        # Parse the manifest
+        if manifest_file["type"] == "text":
+            manifest_content = manifest_file["content"]
+        else:
+            # Remove `data:...` prefix from the base64 content
+            if manifest_file["content"].startswith("data:"):
+                manifest_content = manifest_file["content"].split(",")[1]
+            # Decode base64 content
+            manifest_content = base64.b64decode(manifest_content).decode('utf-8')
+            # remove data:... prefix from the base64 content
+            if manifest_content.startswith("data:"):
+                manifest_content = manifest_content.split(",")[1]
+        
+        deployment_manifest = yaml.safe_load(manifest_content)
+
+        # Validate artifact ID from manifest if not provided
+        if artifact_id is None:
+            if "id" not in deployment_manifest:
+                raise ValueError("No artifact_id provided and no 'id' field found in manifest")
+            artifact_id = deployment_manifest["id"]
+
+        # Validate artifact ID format
+        invalid = any([
+            not artifact_id.islower(),
+            "_" in artifact_id,
+            not artifact_id.replace("-", "_").isidentifier(),
+        ])
+        if invalid:
+            raise ValueError(
+                f"Invalid artifact id: '{artifact_id}'. Please use lowercase letters, numbers, and hyphens only."
+            )
+
+        # Get full artifact ID with workspace
+        workspace = self.server.config.workspace
+        full_artifact_id = artifact_id if "/" in artifact_id else f"{workspace}/{artifact_id}"
+
+        try:
+            # Try to edit existing artifact
+            self.logger.info(f"Attempting to edit existing artifact '{full_artifact_id}'")
+            artifact = await self.artifact_manager.edit(
+                artifact_id=full_artifact_id,
+                manifest=deployment_manifest,
+                type=deployment_manifest.get("type", "generic"),
+                stage=True,
+            )
+            self.logger.info(f"Successfully edited existing artifact '{full_artifact_id}'")
+        except Exception as e:
+            # If edit fails, create new artifact
+            self.logger.info(f"Edit failed ({e}), creating new artifact '{full_artifact_id}'")
+            
+            # Ensure the bioengine-apps collection exists
+            artifact_workspace = full_artifact_id.split("/")[0]
+            collection_id = f"{artifact_workspace}/bioengine-apps"
+            
+            try:
+                await self.artifact_manager.read(collection_id)
+            except Exception as collection_error:
+                expected_error = f'KeyError: "Artifact with ID \'{collection_id}\' does not exist."'
+                if str(collection_error).strip().endswith(expected_error):
+                    self.logger.info(f"Collection '{collection_id}' does not exist. Creating it.")
+                    
+                    collection_manifest = {
+                        "name": "BioEngine Apps",
+                        "description": "A collection of Ray deployments for the BioEngine.",
+                    }
+                    collection = await self.artifact_manager.create(
+                        alias=collection_id,
+                        type="collection",
+                        manifest=collection_manifest,
+                        config={"permissions": {"*": "r", "@": "r+"}}
+                    )
+                    self.logger.info(f"Bioengine Apps collection created with ID: {collection.id}")
+
+            # Create new artifact
+            artifact = await self.artifact_manager.create(
+                alias=full_artifact_id,
+                parent_id=collection_id,
+                manifest=deployment_manifest,
+                type=deployment_manifest.get("type", "generic"),
+                stage=True,
+            )
+            self.logger.info(f"Artifact created with ID: {artifact.id}")
+
+        # Upload all files
+        for file in files:
+            file_name = file["name"]
+            file_content = file["content"]
+            file_type = file["type"]
+
+            self.logger.info(f"Uploading file '{file_name}' to artifact")
+
+            # Get upload URL
+            upload_url = await self.artifact_manager.put_file(artifact.id, file_path=file_name)
+
+            # Prepare content for upload
+            if file_type == "text":
+                upload_data = file_content
+            elif file_type == "base64":
+                # Decode base64 content for binary files
+                upload_data = base64.b64decode(file_content)
+            else:
+                raise ValueError(f"Unsupported file type '{file_type}'. Expected 'text' or 'base64'")
+
+            # Upload the file
+            async with httpx.AsyncClient(timeout=30) as client:
+                if file_type == "text":
+                    response = await client.put(upload_url, data=upload_data)
+                else:
+                    response = await client.put(upload_url, content=upload_data)
+                response.raise_for_status()
+                self.logger.info(f"Successfully uploaded '{file_name}' to artifact")
+
+        # Commit the artifact
+        await self.artifact_manager.commit(
+            artifact_id=artifact.id,
+        )
+        self.logger.info(f"Committed artifact with ID: {artifact.id}")
+
+        return artifact.id
 
     async def deploy_artifact(
         self,
@@ -725,6 +862,38 @@ class RayDeploymentManager:
             raise e
 
 
+async def create_demo_artifact(deployment_manager, artifact_id=None):
+    """Helper function to create a demo artifact from demo deployment files
+    
+    Args:
+        deployment_manager: RayDeploymentManager instance (must be initialized)
+        artifact_id: Optional custom artifact ID
+        
+    Returns:
+        str: The created artifact ID
+    """
+    # Read demo deployment files
+    demo_deployment_dir = Path(__file__).parent / "deployments" / "demo_deployment"
+    
+    # Read manifest.yaml
+    with open(demo_deployment_dir / "manifest.yaml", "r") as f:
+        manifest_content = f.read()
+    
+    # Read main.py
+    with open(demo_deployment_dir / "main.py", "r") as f:
+        main_py_content = f.read()
+    
+    # Prepare files for create_artifact
+    files = [
+        {"name": "manifest.yaml", "content": manifest_content, "type": "text"},
+        {"name": "main.py", "content": main_py_content, "type": "text"},
+    ]
+    
+    # Create the artifact
+    created_artifact_id = await deployment_manager.create_artifact(files, artifact_id=artifact_id)
+    return created_artifact_id
+
+
 if __name__ == "__main__":
     """Test the RayDeploymentManager functionality with a real Ray cluster and model deployment."""
 
@@ -761,6 +930,63 @@ if __name__ == "__main__":
     else:
         autoscaler = None
 
+    async def test_create_artifact(deployment_manager=None, server_url="https://hypha.aicell.io"):
+        """Test the create_artifact function with demo deployment files
+        
+        Args:
+            deployment_manager: Optional existing deployment manager (must be initialized)
+            server_url: Server URL if creating new connection
+            
+        Returns:
+            str: The artifact ID of the last created artifact (for use in other tests)
+        """
+        print("\n===== Testing create_artifact function =====\n")
+        
+        # Use existing deployment manager or create new one
+        if deployment_manager is None:
+            try:
+                # Create deployment manager (no Ray cluster needed for artifact creation)
+                deployment_manager = RayDeploymentManager(_debug=True)
+
+                # Connect to Hypha server using token from environment
+                token = os.environ.get("HYPHA_TOKEN") or await login(
+                    {"server_url": server_url}
+                )
+                server = await connect_to_server({"server_url": server_url, "token": token})
+
+                # Initialize deployment manager
+                await deployment_manager.initialize(server)
+                
+            except Exception as e:
+                print(f"❌ Failed to initialize deployment manager: {e}")
+                raise e
+        
+        try:
+            # Test creating artifact without specifying artifact_id (should use ID from manifest)
+            print("Testing create_artifact without specifying artifact_id...")
+            created_artifact_id = await create_demo_artifact(deployment_manager)
+            print(f"Successfully created artifact: {created_artifact_id}")
+            
+            # Test updating the same artifact
+            print(f"\nTesting update of existing artifact: {created_artifact_id}")
+            updated_artifact_id = await create_demo_artifact(deployment_manager, artifact_id=created_artifact_id)
+            print(f"Successfully updated artifact: {updated_artifact_id}")
+            
+            # Test creating artifact with custom artifact_id
+            print("\nTesting create_artifact with custom artifact_id...")
+            custom_artifact_id = "test-demo-deployment"
+            custom_created_id = await create_demo_artifact(deployment_manager, artifact_id=custom_artifact_id)
+            print(f"Successfully created custom artifact: {custom_created_id}")
+            
+            print("\n✅ All create_artifact tests passed!")
+            
+            # Return the last created artifact ID for use in other tests
+            return custom_created_id
+            
+        except Exception as e:
+            print(f"❌ create_artifact test failed: {e}")
+            raise e
+
     async def test_deployment_manager(
         server_url="https://hypha.aicell.io", keep_running=False
     ):
@@ -782,6 +1008,33 @@ if __name__ == "__main__":
 
             # Initialize deployment manager
             await deployment_manager.initialize(server)
+
+            # Test create_artifact function
+            created_artifact_id = await test_create_artifact(deployment_manager)
+
+            # Test deploying the newly created artifact
+            print(f"\n--- Testing deployment of created artifact: {created_artifact_id} ---")
+            await deployment_manager.deploy_artifact(created_artifact_id)
+            
+            # Test the deployed artifact
+            deployment_status = await deployment_manager.get_status()
+            if created_artifact_id in deployment_status:
+                print(f"Successfully deployed created artifact: {created_artifact_id}")
+                
+                # Test the service
+                deployment_service_id = deployment_status["service_id"]
+                deployment_service = await server.get_service(deployment_service_id)
+                deployment_name = deployment_status[created_artifact_id]["deployment_name"]
+                
+                # Test ping method
+                response = await deployment_service[deployment_name]["ping"]()
+                print(f"Ping response from created artifact: {response}")
+                
+                # Test get_time method
+                response = await deployment_service[deployment_name]["get_time"]("Stockholm")
+                print(f"Time response from created artifact: {response}")
+            else:
+                print(f"Failed to deploy created artifact: {created_artifact_id}")
 
             # Deploy the example deployment
             artifact_id = "example-deployment"
@@ -826,4 +1079,10 @@ if __name__ == "__main__":
                 cluster_manager.shutdown_cluster()
 
     # Run the test
-    asyncio.run(test_deployment_manager(keep_running=True))
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "test_create_artifact":
+        # Run only the create_artifact test (no Ray cluster needed)
+        asyncio.run(test_create_artifact())
+    else:
+        # Run the full deployment manager test
+        asyncio.run(test_deployment_manager(keep_running=True))

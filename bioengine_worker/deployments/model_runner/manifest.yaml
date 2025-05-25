@@ -45,7 +45,7 @@ deployment_config:
         # Only specify memory limit
         memory: 4294967296  # 4GB RAM
         runtime_env:
-          uv: [
+          pip: [
               "numpy<=1.26.4",
               "torch==2.5.1",
               "torchvision==0.20.1",
@@ -62,7 +62,7 @@ deployment_config:
         # Only specify memory limit
         memory: 4294967296  # 4GB RAM
         runtime_env:
-          uv: [
+          pip: [
               "torch==2.5.1",
               "torchvision==0.20.1",
               "tensorflow==2.16.1",

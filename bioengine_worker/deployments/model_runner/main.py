@@ -28,6 +28,7 @@ class ModelRunner:
         model_path = Path(
             save_bioimageio_package_as_folder(model_id, output_path=str(model_path))
         )
+        return model_path
 
     async def _get_model(self, model_id: str):
         from bioimageio.core import load_model_description
@@ -89,13 +90,63 @@ class ModelRunner:
 
         # Change working directory (tensorflow models unzip to current directory)
         cwd = os.getcwd()
-        os.chdir(self.cache_dir / ".cache")
-        prediction = predict(model=model, inputs=inputs)
-        os.chdir(cwd)
+        try:
+            os.chdir(self.cache_dir / ".cache")
+            prediction = predict(model=model, inputs=inputs)
+        except Exception as e:
+            raise e
+        finally:
+            os.chdir(cwd)
 
         # Convert outputs back to numpy arrays
         outputs = {str(k): v.data.data for k, v in prediction.members.items()}
         return outputs
+
+    async def validate(self, rdf_dict: dict, known_files: dict = None) -> dict:
+        """
+        Validate a model RDF description.
+
+        Args:
+            rdf_dict (dict): The RDF description to validate.
+            known_files (dict, optional): Known files for validation context.
+
+        Returns:
+            dict: Validation result with success status and details.
+        """
+        from bioimageio.spec import ValidationContext, validate_format
+        
+        ctx = ValidationContext(perform_io_checks=False, known_files=known_files or {})
+        summary = validate_format(rdf_dict, context=ctx)
+        return {"success": summary.status == "valid-format", "details": summary.format()}
+
+    async def test(self, model_id: str) -> dict:
+        """
+        Test a model using bioimageio.core test functionality.
+
+        Args:
+            model_id (str): The model ID to test.
+
+        Returns:
+            dict: Test result from bioimageio.core.test_model.
+        """
+        from bioimageio.core import test_model
+        
+        # Get the loaded model description using the efficient caching system
+        model = await self._get_model(model_id)
+        
+        print(f"Testing model {model_id}...")
+        
+        # Change working directory (some models may need this)
+        cwd = os.getcwd()
+        os.chdir(self.cache_dir / ".cache")
+        try:
+            result = test_model(model).model_dump(mode="json")
+        except Exception as e:
+            raise e
+        finally:
+            os.chdir(cwd)
+            
+        return result
 
 
 if __name__ == "__main__":
@@ -108,13 +159,28 @@ if __name__ == "__main__":
 
         model_id = "creative-panda"  # choose different bioimage.io model
 
+        # Test the model validation and testing functions
+        print("Testing model validation and testing...")
+        
+        # Test the model
+        print(f"Testing model {model_id}...")
+        test_result = await model_runner.test(model_id)
+        print(f"Test result: {test_result}")
+
+        # Get model RDF for validation
+        model_rdf = await model_runner.get_model_rdf(model_id)
+        
+        # Validate the RDF
+        print("Validating model RDF...")
+        validation_result = await model_runner.validate(model_rdf)
+        print(f"Validation result: {validation_result}")
+
+        # Test inference
         image = await fetch_image(
             "https://zenodo.org/api/records/5906839/files/sample_input_0.tif/content"
         )
         image = image.astype("float32")
         print("example image downloaded: ", image.shape)
-
-        model_rdf = await model_runner.get_model_rdf(model_id)
 
         input_image_shape = tuple(model_rdf["inputs"][0]["shape"][1:])
         print("Input image shape", input_image_shape)

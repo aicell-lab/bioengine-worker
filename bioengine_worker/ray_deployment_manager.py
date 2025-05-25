@@ -862,6 +862,38 @@ class RayDeploymentManager:
             raise e
 
 
+async def create_demo_artifact(deployment_manager, artifact_id=None):
+    """Helper function to create a demo artifact from demo deployment files
+    
+    Args:
+        deployment_manager: RayDeploymentManager instance (must be initialized)
+        artifact_id: Optional custom artifact ID
+        
+    Returns:
+        str: The created artifact ID
+    """
+    # Read demo deployment files
+    demo_deployment_dir = Path(__file__).parent / "deployments" / "demo_deployment"
+    
+    # Read manifest.yaml
+    with open(demo_deployment_dir / "manifest.yaml", "r") as f:
+        manifest_content = f.read()
+    
+    # Read main.py
+    with open(demo_deployment_dir / "main.py", "r") as f:
+        main_py_content = f.read()
+    
+    # Prepare files for create_artifact
+    files = [
+        {"name": "manifest.yaml", "content": manifest_content, "type": "text"},
+        {"name": "main.py", "content": main_py_content, "type": "text"},
+    ]
+    
+    # Create the artifact
+    created_artifact_id = await deployment_manager.create_artifact(files, artifact_id=artifact_id)
+    return created_artifact_id
+
+
 if __name__ == "__main__":
     """Test the RayDeploymentManager functionality with a real Ray cluster and model deployment."""
 
@@ -898,6 +930,63 @@ if __name__ == "__main__":
     else:
         autoscaler = None
 
+    async def test_create_artifact(deployment_manager=None, server_url="https://hypha.aicell.io"):
+        """Test the create_artifact function with demo deployment files
+        
+        Args:
+            deployment_manager: Optional existing deployment manager (must be initialized)
+            server_url: Server URL if creating new connection
+            
+        Returns:
+            str: The artifact ID of the last created artifact (for use in other tests)
+        """
+        print("\n===== Testing create_artifact function =====\n")
+        
+        # Use existing deployment manager or create new one
+        if deployment_manager is None:
+            try:
+                # Create deployment manager (no Ray cluster needed for artifact creation)
+                deployment_manager = RayDeploymentManager(_debug=True)
+
+                # Connect to Hypha server using token from environment
+                token = os.environ.get("HYPHA_TOKEN") or await login(
+                    {"server_url": server_url}
+                )
+                server = await connect_to_server({"server_url": server_url, "token": token})
+
+                # Initialize deployment manager
+                await deployment_manager.initialize(server)
+                
+            except Exception as e:
+                print(f"❌ Failed to initialize deployment manager: {e}")
+                raise e
+        
+        try:
+            # Test creating artifact without specifying artifact_id (should use ID from manifest)
+            print("Testing create_artifact without specifying artifact_id...")
+            created_artifact_id = await create_demo_artifact(deployment_manager)
+            print(f"Successfully created artifact: {created_artifact_id}")
+            
+            # Test updating the same artifact
+            print(f"\nTesting update of existing artifact: {created_artifact_id}")
+            updated_artifact_id = await create_demo_artifact(deployment_manager, artifact_id=created_artifact_id)
+            print(f"Successfully updated artifact: {updated_artifact_id}")
+            
+            # Test creating artifact with custom artifact_id
+            print("\nTesting create_artifact with custom artifact_id...")
+            custom_artifact_id = "test-demo-deployment"
+            custom_created_id = await create_demo_artifact(deployment_manager, artifact_id=custom_artifact_id)
+            print(f"Successfully created custom artifact: {custom_created_id}")
+            
+            print("\n✅ All create_artifact tests passed!")
+            
+            # Return the last created artifact ID for use in other tests
+            return custom_created_id
+            
+        except Exception as e:
+            print(f"❌ create_artifact test failed: {e}")
+            raise e
+
     async def test_deployment_manager(
         server_url="https://hypha.aicell.io", keep_running=False
     ):
@@ -919,6 +1008,33 @@ if __name__ == "__main__":
 
             # Initialize deployment manager
             await deployment_manager.initialize(server)
+
+            # Test create_artifact function
+            created_artifact_id = await test_create_artifact(deployment_manager)
+
+            # Test deploying the newly created artifact
+            print(f"\n--- Testing deployment of created artifact: {created_artifact_id} ---")
+            await deployment_manager.deploy_artifact(created_artifact_id)
+            
+            # Test the deployed artifact
+            deployment_status = await deployment_manager.get_status()
+            if created_artifact_id in deployment_status:
+                print(f"Successfully deployed created artifact: {created_artifact_id}")
+                
+                # Test the service
+                deployment_service_id = deployment_status["service_id"]
+                deployment_service = await server.get_service(deployment_service_id)
+                deployment_name = deployment_status[created_artifact_id]["deployment_name"]
+                
+                # Test ping method
+                response = await deployment_service[deployment_name]["ping"]()
+                print(f"Ping response from created artifact: {response}")
+                
+                # Test get_time method
+                response = await deployment_service[deployment_name]["get_time"]("Stockholm")
+                print(f"Time response from created artifact: {response}")
+            else:
+                print(f"Failed to deploy created artifact: {created_artifact_id}")
 
             # Deploy the example deployment
             artifact_id = "example-deployment"
@@ -963,4 +1079,10 @@ if __name__ == "__main__":
                 cluster_manager.shutdown_cluster()
 
     # Run the test
-    asyncio.run(test_deployment_manager(keep_running=True))
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "test_create_artifact":
+        # Run only the create_artifact test (no Ray cluster needed)
+        asyncio.run(test_create_artifact())
+    else:
+        # Run the full deployment manager test
+        asyncio.run(test_deployment_manager(keep_running=True))

@@ -29,14 +29,22 @@ deployment_config:
         num_cpus: 1
         # memory: 4294967296  # 4GB RAM
         runtime_env:
-          uv: ["cellpose==3.1.1.1"]
+          uv: [
+            "cellpose==3.1.1.1",
+            "httpx",
+            "tifffile",
+          ]
     cpu:
       ray_actor_options:
         num_gpus: 0
         num_cpus: 1
         # memory: 4294967296  # 4GB RAM
         runtime_env:
-          uv: ["cellpose==3.1.1.1"]
+          uv: [
+            "cellpose==3.1.1.1",
+            "httpx",
+            "tifffile",
+          ]
   max_ongoing_requests: 1  # Needs to be 1 for GPU
   max_queued_requests: 10
   autoscaling_config:

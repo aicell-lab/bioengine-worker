@@ -151,7 +151,10 @@ class BioEngineWorker:
             # Set parameters for RayDeploymentManager
             ray_deployment_config = ray_deployment_config or {}
             self._set_parameter(
-                ray_deployment_config, "deployment_cache_dir", cache_dir, overwrite=False
+                ray_deployment_config,
+                "deployment_cache_dir",
+                cache_dir,
+                overwrite=False,
             )
             self._set_parameter(ray_deployment_config, "autoscaler", self.autoscaler)
             self._set_parameter(ray_deployment_config, "log_file", log_file)
@@ -463,10 +466,10 @@ if __name__ == "__main__":
                 workspace="chiron-platform",
                 server_url=server_url,
                 token=token,
-                service_id="bioengine-worker-test",
+                service_id="bioengine-worker",
                 dataset_config={
                     "data_dir": str(Path(__file__).parent.parent / "data"),
-                    "service_id": "bioengine-worker-test-datasets",
+                    "service_id": "bioengine-datasets",
                 },
                 ray_cluster_config={
                     "head_num_cpus": 4,
@@ -481,7 +484,7 @@ if __name__ == "__main__":
                     "metrics_interval_seconds": 10,
                 },
                 ray_deployment_config={
-                    "service_id": "bioengine-worker-test-deployments",
+                    "service_id": "bioengine-apps",
                 },
                 _debug=True,
             )

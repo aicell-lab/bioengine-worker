@@ -15,7 +15,7 @@ class DatasetManager:
     def __init__(
         self,
         data_dir: str = None,
-        service_id: str = "bioengine-worker-datasets",
+        service_id: str = "bioengine-datasets",
         # Logger
         logger: Optional[logging.Logger] = None,
         log_file: Optional[str] = None,
@@ -292,7 +292,7 @@ if __name__ == "__main__":
         data_dir = Path(__file__).parent.parent / "data"
         dataset_manager = DatasetManager(
             data_dir=str(data_dir),
-            service_id="bioengine-worker-test-datasets",
+            service_id="bioengine-datasets",
             _debug=True,
         )
         await dataset_manager.initialize(server)

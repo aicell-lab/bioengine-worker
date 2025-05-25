@@ -172,7 +172,7 @@ def create_parser():
     dataset_group.add_argument(
         "--dataset_service_id",
         type=str,
-        default="bioengine-worker-datasets",
+        default="bioengine-datasets",
         help="Service ID for the dataset manager",
     )
 
@@ -361,7 +361,7 @@ def create_parser():
     deployment_group = parser.add_argument_group("Ray Deployment Manager Options")
     deployment_group.add_argument(
         "--deployment_service_id",
-        default="bioengine-worker-deployments",
+        default="bioengine-apps",
         type=str,
         help="Service ID for deployed models",
     )

@@ -1,3 +1,6 @@
+import json
+import os
+import shutil
 from pathlib import Path
 from typing import Dict, Union
 
@@ -6,8 +9,6 @@ import numpy as np
 
 class ModelRunner:
     def __init__(self, cache_n_models: int = 10):
-        import os
-
         self.cache_dir = (
             Path(os.environ["BIOENGINE_CACHE_PATH"]).resolve() / "bioimageio_models"
         )
@@ -19,9 +20,6 @@ class ModelRunner:
         self.cached_models = []
 
     async def _download_model(self, model_id: str) -> str:
-        import os
-        from pathlib import Path
-
         from bioimageio.spec import save_bioimageio_package_as_folder
 
         # Download new model
@@ -32,8 +30,6 @@ class ModelRunner:
         )
 
     async def _get_model(self, model_id: str):
-        import shutil
-
         from bioimageio.core import load_model_description
         from bioimageio.spec import InvalidDescr
 
@@ -60,7 +56,7 @@ class ModelRunner:
         assert not isinstance(model, InvalidDescr), f"Model {model_id} is invalid"
         return model
 
-    async def get_model_rdf(self, model_id: str) -> Dict:
+    async def get_model_rdf(self, model_id: str) -> dict:
         """
         Get the model RDF description including inputs, preprocessing, postprocessing, and outputs.
 
@@ -70,8 +66,6 @@ class ModelRunner:
         Returns:
             Dict: The model RDF description.
         """
-        import json
-
         model = await self._get_model(model_id)
         return json.loads(model.model_dump_json())
 
@@ -88,8 +82,6 @@ class ModelRunner:
         Returns:
             Dict[str, np.ndarray]: The outputs of the model.
         """
-        import os
-
         from bioimageio.core import predict
 
         # Get the model

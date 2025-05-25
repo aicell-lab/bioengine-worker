@@ -25,7 +25,7 @@ class RayDeploymentManager:
 
     def __init__(
         self,
-        service_id: str = "bioengine-worker-deployments",
+        service_id: str = "bioengine-apps",
         deployment_cache_dir: str = "/tmp",
         autoscaler: Optional[RayAutoscaler] = None,
         # Logger
@@ -258,7 +258,7 @@ class RayDeploymentManager:
                 {
                     "id": self._service_id,
                     "name": "BioEngine Worker Deployments",
-                    "type": "ray-deployment",
+                    "type": "bioengine-apps",
                     "description": "Deployed Ray Serve models",
                     "config": {"visibility": "public", "require_context": True},
                     **service_functions,

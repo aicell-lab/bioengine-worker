@@ -81,7 +81,7 @@ async def manage_artifact(
         artifact = await artifact_manager.edit(
             artifact_id=artifact_id,
             manifest=deployment_manifest,
-            type=deployment_manifest.get("type", "generic"),
+            type=deployment_manifest.get("type", "application"),
             stage=True,
         )
     except:
@@ -111,7 +111,7 @@ async def manage_artifact(
             alias=artifact_id,
             parent_id=collection_id,
             manifest=deployment_manifest,
-            type=deployment_manifest.get("type", "generic"),
+            type=deployment_manifest.get("type", "application"),
             stage=True,
         )
         logger.info(f"Artifact created with ID: {artifact.id}")

@@ -380,7 +380,7 @@ class RayDeploymentManager:
                 artifact = await self.artifact_manager.edit(
                     artifact_id=full_artifact_id,
                     manifest=deployment_manifest,
-                    type=deployment_manifest.get("type", "generic"),
+                    type=deployment_manifest.get("type", "application"),
                     stage=True,
                 )
                 self.logger.info(f"Successfully edited existing artifact '{full_artifact_id}'")
@@ -436,7 +436,7 @@ class RayDeploymentManager:
                 alias=alias,
                 parent_id=collection_id,
                 manifest=deployment_manifest,
-                type=deployment_manifest.get("type", "generic"),
+                type=deployment_manifest.get("type", "application"),
                 stage=True,
             )
             self.logger.info(f"Artifact created with ID: {artifact.id}")

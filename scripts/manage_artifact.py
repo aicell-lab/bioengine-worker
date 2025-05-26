@@ -119,7 +119,7 @@ async def manage_artifact(
     # Upload manifest.yaml
     upload_url = await artifact_manager.put_file(artifact.id, file_path="manifest.yaml")
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.put(upload_url, data=deployment_manifest)
+        response = await client.put(upload_url, data=yaml.dump(deployment_manifest))
         response.raise_for_status()
         logger.info(f"Uploaded manifest.yaml to artifact")
 

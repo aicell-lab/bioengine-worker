@@ -366,6 +366,12 @@ def create_parser():
         help="Service ID for deployed models",
     )
     deployment_group.add_argument(
+        "--admin_users",
+        type=str,
+        nargs="+",
+        help="List of admin users for the deployment",
+    )
+    deployment_group.add_argument(
         "--deployment_cache_dir",
         type=str,
         help="Working directory for Ray Serve deployments. If not set, defaults to cache_dir. This should be a mounted directory if running in container.",

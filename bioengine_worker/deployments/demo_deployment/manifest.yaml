@@ -26,7 +26,7 @@ deployment_class:
 deployment_config:
   ray_actor_options:
     runtime_env:
-      uv: [
+      pip: [
         "geopy",
         "timezonefinder",
         "pytz"

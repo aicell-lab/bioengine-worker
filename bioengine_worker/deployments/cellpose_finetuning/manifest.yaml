@@ -29,9 +29,9 @@ deployment_config:
         num_cpus: 1
         # memory: 4294967296  # 4GB RAM
         runtime_env:
-          uv: [
+          pip: [
             "cellpose==3.1.1.1",
-            "numpy<=1.26.4",
+            "numpy==1.26.4",
             "httpx",
             "tifffile",
           ]
@@ -41,7 +41,7 @@ deployment_config:
         num_cpus: 1
         # memory: 4294967296  # 4GB RAM
         runtime_env:
-          uv: [
+          pip: [
             "cellpose==3.1.1.1",
             "httpx",
             "tifffile",

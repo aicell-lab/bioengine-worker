@@ -3,4 +3,4 @@ httpx
 hypha-rpc
 numpy==1.26.4
 pyyaml
-ray[client,serve]==2.42.1
+ray[client,serve]==2.33.0

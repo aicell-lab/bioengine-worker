@@ -27,6 +27,7 @@ class RayDeploymentManager:
     def __init__(
         self,
         service_id: str = "bioengine-apps",
+        admin_users: Optional[List[str]] = None,
         deployment_cache_dir: str = "/tmp",
         autoscaler: Optional[RayAutoscaler] = None,
         # Logger
@@ -54,6 +55,7 @@ class RayDeploymentManager:
         self._service_id = service_id
         self.autoscaler = autoscaler
         self.deployment_cache_dir = deployment_cache_dir
+        self.admin_users = admin_users or []
 
         # Initialize state variables
         self.server = None
@@ -170,6 +172,20 @@ class RayDeploymentManager:
             )
         return deployment_name
 
+    async def _check_permissions(
+        self, context: Optional[Dict[str, Any]], authorized_users: str, resource_name: str
+    ) -> bool:
+        """Check if the user in the context is authorized to access the deployment"""
+        user = context["user"]
+        if (
+            authorized_users != "*"
+            and user["id"] not in authorized_users
+            and user.get("email", "no-email") not in authorized_users
+        ):
+            msg = f"User {user['id']} is not authorized to access {resource_name}"
+            self.logger.warning(msg)
+            raise PermissionError(msg)
+
     async def _update_services(self) -> None:
         """Update Hypha services based on currently deployed models"""
         try:
@@ -191,23 +207,15 @@ class RayDeploymentManager:
                 **kwargs,
             ):
                 try:
-                    user = (
-                        context["user"]
-                        if context
-                        else {"id": "anonymous", "email": "anonymous"}
+                    await self._check_permissions(
+                        context,
+                        authorized_users,
+                        resource_name=f"deployment '{deployment_name}' method '{method_name}'",
                     )
-
-                    if (
-                        authorized_users != "*"
-                        and user["id"] not in authorized_users
-                        and user["email"] not in authorized_users
-                    ):
-                        msg = f"User {user['id']} is not authorized to call deployment '{deployment_name}'"
-                        self.logger.warning(msg)
-                        raise PermissionError(msg)
+                    user_id = context["user"]["id"]
 
                     self.logger.info(
-                        f"User {user['id']} is calling deployment '{deployment_name}' with method '{method_name}'"
+                        f"User {user_id} is calling deployment '{deployment_name}' with method '{method_name}'"
                     )
                     app_handle = serve.get_app_handle(name=deployment_name)
 
@@ -302,7 +310,7 @@ class RayDeploymentManager:
             self.artifact_manager = None
             raise e
 
-    async def create_artifact(self, files: List[dict], artifact_id: str = None) -> str:
+    async def create_artifact(self, files: List[dict], artifact_id: str = None, context: Optional[dict] = None) -> str:
         """
         Create a deployment artifact
 
@@ -325,6 +333,13 @@ class RayDeploymentManager:
             raise RuntimeError(
                 "Artifact manager not initialized. Call initialize() first."
             )
+
+        await self._check_permissions(
+            context,
+            self.admin_users,
+            resource_name=f"creation of artifact '{artifact_id}'",
+        )
+        user_id = context["user"]["id"]
 
         # Find the manifest file to extract metadata
         manifest_file = None
@@ -476,6 +491,7 @@ class RayDeploymentManager:
         Returns:
             str: Deployment name
         """
+        
         try:
             # Verify client is connected to Hypha server
             if not self.server:
@@ -495,6 +511,13 @@ class RayDeploymentManager:
                     "Ray cluster is not running. Call initialize() first."
                 )
 
+            await self._check_permissions(
+                context,
+                self.admin_users,
+                resource_name=f"deployment of artifact '{artifact_id}'",
+            )
+            user_id = context["user"]["id"]
+
             artifact_id = await self._get_full_artifact_id(artifact_id)
 
             if artifact_id in self._deployed_artifacts:
@@ -503,7 +526,7 @@ class RayDeploymentManager:
                 )
                 return artifact_id
 
-            self.logger.info(f"Deploying artifact '{artifact_id}'...")
+            self.logger.info(f"User {user_id} is deploying artifact '{artifact_id}'...")
 
             # Read the manifest to get deployment configuration
             artifact = await self.artifact_manager.read(artifact_id, version=version)
@@ -656,6 +679,13 @@ class RayDeploymentManager:
                     "Ray cluster is not running. Call initialize() first."
                 )
 
+            await self._check_permissions(
+                context,
+                self.admin_users,
+                resource_name=f"undeployment of artifact '{artifact_id}'",
+            )
+            user_id = context["user"]["id"]
+
             artifact_id = await self._get_full_artifact_id(artifact_id)
 
             # Check if artifact exists in deployed artifacts
@@ -672,7 +702,7 @@ class RayDeploymentManager:
                 )
                 return
 
-            self.logger.info(f"Undeploying artifact '{artifact_id}'...")
+            self.logger.info(f"User {user_id} is undeploying artifact '{artifact_id}'...")
             self._undeploying_artifacts.add(artifact_id)
 
             # Check if there's an ongoing deployment task for this artifact

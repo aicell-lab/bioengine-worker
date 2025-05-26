@@ -21,7 +21,7 @@ deployment_class:
     # This is a multiplexed deployment, meaning that multiple models can be loaded
     # Note: Only works for async methods; method requires exactly one argument: model_id
     method_name: _get_model
-    max_num_models_per_replica: 1
+    max_num_models_per_replica: 5
   exposed_methods:
     get_model_rdf:
       authorized_users: "*"
@@ -29,6 +29,12 @@ deployment_class:
     infer:
       authorized_users: "*"
       description: "Run inference on the model with the given data."
+    validate:
+      authorized_users: "*"
+      description: "Validate a model RDF against the BioImage.IO schema."
+    test:
+      authorized_users: "*"
+      description: "Run a test on the model to check if it is working correctly."
 deployment_config:
   modes:
     # First key is default. If no mode is specified, GPU will be used.
@@ -39,7 +45,7 @@ deployment_config:
         # Only specify memory limit
         memory: 4294967296  # 4GB RAM
         runtime_env:
-          uv: [
+          pip: [
               "numpy<=1.26.4",
               "torch==2.5.1",
               "torchvision==0.20.1",
@@ -56,7 +62,7 @@ deployment_config:
         # Only specify memory limit
         memory: 4294967296  # 4GB RAM
         runtime_env:
-          uv: [
+          pip: [
               "torch==2.5.1",
               "torchvision==0.20.1",
               "tensorflow==2.16.1",

@@ -274,18 +274,9 @@ class ModelRunner:
         else:
             # Handle regular model IDs - let Ray's multiplex caching handle this
             if skip_cache:
-                # Remove from our local cache tracking
-                if model_id in self.cached_models:
-                    self.cached_models.remove(model_id)
-                
-                # Remove existing cache if skip_cache is True
-                model_path = self.cache_dir / model_id
-                if model_path.exists():
-                    print(f"Removing cached model: {model_id}")
-                    try:
-                        shutil.rmtree(str(model_path))
-                    except:
-                        pass
+                raise ValueError(
+                    "skip_cache=True is not supported for model IDs, only for URLs."
+                )
             
             # Always use _get_model to leverage Ray's multiplex caching
             print(f"Getting model: {model_id} (Ray multiplex will handle caching)")
@@ -314,12 +305,18 @@ if __name__ == "__main__":
 
         model_runner = ModelRunner()
 
-        model_id = "creative-panda"  # choose different bioimage.io model
-
         # Test the model validation and testing functions
         print("Testing model validation and testing...")
+
+        # Test the model with an URL
+        model_id = "https://hypha.aicell.io/bioimage-io/artifacts/affable-shark/create-zip-file"
+        print(f"Testing model {model_id}...")
+        test_result = await model_runner.test(model_id)
+        print(f"Test result: {test_result}")
         
-        # Test the model
+        # Test the model with an ID
+        model_id = "creative-panda"  # choose different bioimage.io model
+
         print(f"Testing model {model_id}...")
         test_result = await model_runner.test(model_id)
         print(f"Test result: {test_result}")

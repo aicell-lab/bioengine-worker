@@ -20,6 +20,19 @@ class CellposeFinetune(object):
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         os.environ["CELLPOSE_LOCAL_MODELS_PATH"] = str(self.cache_dir)
 
+        self.pretrained_models = [
+            "cyto",
+            "cyto3",
+            "nuclei",
+            "tissuenet_cp3",
+            "livecell_cp3",
+            "yeast_PhC_cp3",
+            "yeast_BF_cp3",
+            "bact_phase_cp3",
+            "bact_fluor_cp3",
+            "deepbacs_cp3",
+        ]
+
     async def _download_data(self, tmp_dir: Path, download_url: str) -> Path:
         import httpx
 
@@ -177,7 +190,7 @@ class CellposeFinetune(object):
 
     async def _upload_data(
         self,
-        upload_url: str,
+        result_upload_url: str,
         tmp_dir: Path,
         model_path: str,
         test_files: list,
@@ -225,9 +238,12 @@ class CellposeFinetune(object):
 
         # Upload the zip file to the provided upload URL
         zip_content = zip_file_path.read_bytes()
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.put(upload_url, content=zip_content)
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.put(result_upload_url, content=zip_content)
             response.raise_for_status()
+
+    async def list_pretrained_models(self) -> list:
+        return self.pretrained_models
 
     async def train(self, data: dict) -> dict:
         """
@@ -236,7 +252,7 @@ class CellposeFinetune(object):
         Args:
             data: Dictionary containing the following keys:
                 - data_download_url: Presigned URL of the data to download
-                - model_upload_url: Presigned URL to upload the finetuned model
+                - result_upload_url: Presigned URL to upload the model finetuning results
                 - initial_model: Initial model to use for finetuning (not used if 'model_download_url' is given)
 
             Additional optional keys:
@@ -256,13 +272,21 @@ class CellposeFinetune(object):
         # Check if the required keys are present in the data dictionary
         required_keys = [
             "data_download_url",
-            "model_upload_url",
+            "result_upload_url",
             "initial_model",
         ]
         for key in required_keys:
             if key not in data:
                 raise ValueError(f"Missing required key: {key} in data dictionary.")
 
+        # Check if the initial model is valid
+        if data["initial_model"] not in self.pretrained_models:
+            raise ValueError(
+                f"Invalid initial model: {data['initial_model']}. "
+                f"Available models: {', '.join(self.pretrained_models)}."
+            )
+
+        # If model_download_url is provided, raise NotImplementedError
         if "model_download_url" in data:
             raise NotImplementedError(
                 "Starting from a model checkpoint is not implemented yet."
@@ -286,7 +310,6 @@ class CellposeFinetune(object):
             )
 
             # Initialize Cellpose model from one of the available models
-            # ["cyto", "cyto3", "nuclei", "tissuenet_cp3", "livecell_cp3", "yeast_PhC_cp3", "yeast_BF_cp3", "bact_phase_cp3", "bact_fluor_cp3", "deepbacs_cp3", "None"]
             model = models.CellposeModel(
                 gpu=core.use_gpu(), model_type=data["initial_model"]
             )
@@ -332,7 +355,7 @@ class CellposeFinetune(object):
 
             # Save the finetuning results in a zip file and upload it
             await self._upload_data(
-                upload_url=data["model_upload_url"],
+                result_upload_url=data["result_upload_url"],
                 tmp_dir=tmp_dir,
                 model_path=model_path,
                 test_files=test_files,
@@ -371,6 +394,8 @@ if __name__ == "__main__":
         data_artifact_alias = "hpa-demo"
         model_artifact_alias = "cellpose-cyto3-hpa-finetuned"
 
+        finetuning_result = model_artifact_alias.replace("-", "_") + ".zip"
+
         # Create an artifact for the fine-tuned Cellpose model
         model_manifest = {
             "name": "Finetuned Cellpose model",
@@ -386,17 +411,18 @@ if __name__ == "__main__":
                 type=model_manifest["type"],
                 stage=True,
             )
+            print(f"Artifact created with ID: {model_artifact.id}")
         except:
-            model_artifact_id = f"{workspace}/{model_artifact_alias}"
-            answer = input(
-                f"Artifact {model_artifact_id} already exists. Do you want to overwrite it? (y/n): "
-            )
-            if answer.lower() != "y":
-                raise RuntimeError(
-                    f"Artifact {model_artifact_id} already exists and will not be overwritten."
-                )
+            artifact_id = f"{workspace}/{model_artifact_alias}"
+            artifact_files = await artifact_manager.list_files(artifact_id)
+            for file in artifact_files:
+                if file.name == finetuning_result:
+                    print(
+                        f"The file '{finetuning_result}' already exists in the artifact '{artifact_id}'. Overwriting it."
+                    )
+                    break
 
-            # Overwrite the existing artifact
+            # Edit the existing artifact with the new manifest
             model_artifact = await artifact_manager.edit(
                 artifact_id=f"{workspace}/{model_artifact_alias}",
                 manifest=model_manifest,
@@ -406,17 +432,18 @@ if __name__ == "__main__":
 
         # Create presigned URLs for data download and model upload
         data_download_url = await artifact_manager.get_file(
-            artifact_id=f"{workspace}/{data_artifact_alias}", file_path="data.zip"
+            artifact_id=f"{workspace}/{data_artifact_alias}",
+            file_path="data.zip",
         )
 
-        finetuned_model = model_artifact_alias.replace("-", "_") + ".zip"
-        model_upload_url = await artifact_manager.put_file(
-            model_artifact.id, file_path=finetuned_model
+        result_upload_url = await artifact_manager.put_file(
+            artifact_id=model_artifact.id,
+            file_path=finetuning_result,
         )
 
         data = {
             "data_download_url": data_download_url,
-            "model_upload_url": model_upload_url,
+            "result_upload_url": result_upload_url,
             "initial_model": "cyto3",
         }
 
@@ -428,9 +455,7 @@ if __name__ == "__main__":
         assert output["status"] == "success", "Finetuning failed"
 
         # Commit the artifact
-        await artifact_manager.commit(
-            artifact_id=model_artifact.id,
-        )
+        await artifact_manager.commit(artifact_id=model_artifact.id)
         print(f"Committed artifact with ID: {model_artifact.id}")
 
     asyncio.run(test_model())

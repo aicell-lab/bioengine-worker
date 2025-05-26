@@ -18,6 +18,9 @@ deployment_class:
   python_file: main.py
   class_name: CellposeFinetune
   exposed_methods:
+    list_pretrained_models:
+      authorized_users: "*"
+      description: "List available pretrained Cellpose v2 models for fine-tuning."
     train:
       authorized_users: "*"
       description: "Fine-tune the Cellpose v2 model with the provided training data."

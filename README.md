@@ -36,6 +36,11 @@ docker run --rm ghcr.io/aicell-lab/bioengine-worker:0.1.13 python -m bioengine_w
 
 To run as your own user, the variables `UID` and `GID` are required. If not set, `export` them before running docker compose with `export UID=$(id -u)` and `export GID=$(id -g)` or add them to your `.env` file.
 
+As a shortcut, you can also run:
+
+```bash
+UID=$(id -u) GID=$(id -g) docker compose up
+```
 
 ### Apptainer (for HPC)
 

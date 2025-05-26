@@ -18,7 +18,7 @@ class CellposeFinetune(object):
             Path(os.environ["BIOENGINE_CACHE_PATH"]).resolve() / "cellpose_finetune"
         )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        os.environ["CELLPOSE_LOCAL_MODELS_PATH"] = str(self.cache_dir / "models")
+        os.environ["CELLPOSE_LOCAL_MODELS_PATH"] = str(self.cache_dir)
 
     async def _download_data(self, tmp_dir: Path, download_url: str) -> Path:
         import httpx

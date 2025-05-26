@@ -372,7 +372,10 @@ class RayDeploymentManager:
                 manifest_content = manifest_content.split(",")[1]
 
         deployment_manifest = yaml.safe_load(manifest_content)
-
+        
+        if artifact_id is None:
+            deployment_manifest["created_by"] = user_id
+        assert deployment_manifest.get("type") == "application", f"type must be 'application', got '{deployment_manifest.get('type')}'"
         if artifact_id is not None:
             # If artifact_id is provided, we expect an existing artifact and will edit it
             workspace = self.server.config.workspace
@@ -386,7 +389,7 @@ class RayDeploymentManager:
                 artifact = await self.artifact_manager.edit(
                     artifact_id=full_artifact_id,
                     manifest=deployment_manifest,
-                    type=deployment_manifest.get("type", "generic"),
+                    type=deployment_manifest.get("type", "application"),
                     stage=True,
                 )
                 self.logger.info(
@@ -456,7 +459,7 @@ class RayDeploymentManager:
                 alias=alias,
                 parent_id=collection_id,
                 manifest=deployment_manifest,
-                type=deployment_manifest.get("type", "generic"),
+                type=deployment_manifest.get("type", "application"),
                 stage=True,
             )
             self.logger.info(f"Artifact created with ID: {artifact.id}")

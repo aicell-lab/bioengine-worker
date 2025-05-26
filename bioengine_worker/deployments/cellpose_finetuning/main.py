@@ -38,6 +38,7 @@ class CellposeFinetune(object):
 
         # Define the path to save the downloaded zip file
         zip_file_path = tmp_dir / "data.zip"
+        data_dir = tmp_dir / "data"
 
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(download_url)
@@ -46,15 +47,9 @@ class CellposeFinetune(object):
 
         # Unzip the downloaded file
         with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
-            zip_ref.extractall(tmp_dir)
+            zip_ref.extractall(data_dir)
 
-        # List all folders that do not start with _
-        folders = [
-            f for f in tmp_dir.iterdir() if f.is_dir() and not f.name.startswith("_")
-        ]
-        assert len(folders) == 1, "Expected exactly one folder in the data directory."
-
-        return folders[0]
+        return data_dir
 
     def _find_image_annotation_pairs(self, image_dir):
         annotations_dir = image_dir / "annotations"

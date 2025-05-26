@@ -43,7 +43,7 @@ deployment_config:
         num_gpus: 1
         num_cpus: 1
         # Only specify memory limit
-        memory: 4294967296  # 4GB RAM
+        memory: 8589934592  # 8GB RAM
         runtime_env:
           pip: [
               "numpy<=1.26.4",
@@ -60,7 +60,7 @@ deployment_config:
         num_gpus: 0
         num_cpus: 1
         # Only specify memory limit
-        memory: 4294967296  # 4GB RAM
+        memory: 8589934592  # 8GB RAM
         runtime_env:
           pip: [
               "torch==2.5.1",

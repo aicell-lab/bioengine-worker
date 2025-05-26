@@ -31,5 +31,5 @@ deployment_config:
         "timezonefinder",
         "pytz"
       ]
-  max_ongoing_requests: 1
-  max_queued_requests: 10
+  max_ongoing_requests: 10
+  max_queued_requests: 30

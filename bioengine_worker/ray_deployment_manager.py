@@ -343,7 +343,6 @@ class RayDeploymentManager:
                     artifact_id,
                     context=context,
                     _skip_update=True,
-                    _force_redeploy=True,
                 )
                 for artifact_id in self.startup_deployments
             ]
@@ -552,7 +551,6 @@ class RayDeploymentManager:
         mode: str = None,
         version: str = None,
         context: Optional[Dict[str, Any]] = None,
-        _force_redeploy: bool = False,
         _skip_update=False,
     ) -> str:
         """
@@ -595,19 +593,19 @@ class RayDeploymentManager:
         # Check if the artifact is already deployed
         deployment_name = await self._create_deployment_name(artifact_id)
         serve_status = serve.status()
-        if deployment_name in serve_status.applications.keys():
-            if _force_redeploy:
-                self.logger.info(f"Forcing redeployment of artifact '{artifact_id}'")
-                await self.undeploy_artifact(
-                    artifact_id, context=context, _skip_update=_skip_update
-                )
-            else:
+        if deployment_name not in serve_status.applications.keys():
+            self.logger.info(f"User '{user_id}' is starting a new deployment for artifact '{artifact_id}'")
+        else:
+            application = serve_status.applications[deployment_name]
+            if application.status.value == "DEPLOYING":
                 self.logger.info(
-                    f"Artifact '{artifact_id}' is already deployed. Skipping deployment."
+                    f"Artifact '{artifact_id}' is currently being deployed. Skipping deployment."
                 )
                 return
-
-        self.logger.info(f"User '{user_id}' is deploying artifact '{artifact_id}'...")
+            else:
+                self.logger.info(
+                    f"Updating existing deployment for artifact '{artifact_id}'"
+                )
 
         # Read the manifest to get deployment configuration
         artifact = await self.artifact_manager.read(artifact_id, version=version)

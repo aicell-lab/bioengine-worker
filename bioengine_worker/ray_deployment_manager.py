@@ -318,7 +318,7 @@ class RayDeploymentManager:
             files: List of file dictionaries with 'name', 'content', and 'type' keys
                    type can be 'text' or 'base64'
             artifact_id: Optional artifact ID. If provided, will edit existing artifact.
-                        If not provided, will create new artifact.
+                        If not provided, will create new artifact using alias from manifest.
 
         Returns:
             str: The artifact ID of the created/updated artifact
@@ -366,44 +366,47 @@ class RayDeploymentManager:
         
         deployment_manifest = yaml.safe_load(manifest_content)
 
-        # Validate artifact ID from manifest if not provided
-        if artifact_id is None:
+        if artifact_id is not None:
+            # If artifact_id is provided, we expect an existing artifact and will edit it
+            workspace = self.server.config.workspace
+            full_artifact_id = artifact_id if "/" in artifact_id else f"{workspace}/{artifact_id}"
+            
+            try:
+                # Try to edit existing artifact
+                self.logger.info(f"Editing existing artifact '{full_artifact_id}'")
+                artifact = await self.artifact_manager.edit(
+                    artifact_id=full_artifact_id,
+                    manifest=deployment_manifest,
+                    type=deployment_manifest.get("type", "generic"),
+                    stage=True,
+                )
+                self.logger.info(f"Successfully edited existing artifact '{full_artifact_id}'")
+            except Exception as e:
+                # If edit fails, throw an error since we expected an existing artifact
+                raise ValueError(f"Failed to edit existing artifact '{full_artifact_id}': {e}")
+        else:
+            # If artifact_id is not provided, create new artifact using alias from manifest
             if "id" not in deployment_manifest:
                 raise ValueError("No artifact_id provided and no 'id' field found in manifest")
-            artifact_id = deployment_manifest["id"]
-
-        # Validate artifact ID format
-        invalid = any([
-            not artifact_id.islower(),
-            "_" in artifact_id,
-            not artifact_id.replace("-", "_").isidentifier(),
-        ])
-        if invalid:
-            raise ValueError(
-                f"Invalid artifact id: '{artifact_id}'. Please use lowercase letters, numbers, and hyphens only."
-            )
-
-        # Get full artifact ID with workspace
-        workspace = self.server.config.workspace
-        full_artifact_id = artifact_id if "/" in artifact_id else f"{workspace}/{artifact_id}"
-
-        try:
-            # Try to edit existing artifact
-            self.logger.info(f"Attempting to edit existing artifact '{full_artifact_id}'")
-            artifact = await self.artifact_manager.edit(
-                artifact_id=full_artifact_id,
-                manifest=deployment_manifest,
-                type=deployment_manifest.get("type", "generic"),
-                stage=True,
-            )
-            self.logger.info(f"Successfully edited existing artifact '{full_artifact_id}'")
-        except Exception as e:
-            # If edit fails, create new artifact
-            self.logger.info(f"Edit failed ({e}), creating new artifact '{full_artifact_id}'")
+            
+            alias = deployment_manifest["id"]
+            
+            # Validate alias format (can contain -, but not / or other special characters)
+            # Must be a valid Python identifier after replacing - with _
+            invalid = any([
+                not alias.islower(),
+                "_" in alias,
+                "/" in alias,
+                not alias.replace("-", "_").isidentifier(),
+            ])
+            if invalid:
+                raise ValueError(
+                    f"Invalid artifact alias: '{alias}'. Please use lowercase letters, numbers, and hyphens only."
+                )
             
             # Ensure the bioengine-apps collection exists
-            artifact_workspace = full_artifact_id.split("/")[0]
-            collection_id = f"{artifact_workspace}/bioengine-apps"
+            workspace = self.server.config.workspace
+            collection_id = f"{workspace}/bioengine-apps"
             
             try:
                 await self.artifact_manager.read(collection_id)
@@ -424,9 +427,10 @@ class RayDeploymentManager:
                     )
                     self.logger.info(f"Bioengine Apps collection created with ID: {collection.id}")
 
-            # Create new artifact
+            # Create new artifact using alias
+            self.logger.info(f"Creating new artifact with alias '{alias}'")
             artifact = await self.artifact_manager.create(
-                alias=full_artifact_id,
+                alias=alias,
                 parent_id=collection_id,
                 manifest=deployment_manifest,
                 type=deployment_manifest.get("type", "generic"),

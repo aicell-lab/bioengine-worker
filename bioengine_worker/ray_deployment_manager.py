@@ -29,6 +29,7 @@ class RayDeploymentManager:
         service_id: str = "bioengine-apps",
         admin_users: Optional[List[str]] = None,
         deployment_cache_dir: str = "/tmp",
+        startup_deployments: Optional[List[str]] = None,
         autoscaler: Optional[RayAutoscaler] = None,
         # Logger
         logger: Optional[logging.Logger] = None,
@@ -39,7 +40,9 @@ class RayDeploymentManager:
 
         Args:
             service_id: ID to use for the Hypha service exposing deployed models
+            admin_users: List of user IDs or emails with admin permissions
             deployment_cache_dir: Caching directory used in Ray Serve deployments
+            startup_deployments: List of artifact IDs to start on initialization
             autoscaler: Optional RayAutoscaler instance
             logger: Optional logger instance
             _debug: Enable debug logging
@@ -61,6 +64,7 @@ class RayDeploymentManager:
         self.server = None
         self.artifact_manager = None
         self.service_info = None
+        self.startup_deployments = startup_deployments or []
         self._deployed_artifacts = {}
         self._deployment_tasks = {}
         self._undeploying_artifacts = set()
@@ -218,7 +222,7 @@ class RayDeploymentManager:
                     user_id = context["user"]["id"]
 
                     self.logger.info(
-                        f"User {user_id} is calling deployment '{deployment_name}' with method '{method_name}'"
+                        f"User '{user_id}' is calling deployment '{deployment_name}' with method '{method_name}'"
                     )
                     app_handle = serve.get_app_handle(name=deployment_name)
 
@@ -306,6 +310,29 @@ class RayDeploymentManager:
                 "public/artifact-manager"
             )
             self.logger.info("Successfully connected to artifact manager")
+
+            if self.startup_deployments:
+                self.logger.info(
+                    f"Starting deployments for artifacts: {self.startup_deployments}"
+                )
+                context = {
+                    "user": {
+                        "id": "startup",
+                        "email": (
+                            self.admin_users[0] if self.admin_users else "anonymous"
+                        ),
+                    }
+                }
+                deployment_tasks = [
+                    self.deploy_artifact(
+                        artifact_id, context=context, _skip_update=True
+                    )
+                    for artifact_id in self.startup_deployments
+                ]
+                await asyncio.gather(*deployment_tasks)
+
+                # Update services after startup deployments
+                await self._update_services()
 
         except Exception as e:
             self.logger.error(f"Error initializing Ray Deployment Manager: {e}")
@@ -561,7 +588,7 @@ class RayDeploymentManager:
             )
             return
 
-        self.logger.info(f"User {user_id} is deploying artifact '{artifact_id}'...")
+        self.logger.info(f"User '{user_id}' is deploying artifact '{artifact_id}'...")
 
         # Read the manifest to get deployment configuration
         artifact = await self.artifact_manager.read(artifact_id, version=version)
@@ -729,7 +756,7 @@ class RayDeploymentManager:
 
         try:
             self.logger.info(
-                f"User {user_id} is undeploying artifact '{artifact_id}'..."
+                f"User '{user_id}' is undeploying artifact '{artifact_id}'..."
             )
             self._undeploying_artifacts.add(artifact_id)
 

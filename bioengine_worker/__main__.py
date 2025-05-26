@@ -372,6 +372,12 @@ def create_parser():
         help="List of admin users for the deployment",
     )
     deployment_group.add_argument(
+        "--startup_deployments",
+        type=str,
+        nargs="+",
+        help="List of artifact IDs to deploy on worker startup",
+    )
+    deployment_group.add_argument(
         "--deployment_cache_dir",
         type=str,
         help="Working directory for Ray Serve deployments. If not set, defaults to cache_dir. This should be a mounted directory if running in container.",

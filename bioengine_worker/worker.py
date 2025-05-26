@@ -233,7 +233,7 @@ class BioEngineWorker:
                 "config": {
                     "visibility": "public",
                     "require_context": True,
-                },  # TODO: make private
+                },
                 "get_status": self.get_status,
                 "load_dataset": self.dataset_manager.load_dataset,
                 "close_dataset": self.dataset_manager.close_dataset,

@@ -161,7 +161,7 @@ cython_debug/
 # BioEngine
 .cache/
 bioimageio_models/
-ray_sessions/
+ray*
 apptainer_images/
 logs/
 data/

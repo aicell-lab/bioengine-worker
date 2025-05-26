@@ -79,6 +79,7 @@ async def main(group_configs):
             server_url=hypha_config["server_url"],
             token=hypha_config["token"],
             service_id=hypha_config["worker_service_id"],
+            client_id=hypha_config["client_id"],
             mode=group_configs["options"]["mode"],
             dataset_config=dataset_config,
             ray_cluster_config=ray_cluster_config,
@@ -160,6 +161,11 @@ def create_parser():
         default="bioengine-worker",
         type=str,
         help="Service ID for the worker",
+    )
+    hypha_group.add_argument(
+        "--client_id",
+        type=str,
+        help="Client ID for the worker. If not set, a client ID will be generated automatically.",
     )
 
     # Dataset Manager options

@@ -33,6 +33,7 @@ class BioEngineWorker:
         server_url: str = "https://hypha.aicell.io",
         token: Optional[str] = None,
         service_id: str = "bioengine-worker",
+        client_id: Optional[str] = None,
         mode: Literal["slurm", "single-machine", "connect"] = "slurm",
         dataset_config: Optional[Dict] = None,
         ray_cluster_config: Optional[Dict] = None,
@@ -72,6 +73,7 @@ class BioEngineWorker:
             self.server_url = server_url
             self._token = token or os.environ.get("HYPHA_TOKEN")
             self.service_id = service_id
+            self.client_id = client_id
             self.start_time = None
             self.mode = mode
             self.cluster_manager = None
@@ -204,6 +206,7 @@ class BioEngineWorker:
                 "server_url": self.server_url,
                 "token": self._token,
                 "workspace": self.workspace,
+                "client_id": self.client_id,
             }
         )
         if not self.server:

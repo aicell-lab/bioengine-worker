@@ -60,7 +60,7 @@ logs/
 .env.*
 
 # Ray
-ray_sessions/
+ray*/
 
 # Data
 data/

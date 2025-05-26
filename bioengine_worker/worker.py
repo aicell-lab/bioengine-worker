@@ -290,6 +290,7 @@ class BioEngineWorker:
         await self.deployment_manager.initialize(self.server)
         await self.dataset_manager.initialize(self.server)
         sid = await self._register()
+        await self.deployment_manager.initialize_deployments()
 
         return sid
 

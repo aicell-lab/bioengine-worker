@@ -27,6 +27,7 @@ services:
       "--dataset_service_id", "bioengine-datasets",
       "--deployment_service_id", "bioengine-apps",
       "--admin_users", "nils.mech@gmail.com", "oeway007@gmail.com",
+      "--startup_deployments", "bioimage-io/demo-deployment",
       "--data_dir", "/data",
       "--cache_dir", "/tmp",
       "--log_dir", "/app/logs",

@@ -311,35 +311,46 @@ class RayDeploymentManager:
             )
             self.logger.info("Successfully connected to artifact manager")
 
-            if self.startup_deployments:
-                self.logger.info(
-                    f"Starting deployments for artifacts: {self.startup_deployments}"
-                )
-                context = {
-                    "user": {
-                        "id": "startup",
-                        "email": (
-                            self.admin_users[0] if self.admin_users else "anonymous"
-                        ),
-                    }
-                }
-                deployment_tasks = [
-                    self.deploy_artifact(
-                        artifact_id, context=context, _skip_update=True
-                    )
-                    for artifact_id in self.startup_deployments
-                ]
-                await asyncio.gather(*deployment_tasks)
-
-                # Update services after startup deployments
-                await self._update_services()
-
         except Exception as e:
             self.logger.error(f"Error initializing Ray Deployment Manager: {e}")
             self.server = None
             self.artifact_manager = None
             raise e
 
+    async def initialize_deployments(self) -> None:
+        """Deploy all startup deployments defined in the manager"""
+        if not self.server:
+            raise RuntimeError(
+                "Hypha server connection not available. Call initialize() first."
+            )
+        if not self.artifact_manager:
+            raise RuntimeError(
+                "Artifact manager not initialized. Call initialize() first."
+            )
+
+        if self.startup_deployments:
+            self.logger.info(
+                f"Starting deployments for artifacts: {', '.join(self.startup_deployments)}"
+            )
+            context = {
+                "user": {
+                    "id": "startup",
+                    "email": (
+                        self.admin_users[0] if self.admin_users else "anonymous"
+                    ),
+                }
+            }
+            deployment_tasks = [
+                self.deploy_artifact(
+                    artifact_id, context=context, _skip_update=True
+                )
+                for artifact_id in self.startup_deployments
+            ]
+            await asyncio.gather(*deployment_tasks)
+
+            # Update services after startup deployments
+            await self._update_services()
+        
     async def create_artifact(
         self, files: List[dict], artifact_id: str = None, context: Optional[dict] = None
     ) -> str:

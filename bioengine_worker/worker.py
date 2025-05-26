@@ -328,8 +328,9 @@ class BioEngineWorker:
         Returns:
             Dict containing service, cluster, autoscaler and deployment status.
         """
-        user_id = context["user"]["id"] if context else "anonymous"
-        self.logger.debug(f"User {user_id} is getting status of the BioEngine worker")
+        if not ray.is_initialized():
+            raise RuntimeError("Ray is not initialized. Call start() first.")
+
         formatted_service_time = format_time(self.start_time)
         status = {
             "service": {
@@ -338,34 +339,32 @@ class BioEngineWorker:
                 "uptime": formatted_service_time["uptime"],
             }
         }
-        if ray.is_initialized():
-            if self.mode == "connect":
-                # Ray connected externally
-                head_address = ray._private.services.get_node_ip_address()
-                status["cluster"] = {
-                    "head_address": head_address,
-                    "start_time_s": "N/A",
-                    "start_time": "N/A",
-                    "uptime": "N/A",
-                    "worker_nodes": "N/A",
-                    "autoscaler": None,
-                    "note": "Connected to existing Ray cluster; no autoscaler info available.",
-                }
-            else:
-                # Ray started internally
-                status["cluster"] = self.cluster_manager.get_status()
-                if self.mode == "slurm":
-                    # Get autoscaler status if in SLURM mode
-                    status["cluster"]["autoscaler"] = await self.autoscaler.get_status()
-                else:
-                    status["cluster"]["autoscaler"] = None
-                    status["cluster"][
-                        "note"
-                    ] = "Autoscaler is only available in 'slurm' mode."
-            status["deployments"] = await self.deployment_manager.get_status()
-            status["datasets"] = await self.dataset_manager.get_status()
+
+        if self.mode == "connect":
+            # Ray connected externally
+            head_address = ray._private.services.get_node_ip_address()
+            status["cluster"] = {
+                "head_address": head_address,
+                "start_time_s": "N/A",
+                "start_time": "N/A",
+                "uptime": "N/A",
+                "worker_nodes": "N/A",
+                "autoscaler": None,
+                "note": "Connected to existing Ray cluster; no autoscaler info available.",
+            }
         else:
-            status["cluster"] = "Not connected to any Ray cluster."
+            # Ray started internally
+            status["cluster"] = self.cluster_manager.get_status()
+            if self.mode == "slurm":
+                # Get autoscaler status if in SLURM mode
+                status["cluster"]["autoscaler"] = await self.autoscaler.get_status()
+            else:
+                status["cluster"]["autoscaler"] = None
+                status["cluster"][
+                    "note"
+                ] = "Autoscaler is only available in 'slurm' mode."
+        status["deployments"] = await self.deployment_manager.get_status()
+        status["datasets"] = await self.dataset_manager.get_status()
 
         return status
 

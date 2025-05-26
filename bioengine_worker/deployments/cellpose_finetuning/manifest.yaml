@@ -1,0 +1,66 @@
+authors:
+- {affiliation: KTH, github_user: nilsmechtel, name: Nils Mechtel}
+covers: []
+description: A deployment for fine-tuning the Cellpose v2 model, designed for advanced cell segmentation tasks.
+documentation: README.md
+format_version: 0.5.0
+git_repo: ''
+id: cellpose-finetuning
+id_emoji: '🧬'
+license: MIT
+links: []
+maintainers: []
+name: Cellpose Fine-Tuning
+tags: [cell-segmentation, deep-learning, biomedical-imaging, fine-tuning]
+type: application
+version: 0.0.1
+deployment_class:
+  python_file: main.py
+  class_name: CellposeFinetune
+  exposed_methods:
+    list_pretrained_models:
+      authorized_users: "*"
+      description: "List available pretrained Cellpose v2 models for fine-tuning."
+    train:
+      authorized_users: "*"
+      description: "Fine-tune the Cellpose v2 model with the provided training data."
+deployment_config:
+  modes:
+    gpu:
+      ray_actor_options:
+        num_gpus: 1
+        num_cpus: 1
+        memory: 4294967296  # 4GB RAM
+        runtime_env:
+          pip: [
+            "cellpose==3.1.1.1",
+            "numpy==1.26.4",
+            "httpx",
+            "tifffile",
+          ]
+    cpu:
+      ray_actor_options:
+        num_gpus: 0
+        num_cpus: 1
+        memory: 4294967296  # 4GB RAM
+        runtime_env:
+          pip: [
+            "cellpose==3.1.1.1",
+            "httpx",
+            "tifffile",
+          ]
+  max_ongoing_requests: 1  # Needs to be 1 for GPU
+  max_queued_requests: 10
+  autoscaling_config:
+    min_replicas: 1
+    initial_replicas: 1
+    max_replicas: 2
+    target_num_ongoing_requests_per_replica: 0.8
+    metrics_interval_s: 2.0
+    look_back_period_s: 10.0
+    downscale_delay_s: 300
+    upscale_delay_s: 0.0
+  health_check_period_s: 30.0
+  health_check_timeout_s: 30.0
+  graceful_shutdown_timeout_s: 300.0
+  graceful_shutdown_wait_loop_s: 2.0

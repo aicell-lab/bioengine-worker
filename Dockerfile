@@ -4,37 +4,30 @@ FROM python:3.11.9-slim
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     git \
     build-essential \
+    curl \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Python packages
-RUN pip install --no-cache-dir -U pip && \
-    pip install --no-cache-dir \
-    hypha-rpc \
-    "ray[data,train,serve]" \
-    pyyaml \
-    python-dotenv
 
 # Set up working directory
 WORKDIR /app
 
-# Copy project files
-COPY pyproject.toml /app/
-COPY ./hpc_worker /app/hpc_worker/
+# Copy requirements first
+COPY requirements.txt .
 
-# Install the package
-RUN pip install .
+# Install Python packages from requirements
+RUN pip install --no-cache-dir -U pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Create a non-root user
-RUN useradd -m -u 1000 worker && \
-    chown -R worker:worker /app
+# Copy all project files
+COPY . .
 
-USER worker
+# Install the bioengine_worker package
+RUN pip install --no-cache-dir .
 
-# Use the start script as the entrypoint and forward arguments
 CMD [ "/bin/bash" ]

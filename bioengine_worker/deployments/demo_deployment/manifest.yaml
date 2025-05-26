@@ -1,0 +1,35 @@
+authors:
+- {affiliation: KTH, github_user: nilsmechtel, name: Nils Mechtel}
+covers: []
+description: Demo deployment model for BioEngine.
+documentation: README.md
+format_version: 0.5.0
+git_repo: https://github.com/bioimage-io/bioengine
+id: demo-deployment
+id_emoji: '⚙️'
+license: MIT
+links: []
+maintainers: []
+name: Demo Deployment
+tags: [demo, timezonefinder]
+type: application
+deployment_class:
+  python_file: main.py
+  class_name: DemoModel
+  exposed_methods:
+    ping:
+      authorized_users: "*"
+      description: "Ping the model to check if it is alive."
+    get_time:
+      authorized_users: "*"
+      description: "Get the current server time for a given city."
+deployment_config:
+  ray_actor_options:
+    runtime_env:
+      pip: [
+        "geopy",
+        "timezonefinder",
+        "pytz"
+      ]
+  max_ongoing_requests: 10
+  max_queued_requests: 30

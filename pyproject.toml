@@ -3,21 +3,25 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "hpc_worker"
-version = "0.1.0"
-description = "HPC Worker for managing Ray clusters and datasets"
+name = "bioengine_worker"
+version = "0.1.17"
+description = "BioEngine Worker for managing Ray clusters and datasets"
 requires-python = ">=3.11"
 dependencies = [
-    "hypha-rpc",
-    "ray[data,train,serve]",
+    "cloudpickle",
+    "httpx",
+    "hypha-rpc>=0.20.48",
     "pyyaml",
-    "python-dotenv",
-    "numpy"
+    "ray[client,serve]==2.33.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "black",
-    "ruff",
-    "mypy"
+    "pytest",
+    "pytest-asyncio"
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"

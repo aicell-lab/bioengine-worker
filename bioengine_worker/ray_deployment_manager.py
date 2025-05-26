@@ -173,7 +173,10 @@ class RayDeploymentManager:
         return deployment_name
 
     async def _check_permissions(
-        self, context: Optional[Dict[str, Any]], authorized_users: str, resource_name: str
+        self,
+        context: Optional[Dict[str, Any]],
+        authorized_users: str,
+        resource_name: str,
     ) -> bool:
         """Check if the user in the context is authorized to access the deployment"""
         user = context["user"]
@@ -310,7 +313,9 @@ class RayDeploymentManager:
             self.artifact_manager = None
             raise e
 
-    async def create_artifact(self, files: List[dict], artifact_id: str = None, context: Optional[dict] = None) -> str:
+    async def create_artifact(
+        self, files: List[dict], artifact_id: str = None, context: Optional[dict] = None
+    ) -> str:
         """
         Create a deployment artifact
 
@@ -349,7 +354,9 @@ class RayDeploymentManager:
                 break
 
         if not manifest_file:
-            raise ValueError("No manifest file found in files list. Expected 'manifest.yaml'")
+            raise ValueError(
+                "No manifest file found in files list. Expected 'manifest.yaml'"
+            )
 
         # Parse the manifest
         if manifest_file["type"] == "text":
@@ -359,18 +366,20 @@ class RayDeploymentManager:
             if manifest_file["content"].startswith("data:"):
                 manifest_content = manifest_file["content"].split(",")[1]
             # Decode base64 content
-            manifest_content = base64.b64decode(manifest_content).decode('utf-8')
+            manifest_content = base64.b64decode(manifest_content).decode("utf-8")
             # remove data:... prefix from the base64 content
             if manifest_content.startswith("data:"):
                 manifest_content = manifest_content.split(",")[1]
-        
+
         deployment_manifest = yaml.safe_load(manifest_content)
 
         if artifact_id is not None:
             # If artifact_id is provided, we expect an existing artifact and will edit it
             workspace = self.server.config.workspace
-            full_artifact_id = artifact_id if "/" in artifact_id else f"{workspace}/{artifact_id}"
-            
+            full_artifact_id = (
+                artifact_id if "/" in artifact_id else f"{workspace}/{artifact_id}"
+            )
+
             try:
                 # Try to edit existing artifact
                 self.logger.info(f"Editing existing artifact '{full_artifact_id}'")
@@ -380,41 +389,53 @@ class RayDeploymentManager:
                     type=deployment_manifest.get("type", "generic"),
                     stage=True,
                 )
-                self.logger.info(f"Successfully edited existing artifact '{full_artifact_id}'")
+                self.logger.info(
+                    f"Successfully edited existing artifact '{full_artifact_id}'"
+                )
             except Exception as e:
                 # If edit fails, throw an error since we expected an existing artifact
-                raise ValueError(f"Failed to edit existing artifact '{full_artifact_id}': {e}")
+                raise ValueError(
+                    f"Failed to edit existing artifact '{full_artifact_id}': {e}"
+                )
         else:
             # If artifact_id is not provided, create new artifact using alias from manifest
             if "id" not in deployment_manifest:
-                raise ValueError("No artifact_id provided and no 'id' field found in manifest")
-            
+                raise ValueError(
+                    "No artifact_id provided and no 'id' field found in manifest"
+                )
+
             alias = deployment_manifest["id"]
-            
+
             # Validate alias format (can contain -, but not / or other special characters)
             # Must be a valid Python identifier after replacing - with _
-            invalid = any([
-                not alias.islower(),
-                "_" in alias,
-                "/" in alias,
-                not alias.replace("-", "_").isidentifier(),
-            ])
+            invalid = any(
+                [
+                    not alias.islower(),
+                    "_" in alias,
+                    "/" in alias,
+                    not alias.replace("-", "_").isidentifier(),
+                ]
+            )
             if invalid:
                 raise ValueError(
                     f"Invalid artifact alias: '{alias}'. Please use lowercase letters, numbers, and hyphens only."
                 )
-            
+
             # Ensure the bioengine-apps collection exists
             workspace = self.server.config.workspace
             collection_id = f"{workspace}/bioengine-apps"
-            
+
             try:
                 await self.artifact_manager.read(collection_id)
             except Exception as collection_error:
-                expected_error = f'KeyError: "Artifact with ID \'{collection_id}\' does not exist."'
+                expected_error = (
+                    f"KeyError: \"Artifact with ID '{collection_id}' does not exist.\""
+                )
                 if str(collection_error).strip().endswith(expected_error):
-                    self.logger.info(f"Collection '{collection_id}' does not exist. Creating it.")
-                    
+                    self.logger.info(
+                        f"Collection '{collection_id}' does not exist. Creating it."
+                    )
+
                     collection_manifest = {
                         "name": "BioEngine Apps",
                         "description": "A collection of Ray deployments for the BioEngine.",
@@ -423,9 +444,11 @@ class RayDeploymentManager:
                         alias=collection_id,
                         type="collection",
                         manifest=collection_manifest,
-                        config={"permissions": {"*": "r", "@": "r+"}}
+                        config={"permissions": {"*": "r", "@": "r+"}},
                     )
-                    self.logger.info(f"Bioengine Apps collection created with ID: {collection.id}")
+                    self.logger.info(
+                        f"Bioengine Apps collection created with ID: {collection.id}"
+                    )
 
             # Create new artifact using alias
             self.logger.info(f"Creating new artifact with alias '{alias}'")
@@ -447,7 +470,9 @@ class RayDeploymentManager:
             self.logger.info(f"Uploading file '{file_name}' to artifact")
 
             # Get upload URL
-            upload_url = await self.artifact_manager.put_file(artifact.id, file_path=file_name)
+            upload_url = await self.artifact_manager.put_file(
+                artifact.id, file_path=file_name
+            )
 
             # Prepare content for upload
             if file_type == "text":
@@ -456,7 +481,9 @@ class RayDeploymentManager:
                 # Decode base64 content for binary files
                 upload_data = base64.b64decode(file_content)
             else:
-                raise ValueError(f"Unsupported file type '{file_type}'. Expected 'text' or 'base64'")
+                raise ValueError(
+                    f"Unsupported file type '{file_type}'. Expected 'text' or 'base64'"
+                )
 
             # Upload the file
             async with httpx.AsyncClient(timeout=30) as client:
@@ -495,7 +522,7 @@ class RayDeploymentManager:
         Returns:
             str: Deployment name
         """
-        
+
         try:
             # Verify client is connected to Hypha server
             if not self.server:
@@ -706,7 +733,9 @@ class RayDeploymentManager:
                 )
                 return
 
-            self.logger.info(f"User {user_id} is undeploying artifact '{artifact_id}'...")
+            self.logger.info(
+                f"User {user_id} is undeploying artifact '{artifact_id}'..."
+            )
             self._undeploying_artifacts.add(artifact_id)
 
             # Check if there's an ongoing deployment task for this artifact
@@ -898,33 +927,35 @@ class RayDeploymentManager:
 
 async def create_demo_artifact(deployment_manager, artifact_id=None):
     """Helper function to create a demo artifact from demo deployment files
-    
+
     Args:
         deployment_manager: RayDeploymentManager instance (must be initialized)
         artifact_id: Optional custom artifact ID
-        
+
     Returns:
         str: The created artifact ID
     """
     # Read demo deployment files
     demo_deployment_dir = Path(__file__).parent / "deployments" / "demo_deployment"
-    
+
     # Read manifest.yaml
     with open(demo_deployment_dir / "manifest.yaml", "r") as f:
         manifest_content = f.read()
-    
+
     # Read main.py
     with open(demo_deployment_dir / "main.py", "r") as f:
         main_py_content = f.read()
-    
+
     # Prepare files for create_artifact
     files = [
         {"name": "manifest.yaml", "content": manifest_content, "type": "text"},
         {"name": "main.py", "content": main_py_content, "type": "text"},
     ]
-    
+
     # Create the artifact
-    created_artifact_id = await deployment_manager.create_artifact(files, artifact_id=artifact_id)
+    created_artifact_id = await deployment_manager.create_artifact(
+        files, artifact_id=artifact_id
+    )
     return created_artifact_id
 
 
@@ -964,18 +995,20 @@ if __name__ == "__main__":
     else:
         autoscaler = None
 
-    async def test_create_artifact(deployment_manager=None, server_url="https://hypha.aicell.io"):
+    async def test_create_artifact(
+        deployment_manager=None, server_url="https://hypha.aicell.io"
+    ):
         """Test the create_artifact function with demo deployment files
-        
+
         Args:
             deployment_manager: Optional existing deployment manager (must be initialized)
             server_url: Server URL if creating new connection
-            
+
         Returns:
             str: The artifact ID of the last created artifact (for use in other tests)
         """
         print("\n===== Testing create_artifact function =====\n")
-        
+
         # Use existing deployment manager or create new one
         if deployment_manager is None:
             try:
@@ -986,37 +1019,43 @@ if __name__ == "__main__":
                 token = os.environ.get("HYPHA_TOKEN") or await login(
                     {"server_url": server_url}
                 )
-                server = await connect_to_server({"server_url": server_url, "token": token})
+                server = await connect_to_server(
+                    {"server_url": server_url, "token": token}
+                )
 
                 # Initialize deployment manager
                 await deployment_manager.initialize(server)
-                
+
             except Exception as e:
                 print(f"❌ Failed to initialize deployment manager: {e}")
                 raise e
-        
+
         try:
             # Test creating artifact without specifying artifact_id (should use ID from manifest)
             print("Testing create_artifact without specifying artifact_id...")
             created_artifact_id = await create_demo_artifact(deployment_manager)
             print(f"Successfully created artifact: {created_artifact_id}")
-            
+
             # Test updating the same artifact
             print(f"\nTesting update of existing artifact: {created_artifact_id}")
-            updated_artifact_id = await create_demo_artifact(deployment_manager, artifact_id=created_artifact_id)
+            updated_artifact_id = await create_demo_artifact(
+                deployment_manager, artifact_id=created_artifact_id
+            )
             print(f"Successfully updated artifact: {updated_artifact_id}")
-            
+
             # Test creating artifact with custom artifact_id
             print("\nTesting create_artifact with custom artifact_id...")
             custom_artifact_id = "test-demo-deployment"
-            custom_created_id = await create_demo_artifact(deployment_manager, artifact_id=custom_artifact_id)
+            custom_created_id = await create_demo_artifact(
+                deployment_manager, artifact_id=custom_artifact_id
+            )
             print(f"Successfully created custom artifact: {custom_created_id}")
-            
+
             print("\n✅ All create_artifact tests passed!")
-            
+
             # Return the last created artifact ID for use in other tests
             return custom_created_id
-            
+
         except Exception as e:
             print(f"❌ create_artifact test failed: {e}")
             raise e
@@ -1047,25 +1086,31 @@ if __name__ == "__main__":
             created_artifact_id = await test_create_artifact(deployment_manager)
 
             # Test deploying the newly created artifact
-            print(f"\n--- Testing deployment of created artifact: {created_artifact_id} ---")
+            print(
+                f"\n--- Testing deployment of created artifact: {created_artifact_id} ---"
+            )
             await deployment_manager.deploy_artifact(created_artifact_id)
-            
+
             # Test the deployed artifact
             deployment_status = await deployment_manager.get_status()
             if created_artifact_id in deployment_status:
                 print(f"Successfully deployed created artifact: {created_artifact_id}")
-                
+
                 # Test the service
                 deployment_service_id = deployment_status["service_id"]
                 deployment_service = await server.get_service(deployment_service_id)
-                deployment_name = deployment_status[created_artifact_id]["deployment_name"]
-                
+                deployment_name = deployment_status[created_artifact_id][
+                    "deployment_name"
+                ]
+
                 # Test ping method
                 response = await deployment_service[deployment_name]["ping"]()
                 print(f"Ping response from created artifact: {response}")
-                
+
                 # Test get_time method
-                response = await deployment_service[deployment_name]["get_time"]("Stockholm")
+                response = await deployment_service[deployment_name]["get_time"](
+                    "Stockholm"
+                )
                 print(f"Time response from created artifact: {response}")
             else:
                 print(f"Failed to deploy created artifact: {created_artifact_id}")
@@ -1114,6 +1159,7 @@ if __name__ == "__main__":
 
     # Run the test
     import sys
+
     if len(sys.argv) > 1 and sys.argv[1] == "test_create_artifact":
         # Run only the create_artifact test (no Ray cluster needed)
         asyncio.run(test_create_artifact())

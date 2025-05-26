@@ -12,7 +12,7 @@ links: []
 maintainers: []
 name: Cellpose Fine-Tuning
 tags: [cell-segmentation, deep-learning, biomedical-imaging, fine-tuning]
-type: model
+type: application
 version: 0.0.1
 deployment_class:
   python_file: main.py

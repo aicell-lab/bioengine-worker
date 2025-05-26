@@ -365,7 +365,10 @@ class RayDeploymentManager:
                 manifest_content = manifest_content.split(",")[1]
         
         deployment_manifest = yaml.safe_load(manifest_content)
-
+        
+        if artifact_id is None:
+            deployment_manifest["created_by"] = user_id
+        assert deployment_manifest.get("type") == "application", f"type must be 'application', got '{deployment_manifest.get('type')}'"
         if artifact_id is not None:
             # If artifact_id is provided, we expect an existing artifact and will edit it
             workspace = self.server.config.workspace

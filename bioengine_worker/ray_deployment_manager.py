@@ -310,7 +310,7 @@ class RayDeploymentManager:
             self.artifact_manager = None
             raise e
 
-    async def create_artifact(self, files: List[dict], artifact_id: str = None) -> str:
+    async def create_artifact(self, files: List[dict], artifact_id: str = None, context: Optional[dict] = None) -> str:
         """
         Create a deployment artifact
 
@@ -333,6 +333,13 @@ class RayDeploymentManager:
             raise RuntimeError(
                 "Artifact manager not initialized. Call initialize() first."
             )
+
+        await self._check_permissions(
+            context,
+            self.admin_users,
+            resource_name=f"creation of artifact '{artifact_id}'",
+        )
+        user_id = context["user"]["id"]
 
         # Find the manifest file to extract metadata
         manifest_file = None

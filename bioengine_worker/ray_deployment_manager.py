@@ -4,17 +4,17 @@ import logging
 import os
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
-import ray
-from ray import serve
 import numpy as np
 import yaml
 
+import ray
 from bioengine_worker import __version__
 from bioengine_worker.ray_autoscaler import RayAutoscaler
 from bioengine_worker.utils import create_logger, format_time
+from ray import serve
 
 
 class RayDeploymentManager:
@@ -178,14 +178,16 @@ class RayDeploymentManager:
 
     async def _check_permissions(
         self,
-        context: Optional[Dict[str, Any]],
-        authorized_users: str,
+        context: Dict[str, Any],
+        authorized_users: Union[List[str], str],
         resource_name: str,
     ) -> bool:
         """Check if the user in the context is authorized to access the deployment"""
         user = context["user"]
+        if isinstance(authorized_users, str):
+            authorized_users = [authorized_users]
         if (
-            authorized_users != "*"
+            "*" not in authorized_users
             and user["id"] not in authorized_users
             and user.get("email", "no-email") not in authorized_users
         ):

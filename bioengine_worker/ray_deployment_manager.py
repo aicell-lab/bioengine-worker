@@ -372,10 +372,12 @@ class RayDeploymentManager:
                 manifest_content = manifest_content.split(",")[1]
 
         deployment_manifest = yaml.safe_load(manifest_content)
-        
+
         if artifact_id is None:
             deployment_manifest["created_by"] = user_id
-        assert deployment_manifest.get("type") == "application", f"type must be 'application', got '{deployment_manifest.get('type')}'"
+        assert (
+            deployment_manifest.get("type") == "application"
+        ), f"type must be 'application', got '{deployment_manifest.get('type')}'"
         if artifact_id is not None:
             # If artifact_id is provided, we expect an existing artifact and will edit it
             workspace = self.server.config.workspace
@@ -525,139 +527,125 @@ class RayDeploymentManager:
         Returns:
             str: Deployment name
         """
+        # Verify client is connected to Hypha server
+        if not self.server:
+            raise RuntimeError(
+                "Hypha server connection not available. Call initialize() first."
+            )
+
+        # Ensure artifact manager is available
+        if not self.artifact_manager:
+            raise RuntimeError(
+                "Artifact manager not initialized. Call initialize() first."
+            )
+
+        # Verify Ray is initialized
+        if not ray.is_initialized():
+            raise RuntimeError("Ray cluster is not running. Call initialize() first.")
+
+        # Check user permissions
+        await self._check_permissions(
+            context,
+            self.admin_users,
+            resource_name=f"deployment of artifact '{artifact_id}'",
+        )
+        user_id = context["user"]["id"]
+        artifact_id = await self._get_full_artifact_id(artifact_id)
+
+        # Check if the artifact is already deployed
+        deployment_name = await self._create_deployment_name(artifact_id)
+        serve_status = serve.status()
+        if deployment_name in serve_status.applications.keys():
+            self.logger.info(
+                f"Artifact '{artifact_id}' is already deployed. Skipping deployment."
+            )
+            return
+
+        self.logger.info(f"User {user_id} is deploying artifact '{artifact_id}'...")
+
+        # Read the manifest to get deployment configuration
+        artifact = await self.artifact_manager.read(artifact_id, version=version)
+        manifest = artifact["manifest"]
+
+        # Get the deployment configuration
+        deployment_name = await self._create_deployment_name(artifact_id)
+        deployment_config = manifest["deployment_config"]
+        class_config = manifest["deployment_class"]
+        deployment_config["name"] = class_config["class_name"]
+
+        # Check if different modes are supported
+        modes = deployment_config.pop("modes", None)
+        if modes:
+            mode_key = mode or list(modes.keys())[0]
+            mode_key = mode_key.lower()
+            if mode_key not in modes:
+                raise ValueError(
+                    f"Mode '{mode_key}' not found in artifact '{artifact_id}'"
+                )
+
+            # Update deployment config with the selected mode
+            for key, value in modes[mode_key].items():
+                deployment_config[key] = value
+
+            self.logger.info(f"Using mode '{mode_key}' for deployment '{artifact_id}'")
+
+        # Add default ray_actor_options if not present
+        ray_actor_options = deployment_config.setdefault("ray_actor_options", {})
+        ray_actor_options.setdefault("num_cpus", 1)
+        ray_actor_options.setdefault("num_gpus", 0)
+
+        # Add cache path to deployment config environment
+        runtime_env = ray_actor_options.setdefault("runtime_env", {})
+        env_vars = runtime_env.setdefault("env_vars", {})
+        env_vars["BIOENGINE_CACHE_PATH"] = str(self.deployment_cache_dir)
+
+        # Load the deployment code
+        model = await self._load_deployment_code(
+            class_config,
+            artifact_id,
+            version=version,
+        )
+
+        # Create the Ray Serve deployment
+        model_deployment = serve.deployment(**deployment_config)(model)
+
+        # Bind the arguments to the deployment and return an Application
+        kwargs = class_config.get("kwargs", {})
+        app = model_deployment.bind(**kwargs)
+
+        # Store the deployment information first so it's available to other tasks
+        self._deployed_artifacts[artifact_id] = {
+            "deployment_name": deployment_name,
+            "deployment_class": class_config,
+            "resources": {
+                "num_cpus": deployment_config["ray_actor_options"]["num_cpus"],
+                "num_gpus": deployment_config["ray_actor_options"]["num_gpus"],
+            },
+        }
+
+        # Deploy the application in a separate task to avoid blocking
+        async def deploy_task():
+            self.logger.info(f"Started deployment process for artifact '{artifact_id}'")
+            await asyncio.to_thread(
+                serve.run, app, name=deployment_name, route_prefix=None
+            )
+
+            # Check if the deployment was successful
+            serve_status = serve.status()
+            if deployment_name in serve_status.applications.keys():
+                self.logger.info(
+                    f"Successfully completed deployment of artifact '{artifact_id}'"
+                )
+                # Update services if not skipped
+                if not _skip_update:
+                    await self._update_services()
+            else:
+                self.logger.error(
+                    f"Deployment of artifact '{artifact_id}' failed. Deployment name '{deployment_name}' not found in serve status."
+                )
+                self._deployed_artifacts.pop(artifact_id, None)
 
         try:
-            # Verify client is connected to Hypha server
-            if not self.server:
-                raise RuntimeError(
-                    "Hypha server connection not available. Call initialize() first."
-                )
-
-            # Ensure artifact manager is available
-            if not self.artifact_manager:
-                raise RuntimeError(
-                    "Artifact manager not initialized. Call initialize() first."
-                )
-
-            # Verify Ray is initialized
-            if not ray.is_initialized():
-                raise RuntimeError(
-                    "Ray cluster is not running. Call initialize() first."
-                )
-
-            await self._check_permissions(
-                context,
-                self.admin_users,
-                resource_name=f"deployment of artifact '{artifact_id}'",
-            )
-            user_id = context["user"]["id"]
-
-            artifact_id = await self._get_full_artifact_id(artifact_id)
-
-            if artifact_id in self._deployed_artifacts:
-                self.logger.info(
-                    f"Artifact '{artifact_id}' is already deployed. Skipping deployment."
-                )
-                return artifact_id
-
-            self.logger.info(f"User {user_id} is deploying artifact '{artifact_id}'...")
-
-            # Read the manifest to get deployment configuration
-            artifact = await self.artifact_manager.read(artifact_id, version=version)
-            manifest = artifact["manifest"]
-
-            # Get the deployment configuration
-            deployment_name = await self._create_deployment_name(artifact_id)
-            deployment_config = manifest["deployment_config"]
-            class_config = manifest["deployment_class"]
-            deployment_config["name"] = class_config["class_name"]
-
-            # Check if different modes are supported
-            modes = deployment_config.pop("modes", None)
-            if modes:
-                mode_key = mode or list(modes.keys())[0]
-                mode_key = mode_key.lower()
-                if mode_key not in modes:
-                    raise ValueError(
-                        f"Mode '{mode_key}' not found in artifact '{artifact_id}'"
-                    )
-
-                # Update deployment config with the selected mode
-                for key, value in modes[mode_key].items():
-                    deployment_config[key] = value
-
-                self.logger.info(
-                    f"Using mode '{mode_key}' for deployment '{artifact_id}'"
-                )
-
-            # Add default ray_actor_options if not present
-            ray_actor_options = deployment_config.setdefault("ray_actor_options", {})
-            ray_actor_options.setdefault("num_cpus", 1)
-            ray_actor_options.setdefault("num_gpus", 0)
-
-            # Add cache path to deployment config environment
-            runtime_env = ray_actor_options.setdefault("runtime_env", {})
-            env_vars = runtime_env.setdefault("env_vars", {})
-            env_vars["BIOENGINE_CACHE_PATH"] = str(self.deployment_cache_dir)
-
-            # Load the deployment code
-            model = await self._load_deployment_code(
-                class_config,
-                artifact_id,
-                version=version,
-            )
-
-            # Create the Ray Serve deployment
-            model_deployment = serve.deployment(**deployment_config)(model)
-
-            # Bind the arguments to the deployment and return an Application
-            kwargs = class_config.get("kwargs", {})
-            app = model_deployment.bind(**kwargs)
-
-            # Store the deployment information first so it's available to other tasks
-            self._deployed_artifacts[artifact_id] = {
-                "deployment_name": deployment_name,
-                "deployment_class": class_config,
-                "resources": {
-                    "num_cpus": deployment_config["ray_actor_options"]["num_cpus"],
-                    "num_gpus": deployment_config["ray_actor_options"]["num_gpus"],
-                },
-            }
-
-            # Deploy the application in a separate task to avoid blocking
-            async def deploy_task():
-                try:
-                    self.logger.info(
-                        f"Started deployment process for artifact '{artifact_id}'"
-                    )
-                    await asyncio.to_thread(
-                        serve.run, app, name=deployment_name, route_prefix=None
-                    )
-
-                    # Check if the deployment was successful
-                    serve_status = serve.status()
-                    if deployment_name in serve_status.applications.keys():
-                        self.logger.info(
-                            f"Successfully completed deployment of artifact '{artifact_id}'"
-                        )
-                        # Update services if not skipped
-                        if not _skip_update:
-                            await self._update_services()
-                    else:
-                        self.logger.error(
-                            f"Deployment of artifact '{artifact_id}' failed. Deployment name '{deployment_name}' not found in serve status."
-                        )
-                        self._deployed_artifacts.pop(artifact_id, None)
-
-                except asyncio.CancelledError:
-                    self.logger.info(
-                        f"Deployment of artifact '{artifact_id}' was cancelled"
-                    )
-                except Exception as e:
-                    self.logger.error(
-                        f"Error during deployment of artifact '{artifact_id}': {e}"
-                    )
-
             # Create and start the deployment task
             task = asyncio.create_task(deploy_task(), name=f"deploy-{artifact_id}")
 
@@ -673,9 +661,13 @@ class RayDeploymentManager:
 
             # Wait for the deployment task to complete
             await task
-
+        except asyncio.CancelledError as cancel_err:
+            self.logger.info(f"Deployment of artifact '{artifact_id}' was cancelled")
+            raise cancel_err
         except Exception as e:
-            self.logger.error(f"Error deploying '{artifact_id}': {e}")
+            self.logger.error(
+                f"Error during deployment of artifact '{artifact_id}': {e}"
+            )
             raise e
         finally:
             # Clean up the deployment task reference
@@ -694,48 +686,48 @@ class RayDeploymentManager:
             context: Context for Hypha service
             _skip_update: Skip updating services after undeployment
         """
-        try:
-            # Verify client is connected to Hypha server
-            if not self.server:
-                raise RuntimeError(
-                    "Hypha server connection not available. Call initialize() first."
-                )
-
-            # Ensure artifact manager is available
-            if not self.artifact_manager:
-                raise RuntimeError(
-                    "Artifact manager not initialized. Call initialize() first."
-                )
-
-            # Verify Ray is initialized
-            if not ray.is_initialized():
-                raise RuntimeError(
-                    "Ray cluster is not running. Call initialize() first."
-                )
-
-            await self._check_permissions(
-                context,
-                self.admin_users,
-                resource_name=f"undeployment of artifact '{artifact_id}'",
+        # Verify client is connected to Hypha server
+        if not self.server:
+            raise RuntimeError(
+                "Hypha server connection not available. Call initialize() first."
             )
-            user_id = context["user"]["id"]
 
-            artifact_id = await self._get_full_artifact_id(artifact_id)
+        # Ensure artifact manager is available
+        if not self.artifact_manager:
+            raise RuntimeError(
+                "Artifact manager not initialized. Call initialize() first."
+            )
 
-            # Check if artifact exists in deployed artifacts
-            if artifact_id not in self._deployed_artifacts:
-                self.logger.warning(
-                    f"Artifact '{artifact_id}' is not deployed. Skipping undeployment."
-                )
-                return
+        # Verify Ray is initialized
+        if not ray.is_initialized():
+            raise RuntimeError("Ray cluster is not running. Call initialize() first.")
 
-            # Check if artifact is already being undeployed
-            if artifact_id in self._undeploying_artifacts:
-                self.logger.info(
-                    f"Artifact '{artifact_id}' is already being undeployed. Skipping duplicate request."
-                )
-                return
+        # Check user permissions
+        await self._check_permissions(
+            context,
+            self.admin_users,
+            resource_name=f"undeployment of artifact '{artifact_id}'",
+        )
+        user_id = context["user"]["id"]
+        artifact_id = await self._get_full_artifact_id(artifact_id)
 
+        # Check if artifact exists in deployed artifacts
+        deployment_name = await self._create_deployment_name(artifact_id)
+        serve_status = serve.status()
+        if deployment_name not in serve_status.applications.keys():
+            self.logger.warning(
+                f"Artifact '{artifact_id}' is not deployed. Skipping undeployment."
+            )
+            return
+
+        # Check if artifact is already being undeployed
+        if artifact_id in self._undeploying_artifacts:
+            self.logger.info(
+                f"Artifact '{artifact_id}' is already being undeployed. Skipping duplicate request."
+            )
+            return
+
+        try:
             self.logger.info(
                 f"User {user_id} is undeploying artifact '{artifact_id}'..."
             )
@@ -749,11 +741,12 @@ class RayDeploymentManager:
                 deployment_task.cancel()
 
                 # Wait for the task to finish or be cancelled
+                timeout = 30
                 try:
-                    await asyncio.wait_for(deployment_task, timeout=5)
+                    await asyncio.wait_for(deployment_task, timeout=timeout)
                 except asyncio.TimeoutError:
                     self.logger.warning(
-                        f"Deployment task for '{artifact_id}' did not finish in time"
+                        f"Deployment task for '{artifact_id}' did not finish in time ({timeout} seconds)"
                     )
                 except Exception as e:
                     self.logger.error(
@@ -761,7 +754,6 @@ class RayDeploymentManager:
                     )
 
             # Delete the deployment asynchronously
-            deployment_name = self._deployed_artifacts[artifact_id]["deployment_name"]
             try:
                 await asyncio.to_thread(serve.delete, deployment_name)
             except Exception as delete_err:
@@ -772,10 +764,11 @@ class RayDeploymentManager:
 
             # Remove the artifact from deployed artifacts
             self._deployed_artifacts.pop(artifact_id, None)
-            self.logger.info(f"Successfully undeployed {artifact_id}")
 
             if not _skip_update:
                 await self._update_services()
+
+            self.logger.info(f"Successfully undeployed {artifact_id}")
 
         except Exception as e:
             self.logger.error(f"Error undeploying '{artifact_id}': {e}")
@@ -856,76 +849,65 @@ class RayDeploymentManager:
         self.logger.info(
             f"Deploying all artifacts in collection '{deployment_collection_id}'..."
         )
-        try:
-            # Ensure artifact manager is available
-            if not self.artifact_manager:
-                raise ValueError("Artifact manager not initialized")
+        # Ensure artifact manager is available
+        if not self.artifact_manager:
+            raise ValueError("Artifact manager not initialized")
 
-            # Get all artifacts in the collection
-            artifacts = await self.artifact_manager.list(
-                parent_id=deployment_collection_id
-            )
+        # Get all artifacts in the collection
+        artifacts = await self.artifact_manager.list(parent_id=deployment_collection_id)
 
-            # Deploy each artifact
-            for artifact in artifacts:
-                try:
-                    artifact_id = artifact["id"]
-                    await self.deploy_artifact(artifact_id, _skip_update=True)
-                except Exception as e:
-                    self.logger.error(f"Failed to deploy {artifact_id}: {e}")
-                    raise e
+        # Deploy each artifact
+        for artifact in artifacts:
+            try:
+                artifact_id = artifact["id"]
+                await self.deploy_artifact(artifact_id, _skip_update=True)
+            except Exception as e:
+                self.logger.error(f"Failed to deploy {artifact_id}: {e}")
+                raise e
 
-            # Update services after all deployments
-            await self._update_services()
-
-        except Exception as e:
-            self.logger.error(f"Error deploying all artifacts: {e}")
-            raise e
+        # Update services after all deployments
+        await self._update_services()
 
     async def cleanup_deployments(
         self, context: Optional[Dict[str, Any]] = None
     ) -> None:
         """Cleanup Ray Serve deployments"""
         self.logger.info("Cleaning up all deployments...")
-        try:
-            # Ensure Ray is initialized
-            if not ray.is_initialized():
-                raise RuntimeError("Ray cluster is not running")
 
-            artifact_ids = list(self._deployed_artifacts.keys())
-            failed_attempts = 0
-            for artifact_id in artifact_ids:
-                try:
-                    await self.undeploy_artifact(artifact_id)
-                except Exception as e:
-                    failed_attempts += 1
-                    self.logger.error(f"Failed to undeploy {artifact_id}: {e}")
+        # Ensure Ray is initialized
+        if not ray.is_initialized():
+            raise RuntimeError("Ray cluster is not running")
 
-            # Cancel any remaining deployment tasks
-            pending_tasks = []
-            for artifact_id, task in list(self._deployment_tasks.items()):
-                if not task.done():
-                    pending_tasks.append(task)
-                    task.cancel()
+        artifact_ids = list(self._deployed_artifacts.keys())
+        failed_attempts = 0
+        for artifact_id in artifact_ids:
+            try:
+                await self.undeploy_artifact(artifact_id)
+            except Exception as e:
+                failed_attempts += 1
+                self.logger.error(f"Failed to undeploy {artifact_id}: {e}")
 
-            # Wait for all tasks to complete or be cancelled
-            if pending_tasks:
-                self.logger.warning(
-                    f"Cancelling {len(pending_tasks)} remaining deployment tasks"
-                )
-                try:
-                    await asyncio.wait(pending_tasks, timeout=5)
-                except Exception as e:
-                    self.logger.error(f"Error waiting for tasks to cancel: {e}")
+        # Cancel any remaining deployment tasks
+        pending_tasks = []
+        for artifact_id, task in list(self._deployment_tasks.items()):
+            if not task.done():
+                pending_tasks.append(task)
+                task.cancel()
 
-            if failed_attempts != 0:
-                self.logger.warning(
-                    f"Failed to clean up all deployments, {failed_attempts} remaining."
-                )
+        # Wait for all tasks to complete or be cancelled
+        if pending_tasks:
+            self.logger.warning(
+                f"Cancelling {len(pending_tasks)} remaining deployment tasks"
+            )
+            try:
+                await asyncio.wait(pending_tasks, timeout=5)
+            except Exception as e:
+                self.logger.error(f"Error waiting for tasks to cancel: {e}")
 
-        except Exception as e:
-            self.logger.error(f"Error during cleanup: {e}")
-            raise e
+        if failed_attempts != 0:
+            self.logger.warning(
+                f"Failed to clean up all deployments, {failed_attempts} remaining."
+            )
 
 
 async def create_demo_artifact(deployment_manager, artifact_id=None):

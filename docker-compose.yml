@@ -28,8 +28,8 @@ services:
       "--deployment_service_id", "bioengine-apps",
       "--admin_users", "nils.mech@gmail.com", "oeway007@gmail.com",
       "--data_dir", "/data",
-      "--log_dir", "/app/logs",
       "--cache_dir", "/tmp",
+      "--log_dir", "/app/logs",
     ]
     deploy:
       resources:

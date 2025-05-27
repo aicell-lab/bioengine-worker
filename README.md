@@ -52,7 +52,7 @@ bash scripts/start_worker.sh --data_dir <path_to_data>
 
 or access the script directly from Github like this:
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/aicell-lab/autoscaler/bioengine-worker/scripts/start_worker.sh) \
+bash <(curl -s https://raw.githubusercontent.com/aicell-lab/bioengine-worker/scripts/start_worker.sh) \
     --data_dir <path_to_data>
 ```
 

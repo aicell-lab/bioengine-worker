@@ -135,6 +135,18 @@ async def manage_artifact(
         response.raise_for_status()
         logger.info(f"Uploaded {python_file} to artifact")
 
+    # Upload the README.md
+    readme_file = deployment_manifest.get("readme_file", "README.md")
+    with open(deployment_dir / readme_file, "r") as f:
+        readme_content = f.read()
+    logger.info(f"README content loaded from {readme_file}")
+
+    upload_url = await artifact_manager.put_file(artifact.id, file_path=readme_file)
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.put(upload_url, data=readme_content)
+        response.raise_for_status()
+        logger.info(f"Uploaded {readme_file} to artifact")
+
     # Commit the artifact
     await artifact_manager.commit(
         artifact_id=artifact.id,

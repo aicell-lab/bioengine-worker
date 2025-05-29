@@ -22,6 +22,12 @@ dev = [
     "pytest-asyncio"
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["bioengine_worker"]
+
+[tool.hatch.build.targets.wheel.sources]
+"bioengine_worker" = "bioengine_worker"
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"

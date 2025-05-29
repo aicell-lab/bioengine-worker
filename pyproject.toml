@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "bioengine_worker"
 version = "0.1.18"
 description = "BioEngine Worker for managing Ray clusters and datasets"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "cloudpickle",
     "httpx",

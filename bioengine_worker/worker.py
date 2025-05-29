@@ -10,7 +10,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 import cloudpickle
 import ray
-from hypha_rpc import connect_to_server, login
+from hypha_rpc import connect_to_server
+from hypha_rpc.sync import login
 
 from bioengine_worker import __version__
 from bioengine_worker.dataset_manager import DatasetManager
@@ -83,6 +84,18 @@ class BioEngineWorker:
             self.serve_event = None
             cache_dir = Path(cache_dir).resolve()
 
+            # If token is not provided, attempt to login
+            if not self._token:
+                print("=" * 60)
+                print("NO HYPHA TOKEN FOUND - USER LOGIN REQUIRED")
+                print("=" * 60)
+                print("Attempting to login to Hypha server...")
+                print("-" * 60)
+                self._token = login({"server_url": self.server_url})
+                print("-" * 60)
+                print("Login completed successfully!")
+                print("=" * 60)
+
             # Initialize component managers depending on the mode
             dataset_config = dataset_config or {}
             if self.mode in ["slurm", "single-machine"]:
@@ -98,7 +111,7 @@ class BioEngineWorker:
                 self._set_parameter(
                     ray_cluster_config,
                     "ray_temp_dir",
-                    cache_dir / "ray_sessions",
+                    cache_dir / "ray",
                     overwrite=False,
                 )
                 self._set_parameter(
@@ -199,8 +212,6 @@ class BioEngineWorker:
             workspace: Workspace to connect to
         """
         self.logger.info(f"Connecting to Hypha server at {self.server_url}...")
-        if not self._token:
-            self._token = await login({"server_url": self.server_url})
         self.server = await connect_to_server(
             {
                 "server_url": self.server_url,

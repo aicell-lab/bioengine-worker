@@ -239,7 +239,7 @@ def create_parser():
     cluster_group.add_argument(
         "--ray_temp_dir",
         type=str,
-        help="Temporary directory for Ray. If not set, defaults to '<cache_dir>/ray_sessions'. This should be a mounted directory if running in container.",
+        help="Temporary directory for Ray. If not set, defaults to '<cache_dir>/ray'. This should be a mounted directory if running in container.",
     )
     cluster_group.add_argument(
         "--head_num_cpus",

@@ -15,13 +15,13 @@ The BioEngine worker comes in containerized form as Docker or Apptainer image.
 
 ### Docker (for workstations or K8s)
 
-A prebuilt Docker image is available under `ghcr.io/aicell-lab/bioengine-worker:0.1.17` (change the version if needed, see [all the versions](https://github.com/orgs/aicell-lab/packages/container/package/bioengine-worker)).
+A prebuilt Docker image is available under `ghcr.io/aicell-lab/bioengine-worker:0.1.18` (change the version if needed, see [all the versions](https://github.com/orgs/aicell-lab/packages/container/package/bioengine-worker)).
 
-To make use of the predefined settings, clone this Github repository and run `docker compose up --build`.
+To make use of the predefined settings, clone this Github repository and run `docker compose up`.
 
 This assumes the following directories in the current working directory for mounting into the docker container:
+- `.cache`: A temporary directory for Ray (read and write)
 - `data`: A directory with datasets (available only as read-only)
-- `ray_sessions`: A temporary directory for Ray (read and write)
 - `logs`: For writing logging output of the BioEngine worker (read and write)
 
 A token for the Hypha workspace can either be added using the tag `--token` or provided in the `.env` file as `HYPHA_TOKEN`. Otherwise, you will be prompted to login when starting the worker.
@@ -31,7 +31,7 @@ By default, the BioEngine worker will start a local Ray cluster with the provide
 
 An overview of all tags for the BioEngine worker can be accessed via:
 ```bash
-docker run --rm ghcr.io/aicell-lab/bioengine-worker:0.1.17 python -m bioengine_worker --help
+docker run --rm ghcr.io/aicell-lab/bioengine-worker:0.1.18 python -m bioengine_worker --help
 ```
 
 To run as your own user, the variables `UID` and `GID` are required. If not set, `export` them before running docker compose with `export UID=$(id -u)` and `export GID=$(id -g)` or add them to your `.env` file.
@@ -225,6 +225,6 @@ To build the image, run the following command:
 ```bash
 docker buildx build \
     --platform linux/amd64,linux/arm64 \
-    -t ghcr.io/aicell-lab/bioengine-worker:0.1.17 \
+    -t ghcr.io/aicell-lab/bioengine-worker:0.1.18 \
     --push .
 ```

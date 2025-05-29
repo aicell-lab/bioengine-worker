@@ -23,7 +23,9 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["bioengine_worker"]
+artifacts = [
+    "bioengine_worker/*.py",
+]
 
 [tool.hatch.build.targets.wheel.sources]
 "bioengine_worker" = "bioengine_worker"

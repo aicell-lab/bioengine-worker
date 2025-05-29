@@ -88,7 +88,7 @@ class RayDeploymentManager:
         artifact_id: str,
         version=None,
         timeout: int = 30,
-        _local: bool = True,  # TODO: set this parameter to False after testing
+        _local: bool = False,
     ) -> Any:
         """Load and execute deployment code from an artifact directly in memory
 

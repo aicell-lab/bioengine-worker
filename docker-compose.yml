@@ -10,8 +10,8 @@ services:
     user: "${UID}:${GID}"  # add UID and GID to .env file if not found
     # user: "nobody:nogroup"
     volumes:
-      - .worker_cache:/tmp
-      - data:/data
+      - ./.worker_cache:/tmp
+      - ./data:/data
     shm_size: 10.24gb
     env_file:
       - .env

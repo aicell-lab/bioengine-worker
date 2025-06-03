@@ -71,6 +71,12 @@ if [[ "$MODE" != "slurm" ]]; then
     exit 1
 fi
 
+# Get the container cache directory
+CONTAINER_CACHE_DIR=$(get_arg_value "--apptainer_cachedir")
+if [[ -z "$CONTAINER_CACHE_DIR" ]]; then
+    CONTAINER_CACHE_DIR=$(get_arg_value "--singularity_cachedir" "$WORKING_DIR/apptainer_images")
+fi
+
 # Get the path to the image 
 IMAGE="$(get_arg_value "--image" $DEFAULT_IMAGE)"
 
@@ -85,7 +91,7 @@ else
     NAME=${FILE%%:*}
     VERSION=${FILE##*:}
 
-    IMAGE_PATH="$WORKING_DIR/apptainer_images/${NAME}_${VERSION}.sif"
+    IMAGE_PATH="$CONTAINER_CACHE_DIR/${NAME}_${VERSION}.sif"
     DOCKER_IMAGE=$IMAGE
 fi
 

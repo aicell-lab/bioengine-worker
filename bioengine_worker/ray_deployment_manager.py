@@ -105,7 +105,7 @@ class RayDeploymentManager:
             if _local:
                 # Load the file content from local path
                 deployment = artifact_id.split("/")[1].replace("-", "_")
-                local_deployments_dir = Path(__file__).parent.resolve() / "deployments"
+                local_deployments_dir = Path(__file__).parent.parent.resolve() / "deployments"
                 local_path = (
                     local_deployments_dir / deployment / class_config["python_file"]
                 )

@@ -30,18 +30,19 @@ class BioEngineWorker:
 
     def __init__(
         self,
-        workspace: str = None,
         server_url: str = "https://hypha.aicell.io",
+        workspace: str = None,
         token: Optional[str] = None,
-        service_id: str = "bioengine-worker",
         client_id: Optional[str] = None,
+        service_id: str = "bioengine-worker",
+        admin_users: Optional[List[str]] = None,
         mode: Literal["slurm", "single-machine", "connect"] = "slurm",
-        dataset_config: Optional[Dict] = None,
         ray_cluster_config: Optional[Dict] = None,
         clean_up_previous_cluster: bool = True,
         ray_autoscaler_config: Optional[Dict] = None,
+        ray_connection_config: Optional[Dict] = None,
         ray_deployment_config: Optional[Dict] = None,
-        ray_connection_kwargs: Optional[Dict] = None,
+        dataset_config: Optional[Dict] = None,
         cache_dir: str = "/tmp",
         logger: Optional[logging.Logger] = None,
         log_file: Optional[str] = None,
@@ -50,16 +51,19 @@ class BioEngineWorker:
         """Initialize BioEngine worker with component managers.
 
         Args:
-            workspace: Hypha workspace to connect to. Defaults to user's workspace.
             server_url: URL of the Hypha server to register the worker with.
+            workspace: Hypha workspace to connect to. Defaults to user's workspace.
             token: Optional authentication token for the Hypha server.
+            client_id: Optional client ID for the worker. If not provided, a new one will be generated.
             service_id: Service ID used when registering with the Hypha server.
-            dataset_config: Optional configuration for data management.
+            admin_users: List of user IDs or emails with admin permissions. If not set, defaults to the logged-in user.
             ray_cluster_config: Configuration for RayClusterManager component.
             clean_up_previous_cluster: Flag to indicate whether to cleanup of previous Ray cluster.
             ray_autoscaler_config: Configuration for the RayAutoscaler component.
+            ray_connection_config: Optional arguments passed to `ray.init()` to connect to an existing ray cluster. If provided, disables cluster management.
             ray_deployment_config: Configuration for the RayDeploymentManager component.
-            ray_connection_kwargs: Optional arguments passed to `ray.init()` to connect to an existing ray cluster. If provided, disables cluster management.
+            dataset_config: Optional configuration for data management.
+            cache_dir: Directory for temporary files and Ray data. Defaults to `/tmp`.
             logger: Optional custom logger. If not provided, a default logger will be created.
             log_file: File for logging output.
             _debug: Enable debug logging.
@@ -70,11 +74,12 @@ class BioEngineWorker:
             log_file=log_file,
         )
         try:
-            self.workspace = workspace
             self.server_url = server_url
+            self.workspace = workspace
             self._token = token or os.environ.get("HYPHA_TOKEN")
-            self.service_id = service_id
             self.client_id = client_id
+            self.service_id = service_id
+            self.admin_users = admin_users or []
             self.start_time = None
             self.mode = mode
             self.cluster_manager = None
@@ -97,12 +102,18 @@ class BioEngineWorker:
                 print("=" * 60)
 
             # Initialize component managers depending on the mode
+            ray_cluster_config = ray_cluster_config or {}
+            ray_autoscaler_config = ray_autoscaler_config or {}
+            self.ray_connection_config = ray_connection_config or {}
+            # TODO: integrate autoscaler and ray connection in ray cluster manager
             dataset_config = dataset_config or {}
+            ray_deployment_config = ray_deployment_config or {}
+
             if self.mode in ["slurm", "single-machine"]:
-                os.environ["TMPDIR"] = str(cache_dir)
+                # os.environ["TMPDIR"] = str(cache_dir)
 
                 # Set parameters for RayClusterManager
-                ray_cluster_config = ray_cluster_config or {}
+
                 # Overwrite existing 'mode', 'log_file', and '_debug' parameters if provided
                 self._set_parameter(ray_cluster_config, "mode", self.mode)
                 self._set_parameter(ray_cluster_config, "log_file", log_file)
@@ -120,9 +131,11 @@ class BioEngineWorker:
                     dataset_config.get("data_dir"),
                     overwrite=False,
                 )
-                log_dir = Path(log_file).parent if log_file else None
                 self._set_parameter(
-                    ray_cluster_config, "slurm_log_dir", log_dir, overwrite=False
+                    ray_cluster_config,
+                    "slurm_log_dir",
+                    cache_dir / "slurm_logs",
+                    overwrite=False,
                 )
 
                 # Initialize RayClusterManager and update mode
@@ -134,7 +147,6 @@ class BioEngineWorker:
 
                 if self.mode == "slurm":
                     # Set parameters for RayAutoscaler
-                    ray_autoscaler_config = ray_autoscaler_config or {}
                     self._set_parameter(
                         ray_autoscaler_config, "cluster_manager", self.cluster_manager
                     )
@@ -147,12 +159,11 @@ class BioEngineWorker:
 
             elif self.mode == "connect":
                 # Set parameters for connecting to an existing Ray cluster
-                self.ray_connection_kwargs = ray_connection_kwargs or {}
                 self._set_parameter(
-                    self.ray_connection_kwargs, "logging_format", stream_logging_format
+                    self.ray_connection_config, "logging_format", stream_logging_format
                 )
 
-                if not "address" in self.ray_connection_kwargs:
+                if not "address" in self.ray_connection_config:
                     raise ValueError("Ray connection mode requires a provided address!")
 
                 self.logger.info(
@@ -164,7 +175,7 @@ class BioEngineWorker:
                 )
 
             # Set parameters for RayDeploymentManager
-            ray_deployment_config = ray_deployment_config or {}
+            self._set_parameter(ray_deployment_config, "admin_users", self.admin_users)
             self._set_parameter(
                 ray_deployment_config,
                 "deployment_cache_dir",
@@ -178,6 +189,7 @@ class BioEngineWorker:
             self.deployment_manager = RayDeploymentManager(**ray_deployment_config)
 
             # Set parameters for DatasetManager
+            self._set_parameter(dataset_config, "admin_users", self.admin_users)
             self._set_parameter(dataset_config, "log_file", log_file)
             self._set_parameter(dataset_config, "_debug", _debug)
             # Initialize DatasetManager
@@ -223,10 +235,21 @@ class BioEngineWorker:
         if not self.server:
             raise ValueError("Failed to connect to Hypha server")
 
+        user_id = self.server.config.user["id"]
+        user_email = self.server.config.user["email"]
+
         self.workspace = self.server.config.workspace
         self.logger.info(
-            f"Connected to workspace '{self.workspace}' with client ID '{self.server.config.client_id}'"
+            f"User {user_id} connected to workspace '{self.workspace}' with client ID '{self.server.config.client_id}'"
         )
+
+        # If admin users are not set, default to the logged-in user
+        if not self.admin_users:
+            self.admin_users = [user_email]
+            self.deployment_manager.admin_users = self.admin_users
+            self.dataset_manager.admin_users = self.admin_users
+
+        self.logger.info(f"Admin users for this worker: {', '.join(self.admin_users)}")
 
     async def _register(self) -> None:
         """Initialize connection to Hypha and register service interface.
@@ -286,7 +309,7 @@ class BioEngineWorker:
                     "Ray is already initialized. Please stop the existing Ray instance before starting the worker."
                 )
             try:
-                ray.init(**self.ray_connection_kwargs)
+                ray.init(**self.ray_connection_config)
             except Exception as e:
                 self.logger.error(f"Failed to connect to existing Ray cluster: {e}")
                 raise
@@ -354,7 +377,7 @@ class BioEngineWorker:
         if self.mode == "connect":
             # Ray connected externally
             head_address = ray._private.services.get_node_ip_address()
-            status["cluster"] = {
+            status["ray_cluster"] = {
                 "head_address": head_address,
                 "start_time_s": "N/A",
                 "start_time": "N/A",
@@ -365,17 +388,17 @@ class BioEngineWorker:
             }
         else:
             # Ray started internally
-            status["cluster"] = self.cluster_manager.get_status()
+            status["ray_cluster"] = self.cluster_manager.get_status()
             if self.mode == "slurm":
                 # Get autoscaler status if in SLURM mode
-                status["cluster"]["autoscaler"] = await self.autoscaler.get_status()
+                status["ray_cluster"]["autoscaler"] = await self.autoscaler.get_status()
             else:
-                status["cluster"]["autoscaler"] = None
-                status["cluster"][
+                status["ray_cluster"]["autoscaler"] = None
+                status["ray_cluster"][
                     "note"
                 ] = "Autoscaler is only available in 'slurm' mode."
-        status["deployments"] = await self.deployment_manager.get_status()
-        status["datasets"] = await self.dataset_manager.get_status()
+        status["bioengine_apps"] = await self.deployment_manager.get_status()
+        status["bioengine_datasets"] = await self.dataset_manager.get_status()
 
         return status
 

@@ -14,6 +14,19 @@ from bioengine_worker.worker import BioEngineWorker
 
 async def main(group_configs):
     """Main function to initialize and register BioEngine worker"""
+
+    # Set up logging
+    log_dir = group_configs["options"].pop("log_dir")
+    if not log_dir:
+        cache_dir = Path(group_configs["options"]["cache_dir"]).resolve()
+        log_dir = cache_dir / "logs"
+    log_dir = Path(log_dir).resolve()
+    log_file = log_dir / f"bioengine_worker_{time.strftime('%Y%m%d_%H%M%S')}.log"
+    logger = create_logger("__main__", log_file=log_file)
+
+    # Pass log file to group configs
+    group_configs["options"]["log_file"] = log_file
+
     # Setup signal-aware shutdown
     is_shutting_down = False
     bioengine_worker = None
@@ -50,7 +63,6 @@ async def main(group_configs):
 
         # Get Dataset Manager configuration
         dataset_config = group_configs["Dataset Manager Options"]
-        dataset_config["service_id"] = dataset_config.pop("dataset_service_id")
 
         # Get Ray Cluster Manager configuration
         ray_cluster_config = group_configs["Ray Cluster Manager Options"]
@@ -61,17 +73,12 @@ async def main(group_configs):
 
         # Get Ray Deployment Manager configuration
         ray_deployment_config = group_configs["Ray Deployment Manager Options"]
-        ray_deployment_config["service_id"] = ray_deployment_config.pop(
-            "deployment_service_id"
-        )
 
-        # Get Ray Connection options
-        ray_connection_kwargs = group_configs["Ray Connection Options"]
-        ray_connection_kwargs = {
-            k.replace("ray_", ""): v
-            for k, v in ray_connection_kwargs.items()
-            if v is not None
-        }
+        # Get Ray Connection configuration
+        ray_connection_config = group_configs["Ray Connection Options"]
+
+        # Get other worker configuration
+        worker_config = group_configs["options"]
 
         # Create BioEngine worker instance
         bioengine_worker = BioEngineWorker(
@@ -80,16 +87,16 @@ async def main(group_configs):
             token=hypha_config["token"],
             service_id=hypha_config["worker_service_id"],
             client_id=hypha_config["client_id"],
-            mode=group_configs["options"]["mode"],
+            mode=worker_config["mode"],
             dataset_config=dataset_config,
             ray_cluster_config=ray_cluster_config,
             clean_up_previous_cluster=clean_up_previous_cluster,
             ray_autoscaler_config=ray_autoscaler_config,
             ray_deployment_config=ray_deployment_config,
-            ray_connection_kwargs=ray_connection_kwargs,
-            cache_dir=group_configs["options"]["cache_dir"],
-            log_file=group_configs["options"]["log_file"],
-            _debug=group_configs["options"]["debug"],
+            ray_connection_config=ray_connection_config,
+            cache_dir=worker_config["cache_dir"],
+            log_file=worker_config["log_file"],
+            _debug=worker_config["debug"],
         )
 
         # Initialize worker
@@ -117,18 +124,22 @@ def create_parser():
         choices=["slurm", "single-machine", "connect"],
         help="Mode of operation: 'slurm' for managing a Ray cluster with SLURM jobs, 'single-machine' for local Ray cluster, 'connect' for connecting to an existing Ray cluster.",
     )
-
     parser.add_argument(
-        "--log_dir",
+        "--admin_users",
         type=str,
-        help="Directory for logs. This should be a mounted directory if running in container.",
+        nargs="+",
+        help="List of admin users for BioEngine apps and datasets. If not set, defaults to the logged-in user.",
     )
-
     parser.add_argument(
         "--cache_dir",
         type=str,
         default="/tmp",
         help="Directory for caching data. This should be a mounted directory if running in container.",
+    )
+    parser.add_argument(
+        "--log_dir",
+        type=str,
+        help="Directory for logs. If not set, a subdirectory 'logs' in the cache_dir will be used. This should be a mounted directory if running in container.",
     )
 
     parser.add_argument(
@@ -141,11 +152,6 @@ def create_parser():
     # Hypha related options
     hypha_group = parser.add_argument_group("Hypha Options")
     hypha_group.add_argument(
-        "--workspace",
-        type=str,
-        help="Hypha workspace to connect to",
-    )
-    hypha_group.add_argument(
         "--server_url",
         default="https://hypha.aicell.io",
         type=str,
@@ -154,7 +160,17 @@ def create_parser():
     hypha_group.add_argument(
         "--token",
         type=str,
-        help="Authentication token for Hypha server",
+        help="Authentication token for Hypha server. If not set, the environment variable 'HYPHA_TOKEN' will be used, otherwise the user will be prompted to log in.",
+    )
+    hypha_group.add_argument(
+        "--workspace",
+        type=str,
+        help="Hypha workspace to connect to. If not set, the workspace associated with the token will be used.",
+    )
+    hypha_group.add_argument(
+        "--client_id",
+        type=str,
+        help="Client ID for the worker. If not set, a client ID will be generated automatically.",
     )
     hypha_group.add_argument(
         "--worker_service_id",
@@ -162,16 +178,12 @@ def create_parser():
         type=str,
         help="Service ID for the worker",
     )
-    hypha_group.add_argument(
-        "--client_id",
-        type=str,
-        help="Client ID for the worker. If not set, a client ID will be generated automatically.",
-    )
 
     # Dataset Manager options
     dataset_group = parser.add_argument_group("Dataset Manager Options")
     dataset_group.add_argument(
         "--data_dir",
+        default="/data",
         type=str,
         help="Data directory served by the dataset manager. This should be a mounted directory if running in container.",
     )
@@ -187,7 +199,7 @@ def create_parser():
     cluster_group.add_argument(
         "--head_node_ip",
         type=str,
-        help="IP address for head node. Uses first system IP if None",
+        help="IP address for head node. If not set, the first system IP will be used.",
     )
     cluster_group.add_argument(
         "--head_node_port",
@@ -234,12 +246,12 @@ def create_parser():
     cluster_group.add_argument(
         "--redis_password",
         type=str,
-        help="Redis password for Ray cluster",
+        help="Redis password for Ray cluster. If not set, a random password will be generated.",
     )
     cluster_group.add_argument(
         "--ray_temp_dir",
         type=str,
-        help="Temporary directory for Ray. If not set, defaults to '<cache_dir>/ray'. This should be a mounted directory if running in container.",
+        help="Temporary directory for Ray. If not set, a subdirectory 'ray' in the cache_dir will be used. This should be a mounted directory if running in container.",
     )
     cluster_group.add_argument(
         "--head_num_cpus",
@@ -268,12 +280,12 @@ def create_parser():
     cluster_group.add_argument(
         "--worker_data_dir",
         type=str,
-        help="Data directory mounted to the container when starting a worker. If not set, the data_dir will be used.",
+        help="Data directory mounted to the container when starting a worker. If not set, the 'data_dir' will be used.",
     )
     cluster_group.add_argument(
         "--slurm_log_dir",
         type=str,
-        help="Directory for SLURM job logs. If not set, the log_dir will be used.",
+        help="Directory for SLURM job logs. If not set, a subdirectory 'slurm_logs' in the cache_dir will be used. This should be a mounted directory if running in container.",
     )
     cluster_group.add_argument(
         "--further_slurm_args",
@@ -372,12 +384,6 @@ def create_parser():
         help="Service ID for deployed models",
     )
     deployment_group.add_argument(
-        "--admin_users",
-        type=str,
-        nargs="+",
-        help="List of admin users for the deployment",
-    )
-    deployment_group.add_argument(
         "--startup_deployments",
         type=str,
         nargs="+",
@@ -386,7 +392,7 @@ def create_parser():
     deployment_group.add_argument(
         "--deployment_cache_dir",
         type=str,
-        help="Working directory for Ray Serve deployments. If not set, defaults to cache_dir. This should be a mounted directory if running in container.",
+        help="Working directory for Ray Serve deployments. If not set, defaults to 'cache_dir'. This should be a mounted directory if running in container.",
     )
 
     # Ray Connection options
@@ -416,6 +422,25 @@ def get_args_by_group(parser):
             k: args_dict[k] for k in group_keys if k in args_dict
         }
 
+    # Rename 'deployment_service_id' in Ray Deployment Manager configuration
+    ray_deployment_config = group_configs["Ray Deployment Manager Options"]
+    ray_deployment_config["service_id"] = ray_deployment_config.pop(
+        "deployment_service_id"
+    )
+
+    # Rename 'dataset_service_id' in Dataset Manager configuration
+    dataset_config = group_configs["Dataset Manager Options"]
+    dataset_config["service_id"] = dataset_config.pop("dataset_service_id")
+
+    # Rename keys in Ray Connection options
+    ray_connection_config = group_configs["Ray Connection Options"]
+    ray_connection_config = {
+        k.replace("ray_", ""): v
+        for k, v in ray_connection_config.items()
+        if v is not None
+    }
+    group_configs["Ray Connection Options"] = ray_connection_config
+
     return group_configs
 
 
@@ -424,18 +449,4 @@ if __name__ == "__main__":
 
     parser = create_parser()
     group_configs = get_args_by_group(parser)
-
-    # Set up logging
-    if group_configs["options"].get("log_dir"):
-        log_dir = Path(group_configs["options"].get("log_dir")).resolve()
-        log_file = log_dir / f"bioengine_worker_{time.strftime('%Y%m%d_%H%M%S')}.log"
-    else:
-        log_file = None
-    group_configs["options"]["log_file"] = log_file
-    logger = create_logger("__main__", log_file=log_file)
-
-    try:
-        asyncio.run(main(group_configs))
-    except Exception as e:
-        logger.error(f"Unhandled exception: {e}")
-        sys.exit(1)
+    asyncio.run(main(group_configs))

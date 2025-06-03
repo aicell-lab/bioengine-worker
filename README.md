@@ -1,6 +1,6 @@
 # BioEngine Worker
 
-Manages Ray cluster lifecycle and model deployments on HPC systems, single machine Ray instances or pre-existing Ray environments.
+Manages Ray cluster lifecycle BioEngine Apps and Datasets on HPC systems, single machine Ray instances or pre-existing Ray environments.
 
 Provides a Hypha service interface for streaming datasets, executing python code remotely or deploying models through Ray.
 
@@ -135,11 +135,11 @@ status = await worker_service.get_status()
 
 The status contains information about the:
 - Hypha service (`service`)
-- Ray cluster (`cluster`)
-- Model deployments (`deployments`)
-- Streaming Datasets (`datasets`)
+- Ray cluster (`ray_cluster`)
+- BioEngine Apps (`bioengine_apps`)
+- BioEngine Datasets (`bioengine_datasets`)
 
-Both deployments and datasets have separate Hypha service IDs, which can be accessed via `status["deployments"]["service_id"]` and `status["datasets"]["loaded_datasets"]`.
+Both BioEngine Apps and Datasets have separate Hypha service IDs, which can be accessed via `status["bioengine_apps"]["service_id"]` and `status["bioengine_datasets"]["loaded_datasets"]`.
 
 ### Deploying models to the BioEngine worker
 
@@ -161,7 +161,7 @@ With the field `deployment_config`, you can define required resources (e.g., `nu
 
 The field `python_file` defines the python script name, by default `main.py`. This python script must define the model class. The name of the model class needs to be specified in the `class_name` field. The model class requires the `__call__` method. Also note that all imports must be made within the class!
 
-An example deployment can be found in [`bioengine_worker/deployments/example_deployment`](bioengine_worker/deployments/example_deployment).
+An example deployment can be found in [`bioengine_apps/example_deployment`](bioengine_apps/example_deployment).
 
 ### Streaming datasets with the BioEngine worker
 

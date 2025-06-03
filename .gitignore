@@ -159,7 +159,7 @@ cython_debug/
 .vscode/
 
 # BioEngine
-.cache/
+.worker_cache/
 bioimageio_models/
 ray*
 apptainer_images/

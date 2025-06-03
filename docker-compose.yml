@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # Run interactively: `docker compose run --rm bioengine_worker`
   bioengine_worker:
     build:
       context: .
@@ -11,9 +10,8 @@ services:
     user: "${UID}:${GID}"  # add UID and GID to .env file if not found
     # user: "nobody:nogroup"
     volumes:
-      - ./.cache:/tmp
-      - ./data:/data
-      - ./logs:/logs
+      - .worker_cache:/tmp
+      - data:/data
     shm_size: 10.24gb
     env_file:
       - .env
@@ -23,11 +21,6 @@ services:
       "--mode", "single-machine",
       "--head_num_gpus", "1",
       "--head_num_cpus", "4",
-      # "--admin_users", "nils.mech@gmail.com", "oeway007@gmail.com",
-      # "--startup_deployments", "bioimage-io/model-runner",
-      "--cache_dir", "/tmp",
-      "--data_dir", "/data",
-      "--log_dir", "/logs",
     ]
     deploy:
       resources:

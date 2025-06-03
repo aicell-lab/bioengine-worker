@@ -1,7 +1,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, Optional, List
 
 import yaml
 from fastapi import FastAPI, HTTPException, Request
@@ -14,8 +14,9 @@ from bioengine_worker.utils import create_logger
 class DatasetManager:
     def __init__(
         self,
-        data_dir: str = None,
+        data_dir: str,
         service_id: str = "bioengine-datasets",
+        admin_users: Optional[List[str]] = None,
         # Logger
         logger: Optional[logging.Logger] = None,
         log_file: Optional[str] = None,
@@ -37,6 +38,9 @@ class DatasetManager:
         self.loaded_datasets = {}
         self.server = None
 
+        # TODO: Implement admin user checks if needed
+        self.admin_users = admin_users or []
+
     @property
     def datasets(self) -> Dict[str, Dict]:
         """Return the datasets without the internal attributes."""
@@ -53,10 +57,14 @@ class DatasetManager:
 
     def _load_dataset_info(self, data_dir) -> Dict[str, Dict]:
         """Read and parse a manifest.yaml file."""
-        if data_dir is None:
-            return {}
         try:
             data_dir = Path(data_dir).resolve()
+            if not data_dir.exists() or not data_dir.is_dir():
+                self.logger.warning(
+                    f"Data directory {data_dir} does not exist or is not a directory. Skipping dataset loading."
+                )
+                return {}
+
             datasets = {}
 
             for dataset_path in data_dir.iterdir():

@@ -38,21 +38,34 @@ class CellposeFinetune(object):
 
         # Define the path to save the downloaded zip file
         zip_file_path = tmp_dir / "data.zip"
-        data_dir = tmp_dir / "data"
 
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(download_url)
             response.raise_for_status()
             zip_file_path.write_bytes(response.content)
 
-        # Unzip the downloaded file
+        # Unzip the downloaded file directly to tmp_dir
+        # This will create the data/ folder structure inside tmp_dir
         with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
-            zip_ref.extractall(data_dir)
+            zip_ref.extractall(tmp_dir)
+
+        # Return the path to the extracted data directory
+        data_dir = tmp_dir / "data"
+
+        # Verify the data directory exists
+        if not data_dir.exists():
+            raise FileNotFoundError(f"Expected data directory not found at {data_dir}")
 
         return data_dir
 
-    def _find_image_annotation_pairs(self, image_dir):
+    async def _find_image_annotation_pairs(self, image_dir):
         annotations_dir = image_dir / "annotations"
+
+        # Verify annotations directory exists
+        if not annotations_dir.exists():
+            raise FileNotFoundError(
+                f"Annotations directory not found at {annotations_dir}"
+            )
 
         # List to hold pairs of image and corresponding annotation masks
         image_annotation_pairs = []
@@ -60,13 +73,33 @@ class CellposeFinetune(object):
         # Get list of all annotations
         annotation_files = list(annotations_dir.glob("*.tif"))
 
+        if not annotation_files:
+            raise ValueError(f"No annotation files found in {annotations_dir}")
+
         # Iterate through each annotation file
         for annotation_file in annotation_files:
             annotation_name = annotation_file.name
-            image_name = annotation_name.split("_mask_")[0]
-            image_file = image_dir / f"{image_name}.tif"
+            # Handle both "_mask.tif" and "_mask_1.tif" patterns
+            if "_mask.tif" in annotation_name:
+                image_name = annotation_name.replace("_mask.tif", ".tif")
+            elif "_mask_" in annotation_name:
+                image_name = annotation_name.split("_mask_")[0] + ".tif"
+            else:
+                # Skip files that don't match expected mask pattern
+                continue
 
-            image_annotation_pairs.append((image_file, annotation_file))
+            image_file = image_dir / image_name
+
+            # Only add the pair if both files exist
+            if image_file.exists():
+                image_annotation_pairs.append((image_file, annotation_file))
+            else:
+                print(
+                    f"Warning: Image file {image_file} not found for annotation {annotation_file}"
+                )
+
+        if not image_annotation_pairs:
+            raise ValueError(f"No valid image-annotation pairs found in {image_dir}")
 
         return image_annotation_pairs
 
@@ -296,7 +329,7 @@ class CellposeFinetune(object):
             image_dir = await self._download_data(tmp_dir, data["data_download_url"])
 
             # Create pairs of image and annotation masks
-            image_annotation_pairs = self._find_image_annotation_pairs(image_dir)
+            image_annotation_pairs = await self._find_image_annotation_pairs(image_dir)
             train_files, train_labels_files, test_files, test_labels_files = (
                 self._prepare_training_data(
                     image_annotation_pairs=image_annotation_pairs,

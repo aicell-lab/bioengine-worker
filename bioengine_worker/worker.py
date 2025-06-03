@@ -91,15 +91,13 @@ class BioEngineWorker:
 
             # If token is not provided, attempt to login
             if not self._token:
-                print("=" * 60)
+                print("\n" + "=" * 60)
                 print("NO HYPHA TOKEN FOUND - USER LOGIN REQUIRED")
-                print("=" * 60)
-                print("Attempting to login to Hypha server...")
-                print("-" * 60)
+                print("-" * 60, end="\n\n")
                 self._token = login({"server_url": self.server_url})
-                print("-" * 60)
+                print("\n" + "-" * 60)
                 print("Login completed successfully!")
-                print("=" * 60)
+                print("=" * 60, end="\n\n")
 
             # Initialize component managers depending on the mode
             ray_cluster_config = ray_cluster_config or {}

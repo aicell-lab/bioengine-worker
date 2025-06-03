@@ -259,12 +259,22 @@ class BioEngineWorker:
             bool: True if initialization successful
         """
         # Register service interface
+        description = "Manages BioEngine Apps and Datasets"
+        if self.mode == "slurm":
+            description += (
+                " on a HPC system with Ray Autoscaler support for dynamic resource management."
+            )
+        elif self.mode == "single-machine":
+            description += " on a single machine Ray instance."
+        else:
+            description += " in a pre-existing Ray environment."
+
         service_info = await self.server.register_service(
             {
                 "id": self.service_id,
                 "name": "BioEngine worker",
                 "type": "bioengine-worker",
-                "description": "Controls Ray cluster on HPC system",
+                "description": description,
                 "config": {
                     "visibility": "public",
                     "require_context": True,

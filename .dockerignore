@@ -64,8 +64,7 @@ ray*/
 
 # Data
 data/
-bioimageio_models/
-*cache/
+.bioengine
 
 # Keep the apps for now to allow for local deployment
 # bioengine_apps/

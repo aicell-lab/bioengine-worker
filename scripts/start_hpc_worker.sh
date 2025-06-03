@@ -191,11 +191,11 @@ fi
 # Add BioEngine worker bindings
 
 # CACHE_DIR is needed by the BioEngine worker -> container path
-CACHE_DIR=$(get_arg_value "--cache_dir" "$WORKING_DIR/.bioengine_cache")
+CACHE_DIR=$(get_arg_value "--cache_dir" "$WORKING_DIR/.bioengine")
 CACHE_DIR=$(realpath $CACHE_DIR)
 mkdir -p $CACHE_DIR
-add_bind $CACHE_DIR "/tmp"
-set_arg_value "--cache_dir" "/tmp"
+add_bind $CACHE_DIR "/tmp/bioengine"
+set_arg_value "--cache_dir" "/tmp/bioengine"
 
 # LOG_DIR is needed by the BioEngine logger -> container path
 LOG_DIR=$(get_arg_value "--log_dir" "$CACHE_DIR/logs")
@@ -215,10 +215,10 @@ if [[ -n "$DATA_DIR" ]]; then
 fi
 
 # RAY_SESSION_DIR is needed by the Ray head node -> container path
-RAY_SESSION_DIR=$(get_arg_value "--ray_temp_dir" "/tmp/ray/$USER")
+RAY_SESSION_DIR=$(get_arg_value "--ray_temp_dir" "$CACHE_DIR/ray")
 RAY_SESSION_DIR=$(realpath $RAY_SESSION_DIR)
-add_bind $RAY_SESSION_DIR "/tmp/ray"
-set_arg_value "--ray_temp_dir" "/tmp/ray"
+add_bind $RAY_SESSION_DIR "/tmp/bioengine/ray"
+set_arg_value "--ray_temp_dir" "/tmp/bioengine/ray"
 
 # WORKER_DATA_DIR is needed on the SLURM worker node -> real path
 WORKER_DATA_DIR=$(get_arg_value "--worker_data_dir" $DATA_DIR)

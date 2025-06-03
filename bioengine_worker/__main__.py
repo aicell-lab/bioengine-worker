@@ -133,7 +133,7 @@ def create_parser():
     parser.add_argument(
         "--cache_dir",
         type=str,
-        default="/tmp",
+        default="/tmp/bioengine",
         help="Directory for caching data. This should be a mounted directory if running in container.",
     )
     parser.add_argument(

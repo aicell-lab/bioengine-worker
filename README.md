@@ -20,7 +20,7 @@ A prebuilt Docker image is available under `ghcr.io/aicell-lab/bioengine-worker:
 To make use of the predefined settings, clone this Github repository and run `docker compose up`.
 
 This assumes the following directories in the current working directory for mounting into the docker container:
-- `.worker_cache`: A temporary directory for Ray (read and write)
+- `.bioengine`: A temporary directory for Ray (read and write)
 - `data`: A directory with datasets (available only as read-only)
 
 A token for the Hypha workspace can either be added using the tag `--token` or provided in the `.env` file as `HYPHA_TOKEN`. Otherwise, you will be prompted to login when starting the worker.
@@ -63,7 +63,7 @@ The script will pull the latest BioEngine worker docker image and convert it int
 
 To avoid interactive login to Hypha, pass the token with the tag `--token` or save it to `HYPHA_TOKEN` in the `.env` file in the root directory of the project. The script will automatically load the token from the `.env` file if it exists.
 
-The directory `.worker_cache` will be automatically created in the current working directory if the respective tag `--cache_dir` is not specified.
+The directory `.bioengine` will be automatically created in the current working directory if the respective tag `--cache_dir` is not specified.
 
 #### BioEngine worker with different base images
 

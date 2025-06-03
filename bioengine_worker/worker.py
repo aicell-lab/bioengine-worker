@@ -43,7 +43,7 @@ class BioEngineWorker:
         ray_connection_config: Optional[Dict] = None,
         ray_deployment_config: Optional[Dict] = None,
         dataset_config: Optional[Dict] = None,
-        cache_dir: str = "/tmp",
+        cache_dir: str = "/tmp/bioengine",
         logger: Optional[logging.Logger] = None,
         log_file: Optional[str] = None,
         _debug: bool = False,
@@ -63,7 +63,7 @@ class BioEngineWorker:
             ray_connection_config: Optional arguments passed to `ray.init()` to connect to an existing ray cluster. If provided, disables cluster management.
             ray_deployment_config: Configuration for the RayDeploymentManager component.
             dataset_config: Optional configuration for data management.
-            cache_dir: Directory for temporary files and Ray data. Defaults to `/tmp`.
+            cache_dir: Directory for temporary files and Ray data. Defaults to `/tmp/bioengine`.
             logger: Optional custom logger. If not provided, a default logger will be created.
             log_file: File for logging output.
             _debug: Enable debug logging.

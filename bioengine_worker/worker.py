@@ -241,9 +241,9 @@ class BioEngineWorker:
             f"User {user_id} connected to workspace '{self.workspace}' with client ID '{self.server.config.client_id}'"
         )
 
-        # If admin users are not set, default to the logged-in user
-        if not self.admin_users:
-            self.admin_users = [user_email]
+        # Add the logged-in user to admin users if not already present
+        if user_email not in self.admin_users:
+            self.admin_users.append(user_email)
             self.deployment_manager.admin_users = self.admin_users
             self.dataset_manager.admin_users = self.admin_users
 

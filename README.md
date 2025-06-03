@@ -20,9 +20,8 @@ A prebuilt Docker image is available under `ghcr.io/aicell-lab/bioengine-worker:
 To make use of the predefined settings, clone this Github repository and run `docker compose up`.
 
 This assumes the following directories in the current working directory for mounting into the docker container:
-- `.cache`: A temporary directory for Ray (read and write)
+- `.worker_cache`: A temporary directory for Ray (read and write)
 - `data`: A directory with datasets (available only as read-only)
-- `logs`: For writing logging output of the BioEngine worker (read and write)
 
 A token for the Hypha workspace can either be added using the tag `--token` or provided in the `.env` file as `HYPHA_TOKEN`. Otherwise, you will be prompted to login when starting the worker.
 The default workspace can be changed using the tag `--workspace`.
@@ -44,32 +43,27 @@ UID=$(id -u) GID=$(id -g) docker compose up
 
 ### Apptainer (for HPC)
 
-The bash script [`start_worker.sh`](scripts/start_worker.sh) helps to start a BioEngine worker in Apptainer. Either clone this Github repository to run the script:
+The bash script [`start_hpc_worker.sh`](scripts/start_hpc_worker.sh) helps to start a BioEngine worker in Apptainer. Either clone this Github repository to run the script:
 
 ```bash
-bash scripts/start_worker.sh --data_dir <path_to_data>
+bash scripts/start_worker.sh
 ```
 
 or access the script directly from Github like this:
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/aicell-lab/bioengine-worker/scripts/start_worker.sh) \
-    --data_dir <path_to_data>
+bash <(curl -s https://raw.githubusercontent.com/aicell-lab/bioengine-worker/scripts/start_worker.sh)
 ```
-
-The tag `--data_dir` is the only required tag to start a BioEngine worker.
 
 An overview of all tags for the BioEngine worker can be accessed via:
 ```bash
 bash scripts/start_worker.sh --help
 ```
 
-The script will pull the latest BioEngine docker image and convert it into Singularity Image Format (SIF) using Apptainer. These Apptainer images will be saved to the directory `./apptainer_images/`. 
-
-In addition to `single-machine` and `connect`, on HPCs with SLURM available the mode `slurm` is also available (`--mode` is set to `slurm` by default).
+The script will pull the latest BioEngine worker docker image and convert it into Singularity Image Format (SIF) using Apptainer. These Apptainer images will be saved to the directory `./apptainer_images/`. 
 
 To avoid interactive login to Hypha, pass the token with the tag `--token` or save it to `HYPHA_TOKEN` in the `.env` file in the root directory of the project. The script will automatically load the token from the `.env` file if it exists.
 
-The directories `./logs` and `/tmp/ray/$USER` will be automatically created if the respective tags `--log_dir` and `--ray_temp_dir` are not specified.
+The directory `.worker_cache` will be automatically created in the current working directory if the respective tag `--cache_dir` is not specified.
 
 #### BioEngine worker with different base images
 
@@ -79,16 +73,12 @@ It is possible to start a BioEngine worker with a different base image, provided
 
 Here are two examples of how this can be done, from a remote docker image:
 ```bash
-bash scripts/start_worker.sh \
-    --data_dir <path_to_data> \
-    --image <remote_docker_image>
+bash scripts/start_worker.sh --image <remote_docker_image>
 ```
 
 or from a local Apptainer image file:
 ```bash
-bash scripts/start_worker.sh \
-    --data_dir <path_to_data> \
-    --image <path_to_apptainer_image>.sif
+bash scripts/start_worker.sh --image <path_to_apptainer_image>.sif
 ```
 
 Note: When a Ray runtime environment is provided, it is not possible to access installations from the base image anymore.
@@ -146,7 +136,7 @@ Both BioEngine Apps and Datasets have separate Hypha service IDs, which can be a
 The BioEngine worker deploys models from the Hypha artifact manager. To create a deployment artifact, run the following script:
 
 ```bash
-python scripts/create_artifact.py --deployment_dir <path_to_your_deployment_dir>
+python scripts/manage_artifact.py --deployment_dir <path_to_your_deployment_dir>
 ```
 
 A deployment requires a `manifest.yml` file and a python script defining the deployment model.

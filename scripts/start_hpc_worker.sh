@@ -64,7 +64,14 @@ set_arg_value() {
     fi
 }
 
-# Get the path to the image
+# Check if the mode is set to something else than "slurm"
+MODE=$(get_arg_value "--mode" "slurm")
+if [[ "$MODE" != "slurm" ]]; then
+    echo "Error: Invalid mode '$MODE'. For modes other than 'slurm', please run the 'bioengine-worker' container directly. Check out the configuration wizard at https://dev.bioimage.io/#/bioengine."
+    exit 1
+fi
+
+# Get the path to the image 
 IMAGE="$(get_arg_value "--image" $DEFAULT_IMAGE)"
 
 # Get the image name and version
@@ -106,7 +113,6 @@ if [ ! -f "$IMAGE_PATH" ]; then
         exit 1
     fi
 fi
-
 set_arg_value "--image" $IMAGE_PATH
 
 # Define environment variables
@@ -151,8 +157,7 @@ add_bind() {
     fi
 }
 
-# Add SLURM-specific bindings if SLURM is used
-MODE=$(get_arg_value "--mode" "slurm")
+# Add SLURM-specific bindings
 if [[ "$MODE" == "slurm" ]]; then
     # Binaries
     add_bind $(which sinfo)
@@ -185,41 +190,48 @@ fi
 
 # Add BioEngine worker bindings
 
+# CACHE_DIR is needed by the BioEngine worker -> container path
+CACHE_DIR=$(get_arg_value "--cache_dir" "$WORKING_DIR/.bioengine_cache")
+CACHE_DIR=$(realpath $CACHE_DIR)
+mkdir -p $CACHE_DIR
+add_bind $CACHE_DIR "/tmp"
+set_arg_value "--cache_dir" "/tmp"
+
 # LOG_DIR is needed by the BioEngine logger -> container path
-LOG_DIR=$(get_arg_value "--log_dir" "$WORKING_DIR/logs")
-LOG_DIR=$(realpath $LOG_DIR)
-mkdir -p $LOG_DIR
-add_bind $LOG_DIR "/app/logs"
-set_arg_value "--log_dir" "/app/logs"
+LOG_DIR=$(get_arg_value "--log_dir" "$CACHE_DIR/logs")
+if [[ -n "$LOG_DIR" ]]; then
+    LOG_DIR=$(realpath $LOG_DIR)
+    mkdir -p $LOG_DIR
+    add_bind $LOG_DIR "/logs"
+    set_arg_value "--log_dir" "/logs"
+fi
 
 # DATA_DIR is needed on by the DatasetManager -> container path
-DATA_DIR=$(get_arg_value "--data_dir" "")
+DATA_DIR=$(get_arg_value "--data_dir")
 if [[ -n "$DATA_DIR" ]]; then
     DATA_DIR=$(realpath $DATA_DIR)
     add_bind $DATA_DIR "/data" "ro"  # Read-only
     set_arg_value "--data_dir" /data
 fi
 
-# If mode either SLURM or single-node:
-if [[ "$MODE" == "slurm" || "$MODE" == "single-node" ]]; then
-    # RAY_SESSION_DIR is needed by the Ray head node -> container path
-    RAY_SESSION_DIR=$(get_arg_value "--ray_temp_dir" "/tmp/ray/$USER")
-    RAY_SESSION_DIR=$(realpath $RAY_SESSION_DIR)
-    add_bind $RAY_SESSION_DIR "/tmp/ray"
-    set_arg_value "--ray_temp_dir" "/tmp/ray"
+# RAY_SESSION_DIR is needed by the Ray head node -> container path
+RAY_SESSION_DIR=$(get_arg_value "--ray_temp_dir" "/tmp/ray/$USER")
+RAY_SESSION_DIR=$(realpath $RAY_SESSION_DIR)
+add_bind $RAY_SESSION_DIR "/tmp/ray"
+set_arg_value "--ray_temp_dir" "/tmp/ray"
 
-    # WORKER_DATA_DIR is needed on the SLURM worker node -> real path
-    WORKER_DATA_DIR=$(get_arg_value "--worker_data_dir" $DATA_DIR)
-    if [[ -n "$WORKER_DATA_DIR" ]]; then
-        WORKER_DATA_DIR=$(realpath $WORKER_DATA_DIR)
-        set_arg_value "--worker_data_dir" $WORKER_DATA_DIR
-    fi
-
-    # SLURM_LOG_DIR is needed on the SLURM worker node -> real path
-    SLURM_LOG_DIR=$(get_arg_value "--slurm_log_dir" "$WORKING_DIR/logs")
-    SLURM_LOG_DIR=$(realpath $SLURM_LOG_DIR)
-    set_arg_value "--slurm_log_dir" $SLURM_LOG_DIR
+# WORKER_DATA_DIR is needed on the SLURM worker node -> real path
+WORKER_DATA_DIR=$(get_arg_value "--worker_data_dir" $DATA_DIR)
+if [[ -n "$WORKER_DATA_DIR" ]]; then
+    WORKER_DATA_DIR=$(realpath $WORKER_DATA_DIR)
+    set_arg_value "--worker_data_dir" $WORKER_DATA_DIR
 fi
+
+# SLURM_LOG_DIR is needed on the SLURM worker node -> real path
+SLURM_LOG_DIR=$(get_arg_value "--slurm_log_dir" "$CACHE_DIR/slurm_logs")
+SLURM_LOG_DIR=$(realpath $SLURM_LOG_DIR)
+set_arg_value "--slurm_log_dir" $SLURM_LOG_DIR
+
 
 # Check if the flag `--debug` is set
 DEBUG_MODE=$(get_arg_value "--debug" "false")

@@ -375,6 +375,7 @@ class BioEngineWorker:
         }
 
         if self.mode == "connect":
+            # TODO: move ray cluster status completely to RayClusterManager
             # Ray connected externally
             head_address = ray._private.services.get_node_ip_address()
             status["ray_cluster"] = {

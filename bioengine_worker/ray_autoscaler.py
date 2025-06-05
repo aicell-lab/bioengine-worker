@@ -98,8 +98,7 @@ class RayAutoscaler:
         self.monitoring_task = None
         self.is_running = False
 
-    @property
-    def pending_tasks(self) -> list:
+    async def get_pending_tasks(self) -> list:
         """Get pending tasks that need resources."""
         if ray.is_initialized():
             pending_tasks = list_tasks(
@@ -114,8 +113,7 @@ class RayAutoscaler:
             self.logger.warning("Ray cluster is not running")
             return []
 
-    @property
-    def pending_actors(self) -> list:
+    async def get_pending_actors(self) -> list:
         """Get pending actors that need resources."""
         if ray.is_initialized():
             pending_actors = list_actors(
@@ -129,12 +127,11 @@ class RayAutoscaler:
             self.logger.warning("Ray cluster is not running")
             return []
 
-    @property
-    def n_worker_jobs(self) -> int:
+    async def get_worker_jobs(self) -> int:
         """Get number of SLURM workers in the cluster (configuring, pending or running)."""
-        return len(self.ray_cluster.slurm_actor.get_jobs())
+        return len(await self.ray_cluster.slurm_manager.get_jobs())
 
-    def _collect_metrics(self) -> tuple:
+    async def _collect_metrics(self) -> tuple:
         """Collect resource utilization metrics from worker nodes using cluster status."""
 
         node_metrics = self.node_metrics.copy()
@@ -204,7 +201,7 @@ class RayAutoscaler:
 
         return active_worker_ids, dead_worker_ids, node_metrics
 
-    def _scale_up(
+    async def _scale_up(
         self, num_gpus: int, num_cpus: int, mem_per_cpu: int, time_limit: str
     ) -> None:
         """Scale up the cluster by adding a new worker node."""
@@ -217,14 +214,14 @@ class RayAutoscaler:
         )
         self.last_scale_up_time = time.time()
 
-    def _make_scaling_decisions(self, node_metrics: dict) -> None:
+    async def _make_scaling_decisions(self, node_metrics: dict) -> None:
         """Make scaling decisions based on resource utilization and pending tasks."""
 
         current_time = time.time()
-        pending_tasks = self.pending_tasks
-        pending_actors = self.pending_actors
+        pending_tasks = await self.get_pending_tasks
+        pending_actors = await self.get_pending_actors
         num_pending_tasks = len(pending_tasks) + len(pending_actors)
-        n_worker_jobs = self.n_worker_jobs
+        n_worker_jobs = await self.get_worker_jobs
 
         # If at least one task needs resources, check scale up, otherwise check scale down
         if num_pending_tasks > 0:
@@ -297,7 +294,7 @@ class RayAutoscaler:
                 self.ray_cluster.remove_worker(longest_idle_worker)
                 self.last_scale_down_time = current_time
 
-    def _cleanup_dead_nodes(self, worker_ids: set) -> None:
+    async def _cleanup_dead_nodes(self, worker_ids: set) -> None:
         if worker_ids:
             self.logger.info(
                 f"Cleaning up {len(worker_ids)} dead worker(s) from cluster: {worker_ids}"
@@ -441,7 +438,7 @@ class RayAutoscaler:
 
             # Collect metrics
             active_worker_ids, _, node_metrics = self._collect_metrics()
-            pending_workers = max(self.n_worker_jobs - len(active_worker_ids), 0)
+            pending_workers = max(await self.get_worker_jobs - len(active_worker_ids), 0)
 
             # Initialize metrics summary
             recent_metrics = {
@@ -449,7 +446,7 @@ class RayAutoscaler:
                 "active_workers": 0,
                 "idle_workers": 0,
                 "pending_workers": pending_workers,
-                "pending_tasks": len(self.pending_tasks) + len(self.pending_actors),
+                "pending_tasks": len(await self.get_pending_tasks) + len(await self.get_pending_actors),
                 "average_cpu": 0.0,
                 "average_gpu": 0.0,
                 "average_memory": 0.0,

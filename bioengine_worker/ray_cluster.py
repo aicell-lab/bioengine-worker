@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -17,7 +18,6 @@ from bioengine_worker.slurm_manager import SlurmManager
 from bioengine_worker.utils import create_logger, format_time, stream_logging_format
 
 
-# TODO: make async
 class RayCluster:
     """Manages Ray cluster lifecycle and worker nodes on an HPC system.
 
@@ -179,7 +179,7 @@ class RayCluster:
             }
 
             # Initialize SlurmManager
-            self.slurm_actor = SlurmManager(
+            self.slurm_manager = SlurmManager(
                 job_name="ray_worker",
                 slurm_log_dir=Path(worker_cache_dir) / "slurm_logs",
                 log_file=log_file,
@@ -223,7 +223,7 @@ class RayCluster:
             )
             raise RuntimeError("Ray cluster is not running")
 
-    async def _find_ray_executable(self) -> str:
+    def _find_ray_executable(self) -> str:
         """Find the Ray executable path.
 
         Returns:
@@ -242,9 +242,18 @@ class RayCluster:
             True if SLURM is available, False otherwise
         """
         try:
-            subprocess.run(["sinfo"], capture_output=True, text=True, check=True)
-            self.logger.info("SLURM is available")
-            return True
+            proc = await asyncio.create_subprocess_exec(
+                "sinfo",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await proc.communicate()
+            if proc.returncode == 0:
+                self.logger.info("SLURM is available")
+                return True
+            else:
+                self.logger.info("SLURM is not available")
+                return False
         except FileNotFoundError:
             self.logger.info("SLURM is not available")
             return False
@@ -255,8 +264,13 @@ class RayCluster:
         Returns:
             str with the internal IP address
         """
-        result = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
-        return result.stdout.strip().split()[0]  # Take the first IP
+        proc = await asyncio.create_subprocess_exec(
+            "hostname", "-I",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await proc.communicate()
+        return stdout.decode().strip().split()[0]  # Take the first IP
 
     async def _find_ports(self, port: int, step: int = 1) -> int:
         """Find next available port starting from given port number.
@@ -268,14 +282,17 @@ class RayCluster:
         Returns:
             First available port number
         """
+        def check_port(port_num):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                return s.connect_ex(("localhost", port_num)) != 0
+
         available = False
         out_port = port
         while not available:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                if s.connect_ex(("localhost", out_port)) != 0:
-                    available = True
-                else:
-                    out_port += step
+            available = await asyncio.to_thread(check_port, out_port)
+            if not available:
+                out_port += step
+        
         if out_port != port:
             self.logger.warning(
                 f"Port {port} is not available. Using {out_port} instead."
@@ -284,25 +301,25 @@ class RayCluster:
 
     async def _set_cluster_ports(self):
         # Update ports to available ones
-        self.ray_cluster_config["head_node_port"] = self._find_ports(
+        self.ray_cluster_config["head_node_port"] = await self._find_ports(
             self.ray_cluster_config["head_node_port"], step=1
         )
-        self.ray_cluster_config["node_manager_port"] = self._find_ports(
+        self.ray_cluster_config["node_manager_port"] = await self._find_ports(
             self.ray_cluster_config["node_manager_port"], step=100
         )
-        self.ray_cluster_config["object_manager_port"] = self._find_ports(
+        self.ray_cluster_config["object_manager_port"] = await self._find_ports(
             self.ray_cluster_config["object_manager_port"], step=100
         )
-        self.ray_cluster_config["redis_shard_port"] = self._find_ports(
+        self.ray_cluster_config["redis_shard_port"] = await self._find_ports(
             self.ray_cluster_config["redis_shard_port"], step=100
         )
-        self.ray_cluster_config["serve_port"] = self._find_ports(
+        self.ray_cluster_config["serve_port"] = await self._find_ports(
             self.ray_cluster_config["serve_port"], step=1
         )
-        self.ray_cluster_config["dashboard_port"] = self._find_ports(
+        self.ray_cluster_config["dashboard_port"] = await self._find_ports(
             self.ray_cluster_config["dashboard_port"], step=1
         )
-        self.ray_cluster_config["ray_client_server_port"] = self._find_ports(
+        self.ray_cluster_config["ray_client_server_port"] = await self._find_ports(
             self.ray_cluster_config["ray_client_server_port"], step=10000
         )
         self.ray_cluster_config["min_worker_port"] = (
@@ -312,7 +329,7 @@ class RayCluster:
             self.ray_cluster_config["ray_client_server_port"] + 9998
         )
 
-    async def _node_resource_to_worker_id(self, node_resource: Dict) -> Optional[str]:
+    def _node_resource_to_worker_id(self, node_resource: Dict) -> Optional[str]:
         # Extract worker ID from resources
         worker_id = None
         for resource in node_resource.keys():
@@ -321,7 +338,7 @@ class RayCluster:
                 break
         return worker_id
 
-    async def _get_worker_status(self, worker_id: str) -> str:
+    def _get_worker_status(self, worker_id: str) -> str:
         # Check if worker node exists in cluster
         for node in ray.nodes():
             node_worker_id = self._node_resource_to_worker_id(node["Resources"])
@@ -361,7 +378,8 @@ class RayCluster:
         if self.mode == "connect":
             try:
                 head_node_address = f"{self.ray_cluster_config['head_node_address']}:{self.ray_cluster_config['ray_client_server_port']}"
-                ray.init(
+                await asyncio.to_thread(
+                    ray.init,
                     address=head_node_address,
                     logging_format=stream_logging_format,
                 )
@@ -375,7 +393,7 @@ class RayCluster:
             force_clean_up = self.ray_cluster_config["force_clean_up"]
         if force_clean_up:
             self.logger.info("Forcing Ray cleanup...")
-            self.shutdown()
+            await self.shutdown()
         elif ray.is_initialized():
             self.logger.info("Ray cluster is already initialized")
             return self.head_node_address
@@ -383,51 +401,55 @@ class RayCluster:
             self.logger.info("Starting Ray cluster...")
 
             # Check and set cluster ports
-            self._set_cluster_ports()
+            await self._set_cluster_ports()
 
             # Make sure the temporary directory exists (triggers better error message than Ray)
-            self.ray_cluster_config["ray_temp_dir"].mkdir(parents=True, exist_ok=True)
+            ray_temp_dir = Path(self.ray_cluster_config["ray_temp_dir"])
+            await asyncio.to_thread(ray_temp_dir.mkdir, parents=True, exist_ok=True)
 
             # Start ray as the head node with the specified parameters
-            # TODO: make async
-            result = subprocess.run(
-                [
-                    self._ray_exec_path,
-                    "start",
-                    "--head",
-                    f"--num-cpus={self.ray_cluster_config['head_num_cpus']}",
-                    f"--num-gpus={self.ray_cluster_config['head_num_gpus']}",
-                    f"--node-ip-address={self.ray_cluster_config['head_node_address']}",
-                    f"--port={self.ray_cluster_config['head_node_port']}",
-                    f"--node-manager-port={self.ray_cluster_config['node_manager_port']}",
-                    f"--object-manager-port={self.ray_cluster_config['object_manager_port']}",
-                    f"--redis-shard-ports={self.ray_cluster_config['redis_shard_port']}",
-                    f"--ray-client-server-port={self.ray_cluster_config['ray_client_server_port']}",
-                    f"--min-worker-port={self.ray_cluster_config['min_worker_port']}",
-                    f"--max-worker-port={self.ray_cluster_config['max_worker_port']}",
-                    "--include-dashboard=True",
-                    f"--dashboard-port={self.ray_cluster_config['dashboard_port']}",
-                    f"--redis-password={self.ray_cluster_config['redis_password']}",
-                    f"--temp-dir={self.ray_cluster_config['ray_temp_dir']}",
-                ],
-                capture_output=True,
-                check=True,
+            proc = await asyncio.create_subprocess_exec(
+                self._ray_exec_path,
+                "start",
+                "--head",
+                f"--num-cpus={self.ray_cluster_config['head_num_cpus']}",
+                f"--num-gpus={self.ray_cluster_config['head_num_gpus']}",
+                f"--node-ip-address={self.ray_cluster_config['head_node_address']}",
+                f"--port={self.ray_cluster_config['head_node_port']}",
+                f"--node-manager-port={self.ray_cluster_config['node_manager_port']}",
+                f"--object-manager-port={self.ray_cluster_config['object_manager_port']}",
+                f"--redis-shard-ports={self.ray_cluster_config['redis_shard_port']}",
+                f"--ray-client-server-port={self.ray_cluster_config['ray_client_server_port']}",
+                f"--min-worker-port={self.ray_cluster_config['min_worker_port']}",
+                f"--max-worker-port={self.ray_cluster_config['max_worker_port']}",
+                "--include-dashboard=True",
+                f"--dashboard-port={self.ray_cluster_config['dashboard_port']}",
+                f"--redis-password={self.ray_cluster_config['redis_password']}",
+                f"--temp-dir={self.ray_cluster_config['ray_temp_dir']}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
+            stdout, stderr = await proc.communicate()
+            
+            if proc.returncode != 0:
+                error_msg = stderr.decode() if stderr else "Unknown error"
+                raise subprocess.CalledProcessError(proc.returncode, "ray start", stderr=error_msg)
+            
             self.logger.debug(
-                f"Ray start command output:\n----------\n{result.stdout.decode()}"
+                f"Ray start command output:\n----------\n{stdout.decode()}"
             )
 
             # Verify the cluster is running on the correct IP and port
             head_node_address = self.ray_cluster_config["head_node_address"]
             head_node_port = self.ray_cluster_config["head_node_port"]
             address = f"{head_node_address}:{head_node_port}"
-            context = ray.init(address=address, logging_format=stream_logging_format)
-            serve.start(
+            context = await asyncio.to_thread(ray.init, address=address, logging_format=stream_logging_format)
+            await asyncio.to_thread(
+                serve.start,
                 http_options={
                     "host": "0.0.0.0",
                     "port": self.ray_cluster_config["serve_port"],
                 },
-                # logging_config=stream_logging_format,  # TODO: Fix logging
             )
             self.ray_start_time = time.time()
             formatted_time = format_time(self.ray_start_time)
@@ -441,19 +463,22 @@ class RayCluster:
             symlink_path = (
                 Path(self.ray_cluster_config["ray_temp_dir"]) / "session_latest"
             )
-            if symlink_path.is_symlink():
-                # Get the target of the symlink
-                symlink_target = symlink_path.readlink()
-            else:
-                self.logger.error(f"Symlink '{symlink_path}' does not exist")
-                raise FileNotFoundError(f"Symlink '{symlink_path}' does not exist")
-
-            relative_symlink_target = Path(symlink_target.name)
-            self.logger.debug(
-                f"Changing symlink target from '{symlink_target}' to '{relative_symlink_target}'"
-            )
-            symlink_path.unlink()
-            symlink_path.symlink_to(relative_symlink_target)
+            
+            def update_symlink():
+                if symlink_path.is_symlink():
+                    # Get the target of the symlink
+                    symlink_target = symlink_path.readlink()
+                    relative_symlink_target = Path(symlink_target.name)
+                    self.logger.debug(
+                        f"Changing symlink target from '{symlink_target}' to '{relative_symlink_target}'"
+                    )
+                    symlink_path.unlink()
+                    symlink_path.symlink_to(relative_symlink_target)
+                else:
+                    self.logger.error(f"Symlink '{symlink_path}' does not exist")
+                    raise FileNotFoundError(f"Symlink '{symlink_path}' does not exist")
+            
+            await asyncio.to_thread(update_symlink)
 
             # If running on a HPC system, use the RayAutoscaler to manage the Ray cluster
             if self.mode == "slurm":
@@ -463,15 +488,15 @@ class RayCluster:
 
         except subprocess.CalledProcessError as e:
             self.logger.error(
-                f"Ray start command failed with error code {e.returncode}:\n{e.stderr.decode()}"
+                f"Ray start command failed with error code {e.returncode}:\n{e.stderr}"
             )
             if ray.is_initialized():
-                self.shutdown()
+                await self.shutdown()
             raise e
         except Exception as e:
             self.logger.error(f"Error initializing Ray: {e}")
             if ray.is_initialized():
-                self.shutdown()
+                await self.shutdown()
             raise e
 
     async def get_status(self) -> Dict:
@@ -480,31 +505,6 @@ class RayCluster:
         Returns:
             Dict with head node address and worker node IDs
         """
-        # if self.mode == "connect":
-        #     # TODO: move ray cluster status completely to RayCluster
-        #     # Ray connected externally
-        #     head_address = ray._private.services.get_node_ip_address()
-        #     status["ray_cluster"] = {
-        #         "head_address": head_address,
-        #         "start_time_s": "N/A",
-        #         "start_time": "N/A",
-        #         "uptime": "N/A",
-        #         "worker_nodes": "N/A",
-        #         "autoscaler": None,
-        #         "note": "Connected to existing Ray cluster; no autoscaler info available.",
-        #     }
-        # else:
-        #     # Ray started internally
-        #     status["ray_cluster"] = self.ray_cluster.get_status()
-        #     if self.mode == "slurm":
-        #         # Get autoscaler status if in SLURM mode
-        #         status["ray_cluster"]["autoscaler"] = await self.autoscaler.get_status()
-        #     else:
-        #         status["ray_cluster"]["autoscaler"] = None
-        #         status["ray_cluster"][
-        #             "note"
-        #         ] = "Autoscaler is only available in 'slurm' mode."
-
         output = {"head_address": None, "worker_nodes": {"Alive": [], "Dead": []}}
         if not ray.is_initialized():
             self.logger.info("Ray cluster is not running")
@@ -519,15 +519,16 @@ class RayCluster:
             output["start_time"] = formatted_time["start_time"]
             output["uptime"] = formatted_time["uptime"]
 
-            # Get the available resources per node
-            available_resources_per_node = ray.state.available_resources_per_node()
+            # Get the available resources per node (run in thread to avoid blocking)
+            available_resources_per_node = await asyncio.to_thread(ray.state.available_resources_per_node)
 
             # Get the list of running jobs
             if self.mode == "slurm":
-                running_jobs = self.slurm_actor.get_jobs().keys()
+                running_jobs = await self.slurm_manager.get_jobs().keys()
 
-            # Get the status of all worker nodes
-            for node in ray.nodes():
+            # Get the status of all worker nodes (run in thread to avoid blocking)
+            nodes = await asyncio.to_thread(ray.nodes)
+            for node in nodes:
                 # Skip the head node
                 if (
                     "node:__internal_head__" in node["Resources"].keys()
@@ -622,23 +623,27 @@ class RayCluster:
                 try:
                     serve.context._get_global_client()
                     self.logger.info("Shutting down Ray Serve...")
-                    serve.shutdown()
+                    await asyncio.to_thread(serve.shutdown)
                 except serve.exceptions.RayServeException:
                     pass
 
                 self.logger.info("Disconnecting from Ray cluster...")
-                ray.shutdown()
+                await asyncio.to_thread(ray.shutdown)
 
             # Shutdown the Ray cluster head node
             self.logger.info("Shutting down Ray cluster...")
-            result = subprocess.run(
-                [self._ray_exec_path, "stop", f"--grace-period={grace_period}"],
-                capture_output=True,
-                text=True,
-                check=True,
+            proc = await asyncio.create_subprocess_exec(
+                self._ray_exec_path, "stop", f"--grace-period={grace_period}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
             )
+            stdout, stderr = await proc.communicate()
+            
+            if proc.returncode != 0:
+                error_msg = stderr.decode() if stderr else "Unknown error"
+                raise subprocess.CalledProcessError(proc.returncode, "ray stop", stderr=error_msg)
 
-            output = result.stdout
+            output = stdout.decode()
             if re.search(r"Stopped all \d+ Ray processes\.", output):
                 self.logger.info("All Ray processes stopped successfully")
             elif "Did not find any active Ray processes." in output:
@@ -658,9 +663,9 @@ class RayCluster:
                     )
 
             # Clean up any remaining worker jobs
-            time.sleep(5)  # Wait for Ray to fully shut down
+            await asyncio.sleep(5)  # Wait for Ray to fully shut down
             if self.mode == "slurm":
-                self.slurm_actor.cancel_jobs(grace_period=grace_period)
+                await self.slurm_manager.cancel_jobs(grace_period=grace_period)
 
             self.logger.info("Ray cluster shut down complete")
 
@@ -745,7 +750,7 @@ class RayCluster:
             apptainer_cmd += f" {ray_worker_cmd}"
 
             # Create sbatch script using SlurmManager
-            sbatch_script = self.slurm_actor.create_sbatch_script(
+            sbatch_script = await self.slurm_manager.create_sbatch_script(
                 command=apptainer_cmd,
                 gpus=num_gpus,
                 cpus_per_task=num_cpus,
@@ -755,7 +760,7 @@ class RayCluster:
             )
 
             # Submit the job
-            job_id = self.slurm_actor.submit_job(sbatch_script, delete_script=True)
+            job_id = await self.slurm_manager.submit_job(sbatch_script, delete_script=True)
 
             if job_id:
                 self.logger.info(
@@ -818,22 +823,22 @@ class RayCluster:
                 obj_ref = stop_worker.remote()
 
                 try:
-                    ray.get(obj_ref, timeout=15)
+                    await asyncio.to_thread(ray.get, obj_ref, timeout=15)
                 except ray.exceptions.GetTimeoutError:
                     self.logger.error(
                         f"Failed to send shutdown command to worker '{worker_id}' within 15 seconds"
                     )
-                    raise e
+                    raise
 
                 # Wait for worker node to disappear from cluster status
                 start_time = time.time()
                 while time.time() - start_time < grace_period:
-                    time.sleep(3)
+                    await asyncio.sleep(3)
                     status = self._get_worker_status(worker_id)
                     if status != "alive":
                         break
 
-            cancelled_jobs = self.slurm_actor.cancel_jobs([worker_id])
+            cancelled_jobs = await self.slurm_manager.cancel_jobs([worker_id])
             if cancelled_jobs == [worker_id]:
                 self.logger.info(f"Successfully removed worker '{worker_id}'")
             else:
@@ -888,7 +893,7 @@ if __name__ == "__main__":
         # Wait for worker node to appear in cluster status
         print("Waiting for job to start...")
         time.sleep(3)
-        jobs = ray_cluster.slurm_actor.get_jobs()
+        jobs = ray_cluster.slurm_manager.get_jobs()
         if worker_id not in jobs:
             raise RuntimeError(
                 f"Job died before worker node appeared in cluster status"

@@ -1022,7 +1022,7 @@ if __name__ == "__main__":
     print("\n===== Testing AppsManager =====\n")
 
     # Create and start the autoscaler with shorter thresholds for quicker testing
-    cluster_manager = RayClusterManager(
+    ray_cluster = RayClusterManager(
         head_num_cpus=4,
         head_num_gpus=1,
         ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
@@ -1034,11 +1034,13 @@ if __name__ == "__main__":
         slurm_log_dir=str(Path(__file__).parent.parent / "logs"),
         debug=True,
     )
-    cluster_manager.start_cluster(force_clean_up=True)
 
-    if cluster_manager.ray_cluster_config["mode"] == "slurm":
+    # TODO: is async now
+    ray_cluster.start_cluster(force_clean_up=True)
+
+    if ray_cluster.ray_cluster_config["mode"] == "slurm":
         autoscaler = RayAutoscaler(
-            cluster_manager=cluster_manager,
+            ray_cluster=ray_cluster,
             # Use shorter times for faster testing
             default_time_limit="00:10:00",
             max_workers=1,
@@ -1206,7 +1208,7 @@ if __name__ == "__main__":
             if autoscaler:
                 await autoscaler.shutdown_cluster()
             else:
-                cluster_manager.shutdown_cluster()
+                ray_cluster.shutdown_cluster()
 
     # Run the test
     import sys

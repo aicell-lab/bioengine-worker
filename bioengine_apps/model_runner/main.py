@@ -9,13 +9,23 @@ import numpy as np
 
 class ModelRunner:
     def __init__(self, cache_n_models: int = 10):
-        self.cache_dir = (
-            Path(os.environ["BIOENGINE_CACHE_PATH"]).resolve() / "bioimageio_models"
-        )
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        bioimageio_cache_path = self.cache_dir / ".cache"
+        # Set up working directory
+        workdir = Path(os.environ["BIOENGINE_WORKDIR"])
+        workdir.mkdir(parents=True, exist_ok=True)
+
+        # Set up cache directory for bioimageio
+        bioimageio_cache_path = workdir / ".cache"
         bioimageio_cache_path.mkdir(parents=True, exist_ok=True)
         os.environ["BIOIMAGEIO_CACHE_PATH"] = str(bioimageio_cache_path)
+
+        # Change to the cache directory (for keras models which create files in the current directory)
+        os.chdir(bioimageio_cache_path)
+
+        # Set up model directory
+        model_dir = workdir / "models"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        self.model_dir = model_dir
+
         self.cache_n_models = cache_n_models
         self.cached_models = []
 
@@ -34,7 +44,7 @@ class ModelRunner:
         This method can be decorated with Ray's multiplex for URL caching.
         """
         cache_key = self._get_cache_key_for_url(model_url)
-        package_path = self.cache_dir / cache_key
+        package_path = self.model_dir / cache_key
 
         # Handle cache skipping
         if skip_cache and package_path.exists():
@@ -123,7 +133,7 @@ class ModelRunner:
         from bioimageio.spec import save_bioimageio_package_as_folder
 
         # Download new model
-        model_path = self.cache_dir / model_id
+        model_path = self.model_dir / model_id
         os.makedirs(model_path, exist_ok=True)
         model_path = Path(
             save_bioimageio_package_as_folder(model_id, output_path=str(model_path))
@@ -146,14 +156,14 @@ class ModelRunner:
         # Check cache size
         if len(self.cached_models) > self.cache_n_models:
             remove_model_id = self.cached_models.pop(0)
-            remove_model_path = self.cache_dir / remove_model_id
+            remove_model_path = self.model_dir / remove_model_id
             if remove_model_path.exists():
                 try:
                     shutil.rmtree(str(remove_model_path))
                 except:
                     pass
 
-        model = load_model_description(str(self.cache_dir / model_id))
+        model = load_model_description(str(self.model_dir / model_id))
         assert not isinstance(model, InvalidDescr), f"Model {model_id} is invalid"
         return model
 
@@ -189,14 +199,7 @@ class ModelRunner:
         model = await self._get_model(model_id)
 
         # Change working directory (tensorflow models unzip to current directory)
-        cwd = os.getcwd()
-        try:
-            os.chdir(self.cache_dir / ".cache")
-            prediction = predict(model=model, inputs=inputs)
-        except Exception as e:
-            raise e
-        finally:
-            os.chdir(cwd)
+        prediction = predict(model=model, inputs=inputs)
 
         # Convert outputs back to numpy arrays
         outputs = {str(k): v.data.data for k, v in prediction.members.items()}
@@ -250,7 +253,7 @@ class ModelRunner:
                 # Check cache size and cleanup if needed
                 if len(self.cached_models) > self.cache_n_models:
                     remove_cache_key = self.cached_models.pop(0)
-                    remove_model_path = self.cache_dir / remove_cache_key
+                    remove_model_path = self.model_dir / remove_cache_key
                     if remove_model_path.exists():
                         try:
                             shutil.rmtree(str(remove_model_path))
@@ -271,16 +274,7 @@ class ModelRunner:
                     raise FileNotFoundError(f"No rdf.yaml found in {package_path}")
 
             print(f"Testing model with RDF at: {rdf_path}")
-
-            # Change working directory (some models may need this)
-            cwd = os.getcwd()
-            os.chdir(self.cache_dir / ".cache")
-            try:
-                result = test_model(rdf_path).model_dump(mode="json")
-            except Exception as e:
-                raise e
-            finally:
-                os.chdir(cwd)
+            source = rdf_path
         else:
             # Handle regular model IDs - let Ray's multiplex caching handle this
             if skip_cache:
@@ -291,16 +285,11 @@ class ModelRunner:
             # Always use _get_model to leverage Ray's multiplex caching
             print(f"Getting model: {model_id} (Ray multiplex will handle caching)")
             model = await self._get_model(model_id)
+            
+            source = model
 
-            # Change working directory (some models may need this)
-            cwd = os.getcwd()
-            os.chdir(self.cache_dir / ".cache")
-            try:
-                result = test_model(model).model_dump(mode="json")
-            except Exception as e:
-                raise e
-            finally:
-                os.chdir(cwd)
+        # Test the model
+        result = test_model(source).model_dump(mode="json")
 
         return result
 
@@ -311,7 +300,9 @@ if __name__ == "__main__":
     from kaibu_utils import fetch_image
 
     async def test_model():
-        os.environ["BIOENGINE_CACHE_PATH"] = str(Path(".cache").resolve())
+        os.environ["TMPDIR"] = str(
+            Path("__file__").parent.parent.parent / ".bioengine" / "bioimageio"
+        )
 
         model_runner = ModelRunner()
 

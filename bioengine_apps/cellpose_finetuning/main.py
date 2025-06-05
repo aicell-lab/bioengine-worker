@@ -14,12 +14,17 @@ class CellposeFinetune(object):
     """
 
     def __init__(self):
-        self.cache_dir = (
-            Path(os.environ["BIOENGINE_CACHE_PATH"]).resolve() / "cellpose_finetune"
-        )
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        os.environ["CELLPOSE_LOCAL_MODELS_PATH"] = str(self.cache_dir)
+        # Set up working directory
+        workdir = Path(os.environ["BIOENGINE_WORKDIR"])
+        workdir.mkdir(parents=True, exist_ok=True)
+        self.workdir = workdir
 
+        # Set up model directory
+        models_dir = self.workdir / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["CELLPOSE_LOCAL_MODELS_PATH"] = str(models_dir)
+
+        # Define available pretrained models
         self.pretrained_models = [
             "cyto",
             "cyto3",
@@ -321,7 +326,7 @@ class CellposeFinetune(object):
             )
 
         # Create a temporary directory to save the downloaded file
-        with tempfile.TemporaryDirectory(dir=self.cache_dir) as tmp:
+        with tempfile.TemporaryDirectory(dir=self.workdir) as tmp:
             tmp_dir = Path(tmp)
 
             # Download the data from the provided URL
@@ -408,8 +413,8 @@ if __name__ == "__main__":
     from hypha_rpc import connect_to_server, login
 
     async def test_model():
-        os.environ["BIOENGINE_CACHE_PATH"] = str(
-            Path("__file__").parent.parent.parent.parent / ".cache"
+        os.environ["TMPDIR"] = str(
+            Path("__file__").parent.parent.parent / ".bioengine" / "cellpose_finetuning"
         )
         server_url = "https://hypha.aicell.io"
         token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})

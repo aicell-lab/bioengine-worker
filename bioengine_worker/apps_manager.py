@@ -4,20 +4,20 @@ import logging
 import os
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import httpx
 import numpy as np
-import yaml
-
 import ray
+import yaml
+from ray import serve
+
 from bioengine_worker import __version__
 from bioengine_worker.ray_autoscaler import RayAutoscaler
 from bioengine_worker.utils import create_logger, format_time
-from ray import serve
 
 
-class RayDeploymentManager:
+class AppsManager:
     """Manages Ray Serve deployments using Hypha artifact manager
 
     This class integrates with Hypha artifact manager to deploy
@@ -26,15 +26,15 @@ class RayDeploymentManager:
 
     def __init__(
         self,
-        service_id: str = "bioengine-apps",
+        mode: Literal["slurm", "single-machine", "connect"] = "slurm",
         admin_users: Optional[List[str]] = None,
-        deployment_cache_dir: str = "/tmp",
+        cache_dir: str = "/tmp/bioengine",
+        data_dir: str = "/data",
         startup_deployments: Optional[List[str]] = None,
         autoscaler: Optional[RayAutoscaler] = None,
         # Logger
-        logger: Optional[logging.Logger] = None,
         log_file: Optional[str] = None,
-        _debug: bool = False,
+        debug: bool = False,
     ):
         """Initialize the Ray Deployment Manager
 
@@ -42,23 +42,31 @@ class RayDeploymentManager:
             service_id: ID to use for the Hypha service exposing deployed models
             admin_users: List of user IDs or emails with admin permissions
             deployment_cache_dir: Caching directory used in Ray Serve deployments
+            mode: Mode of operation for the worker. Can be 'slurm', 'single-machine', or 'connect'.
             startup_deployments: List of artifact IDs to start on initialization
             autoscaler: Optional RayAutoscaler instance
             logger: Optional logger instance
-            _debug: Enable debug logging
+            debug: Enable debug logging
         """
         # Set up logging
-        self.logger = logger or create_logger(
-            name="RayDeploymentManager",
-            level=logging.DEBUG if _debug else logging.INFO,
+        self.logger = create_logger(
+            name="AppsManager",
+            level=logging.DEBUG if debug else logging.INFO,
             log_file=log_file,
         )
 
         # Store parameters
-        self._service_id = service_id
-        self.autoscaler = autoscaler
-        self.deployment_cache_dir = deployment_cache_dir
+        self.service_id = "bioengine-apps"
         self.admin_users = admin_users or []
+        self.cache_dir = (
+            Path(cache_dir).resolve()
+            if mode == "single-machine"
+            else Path("/tmp/bioengine/apps")
+        )
+        self.data_dir = (
+            Path(data_dir).resolve() if mode == "single-machine" else Path("/data")
+        )
+        self.autoscaler = autoscaler
 
         # Initialize state variables
         self.server = None
@@ -105,7 +113,9 @@ class RayDeploymentManager:
             if _local:
                 # Load the file content from local path
                 deployment = artifact_id.split("/")[1].replace("-", "_")
-                local_deployments_dir = Path(__file__).parent.parent.resolve() / "deployments"
+                local_deployments_dir = (
+                    Path(__file__).parent.parent.resolve() / "deployments"
+                )
                 local_path = (
                     local_deployments_dir / deployment / class_config["python_file"]
                 )
@@ -274,7 +284,7 @@ class RayDeploymentManager:
             # Register all model functions as a single service
             service_info = await self.server.register_service(
                 {
-                    "id": self._service_id,
+                    "id": self.service_id,
                     "name": "BioEngine Worker Deployments",
                     "type": "bioengine-apps",
                     "description": "Deployed Ray Serve models",
@@ -590,13 +600,17 @@ class RayDeploymentManager:
             resource_name=f"deployment of artifact '{artifact_id}'",
         )
         user_id = context["user"]["id"]
+
+        # Get the full artifact ID
         artifact_id = await self._get_full_artifact_id(artifact_id)
 
         # Check if the artifact is already deployed
         deployment_name = await self._create_deployment_name(artifact_id)
         serve_status = serve.status()
         if deployment_name not in serve_status.applications.keys():
-            self.logger.info(f"User '{user_id}' is starting a new deployment for artifact '{artifact_id}'")
+            self.logger.info(
+                f"User '{user_id}' is starting a new deployment for artifact '{artifact_id}'"
+            )
         else:
             application = serve_status.applications[deployment_name]
             if application.status.value == "DEPLOYING":
@@ -643,7 +657,13 @@ class RayDeploymentManager:
         # Add cache path to deployment config environment
         runtime_env = ray_actor_options.setdefault("runtime_env", {})
         env_vars = runtime_env.setdefault("env_vars", {})
-        env_vars["BIOENGINE_CACHE_PATH"] = str(self.deployment_cache_dir)
+        deployment_workdir = str(self.cache_dir / deployment_name)
+        env_vars["BIOENGINE_WORKDIR"] = deployment_workdir
+        env_vars["BIOENGINE_DATA_DIR"] = str(self.data_dir)
+
+        # Ensure the deployment only uses the specified workdir
+        env_vars["TMPDIR"] = deployment_workdir
+        env_vars["HOME"] = deployment_workdir
 
         # Load the deployment code
         model = await self._load_deployment_code(
@@ -755,6 +775,8 @@ class RayDeploymentManager:
             resource_name=f"undeployment of artifact '{artifact_id}'",
         )
         user_id = context["user"]["id"]
+
+        # Get the full artifact ID
         artifact_id = await self._get_full_artifact_id(artifact_id)
 
         # Check if artifact exists in deployed artifacts
@@ -960,7 +982,7 @@ async def create_demo_artifact(deployment_manager, artifact_id=None):
     """Helper function to create a demo artifact from demo deployment files
 
     Args:
-        deployment_manager: RayDeploymentManager instance (must be initialized)
+        deployment_manager: AppsManager instance (must be initialized)
         artifact_id: Optional custom artifact ID
 
     Returns:
@@ -991,13 +1013,13 @@ async def create_demo_artifact(deployment_manager, artifact_id=None):
 
 
 if __name__ == "__main__":
-    """Test the RayDeploymentManager functionality with a real Ray cluster and model deployment."""
+    """Test the AppsManager functionality with a real Ray cluster and model deployment."""
 
     from hypha_rpc import connect_to_server, login
 
-    from bioengine_worker.ray_cluster_manager import RayClusterManager
+    from bioengine_worker.ray_cluster import RayClusterManager
 
-    print("\n===== Testing RayDeploymentManager =====\n")
+    print("\n===== Testing AppsManager =====\n")
 
     # Create and start the autoscaler with shorter thresholds for quicker testing
     cluster_manager = RayClusterManager(
@@ -1010,7 +1032,7 @@ if __name__ == "__main__":
         ),
         worker_data_dir=str(Path(__file__).parent.parent / "data"),
         slurm_log_dir=str(Path(__file__).parent.parent / "logs"),
-        _debug=True,
+        debug=True,
     )
     cluster_manager.start_cluster(force_clean_up=True)
 
@@ -1021,7 +1043,7 @@ if __name__ == "__main__":
             default_time_limit="00:10:00",
             max_workers=1,
             metrics_interval_seconds=10,
-            _debug=True,
+            debug=True,
         )
     else:
         autoscaler = None
@@ -1044,7 +1066,7 @@ if __name__ == "__main__":
         if deployment_manager is None:
             try:
                 # Create deployment manager (no Ray cluster needed for artifact creation)
-                deployment_manager = RayDeploymentManager(_debug=True)
+                deployment_manager = AppsManager(debug=True)
 
                 # Connect to Hypha server using token from environment
                 token = os.environ.get("HYPHA_TOKEN") or await login(
@@ -1100,9 +1122,7 @@ if __name__ == "__main__":
                 await autoscaler.start()
 
             # Create deployment manager
-            deployment_manager = RayDeploymentManager(
-                autoscaler=autoscaler, _debug=True
-            )
+            deployment_manager = AppsManager(autoscaler=autoscaler, debug=True)
 
             # Connect to Hypha server using token from environment
             token = os.environ.get("HYPHA_TOKEN") or await login(

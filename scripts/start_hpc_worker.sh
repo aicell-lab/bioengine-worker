@@ -1,13 +1,14 @@
 # !/bin/bash
 
-VERSION=0.1.18
+VERSION=0.1.19
 DEFAULT_IMAGE="ghcr.io/aicell-lab/bioengine-worker:$VERSION"
 WORKING_DIR=$(pwd)
 
 # Save all arguments
 BIOENGINE_WORKER_ARGS=("$@")
 
-# Check if Apptainer or Singularity is installed
+# === Determine container command ===
+
 if command -v apptainer &> /dev/null; then
     CONTAINER_CMD="apptainer"
 elif command -v singularity &> /dev/null; then
@@ -16,6 +17,8 @@ else
     echo "Neither Apptainer nor Singularity could be found. Please install one of them first."
     exit 1
 fi
+
+# === Define functions for argument handling ===
 
 # Function to get argument value
 get_arg_value() {
@@ -64,87 +67,7 @@ set_arg_value() {
     fi
 }
 
-# Check if the mode is set to something else than "slurm"
-MODE=$(get_arg_value "--mode" "slurm")
-if [[ "$MODE" != "slurm" ]]; then
-    echo "Error: Invalid mode '$MODE'. For modes other than 'slurm', please run the 'bioengine-worker' container directly. Check out the configuration wizard at https://dev.bioimage.io/#/bioengine."
-    exit 1
-fi
-
-# Get the container cache directory
-CONTAINER_CACHE_DIR=$(get_arg_value "--apptainer_cachedir")
-if [[ -z "$CONTAINER_CACHE_DIR" ]]; then
-    CONTAINER_CACHE_DIR=$(get_arg_value "--singularity_cachedir" "$WORKING_DIR/apptainer_images")
-fi
-
-# Get the path to the image 
-IMAGE="$(get_arg_value "--image" $DEFAULT_IMAGE)"
-
-# Get the image name and version
-if [[ "$IMAGE" == *.sif ]]; then
-    # Local Singularity image
-    IMAGE_PATH=$(realpath $IMAGE)
-    DOCKER_IMAGE=
-else
-    # Remote Docker image
-    FILE=${IMAGE##*/}
-    NAME=${FILE%%:*}
-    VERSION=${FILE##*:}
-
-    IMAGE_PATH="$CONTAINER_CACHE_DIR/${NAME}_${VERSION}.sif"
-    DOCKER_IMAGE=$IMAGE
-fi
-
-# Check if the BioEngine worker image is available
-if [ ! -f "$IMAGE_PATH" ]; then
-    if [[ -z "$DOCKER_IMAGE" ]]; then
-        echo "Error: Image file $IMAGE_PATH not found."
-        exit 1
-    fi
-    # Ask user before pulling
-    read -p "Image file $IMAGE_PATH not found. Do you want to pull it from Docker? (yes/no): " response
-    if [[ "$response" =~ ^[Yy][Ee][Ss]$ ]]; then
-        echo "Pulling image $DOCKER_IMAGE..."
-        IMAGE_DIR=$(dirname "$IMAGE_PATH")
-        mkdir -p $IMAGE_DIR
-        $CONTAINER_CMD pull $IMAGE_PATH docker://$DOCKER_IMAGE
-        if [[ $? -eq 0 ]]; then
-            echo "Successfully pulled $DOCKER_IMAGE to $IMAGE_PATH"
-        else
-            echo "Error pulling image $DOCKER_IMAGE"
-            exit 1
-        fi
-    else
-        echo "Image download cancelled"
-        exit 1
-    fi
-fi
-set_arg_value "--image" $IMAGE_PATH
-
-# Define environment variables
-ENV_VARS=()
-add_env() {
-    if [[ -n "$2" ]]; then
-        ENV_VARS+=("--env=$1=$2")
-    fi
-}
-
-# Export environment variables from .env file if it exists
-if [ -f "$WORKING_DIR/.env" ]; then
-    set -a
-    source $WORKING_DIR/.env
-    set +a
-fi
-
-# Add environment variables
-add_env "USER" "$USER"
-
-# Add Hypha token if available
-if [ -n "$HYPHA_TOKEN" ]; then
-    add_env "HYPHA_TOKEN" "$HYPHA_TOKEN"
-fi
-
-# Define bind options
+# Function to define bind mounts
 BIND_OPTS=()
 add_bind() {
     if [[ ! -e "$1" ]]; then
@@ -162,6 +85,73 @@ add_bind() {
         exit 1
     fi
 }
+
+# Function to define environment variables
+ENV_VARS=()
+add_env() {
+    if [[ -n "$2" ]]; then
+        ENV_VARS+=("--env=$1=$2")
+    fi
+}
+
+# === Ensure mode is set to "slurm" ===
+
+# Check if the mode is set to something else than "slurm"
+MODE=$(get_arg_value "--mode" "slurm")
+if [[ "$MODE" != "slurm" ]]; then
+    echo "Error: Invalid mode '$MODE'. For modes other than 'slurm', please run the 'bioengine-worker' container directly. Check out the configuration wizard at https://dev.bioimage.io/#/bioengine."
+    exit 1
+fi
+
+# === Load BioEngine image ===
+
+# Get the container cache directory
+IMAGE_CACHEDIR=$(get_arg_value "--apptainer_cachedir")
+if [[ -z "$IMAGE_CACHEDIR" ]]; then
+    IMAGE_CACHEDIR=$(get_arg_value "--singularity_cachedir" "$WORKING_DIR/apptainer_images")
+fi
+IMAGE_CACHEDIR=$(realpath $IMAGE_CACHEDIR)
+SINGULARITY_CACHEDIR=$IMAGE_CACHEDIR
+APPTAINER_CACHEDIR=$IMAGE_CACHEDIR
+
+# Get the path to the image 
+IMAGE="$(get_arg_value "--image" $DEFAULT_IMAGE)"
+
+# Get the image name and version
+if [[ "$IMAGE" == *.sif ]]; then
+    # Local Singularity image
+    IMAGE_PATH=$(realpath $IMAGE)
+    DOCKER_IMAGE=
+else
+    # Remote Docker image
+    FILE=${IMAGE##*/}
+    NAME=${FILE%%:*}
+    VERSION=${FILE##*:}
+
+    IMAGE_PATH="$IMAGE_CACHEDIR/${NAME}_${VERSION}.sif"
+    DOCKER_IMAGE=$IMAGE
+fi
+
+IMAGE_PATH="$IMAGE_CACHEDIR/${NAME}_${VERSION}.sif"
+
+# Check if the BioEngine worker image is available
+if [ ! -f "$IMAGE_PATH" ]; then
+    if [[ -z "$DOCKER_IMAGE" ]]; then
+        echo "Error: Image file $IMAGE_PATH not found."
+        exit 1
+    fi
+    mkdir -p $IMAGE_CACHEDIR
+    $CONTAINER_CMD pull --dir $IMAGE_CACHEDIR docker://$DOCKER_IMAGE
+    if [[ $? -eq 0 ]]; then
+        echo "Successfully pulled $DOCKER_IMAGE to $IMAGE_PATH"
+    else
+        echo "Error pulling image $DOCKER_IMAGE"
+        exit 1
+    fi
+fi
+set_arg_value "--image" $IMAGE_PATH
+
+# === Set up bind mounts ===
 
 # Add SLURM-specific bindings
 if [[ "$MODE" == "slurm" ]]; then
@@ -203,16 +193,12 @@ mkdir -p $CACHE_DIR
 add_bind $CACHE_DIR "/tmp/bioengine"
 set_arg_value "--cache_dir" "/tmp/bioengine"
 
-# LOG_DIR is needed by the BioEngine logger -> container path
-LOG_DIR=$(get_arg_value "--log_dir" "$CACHE_DIR/logs")
-if [[ -n "$LOG_DIR" ]]; then
-    LOG_DIR=$(realpath $LOG_DIR)
-    mkdir -p $LOG_DIR
-    add_bind $LOG_DIR "/logs"
-    set_arg_value "--log_dir" "/logs"
-fi
+# Pass the real cache_dir to the SLURM worker node via --worker_cache_dir
+WORKER_CACHE_DIR=$(get_arg_value "--worker_cache_dir" $CACHE_DIR)
+WORKER_CACHE_DIR=$(realpath $WORKER_CACHE_DIR)
+set_arg_value "--worker_cache_dir" $WORKER_CACHE_DIR
 
-# DATA_DIR is needed on by the DatasetManager -> container path
+# DATA_DIR is needed on by the DatasetsManager -> container path
 DATA_DIR=$(get_arg_value "--data_dir")
 if [[ -n "$DATA_DIR" ]]; then
     DATA_DIR=$(realpath $DATA_DIR)
@@ -220,24 +206,12 @@ if [[ -n "$DATA_DIR" ]]; then
     set_arg_value "--data_dir" /data
 fi
 
-# RAY_SESSION_DIR is needed by the Ray head node -> container path
-RAY_SESSION_DIR=$(get_arg_value "--ray_temp_dir" "$CACHE_DIR/ray")
-RAY_SESSION_DIR=$(realpath $RAY_SESSION_DIR)
-add_bind $RAY_SESSION_DIR "/tmp/bioengine/ray"
-set_arg_value "--ray_temp_dir" "/tmp/bioengine/ray"
-
-# WORKER_DATA_DIR is needed on the SLURM worker node -> real path
+# Pass the real data_dir to the SLURM worker node via --worker_data_dir
 WORKER_DATA_DIR=$(get_arg_value "--worker_data_dir" $DATA_DIR)
 if [[ -n "$WORKER_DATA_DIR" ]]; then
     WORKER_DATA_DIR=$(realpath $WORKER_DATA_DIR)
     set_arg_value "--worker_data_dir" $WORKER_DATA_DIR
 fi
-
-# SLURM_LOG_DIR is needed on the SLURM worker node -> real path
-SLURM_LOG_DIR=$(get_arg_value "--slurm_log_dir" "$CACHE_DIR/slurm_logs")
-SLURM_LOG_DIR=$(realpath $SLURM_LOG_DIR)
-set_arg_value "--slurm_log_dir" $SLURM_LOG_DIR
-
 
 # Check if the flag `--debug` is set
 DEBUG_MODE=$(get_arg_value "--debug" "false")
@@ -267,7 +241,25 @@ if [[ ! "$DEBUG_MODE" == "false" ]]; then
     echo ""
 fi
 
-# Cleanup function
+# === Set up environment variables ===
+
+# Export environment variables from .env file if it exists
+if [ -f "$WORKING_DIR/.env" ]; then
+    set -a
+    source $WORKING_DIR/.env
+    set +a
+fi
+
+# Add environment variables
+add_env "USER" "$USER"
+
+# Add Hypha token if available
+if [ -n "$HYPHA_TOKEN" ]; then
+    add_env "HYPHA_TOKEN" "$HYPHA_TOKEN"
+fi
+
+# === Set up cleanup ===
+
 cleanup() {
     echo "Making sure the Ray head node is stopped..."
     $CONTAINER_CMD exec "$IMAGE_PATH" ray stop --force
@@ -289,6 +281,8 @@ cleanup() {
 
 # Set trap to ensure cleanup runs on script exit (normal or abnormal)
 trap cleanup EXIT
+
+# === Run the BioEngine worker ===
 
 # Run with clean environment
 $CONTAINER_CMD exec \

@@ -3,34 +3,29 @@ import os
 import subprocess
 import tempfile
 import time
-from pathlib import Path
 from typing import Dict, List, Optional
 
 from bioengine_worker.utils import create_logger
 
 
-class SlurmActor:
+class SlurmManager:
     def __init__(
         self,
         job_name: str,
-        slurm_log_dir: str = "logs",
-        logger: Optional[logging.Logger] = None,
+        slurm_log_dir: str,
         log_file: Optional[str] = None,
-        _debug: bool = False,
+        debug: bool = False,
     ):
         # Set up logging
-        self.logger = logger or create_logger(
-            name="SlurmActor",
-            level=logging.DEBUG if _debug else logging.INFO,
+        self.logger = create_logger(
+            name="SlurmManager",
+            level=logging.DEBUG if debug else logging.INFO,
             log_file=log_file,
         )
 
-        # Set SLURM job name
+        # Set SLURM job name and log directory
         self.job_name = job_name
-
-        # Directory for SLURM logs
-        self.slurm_log_dir = Path(slurm_log_dir).resolve()
-        self.slurm_log_dir.mkdir(parents=True, exist_ok=True)
+        self.slurm_log_dir = slurm_log_dir
 
     def create_sbatch_script(
         self,
@@ -125,7 +120,7 @@ class SlurmActor:
                         f"Failed to remove temporary script: {sbatch_script}"
                     )
 
-            # Parse job ID from Slurm output (usually "Submitted batch job 12345")
+            # Parse job ID from SlurmManager output (usually "Submitted batch job 12345")
             if result.stdout and "Submitted batch job" in result.stdout:
                 job_id = result.stdout.strip().split()[-1]
             else:
@@ -250,7 +245,7 @@ class SlurmActor:
 
 if __name__ == "__main__":
     # Example usage
-    actor = SlurmActor(job_name="ray_worker")
+    actor = SlurmManager(job_name="ray_worker")
     sbatch_script = actor.create_sbatch_script(
         command="sleep 30", gpus=1, cpus_per_task=1, mem_per_cpu=1, time="00:10:00"
     )

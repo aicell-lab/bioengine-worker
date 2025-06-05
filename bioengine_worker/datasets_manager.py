@@ -1,7 +1,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, List, Optional
 
 import yaml
 from fastapi import FastAPI, HTTPException, Request
@@ -11,22 +11,20 @@ from fastapi.responses import StreamingResponse
 from bioengine_worker.utils import create_logger
 
 
-class DatasetManager:
+class DatasetsManager:
     def __init__(
         self,
         data_dir: str,
-        service_id: str = "bioengine-datasets",
         admin_users: Optional[List[str]] = None,
         # Logger
-        logger: Optional[logging.Logger] = None,
         log_file: Optional[str] = None,
-        _debug: bool = False,
+        debug: bool = False,
     ):
 
         # Set up logging
-        self.logger = logger or create_logger(
-            name="DatasetManager",
-            level=logging.DEBUG if _debug else logging.INFO,
+        self.logger = create_logger(
+            name="DatasetsManager",
+            level=logging.DEBUG if debug else logging.INFO,
             log_file=log_file,
         )
 
@@ -34,7 +32,7 @@ class DatasetManager:
         self._datasets = self._load_dataset_info(data_dir)
 
         # Initialize state variables
-        self._service_id_base = service_id
+        self.service_id_base = "bioengine-dataset"
         self.loaded_datasets = {}
         self.server = None
 
@@ -59,15 +57,45 @@ class DatasetManager:
         """Read and parse a manifest.yaml file."""
         try:
             data_dir = Path(data_dir).resolve()
-            if not data_dir.exists() or not data_dir.is_dir():
+
+            # Check if data directory exists
+            if not data_dir.exists():
                 self.logger.warning(
-                    f"Data directory {data_dir} does not exist or is not a directory. Skipping dataset loading."
+                    f"Data directory {data_dir} does not exist. Skipping dataset loading."
+                )
+                return {}
+
+            # Check if path is actually a directory
+            if not data_dir.is_dir():
+                self.logger.warning(
+                    f"Data directory {data_dir} is not a directory. Skipping dataset loading."
+                )
+                return {}
+
+            # Check if path is readable
+            if not os.access(data_dir, os.R_OK):
+                self.logger.warning(
+                    f"Data directory {data_dir} is not readable. Skipping dataset loading."
                 )
                 return {}
 
             datasets = {}
 
-            for dataset_path in data_dir.iterdir():
+            # Try to access the directory - this will catch permission errors
+            try:
+                directory_contents = list(data_dir.iterdir())
+            except PermissionError:
+                self.logger.warning(
+                    f"Permission denied accessing data directory {data_dir}. Skipping dataset loading."
+                )
+                return {}
+            except OSError as e:
+                self.logger.warning(
+                    f"Cannot access data directory {data_dir}: {e}. Skipping dataset loading."
+                )
+                return {}
+
+            for dataset_path in directory_contents:
                 if not dataset_path.is_dir():
                     continue
 
@@ -215,7 +243,7 @@ class DatasetManager:
             )
             await dataset_app(args["scope"], args["receive"], args["send"])
 
-        dataset_service_id = f"{self._service_id_base}-{dataset_id}"
+        dataset_service_id = f"{self.service_id_base}-{dataset_id}"
         service_info = await self.server.register_service(
             {
                 "id": dataset_service_id,
@@ -276,6 +304,21 @@ class DatasetManager:
             self.logger.error(f"Error closing dataset {dataset_id}: {e}")
             raise e
 
+    async def cleanup_datasets(self) -> str:
+        """Close all loaded datasets."""
+        try:
+            if not self.loaded_datasets:
+                self.logger.info("No datasets are currently loaded.")
+                return "No datasets to close."
+
+            for dataset_id in list(self.loaded_datasets.keys()):
+                await self.close_dataset(dataset_id)
+
+            return "All datasets closed successfully."
+        except Exception as e:
+            self.logger.error(f"Error closing all datasets: {e}")
+            raise e
+
     async def get_status(self) -> Dict[str, dict]:
         """Get the status of the dataset manager."""
         return {
@@ -296,12 +339,11 @@ if __name__ == "__main__":
         token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
         server = await connect_to_server({"server_url": server_url, "token": token})
 
-        # Initialize DatasetManager
+        # Initialize DatasetsManager
         data_dir = Path(__file__).parent.parent / "data"
-        dataset_manager = DatasetManager(
+        dataset_manager = DatasetsManager(
             data_dir=str(data_dir),
-            service_id="bioengine-datasets",
-            _debug=True,
+            debug=True,
         )
         await dataset_manager.initialize(server)
 

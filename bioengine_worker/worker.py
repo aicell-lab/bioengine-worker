@@ -274,7 +274,7 @@ class BioEngineWorker:
             self.logger.info("Connected to existing Ray cluster.")
         else:
             # Start the Ray cluster
-            self.ray_cluster.start(force_clean_up=self._clean_up)
+            await self.ray_cluster.start(force_clean_up=self._clean_up)
 
         # Connect to the Hypha server and register the service
         await self._connect_to_server()

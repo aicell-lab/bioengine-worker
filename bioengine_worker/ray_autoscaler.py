@@ -138,7 +138,7 @@ class RayAutoscaler:
 
         # Get current cluster status
         current_time = time.time()
-        cluster_status = self.ray_cluster.get_status()
+        cluster_status = await self.ray_cluster.get_status()
         active_nodes = cluster_status["worker_nodes"]["Alive"]
         dead_nodes = cluster_status["worker_nodes"]["Dead"]
 
@@ -206,7 +206,7 @@ class RayAutoscaler:
     ) -> None:
         """Scale up the cluster by adding a new worker node."""
         # TODO: Check if this is blocking
-        _ = self.ray_cluster.add_worker(
+        _ = await self.ray_cluster.add_worker(
             num_gpus=num_gpus,
             num_cpus=num_cpus,
             mem_per_cpu=mem_per_cpu,
@@ -291,7 +291,7 @@ class RayAutoscaler:
                 self.logger.info(
                     f"Scaling down worker '{longest_idle_worker}' due to inactivity for {longest_idle_time:.1f}s"
                 )
-                self.ray_cluster.remove_worker(longest_idle_worker)
+                await self.ray_cluster.remove_worker(longest_idle_worker)
                 self.last_scale_down_time = current_time
 
     async def _cleanup_dead_nodes(self, worker_ids: set) -> None:
@@ -300,7 +300,7 @@ class RayAutoscaler:
                 f"Cleaning up {len(worker_ids)} dead worker(s) from cluster: {worker_ids}"
             )
             for worker_id in worker_ids:
-                self.ray_cluster.remove_worker(worker_id)
+                await self.ray_cluster.remove_worker(worker_id)
 
     async def _monitoring_loop(self, max_consecutive_errors: int = 3) -> None:
         """Main monitoring loop for the autoscaler.

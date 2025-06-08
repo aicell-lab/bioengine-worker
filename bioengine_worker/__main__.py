@@ -105,7 +105,7 @@ def create_parser():
         choices=["slurm", "single-machine", "connect"],
         help="Mode of operation: 'slurm' for managing a Ray cluster with SLURM jobs, 'single-machine' for local Ray cluster, 'connect' for connecting to an existing Ray cluster.",
     )
-    # TODO: use --head_node_address and --ray_client_server_port to connect to existing Ray cluster
+    # TODO: use --head_node_address and --client_server_port to connect to existing Ray cluster
     parser.add_argument(
         "--admin_users",
         type=str,
@@ -199,7 +199,7 @@ def create_parser():
         help="Port for Ray dashboard",
     )
     ray_cluster_group.add_argument(
-        "--ray_client_server_port",
+        "--client_server_port",
         type=int,
         default=10001,
         help="Port for Ray client server",

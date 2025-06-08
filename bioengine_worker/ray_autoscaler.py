@@ -8,7 +8,6 @@ import ray
 from ray.util.state import list_actors, list_tasks
 
 from bioengine_worker import __version__
-from bioengine_worker.ray_cluster import RayCluster
 from bioengine_worker.utils import create_logger
 
 
@@ -21,7 +20,7 @@ class RayAutoscaler:
 
     def __init__(
         self,
-        ray_cluster: RayCluster,
+        ray_cluster,
         # Default resource parameters
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
@@ -557,6 +556,8 @@ if __name__ == "__main__":
     import os
     import time
     from pathlib import Path
+
+    from bioengine_worker.ray_cluster import RayCluster
 
     print("\n===== Testing Ray Autoscaler class =====\n")
 

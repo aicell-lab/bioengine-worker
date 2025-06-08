@@ -105,8 +105,8 @@ class BioEngineWorker:
                 print("=" * 60, end="\n\n")
 
             # Set temporary directory for Ray runtime installation
-            os.environ["TMPDIR"] = str(cache_dir)
-            # os.environ["HOME"] = str(cache_dir)
+            os.environ["TMPDIR"] = str(self.cache_dir)
+            # os.environ["HOME"] = str(self.cache_dir)
 
             # Set parameters for RayCluster
             ray_cluster_config = ray_cluster_config or {}
@@ -115,7 +115,7 @@ class BioEngineWorker:
             self._set_parameter(ray_cluster_config, "mode", self.mode)
             self._set_parameter(ray_cluster_config, "log_file", log_file)
             self._set_parameter(ray_cluster_config, "debug", debug)
-            self._set_parameter(ray_cluster_config, "ray_temp_dir", cache_dir / "ray")
+            self._set_parameter(ray_cluster_config, "ray_temp_dir", self.cache_dir / "ray")
             force_clean_up = not ray_cluster_config.pop("skip_cleanup", False)
             self._set_parameter(ray_cluster_config, "force_clean_up", force_clean_up)
 
@@ -274,7 +274,7 @@ class BioEngineWorker:
             self.logger.info("Connected to existing Ray cluster.")
         else:
             # Start the Ray cluster
-            await self.ray_cluster.start(force_clean_up=self._clean_up)
+            await self.ray_cluster.start()
 
         # Connect to the Hypha server and register the service
         await self._connect_to_server()

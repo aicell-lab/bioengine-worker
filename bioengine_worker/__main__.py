@@ -238,7 +238,7 @@ def create_parser():
     slurm_job_group = parser.add_argument_group("SLURM Job Options")
     slurm_job_group.add_argument(
         "--image",
-        default=f"ghcr.io/aicell-lab/bioengine-worker:{__version__}",
+        default=f"docker://ghcr.io/aicell-lab/bioengine-worker:{__version__}",
         type=str,
         help="Worker image for SLURM job",
     )

@@ -108,7 +108,7 @@ fi
 # Get the container cache directory
 IMAGE_CACHEDIR=$(get_arg_value "--apptainer_cachedir")
 if [[ -z "$IMAGE_CACHEDIR" ]]; then
-    IMAGE_CACHEDIR=$(get_arg_value "--singularity_cachedir" "$WORKING_DIR/apptainer_images")
+    IMAGE_CACHEDIR=$(get_arg_value "--singularity_cachedir" "$WORKING_DIR/images")
 fi
 IMAGE_CACHEDIR=$(realpath $IMAGE_CACHEDIR)
 SINGULARITY_CACHEDIR=$IMAGE_CACHEDIR
@@ -121,35 +121,12 @@ IMAGE="$(get_arg_value "--image" $DEFAULT_IMAGE)"
 if [[ "$IMAGE" == *.sif ]]; then
     # Local Singularity image
     IMAGE_PATH=$(realpath $IMAGE)
-    DOCKER_IMAGE=
-else
-    # Remote Docker image
-    FILE=${IMAGE##*/}
-    NAME=${FILE%%:*}
-    VERSION=${FILE##*:}
-
-    IMAGE_PATH="$IMAGE_CACHEDIR/${NAME}_${VERSION}.sif"
-    DOCKER_IMAGE=$IMAGE
-fi
-
-IMAGE_PATH="$IMAGE_CACHEDIR/${NAME}_${VERSION}.sif"
-
-# Check if the BioEngine worker image is available
-if [ ! -f "$IMAGE_PATH" ]; then
-    if [[ -z "$DOCKER_IMAGE" ]]; then
+    if [ ! -f "$IMAGE_PATH" ]; then
         echo "Error: Image file $IMAGE_PATH not found."
         exit 1
     fi
-    mkdir -p $IMAGE_CACHEDIR
-    $CONTAINER_CMD pull --dir $IMAGE_CACHEDIR docker://$DOCKER_IMAGE
-    if [[ $? -eq 0 ]]; then
-        echo "Successfully pulled $DOCKER_IMAGE to $IMAGE_PATH"
-    else
-        echo "Error pulling image $DOCKER_IMAGE"
-        exit 1
-    fi
+    set_arg_value "--image" $IMAGE_PATH
 fi
-set_arg_value "--image" $IMAGE_PATH
 
 # === Set up bind mounts ===
 
@@ -290,5 +267,5 @@ $CONTAINER_CMD exec \
     --pwd /app \
     "${ENV_VARS[@]}" \
     "${BIND_OPTS[@]}" \
-    "$IMAGE_PATH" \
+    "$IMAGE" \
     python -m bioengine_worker "${BIOENGINE_WORKER_ARGS[@]}"

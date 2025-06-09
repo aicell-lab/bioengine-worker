@@ -38,7 +38,7 @@ class RayAutoscaler:
         node_grace_period_seconds: int = 600,  # 10 minutes grace period for new nodes
         # Logger
         log_file: Optional[str] = None,
-        _debug: bool = False,
+        debug: bool = False,
     ):
         """Initialize the Ray autoscaler.
 
@@ -58,12 +58,12 @@ class RayAutoscaler:
             node_grace_period_seconds: Give new nodes time before considering for scale-down
             logger: Optional logger instance
             log_file: File for logging output
-            _debug: Enable debug logging
+            debug: Enable debug logging
         """
         # Set up logging
         self.logger = create_logger(
             name="RayAutoscaler",
-            level=logging.DEBUG if _debug else logging.INFO,
+            level=logging.DEBUG if debug else logging.INFO,
             log_file=log_file,
         )
 
@@ -437,7 +437,9 @@ class RayAutoscaler:
 
             # Collect metrics
             active_worker_ids, _, node_metrics = self._collect_metrics()
-            pending_workers = max(await self.get_worker_jobs - len(active_worker_ids), 0)
+            pending_workers = max(
+                await self.get_worker_jobs - len(active_worker_ids), 0
+            )
 
             # Initialize metrics summary
             recent_metrics = {
@@ -445,7 +447,8 @@ class RayAutoscaler:
                 "active_workers": 0,
                 "idle_workers": 0,
                 "pending_workers": pending_workers,
-                "pending_tasks": len(await self.get_pending_tasks) + len(await self.get_pending_actors),
+                "pending_tasks": len(await self.get_pending_tasks)
+                + len(await self.get_pending_actors),
                 "average_cpu": 0.0,
                 "average_gpu": 0.0,
                 "average_memory": 0.0,
@@ -574,13 +577,9 @@ if __name__ == "__main__":
         try:
             ray_cluster = RayCluster(
                 ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
-                image=str(
-                    Path(__file__).parent.parent
-                    / f"apptainer_images/bioengine-worker_{__version__}.sif"
-                ),
                 worker_data_dir=str(Path(__file__).parent.parent / "data"),
                 slurm_log_dir=str(Path(__file__).parent.parent / "logs"),
-                _debug=True,
+                debug=True,
             )
             ray_cluster.start(force_clean_up=True)
 
@@ -595,7 +594,7 @@ if __name__ == "__main__":
                 scale_up_cooldown_seconds=10,  # 10 seconds between scale up
                 scale_down_cooldown_seconds=10,  # 10 seconds between scale down
                 node_grace_period_seconds=10,
-                _debug=True,
+                debug=True,
             )
 
             # Start autoscaler

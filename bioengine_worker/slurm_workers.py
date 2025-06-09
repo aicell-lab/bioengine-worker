@@ -1,22 +1,16 @@
 import asyncio
 import logging
 import os
-import re
-import socket
 import subprocess
-import sys
 import tempfile
 import time
-from pathlib import Path
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Optional
 
 import ray
-from ray.util.state import get_node
-from ray import serve
+from ray.util.state import get_node, list_nodes
 
 from bioengine_worker import __version__
-from bioengine_worker.ray_autoscaler import RayAutoscaler
-from bioengine_worker.utils import create_logger, format_time, stream_logging_format
+from bioengine_worker.utils import create_logger
 
 
 class SlurmWorkers:
@@ -28,13 +22,16 @@ class SlurmWorkers:
     def __init__(
         self,
         worker_cache_dir: str,  # Cache directory mounted to the container when starting a worker
-        worker_data_dir: str = None,  # Data directory mounted to the container when starting a worker
-        image: str = f"ghcr.io/aicell-lab/bioengine-worker:{__version__}",  # BioEngine image tag or path to the image file
+        head_node_address: str,  # Address of the Ray head node
+        image: str = f"docker://ghcr.io/aicell-lab/bioengine-worker:{__version__}",  # BioEngine image tag or path to the image file
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
         default_mem_per_cpu: int = 16,
         default_time_limit: str = "4:00:00",
         further_slurm_args: List[str] = None,
+        worker_data_dir: Optional[
+            str
+        ] = None,  # Data directory mounted to the container when starting a worker
         log_file: Optional[str] = None,
         debug: bool = False,
     ):
@@ -51,8 +48,8 @@ class SlurmWorkers:
         )
 
         # Set SLURM job name and log directory
-        self.worker_cache_dir = worker_cache_dir
-        self.worker_data_dir = worker_data_dir
+        self.worker_cache_dir = str(worker_cache_dir)
+        self.head_node_address = head_node_address
         self.image = image
         self.job_name = "ray_worker"
         self.default_num_gpus = default_num_gpus
@@ -60,46 +57,15 @@ class SlurmWorkers:
         self.default_mem_per_cpu = default_mem_per_cpu
         self.default_time_limit = default_time_limit
         self.further_slurm_args = further_slurm_args or []
-        self.slurm_log_dir = Path(self.worker_cache_dir) / "slurm_logs"
+        self.worker_data_dir = str(worker_data_dir) if worker_data_dir else None
 
         if self.worker_cache_dir is None:
             raise ValueError(
                 "Mountable worker cache directory must be set in 'SLURM' mode"
             )
 
-    async def _check_slurm_available(self) -> bool:
-        """Check if SLURM is available on the system.
-
-        Returns:
-            True if SLURM is available, False otherwise
-        """
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "sinfo", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-            await proc.communicate()
-            if proc.returncode == 0:
-                self.logger.info("SLURM is available")
-                return True
-            else:
-                self.logger.info("SLURM is not available")
-                return False
-        except FileNotFoundError:
-            self.logger.info("SLURM is not available")
-            return False
-
-    def _get_job_id(self, node_resource: Dict) -> Optional[str]:
-        # Extract worker ID from resources
-        job_id = None
-        for resource in node_resource.keys():
-            if resource.startswith("node:__internal_job_id"):
-                job_id = resource.split("_")[-3]
-                break
-        return job_id
-
-    async def _create_sbatch_script(
+    def _create_sbatch_script(
         self,
-        command: str,
         gpus: int = 1,
         cpus_per_task: int = 8,
         mem_per_cpu: int = 8,
@@ -107,72 +73,109 @@ class SlurmWorkers:
         further_slurm_args: Optional[Dict[str, str]] = None,
     ) -> str:
         try:
+            # Define the apptainer command with the Ray worker command
+            apptainer_cmd = (
+                "apptainer run "
+                "--nv "
+                "--cleanenv "
+                "--env='SLURM_JOB_ID'='${SLURM_JOB_ID}' "
+                "--pwd /app "
+                f"--bind {self.worker_cache_dir}:/tmp/bioengine"
+            )
+            self.logger.info(
+                f"Binding cache directory '{self.worker_cache_dir}' to container directory '/tmp/bioengine'"
+            )
 
+            # Add data directory binding if specified
+            if self.worker_data_dir:
+                self.logger.info(
+                    f"Binding data directory '{self.worker_data_dir}' to container directory '/data'"
+                )
+                apptainer_cmd += f" --bind {self.worker_data_dir}:/data"
+
+            # Define the Ray worker command that will run inside the container and add it to the command
+            ray_worker_cmd = (
+                "ray start "
+                f"--address={self.head_node_address} "
+                f"--num-cpus={cpus_per_task} "
+                f"--num-gpus={gpus} "
+                "--resources='{\\\"node:__internal_job_id_${SLURM_JOB_ID}__\\\": 1}' "
+                "--block"
+            )
+            # Example: ray start --address='10.81.254.11:6379' --num-cpus=8 --num-gpus=1 --resources='{"node:__internal_job_id_${SLURM_JOB_ID}__": 1}' --block
+
+            # Add the container image and Ray worker command to the apptainer command
+            apptainer_cmd += f" {self.image} {ray_worker_cmd}"
+
+            # Define further SLURM arguments if provided
             further_slurm_args = (
                 "\n".join([f"#SBATCH {arg}" for arg in further_slurm_args if arg])
                 if further_slurm_args
                 else ""
             )
 
-            def create_temp_script():
-                # TODO: set APPTAINER_CACHEDIR to worker_cache_dir
-                # Create a temporary batch script
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".sh", delete=False
-                ) as batch_file:
-                    batch_script = f"""
-                    #!/bin/bash
-                    #SBATCH --job-name={self.job_name}
-                    #SBATCH --ntasks=1
-                    #SBATCH --nodes=1
-                    #SBATCH --gpus={gpus}
-                    #SBATCH --cpus-per-task={cpus_per_task}
-                    #SBATCH --mem-per-cpu={mem_per_cpu}G
-                    #SBATCH --time={time}
-                    #SBATCH --chdir=/home/{os.environ['USER']}
-                    #SBATCH --output={self.slurm_log_dir}/%x_%j.out
-                    #SBATCH --error={self.slurm_log_dir}/%x_%j.err
-                    {further_slurm_args}
+            # Define content of batch script with SLURM directives
+            batch_script = f"""#!/bin/bash
+            #SBATCH --job-name={self.job_name}
+            #SBATCH --ntasks=1
+            #SBATCH --nodes=1
+            #SBATCH --gpus={gpus}
+            #SBATCH --cpus-per-task={cpus_per_task}
+            #SBATCH --mem-per-cpu={mem_per_cpu}G
+            #SBATCH --time={time}
+            #SBATCH --chdir={self.worker_cache_dir}
+            #SBATCH --output={self.worker_cache_dir}/slurm_logs/%x_%j.out
+            #SBATCH --error={self.worker_cache_dir}/slurm_logs/%x_%j.err
+            {further_slurm_args}
 
-                    # Print some diagnostic information
-                    echo "Host: $(hostname)"
-                    echo "Date: $(date)"
-                    echo "GPUs: {gpus}, CPUs: {cpus_per_task}"
-                    echo "GPU info: $(nvidia-smi -L)"
-                    echo "Job ID: $SLURM_JOB_ID"
-                    echo "Working directory: $(pwd)"
-                    echo "Running command: {command}"
-                    echo ""
-                    echo "========================================"
-                    echo ""
+            # Print some diagnostic information
+            echo "Host: $(hostname)"
+            echo "Date: $(date)"
+            echo "GPUs: {gpus}, CPUs: {cpus_per_task}"
+            echo "GPU info: $(nvidia-smi -L)"
+            echo "Job ID: $SLURM_JOB_ID"
+            echo "Working directory: $(pwd)"
+            echo "Running command: {apptainer_cmd}"
+            echo ""
+            echo "========================================"
+            echo ""
 
-                    if [ -z "$SLURM_JOB_ID" ]; then
-                        echo "SLURM_JOB_ID is not set. This script may not be running in a SLURM job."
-                        exit 1
-                    fi
+            if [ -z "$SLURM_JOB_ID" ]; then
+                echo "SLURM_JOB_ID is not set. This script may not be running in a SLURM job."
+                exit 1
+            fi
 
-                    # Reset bound in paths in case of submission from a container
-                    APPTAINER_BIND=
-                    SINGULARITY_BIND=
+            # Create the log directory if it doesn't exist
+            mkdir -p {self.worker_cache_dir}/slurm_logs
 
-                    {command}
+            # Reset bound in paths in case of submission from a container
+            APPTAINER_BIND=
+            SINGULARITY_BIND=
 
-                    # Print completion status
-                    echo "Job completed with status $?"
-                    """
-                    for line in batch_script.split("\n"):
-                        # Remove leading whitespace and write non-empty lines
-                        line = line.strip()
-                        if line:
-                            batch_file.write(line + "\n")
+            # Set the cache directory for Apptainer
+            export APPTAINER_CACHEDIR="{self.worker_cache_dir}/images"
+            export SINGULARITY_CACHEDIR="{self.worker_cache_dir}/images"
 
-                    self.logger.debug(
-                        f"Created sbatch script '{batch_file.name}':\n{batch_script}"
-                    )
+            {apptainer_cmd}
 
-                    return batch_file.name
+            # Print completion status
+            echo "Job completed with status $?"
+            """
 
-            return await asyncio.to_thread(create_temp_script)
+            # Create a temporary batch script
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".sh", delete=False
+            ) as batch_file:
+                for line in batch_script.split("\n"):
+                    # Remove leading whitespace
+                    line = line.strip()
+                    batch_file.write(line + "\n")
+
+                self.logger.debug(
+                    f"Created sbatch script '{batch_file.name}':\n{batch_script}"
+                )
+
+            return batch_file.name
         except Exception as e:
             self.logger.error(f"Failed to create sbatch script: {e}")
             raise e
@@ -217,7 +220,7 @@ class SlurmWorkers:
             self.logger.error(f"Failed to submit job: {e}")
             raise e
 
-    async def _get_jobs(self) -> Dict[str, Dict[str, str]]:
+    async def get_jobs(self) -> Dict[str, Dict[str, str]]:
         """Query SLURM for status of all jobs.
 
         Returns:
@@ -263,7 +266,7 @@ class SlurmWorkers:
                             parts[4],
                         )
 
-                        # Only include Ray worker jobs
+                        # Only include BioEngine worker jobs
                         if job_name == self.job_name:
                             jobs[job_id] = {
                                 "name": job_name,
@@ -277,8 +280,17 @@ class SlurmWorkers:
             self.logger.error(f"Failed to get jobs: {e}")
             raise e
 
-    async def _cancel_jobs(
-        self, job_ids: Optional[List[str]] = None, grace_period: Optional[int] = 30
+    def get_job_id_from_resource(self, node_resource: Dict) -> Optional[str]:
+        # Extract worker ID from resources
+        job_id = None
+        for resource in node_resource.keys():
+            if resource.startswith("node:__internal_job_id"):
+                job_id = resource.split("_")[-3]
+                break
+        return job_id
+
+    async def cancel_jobs(
+        self, job_ids: Optional[List[str]] = None, grace_period: Optional[int] = 60
     ) -> List[str]:
         """Cancel running jobs
 
@@ -290,10 +302,11 @@ class SlurmWorkers:
             List of job IDs that were cancelled.
         """
         # First get all ray worker jobs
-        jobs_to_cancel = list((await self.get_jobs()).keys())
+        jobs = await self.get_jobs()
+        jobs_to_cancel = list(jobs.keys())
 
         if not jobs_to_cancel:
-            self.logger.info("No jobs found to cancel")
+            self.logger.info("No running BioEngine worker jobs found")
             return []
 
         try:
@@ -348,7 +361,6 @@ class SlurmWorkers:
             self.logger.error(f"Failed to cancel jobs: {e}")
             raise e
 
-    # add_worker
     async def start_worker(
         self,
         num_gpus: int = 1,
@@ -370,100 +382,75 @@ class SlurmWorkers:
         try:
             # Check if Ray cluster is running
             if not ray.is_initialized():
-                raise RuntimeError("Ray cluster is not running")
-
-            # Define the apptainer command with the Ray worker command
-            apptainer_cmd = (
-                "apptainer run "
-                "--nv "
-                "--cleanenv "
-                '--env="SLURM_JOB_ID"="$SLURM_JOB_ID" '
-                "--pwd /app "
-                f"--bind {self.worker_cache_dir}:/tmp/bioengine"
-            )
-            self.logger.info(
-                f"Binding cache directory '{self.worker_cache_dir}' to container directory '/tmp/bioengine'"
-            )
-
-            # Add data directory binding if specified
-            if self.worker_data_dir:
-                self.logger.info(
-                    f"Binding data directory '{self.worker_data_dir}' to container directory '/data'"
-                )
-                apptainer_cmd += f" --bind {self.worker_data_dir}:/data"
-
-            # Add the container image to the command
-            apptainer_cmd += f" {self.image}"
-
-            # Define the Ray worker command that will run inside the container and add it to the command
-            ray_worker_cmd = (
-                "ray start "
-                f"--address={self.head_node_address} "
-                f"--num-cpus={num_cpus} "
-                f"--num-gpus={num_gpus} "
-                "--resources='{\\\"node:__internal_job_id_${SLURM_JOB_ID}__\\\": 1}' "
-                "--block"
-            )
-            # ray start --address='10.81.254.11:6379' --num-cpus=8 --num-gpus=1 --resources='{"node:__internal_job_id_${SLURM_JOB_ID}__": 1}' --block
-            apptainer_cmd += f" {ray_worker_cmd}"
+                raise RuntimeError("Ray is not initialized. Call start() first.")
 
             # Create sbatch script using SlurmManager
-            sbatch_script = await self.slurm_manager.create_sbatch_script(
-                command=apptainer_cmd,
+            sbatch_script = await asyncio.to_thread(
+                self._create_sbatch_script,
                 gpus=num_gpus,
                 cpus_per_task=num_cpus,
                 mem_per_cpu=mem_per_cpu,
                 time=time_limit,
-                further_slurm_args=self.job_config.get("further_slurm_args"),
+                further_slurm_args=self.further_slurm_args,
             )
 
             # Submit the job
-            job_id = await self.slurm_manager.submit_job(
-                sbatch_script, delete_script=True
-            )
+            job_id = await self._submit_job(sbatch_script, delete_script=True)
 
             if job_id:
                 self.logger.info(
                     f"Worker job submitted successfully. Worker & Job ID: {job_id}, Resources: {num_gpus} GPU(s), "
                     f"{num_cpus} CPU(s), {mem_per_cpu}G mem/CPU, {time_limit} time limit"
                 )
-
-                return job_id  # equivalent to worker ID
             else:
                 raise RuntimeError("Failed to submit worker job")
+
+            # TODO: fix following error
+            # [2025-06-09 13:57:33,539 C 1457009 1457009] global_state_accessor.cc:390: Failed to get system config within the timeout setting.
+
+            # Wait for the worker to be added to the Ray cluster
+            while True:
+                await asyncio.sleep(5)
+
+                # Check if the job is still running
+                jobs = await self.get_jobs()
+                if job_id not in jobs:
+                    raise RuntimeError(
+                        f"Job {job_id} is no longer running. Worker may not have started successfully."
+                    )
+
+                # Check if the worker node has already been added to the Ray cluster
+                try:
+                    all_nodes = await asyncio.to_thread(
+                        list_nodes, address=self.head_node_address
+                    )
+                    for node in all_nodes:
+                        if node.is_head_node:
+                            continue
+                        node_worker_id = self.get_job_id_from_resource(
+                            node.resources_total
+                        )
+                        if node_worker_id == job_id:
+                            node_id = node.node_id
+                            self.logger.info(
+                                f"Worker node with ID '{job_id}' is now running in the Ray cluster"
+                            )
+                            break
+                except Exception as e:
+                    self.logger.error(
+                        f"Error checking Ray cluster nodes: {e}. Stopping worker start."
+                    )
+                    self.cancel_jobs([job_id])
+                    raise e
+
+            return node_id
 
         except Exception as e:
             self.logger.error(f"Error adding worker: {e}")
             raise e
 
-    # def _get_worker_status(self, worker_id: str) -> str:
-    #     # TODO: needed?
-    #     # Check if worker node exists in cluster
-    #     for node in list_nodes():
-    #         node_worker_id = self._node_resource_to_worker_id(node["resources_total"])
-    #         if node_worker_id == worker_id:
-    #             node_id = node["NodeID"]
-    #             node_ip = node["NodeManagerAddress"]
-
-    #             if node["Alive"]:
-    #                 self.logger.debug(
-    #                     f"Ray worker '{worker_id}' on machine '{node_ip}' with node ID '{node_id}' is currently running"
-    #                 )
-    #                 return "alive"
-    #             else:
-    #                 self.logger.debug(
-    #                     f"Ray worker '{worker_id}' on machine '{node_ip}' with node ID '{node_id}' is already stopped"
-    #                 )
-    #                 return "dead"
-
-    #     # If not found in either alive or dead nodes
-    #     self.logger.debug(f"Ray worker '{worker_id}' not found in cluster")
-    #     return "not_found"
-
-    # remove_worker
-    async def stop_worker(self, node_id: str, grace_period: int = 30) -> None:
+    async def stop_worker(self, node_id: str, grace_period: int = 60) -> None:
         """Shut down an existing Slurm worker node from the Ray cluster.
-
 
         Returns:
             True if worker was successfully shut down
@@ -471,22 +458,28 @@ class SlurmWorkers:
         try:
             # Check if Ray cluster is running
             if not ray.is_initialized():
-                raise RuntimeError("Ray cluster is not running")
+                raise RuntimeError("Ray is not initialized. Call start() first.")
 
             # Check worker status
-            worker_status = get_node(node_id)
+            try:
+                worker_status = await asyncio.to_thread(
+                    get_node, id=node_id, address=self.head_node_address
+                )
+                # TODO: check error type (RayStateApiException?)
+            except ValueError as e:
+                self.logger.error(f"Worker '{node_id}' not found in cluster: {e}")
+                raise e
 
-            if worker_status == "not_found":
-                raise ValueError(f"Node ID '{worker_id}' not found in cluster status")
+            job_id = self.get_job_id_from_resource(worker_status["resources_total"])
 
             self.logger.info(
-                f"Removing worker '{worker_id}' (status='{worker_status}') from cluster status..."
+                f"Removing worker '{node_id}' (status='{worker_status}' | job_id='{job_id}') from cluster status..."
             )
 
-            if worker_status == "alive":
-                self.logger.info(f"Stopping all processes on worker '{worker_id}'...")
+            if worker_status.status == "ALIVE":
+                self.logger.info(f"Stopping all processes on worker '{node_id}'...")
 
-                @ray.remote(resources={f"node:__internal_job_id_{worker_id}__": 0.01})
+                @ray.remote(resources={f"node:__internal_job_id_{job_id}__": 0.01})
                 def stop_worker():
                     """Stops the worker node by executing 'ray stop'."""
                     import subprocess
@@ -501,10 +494,10 @@ class SlurmWorkers:
                 obj_ref = stop_worker.remote()
 
                 try:
-                    await asyncio.to_thread(ray.get, obj_ref, timeout=15)
+                    await asyncio.to_thread(ray.get, obj_ref, timeout=grace_period)
                 except ray.exceptions.GetTimeoutError:
                     self.logger.error(
-                        f"Failed to send shutdown command to worker '{worker_id}' within 15 seconds"
+                        f"Failed to send shutdown command to worker '{node_id}' within {grace_period} seconds. Cancelling job..."
                     )
                     raise
 
@@ -512,39 +505,20 @@ class SlurmWorkers:
                 start_time = time.time()
                 while time.time() - start_time < grace_period:
                     await asyncio.sleep(3)
-                    status = self._get_worker_status(worker_id)
-                    if status != "alive":
+                    worker_status = await asyncio.to_thread(
+                        get_node, id=node_id, address=self.head_node_address
+                    )
+                    if worker_status.status != "ALIVE":
                         break
 
-            cancelled_jobs = await self.slurm_manager.cancel_jobs([worker_id])
-            if cancelled_jobs == [worker_id]:
-                self.logger.info(f"Successfully removed worker '{worker_id}'")
+            cancelled_jobs = await self.slurm_manager.cancel_jobs(
+                [job_id], grace_period=grace_period
+            )
+            if cancelled_jobs == [job_id]:
+                self.logger.info(f"Successfully removed worker '{node_id}'")
             else:
-                raise RuntimeError(f"Failed to cancel job '{worker_id}'")
+                raise RuntimeError(f"Failed to cancel job '{node_id}'")
 
         except Exception as e:
-            self.logger.error(f"Error shutting down worker {worker_id}: {e}")
+            self.logger.error(f"Error shutting down worker {node_id}: {e}")
             raise e
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    async def main():
-        # Example usage
-        actor = SlurmWorkers(job_name="ray_worker", slurm_log_dir="/tmp")
-        sbatch_script = await actor.create_sbatch_script(
-            command="sleep 30", gpus=1, cpus_per_task=1, mem_per_cpu=1, time="00:10:00"
-        )
-        job_id = await actor.submit_job(sbatch_script, delete_script=False)
-        job_id = await actor.submit_job(sbatch_script, delete_script=False)
-        job_id = await actor.submit_job(sbatch_script, delete_script=True)
-
-        running_jobs = []
-        while len(running_jobs) < 3:
-            await asyncio.sleep(1)
-            running_jobs = await actor.get_jobs()
-
-        await actor.cancel_jobs(grace_period=10)
-
-    asyncio.run(main())

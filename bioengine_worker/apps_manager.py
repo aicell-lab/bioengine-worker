@@ -1026,10 +1026,6 @@ if __name__ == "__main__":
         head_num_cpus=4,
         head_num_gpus=1,
         ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
-        image=str(
-            Path(__file__).parent.parent
-            / f"apptainer_images/bioengine-worker_{__version__}.sif"
-        ),
         worker_data_dir=str(Path(__file__).parent.parent / "data"),
         slurm_log_dir=str(Path(__file__).parent.parent / "logs"),
         debug=True,

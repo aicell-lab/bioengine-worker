@@ -59,7 +59,7 @@ An overview of all tags for the BioEngine worker can be accessed via:
 bash scripts/start_worker.sh --help
 ```
 
-The script will pull the latest BioEngine worker docker image and convert it into Singularity Image Format (SIF) using Apptainer. These Apptainer images will be saved to the directory `./apptainer_images/`. 
+The script will pull the latest BioEngine worker docker image and convert it into Singularity Image Format (SIF) using Apptainer. These Apptainer images will be saved to the directory `./images/`. 
 
 To avoid interactive login to Hypha, pass the token with the tag `--token` or save it to `HYPHA_TOKEN` in the `.env` file in the root directory of the project. The script will automatically load the token from the `.env` file if it exists.
 

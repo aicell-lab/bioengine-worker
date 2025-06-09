@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union
 
 import ray
-from ray import serve
 from ray._private.state import available_resources_per_node  # DeveloperAPI
 from ray.util.state import list_nodes
 
@@ -63,7 +62,7 @@ class RayCluster:
         status_interval_seconds: int = 10,
         max_status_history_length: int = 100,
         # SLURM Worker Configuration parameters
-        image: str = f"ghcr.io/aicell-lab/bioengine-worker:{__version__}",  # BioEngine image tag or path to the image file
+        image: str = f"docker://ghcr.io/aicell-lab/bioengine-worker:{__version__}",  # BioEngine image tag or path to the image file
         worker_cache_dir: Optional[
             str
         ] = None,  # Cache directory mounted to the container when starting a worker (required for SLURM mode)
@@ -205,17 +204,16 @@ class RayCluster:
 
         if self.mode == "slurm":
             # Initialize SlurmWorkers
-            # TODO: update
             self.slurm_workers = SlurmWorkers(
                 worker_cache_dir=worker_cache_dir,
-                worker_data_dir=worker_data_dir,
-                image=image,
                 head_node_address=self.head_node_address,
+                image=image,
                 default_num_gpus=default_num_gpus,
                 default_num_cpus=default_num_cpus,
                 default_mem_per_cpu=default_mem_per_cpu,
                 default_time_limit=default_time_limit,
                 further_slurm_args=further_slurm_args,
+                worker_data_dir=worker_data_dir,
                 log_file=log_file,
                 debug=debug,
             )
@@ -536,7 +534,9 @@ class RayCluster:
 
             # If running on a HPC system, use the RayAutoscaler to manage the Ray cluster
             if self.mode == "slurm":
-                await self.autoscaler.start()
+                # TODO: update
+                # await self.autoscaler.start()
+                pass
 
         except subprocess.CalledProcessError as e:
             self.logger.error(
@@ -612,8 +612,8 @@ class RayCluster:
 
             # In SLURM mode, get all running jobs
             if self.mode == "slurm":
-                # TODO: update
-                running_jobs = await self.slurm_workers.get_running_jobs()
+                jobs = await self.slurm_workers.get_jobs()
+                running_jobs_ids = list(jobs.keys())
 
             nodes_status = {}
             for node in all_nodes:
@@ -629,10 +629,12 @@ class RayCluster:
                         job_id = None
                     else:
                         # Get SLURM job ID from resources
-                        job_id = self.slurm_workers._get_job_id(node.resources_total)
+                        job_id = self.slurm_workers.get_job_id_from_resource(
+                            node.resources_total
+                        )
 
                         # Skip nodes if job is not running anymore
-                        if job_id not in running_jobs:
+                        if job_id not in running_jobs_ids:
                             self.logger.warning(
                                 f"Skipping worker node '{node.node_id}' with already cancelled job ID '{job_id}'"
                             )
@@ -935,31 +937,28 @@ if __name__ == "__main__":
     async def test_ray_cluster_slurm():
         print("\n===== Testing RayCluster in SLURM mode =====\n")
 
+        bioengine_cache_dir = Path(os.environ["HOME"]) / ".bioengine"
         ray_cluster = RayCluster(
             mode="slurm",
-            ray_temp_dir=Path(os.environ["HOME"]) / ".bioengine" / "ray",
-            image=str(
-                Path(__file__).parent.parent
-                / ".bioengine"
-                / "apptainer_images"
-                / f"bioengine-worker_{__version__}.sif"
-            ),
-            worker_cache_dir=str(Path(__file__).parent.parent / ".bioengine"),
+            ray_temp_dir=bioengine_cache_dir / "ray",
+            status_interval_seconds=3,
+            worker_cache_dir=bioengine_cache_dir,
             # further_slurm_args=["-C 'thin'"]
             debug=True,
         )
-        await ray_cluster.start_cluster(force_clean_up=True)
-        status = await ray_cluster.get_status()
-        print("\n=== Cluster status ===\n", status, end="\n\n")
+        await ray_cluster.start()
 
-        job_id = await ray_cluster.slurm_workers.add_worker(
+        await asyncio.sleep(5)
+        print("\n=== Cluster status ===\n", ray_cluster.status, end="\n\n")
+
+        node_id = await ray_cluster.slurm_workers.start_worker(
             time_limit="00:30:00",
             num_cpus=1,
-            num_gpus=0,
+            num_gpus=1,
         )
 
-        status = await ray_cluster.get_status()
-        print("\n=== Cluster status ===\n", status, end="\n\n")
+        await asyncio.sleep(5)
+        print("\n=== Cluster status ===\n", ray_cluster.status, end="\n\n")
 
         # Test running a remote function on worker node
         @ray.remote(
@@ -987,16 +986,16 @@ if __name__ == "__main__":
             return f"Successfully run a task in runtime environment on the worker node!"
 
         obj_ref = test_remote.remote()
-        print(ray.get(obj_ref))
+        print(await asyncio.to_thread(ray.get, obj_ref))
 
         # Test closing a worker node
-        ray_cluster.remove_worker(job_id)
+        ray_cluster.slurm_workers.stop_worker(node_id)
 
-        await ray_cluster._shutdown()
+        await ray_cluster.stop()
 
     # Run the tests
     asyncio.run(test_ray_cluster_single_machine())
-    # asyncio.run(test_ray_cluster_slurm())
+    asyncio.run(test_ray_cluster_slurm())
 
     # # Test submitting a worker job
     # print("Adding a worker...")

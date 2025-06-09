@@ -115,7 +115,9 @@ class BioEngineWorker:
             self._set_parameter(ray_cluster_config, "mode", self.mode)
             self._set_parameter(ray_cluster_config, "log_file", log_file)
             self._set_parameter(ray_cluster_config, "debug", debug)
-            self._set_parameter(ray_cluster_config, "ray_temp_dir", self.cache_dir / "ray")
+            self._set_parameter(
+                ray_cluster_config, "ray_temp_dir", self.cache_dir / "ray"
+            )
             force_clean_up = not ray_cluster_config.pop("skip_cleanup", False)
             self._set_parameter(ray_cluster_config, "force_clean_up", force_clean_up)
 

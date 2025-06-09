@@ -322,7 +322,7 @@ class BioEngineWorker:
                 "start_time": formatted_service_time["start_time"],
                 "uptime": formatted_service_time["uptime"],
             },
-            "ray_cluster": await self.ray_cluster.get_status(),
+            "ray_cluster": self.ray_cluster.status,
             "bioengine_apps": await self.deployment_manager.get_status(),
             "bioengine_datasets": await self.dataset_manager.get_status(),
         }

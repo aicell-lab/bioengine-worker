@@ -137,7 +137,7 @@ class RayAutoscaler:
 
         # Get current cluster status
         current_time = time.time()
-        cluster_status = await self.ray_cluster.get_status()
+        cluster_status = self.ray_cluster.worker_nodes_history
         active_nodes = cluster_status["worker_nodes"]["Alive"]
         dead_nodes = cluster_status["worker_nodes"]["Dead"]
 

@@ -106,9 +106,12 @@ fi
 # === Load BioEngine image ===
 
 # Get the container cache directory
+CACHE_DIR=$(get_arg_value "--cache_dir" "$WORKING_DIR/.bioengine")
+CACHE_DIR=$(realpath $CACHE_DIR)
+
 IMAGE_CACHEDIR=$(get_arg_value "--apptainer_cachedir")
 if [[ -z "$IMAGE_CACHEDIR" ]]; then
-    IMAGE_CACHEDIR=$(get_arg_value "--singularity_cachedir" "$WORKING_DIR/images")
+    IMAGE_CACHEDIR=$(get_arg_value "--singularity_cachedir" "$CACHE_DIR/images")
 fi
 IMAGE_CACHEDIR=$(realpath $IMAGE_CACHEDIR)
 SINGULARITY_CACHEDIR=$IMAGE_CACHEDIR
@@ -164,8 +167,6 @@ fi
 # Add BioEngine worker bindings
 
 # CACHE_DIR is needed by the BioEngine worker -> container path
-CACHE_DIR=$(get_arg_value "--cache_dir" "$WORKING_DIR/.bioengine")
-CACHE_DIR=$(realpath $CACHE_DIR)
 mkdir -p $CACHE_DIR
 add_bind $CACHE_DIR "/tmp/bioengine"
 set_arg_value "--cache_dir" "/tmp/bioengine"

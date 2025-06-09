@@ -62,13 +62,9 @@ class RayCluster:
         status_interval_seconds: int = 10,
         max_status_history_length: int = 100,
         # SLURM Worker Configuration parameters
-        image: str = f"docker://ghcr.io/aicell-lab/bioengine-worker:{__version__}",  # BioEngine image tag or path to the image file
-        worker_cache_dir: Optional[
-            str
-        ] = None,  # Cache directory mounted to the container when starting a worker (required for SLURM mode)
-        worker_data_dir: Optional[
-            str
-        ] = None,  # Data directory mounted to the container when starting a worker
+        image: str = f"docker://ghcr.io/aicell-lab/bioengine-worker:{__version__}",
+        worker_cache_dir: Optional[str] = None,
+        worker_data_dir: Optional[str] = None,
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
         default_mem_per_cpu: int = 16,
@@ -203,44 +199,32 @@ class RayCluster:
         }
 
         if self.mode == "slurm":
-            # Initialize SlurmWorkers
-            self.slurm_workers = SlurmWorkers(
-                worker_cache_dir=worker_cache_dir,
-                head_node_address=self.head_node_address,
-                image=image,
-                default_num_gpus=default_num_gpus,
-                default_num_cpus=default_num_cpus,
-                default_mem_per_cpu=default_mem_per_cpu,
-                default_time_limit=default_time_limit,
-                further_slurm_args=further_slurm_args,
-                worker_data_dir=worker_data_dir,
-                log_file=log_file,
-                debug=debug,
-            )
+            self.slurm_worker_config = {
+                "image": image,
+                "worker_cache_dir": worker_cache_dir,
+                "worker_data_dir": worker_data_dir,
+                "default_num_gpus": default_num_gpus,
+                "default_num_cpus": default_num_cpus,
+                "default_mem_per_cpu": default_mem_per_cpu,
+                "default_time_limit": default_time_limit,
+                "further_slurm_args": further_slurm_args or [],
+                "log_file": log_file,
+                "debug": debug,
+            }
 
-            # Initialize RayAutoscaler
-            # TODO: update
-            self.autoscaler = RayAutoscaler(
-                ray_cluster=self,
-                default_num_gpus=default_num_gpus,
-                default_num_cpus=default_num_cpus,
-                default_mem_per_cpu=default_mem_per_cpu,
-                default_time_limit=default_time_limit,
-                min_workers=min_workers,
-                max_workers=max_workers,
-                metrics_interval_seconds=metrics_interval_seconds,
-                gpu_idle_threshold=gpu_idle_threshold,
-                cpu_idle_threshold=cpu_idle_threshold,
-                scale_down_threshold_seconds=scale_down_threshold_seconds,
-                scale_up_cooldown_seconds=scale_up_cooldown_seconds,
-                scale_down_cooldown_seconds=scale_down_cooldown_seconds,
-                node_grace_period_seconds=node_grace_period_seconds,
-                log_file=log_file,
-                debug=debug,
-            )
-        else:
-            self.slurm_workers = None
-            self.autoscaler = None
+            self.autoscaler_config = {
+                "min_workers": min_workers,
+                "max_workers": max_workers,
+                "metrics_interval_seconds": metrics_interval_seconds,
+                "gpu_idle_threshold": gpu_idle_threshold,
+                "cpu_idle_threshold": cpu_idle_threshold,
+                "scale_down_threshold_seconds": scale_down_threshold_seconds,
+                "scale_up_cooldown_seconds": scale_up_cooldown_seconds,
+                "scale_down_cooldown_seconds": scale_down_cooldown_seconds,
+                "node_grace_period_seconds": node_grace_period_seconds,
+                "log_file": log_file,
+                "debug": debug,
+            }
 
         self.is_running = False
         self.ray_start_time = None
@@ -248,6 +232,8 @@ class RayCluster:
         self.max_status_history_length = max_status_history_length
         self.worker_nodes_history = OrderedDict()
         self.monitoring_task = None
+        self.slurm_workers = None
+        self.autoscaler = None
 
     @property
     def head_node_address(self) -> str:
@@ -423,8 +409,7 @@ class RayCluster:
                 "Ray is already initialized. Please stop the existing Ray instance before starting the worker."
             )
 
-        force_clean_up = self.ray_cluster_config["force_clean_up"]
-        if force_clean_up:
+        if self.ray_cluster_config["force_clean_up"]:
             self.logger.info("Forcing Ray cleanup...")
             await self._shutdown()
         try:
@@ -534,6 +519,16 @@ class RayCluster:
 
             # If running on a HPC system, use the RayAutoscaler to manage the Ray cluster
             if self.mode == "slurm":
+                # Initialize SlurmWorkers
+                self.slurm_workers = SlurmWorkers(
+                    head_node_address=self.head_node_address, **self.slurm_worker_config
+                )
+                # Initialize RayAutoscaler
+                self.autoscaler = RayAutoscaler(
+                    ray_cluster=self,
+                    **self.autoscaler_config,
+                )
+
                 # TODO: update
                 # await self.autoscaler.start()
                 pass
@@ -681,7 +676,7 @@ class RayCluster:
         """
         try:
             # Stop the autoscaler if running in SLURM mode
-            if self.mode == "slurm":
+            if self.autoscaler:
                 await self.autoscaler.stop()
 
             # Disconnect from Ray cluster if it was initialized
@@ -732,8 +727,7 @@ class RayCluster:
             await asyncio.sleep(5)  # Wait for Ray to fully shut down
 
             # In SLURM mode, clean up any remaining worker jobs
-            if self.mode == "slurm":
-                # TODO: update
+            if self.slurm_workers:
                 await self.slurm_workers.cancel_jobs(grace_period=grace_period)
 
             self.logger.info("Ray cluster shut down complete")
@@ -938,11 +932,13 @@ if __name__ == "__main__":
         print("\n===== Testing RayCluster in SLURM mode =====\n")
 
         bioengine_cache_dir = Path(os.environ["HOME"]) / ".bioengine"
+        bioengine_data_dir = Path(__file__).parent.parent / "data"
         ray_cluster = RayCluster(
             mode="slurm",
             ray_temp_dir=bioengine_cache_dir / "ray",
             status_interval_seconds=3,
             worker_cache_dir=bioengine_cache_dir,
+            worker_data_dir=bioengine_data_dir,
             # further_slurm_args=["-C 'thin'"]
             debug=True,
         )
@@ -952,9 +948,9 @@ if __name__ == "__main__":
         print("\n=== Cluster status ===\n", ray_cluster.status, end="\n\n")
 
         node_id = await ray_cluster.slurm_workers.start_worker(
-            time_limit="00:30:00",
-            num_cpus=1,
             num_gpus=1,
+            num_cpus=1,
+            time_limit="00:30:00",
         )
 
         await asyncio.sleep(5)
@@ -973,87 +969,26 @@ if __name__ == "__main__":
             # Check if runtime environment is set up correctly
             import pandas as pd
 
-            # # Check Ray's temporary directory
-            # assert (
-            #     Path(__file__).parent.parent / ".bioengine" / "ray"
-            # ).exists(), "Temporary directory does not exist"
+            # Check Bioengine cache directory
+            assert (
+                Path(bioengine_cache_dir)
+            ).exists(), "Bioengine cache directory does not exist"
             # Check data directory
-            # num_files = len(os.listdir("/data"))
-            # assert num_files, "Data directory is empty"
+            num_files = len(os.listdir("/data"))
+            assert num_files, "Data directory is empty"
 
             time.sleep(1)
 
-            return f"Successfully run a task in runtime environment on the worker node!"
+            return f"Successfully run a task in a runtime environment on the worker node!"
 
         obj_ref = test_remote.remote()
         print(await asyncio.to_thread(ray.get, obj_ref))
 
         # Test closing a worker node
-        ray_cluster.slurm_workers.stop_worker(node_id)
+        await ray_cluster.slurm_workers.stop_worker(node_id)
 
         await ray_cluster.stop()
 
     # Run the tests
     asyncio.run(test_ray_cluster_single_machine())
     asyncio.run(test_ray_cluster_slurm())
-
-    # # Test submitting a worker job
-    # print("Adding a worker...")
-    # worker_id = ray_cluster.add_worker(time_limit="00:30:00")
-
-    # # Wait for worker to start
-    # status = ""
-    # while status != "RUNNING":
-    #     # Wait for worker node to appear in cluster status
-    #     print("Waiting for job to start...")
-    #     time.sleep(3)
-    #     jobs = ray_cluster.slurm_workers.get_jobs()
-    #     if worker_id not in jobs:
-    #         raise RuntimeError(
-    #             f"Job died before worker node appeared in cluster status"
-    #         )
-    #     status = jobs[worker_id]["state"]
-
-    # while status != "alive":
-    #     print("Waiting for worker node to start...")
-    #     time.sleep(3)
-    #     status = ray_cluster._get_worker_status(worker_id)
-
-    # # Test cluster status
-    # cluster_status = ray_cluster.get_status()
-    # print("\n=== Cluster status ===\n", cluster_status, end="\n\n")
-
-    # # Test running a remote function on worker node
-    # @ray.remote(
-    #     num_cpus=1,
-    #     num_gpus=1,
-    #     # runtime_env={"pip": ["hypha-rpc"]},
-    # )
-    # def test_remote():
-    #     import os
-    #     import time
-
-    #     # Check if runtime environment is set up correctly
-    #     from hypha_rpc.sync import connect_to_server
-
-    #     # Check Ray's temporary directory
-    #     assert (
-    #         Path(__file__).parent.parent / ".bioengine" / "ray"
-    #     ).exists(), "Temporary directory does not exist"
-
-    #     # Check data directory
-    #     num_files = len(os.listdir("/data"))
-    #     assert num_files, "Data directory is empty"
-
-    #     time.sleep(1)
-
-    #     return f"Successfully run a task in runtime environment on the worker node! (Number of files in data directory: {num_files})"
-
-    # obj_ref = test_remote.remote()
-    # print(ray.get(obj_ref))
-
-    # # Test closing a worker node
-    # ray_cluster.remove_worker(worker_id)
-
-    # # Test shutting down Ray cluster
-    # ray_cluster._shutdown()

@@ -21,11 +21,6 @@ class RayAutoscaler:
     def __init__(
         self,
         ray_cluster,
-        # Default resource parameters
-        default_num_gpus: int = 1,
-        default_num_cpus: int = 8,
-        default_mem_per_cpu: int = 16,
-        default_time_limit: str = "4:00:00",
         # Autoscaling configuration parameters
         min_workers: int = 0,
         max_workers: int = 4,
@@ -71,21 +66,15 @@ class RayAutoscaler:
         self.ray_cluster = ray_cluster
 
         # Store configuration
-        self.autoscale_config = {
-            "default_num_gpus": default_num_gpus,
-            "default_num_cpus": default_num_cpus,
-            "default_mem_per_cpu": default_mem_per_cpu,
-            "default_time_limit": default_time_limit,
-            "min_workers": min_workers,
-            "max_workers": max_workers,
-            "metrics_interval": metrics_interval_seconds,
-            "gpu_idle_threshold": gpu_idle_threshold,
-            "cpu_idle_threshold": cpu_idle_threshold,
-            "scale_down_threshold": scale_down_threshold_seconds,
-            "scale_up_cooldown": scale_up_cooldown_seconds,
-            "scale_down_cooldown": scale_down_cooldown_seconds,
-            "node_grace_period": node_grace_period_seconds,
-        }
+        self.min_workers = min_workers
+        self.max_workers = max_workers
+        self.metrics_interval = metrics_interval_seconds
+        self.gpu_idle_threshold = gpu_idle_threshold
+        self.cpu_idle_threshold = cpu_idle_threshold
+        self.scale_down_threshold = scale_down_threshold_seconds
+        self.scale_up_cooldown = scale_up_cooldown_seconds
+        self.scale_down_cooldown = scale_down_cooldown_seconds
+        self.node_grace_period = node_grace_period_seconds
 
         # Initialize state variables
         self.last_time_collected_metrics = 0

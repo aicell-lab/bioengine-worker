@@ -563,7 +563,7 @@ class RayCluster:
     async def _get_nodes_status(self) -> Dict[str, Union[str, dict]]:
         """Get current cluster state including head node and worker information.
 
-        Returns a detailed status report including information about all worker nodes 
+        Returns a detailed status report including information about all worker nodes
         including their resources and SLURM job IDs if applicable. This method
         excludes the head node unless running in single-machine mode.
 
@@ -571,7 +571,7 @@ class RayCluster:
             Dict containing worker nodes grouped by state (e.g., 'ALIVE', 'DEAD').
             Each node entry includes:
                 - Node ID: Unique identifier for the node
-                - Node IP: IP address of the worker node  
+                - Node IP: IP address of the worker node
                 - SLURM Job ID: Job ID if running in SLURM mode, 'N/A' otherwise
                 - Total/Available GPU: GPU resource information
                 - Total/Available CPU: CPU resource information
@@ -791,7 +791,7 @@ class RayCluster:
                     # Don't raise the exception to avoid crashing the monitoring loop
                     # Instead, wait a bit and continue monitoring
                     await asyncio.sleep(self.status_interval_seconds)
-        
+
         self.logger.debug("Monitoring loop stopped")
 
     async def start(self) -> None:
@@ -820,7 +820,9 @@ class RayCluster:
 
             # Start the monitoring loop
             self.monitoring_task = asyncio.create_task(self._monitoring_loop())
-            self.logger.debug(f"Monitoring task started with status interval: {self.status_interval_seconds}s")
+            self.logger.debug(
+                f"Monitoring task started with status interval: {self.status_interval_seconds}s"
+            )
             self.logger.info("Ray cluster started successfully")
 
         except Exception as e:
@@ -897,7 +899,7 @@ if __name__ == "__main__":
             print("\n=== Worker Nodes History ===\n", history, end="\n\n")
 
         print("\n=== Cluster status ===\n", ray_cluster.status, end="\n\n")
-        
+
         await ray_cluster.stop()
 
     async def test_ray_cluster_slurm():

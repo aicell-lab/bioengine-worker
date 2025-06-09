@@ -60,7 +60,7 @@ class RayCluster:
         ray_connection_address: str = "auto",  # 'auto' or 'ip:port' format
         force_clean_up: bool = True,
         # Cluster Monitoring parameters
-        status_interval_seconds: int = 15,
+        status_interval_seconds: int = 10,
         max_status_history_length: int = 100,
         # SLURM Worker Configuration parameters
         image: str = f"ghcr.io/aicell-lab/bioengine-worker:{__version__}",  # BioEngine image tag or path to the image file
@@ -144,6 +144,9 @@ class RayCluster:
 
         # Find and store Ray executable path
         self.ray_exec_path = self._find_ray_executable()
+        self.serve_exec_path = (
+            self.ray_exec_path[:-3] + "serve"
+        )  # Replace 'ray' with 'serve'
 
         # Check if mode is valid
         self.mode = mode
@@ -161,6 +164,7 @@ class RayCluster:
                     raise ValueError(
                         "Invalid ray_connection_address format. Use 'ip:port' format."
                     )
+
         elif self.mode != "single-machine":
             raise ValueError(
                 f"Invalid mode '{self.mode}'. Supported modes are 'slurm', 'single-machine' and 'connect'."
@@ -245,6 +249,7 @@ class RayCluster:
         self.status_interval_seconds = status_interval_seconds
         self.max_status_history_length = max_status_history_length
         self.worker_nodes_history = OrderedDict()
+        self.monitoring_task = None
 
     @property
     def head_node_address(self) -> str:
@@ -259,10 +264,10 @@ class RayCluster:
         """
         head_node_address = str(self.ray_cluster_config["head_node_address"])
         if head_node_address.startswith("ray://"):
-            # Choose client server port for head node address
+            # Choose client server port for remote head node
             port = self.ray_cluster_config["client_server_port"]
         else:
-            # Choose GCS server port for head node address
+            # Choose GCS server port for local head node
             port = self.ray_cluster_config["head_node_port"]
         return f"{head_node_address}:{port}"
 
@@ -471,17 +476,32 @@ class RayCluster:
                 f"Ray start command output:\n----------\n{stdout.decode()}"
             )
 
-            # Verify the cluster is running on the correct IP and port
+            # Verify connection to the Ray cluster
             await self._connect_to_cluster()
 
             # Start Ray Serve
-            await asyncio.to_thread(
-                serve.start,
-                http_options={
-                    "host": "0.0.0.0",
-                    "port": self.ray_cluster_config["serve_port"],
-                },
+            args = [
+                "start",
+                "--address",
+                self.head_node_address,
+                "--http-host",
+                "0.0.0.0",
+                "--http-port",
+                str(self.ray_cluster_config["serve_port"]),
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                self.serve_exec_path,
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
+            stdout, stderr = await proc.communicate()
+
+            if proc.returncode != 0:
+                error_msg = stderr.decode() if stderr else "Unknown error"
+                raise subprocess.CalledProcessError(
+                    proc.returncode, f"serve start", stderr=error_msg
+                )
 
             # Log the start time and head node address
             self.ray_start_time = time.time()
@@ -583,7 +603,11 @@ class RayCluster:
         """
         try:
             # Get the status and resources of all nodes (run in thread to avoid blocking)
-            all_nodes = await asyncio.to_thread(list_nodes)
+            # ray.nodes() took on average 0.0012 seconds
+            # list_nodes() took on average 0.0074 seconds
+            all_nodes = await asyncio.to_thread(
+                list_nodes, address=self.head_node_address
+            )
             available_resources = await asyncio.to_thread(available_resources_per_node)
 
             # In SLURM mode, get all running jobs
@@ -638,7 +662,7 @@ class RayCluster:
             self.logger.error(f"Error checking ray cluster: {e}")
             raise e
 
-    async def _shutdown(self, grace_period: int = 30) -> None:
+    async def _shutdown(self, grace_period: int = 60) -> None:
         """Stop Ray cluster and all worker nodes.
 
         Performs a graceful shutdown of the Ray cluster including stopping
@@ -654,24 +678,18 @@ class RayCluster:
             Exception: For other shutdown errors.
         """
         try:
+            # Stop the autoscaler if running in SLURM mode
             if self.mode == "slurm":
                 await self.autoscaler.stop()
 
             # Disconnect from Ray cluster if it was initialized
             if ray.is_initialized():
-
-                # Stop Ray Serve if it was initialized
-                try:
-                    await asyncio.to_thread(serve.context._get_global_client)
-                    self.logger.info("Shutting down Ray Serve...")
-                    await asyncio.to_thread(serve.shutdown)
-                except serve.exceptions.RayServeException:
-                    # Ray Serve was not initialized, ignore the error
-                    pass
-
                 # Disconnect current client from Ray cluster
                 self.logger.info("Disconnecting from Ray cluster...")
                 await asyncio.to_thread(ray.shutdown)
+
+            if self.mode == "connect":
+                return
 
             # Shutdown the Ray cluster head node
             self.logger.info("Shutting down Ray cluster...")
@@ -709,8 +727,9 @@ class RayCluster:
                         f"Unknown message during Ray shutdown:\n----------\n{output}"
                     )
 
-            # Clean up any remaining worker jobs
             await asyncio.sleep(5)  # Wait for Ray to fully shut down
+
+            # In SLURM mode, clean up any remaining worker jobs
             if self.mode == "slurm":
                 # TODO: update
                 await self.slurm_workers.cancel_jobs(grace_period=grace_period)
@@ -733,7 +752,7 @@ class RayCluster:
             self.logger.error(f"Error shutting down Ray cluster: {e}")
             raise e
 
-    async def _monitoring_loop(self) -> None:
+    async def _monitoring_loop(self, max_consecutive_errors: int = 5) -> None:
         """Continuously monitor cluster status and update worker nodes history.
 
         This loop runs while the cluster is active, periodically collecting
@@ -747,10 +766,14 @@ class RayCluster:
         4. Handles Ray connection errors with automatic reconnection
         5. Gracefully handles task cancellation during shutdown
 
+        Args:
+            max_consecutive_errors: Maximum number of consecutive errors before stopping
+
         Raises:
             Exception: If an unrecoverable error occurs during monitoring.
         """
         self.logger.debug("Starting monitoring loop")
+        consecutive_errors = 0
         while self.is_running:
             try:
                 # Get the current status of the cluster
@@ -758,12 +781,20 @@ class RayCluster:
                 self.worker_nodes_history[time.time()] = nodes_status
                 if len(self.worker_nodes_history) > self.max_status_history_length:
                     self.worker_nodes_history.popitem(last=False)
+                consecutive_errors = 0  # Reset error counter on success
                 await asyncio.sleep(self.status_interval_seconds)
             except asyncio.CancelledError:
                 # Handle task cancellation gracefully
                 self.logger.debug("Monitoring loop cancelled")
                 break
             except Exception as e:
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    self.logger.error(
+                        f"Stopping monitoring loop after {consecutive_errors} consecutive errors"
+                    )
+                    raise e
+
                 # Handle specific Ray connection errors
                 error_message = str(e)
                 if (
@@ -773,11 +804,10 @@ class RayCluster:
                     isinstance(e, ray.exceptions.RaySystemError)
                     and "Ray has not been started yet" in error_message
                 ):
-                    self.logger.warning(f"Ray client disconnected: {e}")
+                    self.logger.warning(f"Ray client disconnected. Reconnecting...")
                     # Make sure to shutdown and reconnect
                     if ray.is_initialized():
                         await asyncio.to_thread(ray.shutdown)
-                    self.logger.info("Reconnecting to Ray cluster...")
                     try:
                         await self._connect_to_cluster()
                     except Exception as reconnect_error:
@@ -793,6 +823,7 @@ class RayCluster:
                     await asyncio.sleep(self.status_interval_seconds)
 
         self.logger.debug("Monitoring loop stopped")
+        self.worker_nodes_history = OrderedDict()  # Clear history on stop
 
     async def start(self) -> None:
         """Start the Ray cluster based on the configured mode.
@@ -810,7 +841,6 @@ class RayCluster:
             raise RuntimeError("Ray cluster is already running")
 
         self.is_running = True
-        self.monitoring_task = None
 
         try:
             if self.mode == "connect":
@@ -839,7 +869,7 @@ class RayCluster:
             raise e
 
     async def stop(self) -> None:
-        """Stop the Ray cluster and all worker nodes.
+        """Stop the Ray cluster and in SLURM mode also all worker nodes.
 
         This method will stop the Ray cluster, disconnect from it, and clean up
         any resources used by the cluster. It will also stop the autoscaler if
@@ -860,11 +890,7 @@ class RayCluster:
         self.is_running = False
 
         # Cancel monitoring task
-        if (
-            hasattr(self, "monitoring_task")
-            and self.monitoring_task
-            and not self.monitoring_task.done()
-        ):
+        if self.monitoring_task and not self.monitoring_task.done():
             self.monitoring_task.cancel()
             try:
                 await self.monitoring_task
@@ -897,6 +923,10 @@ if __name__ == "__main__":
             await asyncio.sleep(3)
             history = ray_cluster.worker_nodes_history
             print("\n=== Worker Nodes History ===\n", history, end="\n\n")
+
+        # Test automatic reconnection
+        ray.shutdown()
+        await asyncio.sleep(10)
 
         print("\n=== Cluster status ===\n", ray_cluster.status, end="\n\n")
 

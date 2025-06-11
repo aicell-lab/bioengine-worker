@@ -320,21 +320,8 @@ class BioEngineWorker:
         """
         self.start_time = time.time()
 
-        if self.ray_cluster.mode == "connect":
-            # Connect to an existing Ray cluster
-            if ray.is_initialized():
-                raise RuntimeError(
-                    "Ray is already initialized. Please stop the existing Ray instance before starting the worker."
-                )
-            try:
-                ray.init(**self.ray_connection_config)
-            except Exception as e:
-                self.logger.error(f"Failed to connect to existing Ray cluster: {e}")
-                raise
-            self.logger.info("Connected to existing Ray cluster.")
-        else:
-            # Start the Ray cluster
-            await self.ray_cluster.start()
+        # Start the Ray cluster
+        await self.ray_cluster.start()
 
         # Connect to the Hypha server and register the service
         await self._connect_to_server()

@@ -164,14 +164,30 @@ class RayCluster:
         elif self.mode == "connect":
             if ray_connection_address != "auto":
                 try:
-                    head_node_address, port = ray_connection_address.split(":")
-                    if head_node_address.startswith("ray://"):
-                        client_server_port = int(port.strip())
+                    # Regular expression to parse address and port
+                    # Supports: ray://hostname:port, IPv4:port, [IPv6]:port, hostname:port
+                    import re
+                    pattern = r'^(?:(ray://[^:]+)|(\[[^\]]+\])|([^:]+)):(\d+)$'
+                    match = re.match(pattern, ray_connection_address.strip())
+                    
+                    if not match:
+                        raise ValueError("Invalid address format")
+                    
+                    ray_address, ipv6_address, other_address, port_str = match.groups()
+                    port = int(port_str)
+                    
+                    if ray_address:
+                        # Ray client address
+                        head_node_address = ray_address
+                        client_server_port = port
                     else:
-                        head_node_port = int(port.strip())
-                except ValueError:
+                        # IP address or hostname
+                        head_node_address = ipv6_address or other_address
+                        head_node_port = port
+                        
+                except (ValueError, AttributeError):
                     raise ValueError(
-                        "Invalid ray_connection_address format. Use 'ip:port' format."
+                        "Invalid ray_connection_address format. Use formats like 'ip:port' or 'ray://hostname:port'."
                     )
 
         elif self.mode != "single-machine":
@@ -191,7 +207,7 @@ class RayCluster:
                     "Ignoring 'head_num_gpus' setting in 'SLURM' mode - will be set to 0"
                 )
                 head_num_gpus = 0
-        elif head_num_cpus <= 0 and head_num_gpus <= 0:
+        elif self.mode == "single-machine" and head_num_cpus <= 0 and head_num_gpus <= 0:
             raise ValueError(
                 "When SLURM is not available, either head_num_cpus or head_num_gpus must be greater than 0"
             )

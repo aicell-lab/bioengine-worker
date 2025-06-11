@@ -256,15 +256,15 @@ class SlurmWorkers:
 
         Args:
             node_info: Dictionary containing node resource information with keys
-                      'Total CPU', 'Available CPU', 'Total GPU', 'Available GPU'
+                      'total_cpu', 'available_cpu', 'total_gpu', 'available_gpu'
 
         Returns:
             True if the node is completely idle (no used CPUs or GPUs), False otherwise
         """
-        used_cpus = node_info["Total CPU"] - node_info["Available CPU"]
+        used_cpus = node_info["total_cpu"] - node_info["available_cpu"]
         # GPU nodes
-        if node_info["Total GPU"] > 0:
-            used_gpus = node_info["Total GPU"] - node_info["Available GPU"]
+        if node_info["total_gpu"] > 0:
+            used_gpus = node_info["total_gpu"] - node_info["available_gpu"]
         else:
             used_gpus = 0
 
@@ -282,16 +282,16 @@ class SlurmWorkers:
             running_nodes: List of node information dictionaries from Ray cluster
 
         Returns:
-            Set of node IDs that are currently idle
+            Set of node_ids that are currently idle
         """
         idle_nodes = set()
         for node_info in running_nodes:
             if await self._check_is_idle(node_info):
                 # Node is completely idle
                 self.logger.debug(
-                    f"Node {node_info['Node ID']} is completely idle (no used GPUs or CPUs)"
+                    f"Node {node_info['node_id']} is completely idle (no used GPUs or CPUs)"
                 )
-                idle_nodes.add(node_info["Node ID"])
+                idle_nodes.add(node_info["node_id"])
 
         return idle_nodes
 

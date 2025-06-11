@@ -596,12 +596,14 @@ class RayCluster:
         Returns:
             Dict containing worker nodes grouped by state (e.g., 'ALIVE', 'DEAD').
             Each node entry includes:
-                - Node ID: Unique identifier for the node
-                - Node IP: IP address of the worker node
-                - SLURM Job ID: Job ID if running in SLURM mode, 'N/A' otherwise
-                - Total/Available GPU: GPU resource information
-                - Total/Available CPU: CPU resource information
-                - Total/Available Memory: Memory resource information
+                - node_id: Unique identifier for the node
+                - node_ip: IP address of the worker node
+                - total_gpu: GPU resource information
+                - available_gpu: Available GPU resource information
+                - total_cpu: CPU resource information
+                - available_cpu: Available CPU resource information
+                - total_memory: Memory resource information
+                - available_memory: Available memory resource information
 
         Raises:
             RuntimeError: If Ray cluster is not initialized.
@@ -631,14 +633,14 @@ class RayCluster:
                 available_node_resources = available_resources.get(node.node_id, {})
 
                 node_info = {
-                    "Node ID": node.node_id,
-                    "Node IP": node.node_ip,
-                    "Total GPU": node.resources_total.get("GPU", 0),
-                    "Available GPU": available_node_resources.get("GPU", 0),
-                    "Total CPU": node.resources_total.get("CPU", 0),
-                    "Available CPU": available_node_resources.get("CPU", 0),
-                    "Total Memory": node.resources_total.get("memory", 0),
-                    "Available Memory": available_node_resources.get("memory", 0),
+                    "node_id": node.node_id,
+                    "node_ip": node.node_ip,
+                    "total_gpu": node.resources_total.get("GPU", 0),
+                    "available_gpu": available_node_resources.get("GPU", 0),
+                    "total_cpu": node.resources_total.get("CPU", 0),
+                    "available_cpu": available_node_resources.get("CPU", 0),
+                    "total_memory": node.resources_total.get("memory", 0),
+                    "available_memory": available_node_resources.get("memory", 0),
                 }
                 nodes_status.setdefault(node.state, []).append(node_info)
 

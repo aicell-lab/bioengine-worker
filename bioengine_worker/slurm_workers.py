@@ -7,7 +7,7 @@ import time
 from typing import Dict, List, Optional, Set
 
 import ray
-from ray.util.state import get_node, list_nodes, summarize_tasks
+from ray.util.state import get_node, list_nodes, summarize_actors, summarize_tasks
 
 from bioengine_worker import __version__
 from bioengine_worker.utils import create_logger
@@ -120,7 +120,7 @@ class SlurmWorkers:
 
         if worker_cache_dir is None:
             raise ValueError(
-                "Mountable worker cache directory must be set in 'SLURM' mode"
+                "Mountable worker cache directory ('--worker_cache_dir') must be set in 'SLURM' mode"
             )
 
         self.ray_cluster = ray_cluster
@@ -158,9 +158,9 @@ class SlurmWorkers:
         self.monitoring_task = None
         self.is_running = False
 
-    async def _get_num_pending_tasks(self) -> int:
+    async def _get_num_pending_tasks_actors(self) -> int:
         """
-        Get the number of pending tasks in the Ray cluster.
+        Get the number of pending tasks and actors in the Ray cluster.
 
         Queries the Ray cluster to count tasks that are waiting for node assignment.
         These tasks indicate demand for additional worker resources.
@@ -171,14 +171,21 @@ class SlurmWorkers:
         Raises:
             Exception: If task summary retrieval fails due to Ray connection issues
         """
-        summary = await asyncio.to_thread(
+        task_summary = await asyncio.to_thread(
             summarize_tasks, address=self.ray_cluster.head_node_address
         )
         num_pending_tasks = sum(
             task["state_counts"].get("PENDING_NODE_ASSIGNMENT", 0)
-            for task in summary["cluster"]["summary"].values()
+            for task in task_summary["cluster"]["summary"].values()
         )
-        return num_pending_tasks
+        actor_summary = await asyncio.to_thread(
+            summarize_actors, address=self.ray_cluster.head_node_address
+        )
+        num_pending_actors = sum(
+            actor["state_counts"].get("PENDING_CREATION", 0)
+            for actor in actor_summary["cluster"]["summary"].values()
+        )
+        return num_pending_tasks + num_pending_actors
 
     async def _get_num_worker_jobs(self) -> int:
         """
@@ -390,7 +397,7 @@ class SlurmWorkers:
             self.last_scaling_decision = current_time
             return
 
-        num_pending_tasks = await self._get_num_pending_tasks()
+        num_pending_tasks = await self._get_num_pending_tasks_actors()
         n_worker_jobs = await self._get_num_worker_jobs()
 
         # If at least one task needs resources, check scale up, otherwise check scale down

@@ -195,13 +195,13 @@ class BioEngineWorker:
     ) -> dict:
         """
         Set parameter in configuration dictionary with optional overwrite control.
-        
+
         Args:
             kwargs: Configuration dictionary to modify
             key: Parameter key to set
             value: Value to set for the parameter
             overwrite: Whether to overwrite existing values
-            
+
         Returns:
             Modified configuration dictionary
         """
@@ -310,7 +310,7 @@ class BioEngineWorker:
     async def start(self) -> str:
         """
         Start the BioEngine worker and all component services.
-        
+
         Initializes the Ray cluster (or connects to existing one), establishes
         connection to the Hypha server, registers the service interface, and
         starts all component managers. Also deploys any configured startup
@@ -353,10 +353,10 @@ class BioEngineWorker:
     async def serve(self) -> None:
         """
         Keep the BioEngine worker running and serving requests.
-        
+
         Maintains the worker in an active state to handle incoming requests
         from the Hypha server. This method blocks until cleanup() is called.
-        
+
         Raises:
             RuntimeError: If server is not initialized or Ray is not running
         """
@@ -369,13 +369,13 @@ class BioEngineWorker:
     async def cleanup(self, context: Optional[Dict[str, Any]] = None) -> None:
         """
         Clean up resources and stop the Ray cluster if managed by this worker.
-        
+
         Performs cleanup of all components including datasets, deployments, and
         the Ray cluster. Signals the serve loop to exit gracefully.
-        
+
         Args:
             context: Optional context information from Hypha request
-            
+
         Raises:
             Exception: If cleanup of any component fails
         """

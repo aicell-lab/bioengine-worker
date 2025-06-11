@@ -330,9 +330,9 @@ class RayCluster:
     def _find_internal_ip(self) -> str:
         """
         Find the internal IP address of the system.
-        
+
         Uses the hostname command to retrieve the system's internal IP address.
-        
+
         Returns:
             str: The internal IP address of the system
         """
@@ -854,14 +854,14 @@ class RayCluster:
     async def notify(self, delay_s: int = 3) -> None:
         """
         Notify SLURM workers' autoscaling system of a change in cluster state.
-        
+
         This method triggers the autoscaling system to check for scaling opportunities
         after a specified delay. It's typically called when new tasks are submitted
         or when the cluster state changes in a way that might require scaling.
-        
+
         Args:
             delay_s: Delay in seconds before triggering scaling decision
-            
+
         Raises:
             RuntimeError: If SLURM workers are not initialized
         """
@@ -977,7 +977,9 @@ if __name__ == "__main__":
 
             time.sleep(1)
 
-            return f"Successfully run a task in a runtime environment on the worker node!"
+            return (
+                f"Successfully run a task in a runtime environment on the worker node!"
+            )
 
         # Submit some test tasks
         obj_refs = [test_remote.remote() for _ in range(5)]

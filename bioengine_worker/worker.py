@@ -163,8 +163,8 @@ class BioEngineWorker:
             self.deployment_manager = AppsManager(
                 ray_cluster=self.ray_cluster,
                 admin_users=self.admin_users,
-                cache_dir=self.cache_dir / "apps",
-                data_dir=self.data_dir,
+                apps_cache_dir=self.cache_dir / "apps",
+                apps_data_dir=self.data_dir,
                 startup_deployments=self.startup_deployments,
                 log_file=log_file,
                 debug=debug,

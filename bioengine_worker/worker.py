@@ -297,7 +297,7 @@ class BioEngineWorker:
 
         self.logger.info(f"BioEngine worker service registered with ID '{sid}'")
         self.logger.info(
-            f"Manage BioEngine worker at: https://dev.bioimage.io/#/bioengine?service_id={sid}"
+            f"Manage BioEngine worker at: https://dev.bioimage.io/#/bioengine/worker?service_id={sid}"
         )
 
         return sid

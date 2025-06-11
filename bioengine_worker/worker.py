@@ -86,7 +86,7 @@ class BioEngineWorker:
         Handles authentication with the Hypha server and configures logging.
 
         Args:
-            mode: Deployment mode ('slurm', 'single-machine', 'connect')
+            mode: Ray cluster mode ('slurm', 'single-machine', 'connect')
             admin_users: List of user emails with admin permissions
             cache_dir: Directory for temporary files and Ray data
             data_dir: Directory for dataset storage
@@ -102,7 +102,6 @@ class BioEngineWorker:
         Raises:
             Exception: If initialization of any component fails
         """
-        self.mode = mode
         self.admin_users = admin_users or []
         self.cache_dir = Path(cache_dir).resolve()
         self.data_dir = Path(data_dir).resolve()
@@ -148,7 +147,7 @@ class BioEngineWorker:
             ray_cluster_config = ray_cluster_config or {}
 
             # Overwrite existing 'mode', 'log_file', and 'debug' parameters if provided
-            self._set_parameter(ray_cluster_config, "mode", self.mode)
+            self._set_parameter(ray_cluster_config, "mode", mode)
             self._set_parameter(ray_cluster_config, "log_file", log_file)
             self._set_parameter(ray_cluster_config, "debug", debug)
             self._set_parameter(
@@ -160,17 +159,13 @@ class BioEngineWorker:
             # Initialize RayCluster and update mode
             self.ray_cluster = RayCluster(**ray_cluster_config)
 
-            # Update mode in case SLURM is not available
-            self.mode = self.ray_cluster.mode
-
             # Initialize AppsManager
             self.deployment_manager = AppsManager(
-                mode=self.mode,
+                ray_cluster=self.ray_cluster,
                 admin_users=self.admin_users,
                 cache_dir=self.cache_dir / "apps",
                 data_dir=self.data_dir,
                 startup_deployments=self.startup_deployments,
-                ray_cluster=self.ray_cluster,
                 log_file=log_file,
                 debug=debug,
             )
@@ -268,9 +263,9 @@ class BioEngineWorker:
         """
         # Register service interface
         description = "Manages BioEngine Apps and Datasets"
-        if self.mode == "slurm":
+        if self.ray_cluster.mode == "slurm":
             description += " on a HPC system with Ray Autoscaler support for dynamic resource management."
-        elif self.mode == "single-machine":
+        elif self.ray_cluster.mode == "single-machine":
             description += " on a single machine Ray instance."
         else:
             description += " in a pre-existing Ray environment."
@@ -325,7 +320,7 @@ class BioEngineWorker:
         """
         self.start_time = time.time()
 
-        if self.mode == "connect":
+        if self.ray_cluster.mode == "connect":
             # Connect to an existing Ray cluster
             if ray.is_initialized():
                 raise RuntimeError(
@@ -531,7 +526,7 @@ class BioEngineWorker:
 
         RemoteRayTask = ray.remote(**remote_options)(ray_task)
         future = RemoteRayTask.remote(user_func, args, kwargs)
-        if self.mode == "slurm":
+        if self.ray_cluster.mode == "slurm":
             await self.ray_cluster.notify()
         result = await asyncio.get_event_loop().run_in_executor(None, ray.get, future)
 

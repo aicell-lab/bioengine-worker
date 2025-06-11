@@ -909,7 +909,7 @@ if __name__ == "__main__":
     # TODO: add this to tests
 
     async def test_ray_cluster_single_machine():
-        print("\n===== Testing RayCluster manager in single-machine mode =====\n")
+        print("\n===== Testing RayCluster in single-machine mode =====\n")
 
         ray_cluster = RayCluster(
             mode="single-machine",

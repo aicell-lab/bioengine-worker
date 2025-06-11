@@ -18,35 +18,73 @@ from bioengine_worker.utils import create_logger, format_time
 
 
 class AppsManager:
-    """Manages Ray Serve deployments using Hypha artifact manager
+    """
+    Manages Ray Serve deployments using Hypha artifact manager integration.
 
-    This class integrates with Hypha artifact manager to deploy
-    artifacts from Hypha as Ray Serve deployments.
+    This class provides comprehensive management of application deployments by integrating
+    with the Hypha artifact manager to deploy containerized applications as Ray Serve
+    deployments. It handles the complete lifecycle from artifact creation through
+    deployment management to cleanup, with robust error handling and permission control.
+
+    The AppsManager orchestrates:
+    - Artifact creation and management through Hypha
+    - Ray Serve deployment lifecycle management
+    - Dynamic service registration and exposure
+    - Resource allocation and monitoring
+    - Permission-based access control
+    - Graceful deployment and undeployment operations
+
+    Key Features:
+    - Artifact-based deployment system with versioning support
+    - Dynamic Hypha service registration for deployed models
+    - Multi-mode deployment configurations
+    - Resource-aware deployment with CPU/GPU allocation
+    - Permission-based access control for deployments
+    - Comprehensive error handling and logging
+    - Startup deployment automation
+    - Real-time deployment status monitoring
+
+    Attributes:
+        service_id (str): Service ID for Hypha registration
+        admin_users (List[str]): List of user emails with admin permissions
+        apps_cache_dir (Path): Cache directory for deployment artifacts
+        apps_data_dir (Path): Data directory for deployment access
+        ray_cluster (RayCluster): Ray cluster manager instance
+        server: Hypha server connection
+        artifact_manager: Hypha artifact manager service
+        service_info: Registered Hypha service information
+        startup_deployments (List[str]): Deployments to start automatically
+        logger: Logger instance for deployment operations
     """
 
     def __init__(
         self,
-        mode: Literal["slurm", "single-machine", "connect"] = "slurm",
+        ray_cluster: RayCluster,
         admin_users: Optional[List[str]] = None,
-        cache_dir: str = "/tmp/bioengine",
-        data_dir: str = "/data",
+        apps_cache_dir: str = "/tmp/bioengine/apps",
+        apps_data_dir: str = "/data",
         startup_deployments: Optional[List[str]] = None,
-        ray_cluster: Optional[RayCluster] = None,
         # Logger
         log_file: Optional[str] = None,
         debug: bool = False,
     ):
-        """Initialize the Ray Deployment Manager
+        """
+        Initialize the Ray Deployment Manager.
+
+        Sets up the deployment manager with the specified configuration and
+        initializes state variables for tracking deployments.
 
         Args:
-            service_id: ID to use for the Hypha service exposing deployed models
+            ray_cluster: RayCluster instance for managing compute resources
             admin_users: List of user IDs or emails with admin permissions
-            deployment_cache_dir: Caching directory used in Ray Serve deployments
-            mode: Mode of operation for the worker. Can be 'slurm', 'single-machine', or 'connect'.
+            apps_cache_dir: Caching directory used in Ray Serve deployments
+            apps_data_dir: Data directory accessible to deployments
             startup_deployments: List of artifact IDs to start on initialization
-            ray_cluster: Optional RayCluster instance
-            logger: Optional logger instance
+            log_file: Optional log file path for output
             debug: Enable debug logging
+
+        Raises:
+            Exception: If initialization of any component fails
         """
         # Set up logging
         self.logger = create_logger(
@@ -58,13 +96,13 @@ class AppsManager:
         # Store parameters
         self.service_id = "bioengine-apps"
         self.admin_users = admin_users or []
-        self.cache_dir = (
-            Path(cache_dir).resolve()
-            if mode == "single-machine"
+        self.apps_cache_dir = (
+            Path(apps_cache_dir).resolve()
+            if ray_cluster.mode == "single-machine"
             else Path("/tmp/bioengine/apps")
         )
-        self.data_dir = (
-            Path(data_dir).resolve() if mode == "single-machine" else Path("/data")
+        self.apps_data_dir = (
+            Path(apps_data_dir).resolve() if ray_cluster.mode == "single-machine" else Path("/data")
         )
         self.ray_cluster = ray_cluster
 
@@ -78,13 +116,16 @@ class AppsManager:
         self._undeploying_artifacts = set()
 
     async def _get_full_artifact_id(self, artifact_id: str) -> str:
-        """Convert artifact ID to a full artifact ID
-
+        """
+        Convert artifact ID to a full artifact ID.
+        
+        Prepends workspace prefix if the artifact ID doesn't already contain one.
+        
         Args:
             artifact_id: The artifact ID to convert
-
+        
         Returns:
-            str: The converted full artifact ID
+            str: The converted full artifact ID in format 'workspace/artifact_id'
         """
         if "/" not in artifact_id:
             return f"{self.server.config.workspace}/{artifact_id}"
@@ -98,16 +139,27 @@ class AppsManager:
         timeout: int = 30,
         _local: bool = False,
     ) -> Any:
-        """Load and execute deployment code from an artifact directly in memory
+        """
+        Load and execute deployment code from an artifact directly in memory.
+
+        Downloads and executes Python code from an artifact to create deployable classes.
+        Supports both remote artifact loading and local file loading for development.
 
         Args:
-            class_config: Configuration for the class to load
-            artifact_id: ID of the artifact
-            version: Optional version of the artifact
-            timeout: Timeout in seconds for network requests (default: 30)
+            class_config: Configuration for the class to load including class name and file path
+            artifact_id: ID of the artifact containing the deployment code
+            version: Optional version of the artifact to load
+            timeout: Timeout in seconds for network requests
+            _local: Whether to load from local filesystem instead of artifact
 
         Returns:
-            Any: The loaded class or None if not found
+            Any: The loaded class ready for Ray Serve deployment
+
+        Raises:
+            FileNotFoundError: If local deployment file is not found
+            ValueError: If class name is not found in the code
+            RuntimeError: If class loading fails
+            Exception: If code execution or download fails
         """
         try:
             if _local:
@@ -176,6 +228,21 @@ class AppsManager:
             raise e
 
     async def _create_deployment_name(self, artifact_id: str) -> str:
+        """
+        Create a valid deployment name from an artifact ID.
+        
+        Converts the artifact ID to a valid Python identifier by replacing
+        special characters with underscores and ensuring it meets naming requirements.
+        
+        Args:
+            artifact_id: The artifact ID to convert
+            
+        Returns:
+            str: A valid deployment name suitable for Ray Serve
+            
+        Raises:
+            ValueError: If the artifact ID cannot be converted to a valid identifier
+        """
         deployment_name = artifact_id.lower()
         for char in ["|", "/", "-", "."]:
             deployment_name = deployment_name.replace(char, "_")
@@ -192,7 +259,23 @@ class AppsManager:
         authorized_users: Union[List[str], str],
         resource_name: str,
     ) -> bool:
-        """Check if the user in the context is authorized to access the deployment"""
+        """
+        Check if the user in the context is authorized to access the deployment.
+        
+        Validates user permissions against the authorized users list for specific
+        deployment operations.
+        
+        Args:
+            context: Request context containing user information
+            authorized_users: List of authorized user IDs/emails or single user string
+            resource_name: Name of the resource being accessed for logging
+            
+        Returns:
+            bool: True if user is authorized
+            
+        Raises:
+            PermissionError: If user is not authorized to access the resource
+        """
         user = context["user"]
         if isinstance(authorized_users, str):
             authorized_users = [authorized_users]
@@ -206,7 +289,16 @@ class AppsManager:
             raise PermissionError(msg)
 
     async def _update_services(self) -> None:
-        """Update Hypha services based on currently deployed models"""
+        """
+        Update Hypha services based on currently deployed models.
+        
+        Registers all currently deployed artifacts as callable Hypha services,
+        enabling remote access to the deployed models through the Hypha platform.
+        
+        Raises:
+            RuntimeError: If Hypha server connection is not available
+            Exception: If service registration fails
+        """
         try:
             # Ensure server connection
             if not self.server:
@@ -308,10 +400,17 @@ class AppsManager:
             raise e
 
     async def initialize(self, server) -> None:
-        """Initialize the deployment manager with a Hypha server connection
+        """
+        Initialize the deployment manager with a Hypha server connection.
+        
+        Establishes connection to the Hypha server and artifact manager service
+        for deployment operations.
 
         Args:
-            server: Hypha server connection
+            server: Hypha server connection instance
+            
+        Raises:
+            Exception: If server connection or artifact manager initialization fails
         """
         try:
             # Store server connection
@@ -330,7 +429,16 @@ class AppsManager:
             raise e
 
     async def initialize_deployments(self) -> None:
-        """Deploy all startup deployments defined in the manager"""
+        """
+        Deploy all startup deployments defined in the manager.
+        
+        Automatically deploys all artifacts specified in the startup_deployments
+        list during initialization. Uses admin user context for authentication.
+        
+        Raises:
+            RuntimeError: If server or artifact manager is not initialized
+            Exception: If deployment of any startup artifact fails
+        """
         if not self.server:
             raise RuntimeError(
                 "Hypha server connection not available. Call initialize() first."
@@ -566,16 +674,27 @@ class AppsManager:
         _skip_update=False,
     ) -> str:
         """
-        Deploy a single artifact to Ray Serve
+        Deploy a single artifact to Ray Serve.
+
+        Downloads the artifact from Hypha, loads the deployment code, configures
+        the Ray Serve deployment with appropriate resources, and registers it as
+        a callable service.
 
         Args:
             artifact_id: ID of the artifact to deploy
-            version: Optional version of the artifact
-            context: Context for Hypha service
-            _skip_update: Skip updating services after deployment
+            mode: Optional deployment mode for multi-mode artifacts
+            version: Optional version of the artifact to deploy
+            context: Optional context information from Hypha request containing user info
+            _skip_update: Skip updating Hypha services after deployment (for batch operations)
 
         Returns:
-            str: Deployment name
+            str: The deployment name assigned to the artifact
+
+        Raises:
+            RuntimeError: If server, artifact manager, or Ray is not initialized
+            PermissionError: If user lacks permission to deploy artifacts
+            ValueError: If artifact mode is invalid or deployment configuration is malformed
+            Exception: If artifact deployment fails
         """
         # Verify client is connected to Hypha server
         if not self.server:
@@ -657,9 +776,9 @@ class AppsManager:
         # Add cache path to deployment config environment
         runtime_env = ray_actor_options.setdefault("runtime_env", {})
         env_vars = runtime_env.setdefault("env_vars", {})
-        deployment_workdir = str(self.cache_dir / deployment_name)
+        deployment_workdir = str(self.apps_cache_dir / deployment_name)
         env_vars["BIOENGINE_WORKDIR"] = deployment_workdir
-        env_vars["BIOENGINE_DATA_DIR"] = str(self.data_dir)
+        env_vars["BIOENGINE_DATA_DIR"] = str(self.apps_data_dir)
 
         # Ensure the deployment only uses the specified workdir
         env_vars["TMPDIR"] = deployment_workdir
@@ -743,12 +862,21 @@ class AppsManager:
         context: Optional[Dict[str, Any]] = None,
         _skip_update=False,
     ) -> None:
-        """Remove a deployment from Ray Serve
+        """
+        Remove a deployment from Ray Serve.
+
+        Gracefully undeploys an artifact by canceling any ongoing deployment tasks,
+        removing the Ray Serve deployment, and cleaning up associated resources.
 
         Args:
             artifact_id: ID of the artifact to undeploy
-            context: Context for Hypha service
-            _skip_update: Skip updating services after undeployment
+            context: Optional context information from Hypha request containing user info
+            _skip_update: Skip updating Hypha services after undeployment (for batch operations)
+
+        Raises:
+            RuntimeError: If server, artifact manager, or Ray is not initialized
+            PermissionError: If user lacks permission to undeploy artifacts
+            Exception: If artifact undeployment fails
         """
         # Verify client is connected to Hypha server
         if not self.server:
@@ -844,7 +972,21 @@ class AppsManager:
             self._undeploying_artifacts.discard(artifact_id)
 
     async def get_status(self) -> Dict[str, Any]:
-        """Get a dictionary of currently deployed models"""
+        """
+        Get comprehensive status of all deployed artifacts.
+
+        Returns detailed status information for all currently deployed artifacts,
+        including deployment metadata, resource usage, and service availability.
+
+        Returns:
+            Dict containing:
+                - service_id: Hypha service ID for deployments (if registered)
+                - Per artifact: deployment name, available methods, timing info,
+                  status, replica states, and resource allocation
+
+        Raises:
+            RuntimeError: If Ray cluster is not running
+        """
         if not ray.is_initialized():
             self.logger.error("Can not get deployments - Ray cluster is not running")
             raise RuntimeError("Ray cluster is not running")
@@ -903,14 +1045,22 @@ class AppsManager:
         deployment_collection_id: str = "bioengine-apps",
         context: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
-        """Deploy all artifacts in the deployment collection to Ray Serve
+        """
+        Deploy all artifacts in the deployment collection to Ray Serve.
+
+        Iterates through all artifacts in the specified collection and deploys
+        each one to Ray Serve. Updates Hypha services after all deployments complete.
 
         Args:
             deployment_collection_id: Artifact collection ID for deployments
-            context: Context for Hypha service
+            context: Optional context information from Hypha request containing user info
 
         Returns:
-            list: List of artifact IDs that were successfully deployed
+            List of artifact IDs that were successfully deployed
+
+        Raises:
+            ValueError: If artifact manager is not initialized
+            Exception: If deployment of any artifact fails
         """
         self.logger.info(
             f"Deploying all artifacts in collection '{deployment_collection_id}'..."
@@ -937,7 +1087,19 @@ class AppsManager:
     async def cleanup_deployments(
         self, context: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Cleanup Ray Serve deployments"""
+        """
+        Clean up all Ray Serve deployments and associated resources.
+
+        Gracefully undeploys all artifacts, cancels any ongoing deployment tasks,
+        and performs comprehensive cleanup of deployment resources.
+
+        Args:
+            context: Optional context information from Hypha request containing user info
+
+        Raises:
+            RuntimeError: If Ray cluster is not running
+            Exception: If cleanup of deployments fails
+        """
         self.logger.info("Cleaning up all deployments...")
 
         # Ensure Ray is initialized
@@ -1015,35 +1177,6 @@ if __name__ == "__main__":
 
     from hypha_rpc import connect_to_server, login
 
-    from bioengine_worker.ray_cluster import RayClusterManager
-
-    print("\n===== Testing AppsManager =====\n")
-
-    # Create and start the autoscaler with shorter thresholds for quicker testing
-    ray_cluster = RayClusterManager(
-        head_num_cpus=4,
-        head_num_gpus=1,
-        ray_temp_dir=f"/tmp/ray/{os.environ['USER']}",
-        worker_data_dir=str(Path(__file__).parent.parent / "data"),
-        slurm_log_dir=str(Path(__file__).parent.parent / "logs"),
-        debug=True,
-    )
-
-    # TODO: is async now
-    ray_cluster.start_cluster(force_clean_up=True)
-
-    if ray_cluster.ray_cluster_config["mode"] == "slurm":
-        autoscaler = RayAutoscaler(
-            ray_cluster=ray_cluster,
-            # Use shorter times for faster testing
-            default_time_limit="00:10:00",
-            max_workers=1,
-            metrics_interval_seconds=10,
-            debug=True,
-        )
-    else:
-        autoscaler = None
-
     async def test_create_artifact(
         deployment_manager=None, server_url="https://hypha.aicell.io"
     ):
@@ -1109,16 +1242,31 @@ if __name__ == "__main__":
             print(f"❌ create_artifact test failed: {e}")
             raise e
 
-    async def test_deployment_manager(
+    async def test_apps_manager(
         server_url="https://hypha.aicell.io", keep_running=False
     ):
         try:
-            if autoscaler:
-                # Start autoscaler
-                await autoscaler.start()
+            print("\n===== Testing AppsManager in single-machine mode =====\n")
+
+            bioengine_cache_dir = Path(os.environ["HOME"]) / ".bioengine"
+            ray_cluster = RayCluster(
+                mode="single-machine",
+                head_num_cpus=1,
+                head_num_gpus=0,
+                ray_temp_dir=bioengine_cache_dir / "ray",
+                status_interval_seconds=3,
+                debug=True,
+            )
+            await ray_cluster.start()
+
+            print("\n=== Cluster status ===\n", ray_cluster.status, end="\n\n")
 
             # Create deployment manager
-            deployment_manager = AppsManager(autoscaler=autoscaler, debug=True)
+            deployment_manager = AppsManager(
+                ray_cluster=ray_cluster,
+                apps_cache_dir=bioengine_cache_dir / "apps",
+                debug=True,
+            )
 
             # Connect to Hypha server using token from environment
             token = os.environ.get("HYPHA_TOKEN") or await login(
@@ -1199,10 +1347,7 @@ if __name__ == "__main__":
             print(f"An error occurred: {e}")
             raise e
         finally:
-            if autoscaler:
-                await autoscaler.shutdown_cluster()
-            else:
-                ray_cluster.shutdown_cluster()
+            await ray_cluster.stop()
 
     # Run the test
     import sys
@@ -1212,4 +1357,4 @@ if __name__ == "__main__":
         asyncio.run(test_create_artifact())
     else:
         # Run the full deployment manager test
-        asyncio.run(test_deployment_manager(keep_running=True))
+        asyncio.run(test_apps_manager(keep_running=True))

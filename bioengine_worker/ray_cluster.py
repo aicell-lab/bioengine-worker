@@ -291,19 +291,35 @@ class RayCluster:
                 - uptime: Human-readable uptime string
                 - worker_nodes: Most recent worker nodes status grouped by state
         """
-        formatted_time = format_time(self.ray_start_time)
+
+        if self.ray_start_time is None:
+            raise RuntimeError(
+                "Ray cluster has not been started yet. Please start the cluster first."
+            )
+        
+        if self.ray_start_time == "N/A":
+            status = {
+                "head_address": self.ray_cluster_config["head_node_address"],
+                "start_time_s": "N/A",
+                "start_time": "N/A",
+                "uptime": "N/A",
+            }
+        else:
+            formatted_time = format_time(self.ray_start_time)
+            status = {
+                "head_address": self.ray_cluster_config["head_node_address"],
+                "start_time_s": self.ray_start_time,
+                "start_time": formatted_time["start_time"],
+                "uptime": formatted_time["uptime"],
+            }
+
         last_status = (
             next(reversed(self.worker_nodes_history.values()))
             if self.worker_nodes_history
             else None
         )
-        status = {
-            "head_address": self.ray_cluster_config["head_node_address"],
-            "start_time_s": self.ray_start_time,
-            "start_time": formatted_time["start_time"],
-            "uptime": formatted_time["uptime"],
-            "worker_nodes": last_status,
-        }
+        status["worker_nodes"] = last_status
+
         return status
 
     def _find_ray_executable(self) -> str:
@@ -597,6 +613,7 @@ class RayCluster:
                 address=self.head_node_address,
                 logging_format=stream_logging_format,
             )
+            self.ray_start_time = "N/A"
         except Exception as e:
             self.logger.error(f"Failed to connect to existing Ray cluster: {e}")
             raise e

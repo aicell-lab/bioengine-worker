@@ -114,6 +114,7 @@ if [[ -z "$IMAGE_CACHEDIR" ]]; then
     IMAGE_CACHEDIR=$(get_arg_value "--singularity_cachedir" "$CACHE_DIR/images")
 fi
 IMAGE_CACHEDIR=$(realpath $IMAGE_CACHEDIR)
+mkdir -p $IMAGE_CACHEDIR
 SINGULARITY_CACHEDIR=$IMAGE_CACHEDIR
 APPTAINER_CACHEDIR=$IMAGE_CACHEDIR
 
@@ -122,14 +123,17 @@ IMAGE="$(get_arg_value "--image" $DEFAULT_IMAGE)"
 
 # Get the image name and version
 if [[ "$IMAGE" == *.sif ]]; then
-    # Local Singularity image
-    IMAGE_PATH=$(realpath $IMAGE)
-    if [ ! -f "$IMAGE_PATH" ]; then
-        echo "Error: Image file $IMAGE_PATH not found."
+    # Check if local Singularity image file exists
+    IMAGE=$(realpath $IMAGE)
+    if [ ! -f "$IMAGE" ]; then
+        echo "Error: Image file $IMAGE not found."
         exit 1
     fi
-    set_arg_value "--image" $IMAGE_PATH
+elif [[ "$IMAGE" != docker://* ]]; then
+    # Add docker:// prefix if not present
+    IMAGE="docker://${IMAGE}"
 fi
+set_arg_value "--image" $IMAGE
 
 # === Set up bind mounts ===
 

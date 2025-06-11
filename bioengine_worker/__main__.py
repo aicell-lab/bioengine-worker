@@ -67,7 +67,7 @@ async def main(group_configs):
         slurm_job_config = group_configs["SLURM Job Options"]
 
         # Get Ray Autoscaler configuration
-        ray_autoscaler_config = group_configs["Ray Autoscaler Options"]
+        ray_autoscaling_config = group_configs["Ray Autoscaler Options"]
 
         # Create BioEngine worker instance
         bioengine_worker = BioEngineWorker(
@@ -76,7 +76,7 @@ async def main(group_configs):
             ray_cluster_config={
                 **ray_cluster_config,
                 **slurm_job_config,
-                **ray_autoscaler_config,
+                **ray_autoscaling_config,
             },
         )
 
@@ -222,23 +222,35 @@ def create_parser():
         help="Number of GPUs for head node if starting locally",
     )
     ray_cluster_group.add_argument(
+        "--ray_connection_address",
+        type=str,
+        default="auto",
+        help="Address of existing Ray cluster to connect to (format: 'auto' for auto-discovery, 'ip:port' for specific address).",
+    )
+    ray_cluster_group.add_argument(
         "--skip_cleanup",
         action="store_true",
         default=False,
         help="Skip cleanup of previous Ray cluster",
     )
     ray_cluster_group.add_argument(
-        "--ray_connection_address",
-        type=str,
-        default="auto",
-        help="Address of existing Ray cluster to connect to (format: 'auto' for auto-discovery, 'ip:port' for specific address).",
+        "--status_interval_seconds",
+        default=10,
+        type=int,
+        help="Interval in seconds to check the status of the Ray cluster",
+    )
+    ray_cluster_group.add_argument(
+        "--max_status_history_length",
+        default=100,
+        type=int,
+        help="Maximum length of the status history for the Ray cluster",
     )
 
     # SLURM Job Configuration parameters
     slurm_job_group = parser.add_argument_group("SLURM Job Options")
     slurm_job_group.add_argument(
         "--image",
-        default=f"docker://ghcr.io/aicell-lab/bioengine-worker:{__version__}",
+        default=f"ghcr.io/aicell-lab/bioengine-worker:{__version__}",
         type=str,
         help="Worker image for SLURM job",
     )
@@ -284,60 +296,42 @@ def create_parser():
     )
 
     # Autoscaling configuration parameters
-    ray_autoscaler_group = parser.add_argument_group("Ray Autoscaler Options")
-    ray_autoscaler_group.add_argument(
+    ray_autoscaling_group = parser.add_argument_group("Ray Autoscaler Options")
+    ray_autoscaling_group.add_argument(
         "--min_workers",
         default=0,
         type=int,
         help="Minimum number of worker nodes",
     )
-    ray_autoscaler_group.add_argument(
+    ray_autoscaling_group.add_argument(
         "--max_workers",
         default=4,
         type=int,
         help="Maximum number of worker nodes",
     )
-    ray_autoscaler_group.add_argument(
-        "--metrics_interval_seconds",
+    ray_autoscaling_group.add_argument(
+        "--check_interval_seconds",
         default=60,
         type=int,
-        help="Interval for collecting metrics",
+        help="Interval in seconds to check scale up/down",
     )
-    ray_autoscaler_group.add_argument(
-        "--gpu_idle_threshold",
-        default=0.05,
-        type=float,
-        help="GPU utilization threshold for idle nodes",
-    )
-    ray_autoscaler_group.add_argument(
-        "--cpu_idle_threshold",
-        default=0.1,
-        type=float,
-        help="CPU utilization threshold for idle nodes",
-    )
-    ray_autoscaler_group.add_argument(
+    ray_autoscaling_group.add_argument(
         "--scale_down_threshold_seconds",
         default=300,
         type=int,
         help="Time threshold before scaling down idle nodes",
     )
-    ray_autoscaler_group.add_argument(
+    ray_autoscaling_group.add_argument(
         "--scale_up_cooldown_seconds",
-        default=120,
+        default=180,
         type=int,
         help="Cooldown period before scaling up",
     )
-    ray_autoscaler_group.add_argument(
+    ray_autoscaling_group.add_argument(
         "--scale_down_cooldown_seconds",
-        default=600,
+        default=60,
         type=int,
         help="Cooldown period before scaling down",
-    )
-    ray_autoscaler_group.add_argument(
-        "--node_grace_period_seconds",
-        default=600,
-        type=int,
-        help="Grace period before considering a node for scaling down",
     )
 
     parser.add_argument(

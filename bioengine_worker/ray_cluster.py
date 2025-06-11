@@ -15,29 +15,46 @@ from ray._private.state import available_resources_per_node  # DeveloperAPI
 from ray.util.state import list_nodes
 
 from bioengine_worker import __version__
-from bioengine_worker.ray_autoscaler import RayAutoscaler
 from bioengine_worker.slurm_workers import SlurmWorkers
 from bioengine_worker.utils import create_logger, format_time, stream_logging_format
 
 
 class RayCluster:
-    """Manages Ray cluster lifecycle across different deployment environments.
+    """
+    Manages Ray cluster lifecycle across different deployment environments.
 
     This class provides a unified interface for managing Ray clusters in various environments:
     - SLURM-managed HPC systems with automatic worker scaling
     - Single-machine deployments for local development
     - Connection to existing Ray clusters
 
-    Features:
-    - Dynamic port allocation to avoid conflicts
-    - Container-based worker deployment via SLURM
-    - Automatic scaling based on resource utilization
-    - Ray Serve integration for model serving
-    - Comprehensive cluster monitoring and status reporting
-
     The class handles the complete lifecycle from cluster initialization through
     worker management to graceful shutdown, with robust error handling and
-    logging throughout.
+    logging throughout. It includes intelligent autoscaling for SLURM environments,
+    automatic port allocation to avoid conflicts, and comprehensive monitoring.
+
+    Key Features:
+    - Multi-environment support (SLURM, single-machine, connect)
+    - Dynamic port allocation with conflict resolution
+    - Container-based worker deployment via SLURM with Apptainer/Singularity
+    - Automatic scaling based on resource utilization and task demand
+    - Ray Serve integration for model serving capabilities
+    - Comprehensive cluster monitoring with historical status tracking
+    - Graceful shutdown with proper resource cleanup
+    - Robust error handling with automatic reconnection
+
+    Attributes:
+        mode (str): Deployment mode ('slurm', 'single-machine', 'connect')
+        ray_cluster_config (dict): Configuration for Ray head node
+        slurm_worker_config (dict): Configuration for SLURM workers (if applicable)
+        is_running (bool): Whether the cluster is currently active
+        ray_start_time (float): Timestamp when cluster was started
+        status_interval_seconds (int): Interval for status monitoring
+        max_status_history_length (int): Maximum entries in status history
+        worker_nodes_history (OrderedDict): Historical status of worker nodes
+        monitoring_task (asyncio.Task): Background monitoring task
+        slurm_workers (SlurmWorkers): SLURM worker manager instance
+        logger: Logger instance for cluster operations
     """
 
     def __init__(
@@ -62,7 +79,7 @@ class RayCluster:
         status_interval_seconds: int = 10,
         max_status_history_length: int = 100,
         # SLURM Worker Configuration parameters
-        image: str = f"docker://ghcr.io/aicell-lab/bioengine-worker:{__version__}",
+        image: str = f"ghcr.io/aicell-lab/bioengine-worker:{__version__}",
         worker_cache_dir: Optional[str] = None,
         worker_data_dir: Optional[str] = None,
         default_num_gpus: int = 1,
@@ -73,13 +90,10 @@ class RayCluster:
         # Autoscaling configuration parameters
         min_workers: int = 0,
         max_workers: int = 4,
-        metrics_interval_seconds: int = 60,  # Higher value to reduce monitoring overhead
-        gpu_idle_threshold: float = 0.05,
-        cpu_idle_threshold: float = 0.1,
+        check_interval_seconds: int = 60,  # Check scaling once per minute
         scale_down_threshold_seconds: int = 300,  # 5 minutes of idleness before scale down
-        scale_up_cooldown_seconds: int = 120,  # 2 minutes between scale ups
-        scale_down_cooldown_seconds: int = 600,  # 10 minutes between scale downs
-        node_grace_period_seconds: int = 600,  # 10 minutes grace period for new nodes
+        scale_up_cooldown_seconds: int = 180,  # 3 minutes between scale ups
+        scale_down_cooldown_seconds: int = 60,  # 1 minute between scale downs
         # Logger configuration
         log_file: Optional[str] = None,
         debug: bool = False,
@@ -208,20 +222,12 @@ class RayCluster:
                 "default_mem_per_cpu": default_mem_per_cpu,
                 "default_time_limit": default_time_limit,
                 "further_slurm_args": further_slurm_args or [],
-                "log_file": log_file,
-                "debug": debug,
-            }
-
-            self.autoscaler_config = {
                 "min_workers": min_workers,
                 "max_workers": max_workers,
-                "metrics_interval_seconds": metrics_interval_seconds,
-                "gpu_idle_threshold": gpu_idle_threshold,
-                "cpu_idle_threshold": cpu_idle_threshold,
+                "check_interval_seconds": check_interval_seconds,
                 "scale_down_threshold_seconds": scale_down_threshold_seconds,
                 "scale_up_cooldown_seconds": scale_up_cooldown_seconds,
                 "scale_down_cooldown_seconds": scale_down_cooldown_seconds,
-                "node_grace_period_seconds": node_grace_period_seconds,
                 "log_file": log_file,
                 "debug": debug,
             }
@@ -233,7 +239,6 @@ class RayCluster:
         self.worker_nodes_history = OrderedDict()
         self.monitoring_task = None
         self.slurm_workers = None
-        self.autoscaler = None
 
     @property
     def head_node_address(self) -> str:
@@ -286,15 +291,17 @@ class RayCluster:
         return status
 
     def _find_ray_executable(self) -> str:
-        """Find the Ray executable path.
+        """
+        Find the Ray executable path in the current Python environment.
 
-        Searches for the Ray executable in the Python environment's bin directory.
+        Searches for the Ray executable in the Python environment's bin directory
+        based on the current Python interpreter location.
 
         Returns:
             str: Path to the Ray executable
 
         Raises:
-            FileNotFoundError: If Ray executable is not found
+            FileNotFoundError: If Ray executable is not found in the expected location
         """
         ray_path = Path(sys.executable).parent / "ray"
         if not ray_path.exists():
@@ -303,10 +310,14 @@ class RayCluster:
         return str(ray_path)
 
     def _check_slurm_available(self) -> None:
-        """Check if SLURM is available on the system.
+        """
+        Check if SLURM is available on the system.
+
+        Verifies that the SLURM workload manager is installed and accessible
+        by attempting to run the 'sinfo' command.
 
         Raises:
-            RuntimeError: If SLURM is not available
+            RuntimeError: If SLURM is not available or 'sinfo' command fails
         """
         try:
             subprocess.run(["sinfo"], capture_output=True, text=True, check=True)
@@ -317,23 +328,31 @@ class RayCluster:
             raise RuntimeError("SLURM is not available") from e
 
     def _find_internal_ip(self) -> str:
-        """Find the internal IP address of the system.
-
+        """
+        Find the internal IP address of the system.
+        
+        Uses the hostname command to retrieve the system's internal IP address.
+        
         Returns:
-            str: The internal IP address
+            str: The internal IP address of the system
         """
         result = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
         return result.stdout.strip().split()[0]  # Take the first IP
 
     async def _find_available_port(self, port: int, step: int = 1) -> int:
-        """Find next available port starting from given port number.
+        """
+        Find next available port starting from given port number.
+
+        Checks for port availability by attempting to bind to the port.
+        If the port is in use, it increments by the step value until an
+        available port is found.
 
         Args:
             port: Starting port number to check
             step: Increment between port numbers to check
 
         Returns:
-            First available port number
+            First available port number found
         """
 
         def check_port(port_num):
@@ -396,7 +415,7 @@ class RayCluster:
 
         Initializes the Ray cluster head node with all configured settings,
         starts Ray Serve for model serving, and optionally starts the
-        autoscaler for SLURM environments. Handles port allocation,
+        autoscaling system for SLURM environments. Handles port allocation,
         directory setup, and symlink management for containerized environments.
 
         Raises:
@@ -517,21 +536,13 @@ class RayCluster:
 
             await asyncio.to_thread(update_symlink)
 
-            # If running on a HPC system, use the RayAutoscaler to manage the Ray cluster
+            # If running on a HPC system, use SlurmWorkers to manage worker nodes
             if self.mode == "slurm":
                 # Initialize SlurmWorkers
                 self.slurm_workers = SlurmWorkers(
-                    head_node_address=self.head_node_address, **self.slurm_worker_config
+                    ray_cluster=self, **self.slurm_worker_config
                 )
-                # Initialize RayAutoscaler
-                self.autoscaler = RayAutoscaler(
-                    ray_cluster=self,
-                    **self.autoscaler_config,
-                )
-
-                # TODO: update
-                # await self.autoscaler.start()
-                pass
+                await self.slurm_workers.start()
 
         except subprocess.CalledProcessError as e:
             self.logger.error(
@@ -605,37 +616,16 @@ class RayCluster:
             )
             available_resources = await asyncio.to_thread(available_resources_per_node)
 
-            # In SLURM mode, get all running jobs
-            if self.mode == "slurm":
-                jobs = await self.slurm_workers.get_jobs()
-                running_jobs_ids = list(jobs.keys())
-
             nodes_status = {}
             for node in all_nodes:
                 # Skip the head node if it is not a worker node
                 if self.mode != "single-machine" and node.is_head_node:
                     continue
 
-                if self.mode == "slurm":
-                    if not node.resources_total:
-                        self.logger.warning(
-                            f"Encountered worker node without node resources and state '{node.state}'"
-                        )
-                        job_id = None
-                    else:
-                        # Get SLURM job ID from resources
-                        job_id = self.slurm_workers.get_job_id_from_resource(
-                            node.resources_total
-                        )
-
-                        # Skip nodes if job is not running anymore
-                        if job_id not in running_jobs_ids:
-                            self.logger.warning(
-                                f"Skipping worker node '{node.node_id}' with already cancelled job ID '{job_id}'"
-                            )
-                            continue
-                else:
-                    job_id = "N/A"  # Not applicable
+                if not node.resources_total:
+                    self.logger.warning(
+                        f"Encountered worker node without node resources and state '{node.state}'"
+                    )
 
                 # Get available node resources
                 available_node_resources = available_resources.get(node.node_id, {})
@@ -643,7 +633,6 @@ class RayCluster:
                 node_info = {
                     "Node ID": node.node_id,
                     "Node IP": node.node_ip,
-                    "SLURM Job ID": job_id,
                     "Total GPU": node.resources_total.get("GPU", 0),
                     "Available GPU": available_node_resources.get("GPU", 0),
                     "Total CPU": node.resources_total.get("CPU", 0),
@@ -663,7 +652,7 @@ class RayCluster:
         """Stop Ray cluster and all worker nodes.
 
         Performs a graceful shutdown of the Ray cluster including stopping
-        the autoscaler (if running in SLURM mode), disconnecting from the
+        all workers (if running in SLURM mode), disconnecting from the
         cluster, stopping Ray Serve, and canceling any remaining SLURM jobs.
 
         Args:
@@ -675,9 +664,9 @@ class RayCluster:
             Exception: For other shutdown errors.
         """
         try:
-            # Stop the autoscaler if running in SLURM mode
-            if self.autoscaler:
-                await self.autoscaler.stop()
+            # Shutdown all SLURM workers if running in SLURM mode
+            if self.slurm_workers:
+                await self.slurm_workers.stop()
 
             # Disconnect from Ray cluster if it was initialized
             if ray.is_initialized():
@@ -725,10 +714,6 @@ class RayCluster:
                     )
 
             await asyncio.sleep(5)  # Wait for Ray to fully shut down
-
-            # In SLURM mode, clean up any remaining worker jobs
-            if self.slurm_workers:
-                await self.slurm_workers.cancel_jobs(grace_period=grace_period)
 
             self.logger.info("Ray cluster shut down complete")
 
@@ -864,11 +849,29 @@ class RayCluster:
             self.monitoring_task = None
             raise e
 
+    async def notify(self, delay_s: int = 3) -> None:
+        """
+        Notify SLURM workers' autoscaling system of a change in cluster state.
+        
+        This method triggers the autoscaling system to check for scaling opportunities
+        after a specified delay. It's typically called when new tasks are submitted
+        or when the cluster state changes in a way that might require scaling.
+        
+        Args:
+            delay_s: Delay in seconds before triggering scaling decision
+            
+        Raises:
+            RuntimeError: If SLURM workers are not initialized
+        """
+        if not self.slurm_workers:
+            raise RuntimeError("SLURM workers are not initialized")
+        await self.slurm_workers.notify(delay_s=delay_s)
+
     async def stop(self) -> None:
         """Stop the Ray cluster and in SLURM mode also all worker nodes.
 
         This method will stop the Ray cluster, disconnect from it, and clean up
-        any resources used by the cluster. It will also stop the autoscaler if
+        any resources used by the cluster. It will also shutdown all workers if
         running in SLURM mode and cancel the monitoring task.
 
         The shutdown process:
@@ -939,19 +942,12 @@ if __name__ == "__main__":
             status_interval_seconds=3,
             worker_cache_dir=bioengine_cache_dir,
             worker_data_dir=bioengine_data_dir,
-            # further_slurm_args=["-C 'thin'"]
+            # further_slurm_args=["-C 'thin'"],
+            check_interval_seconds=30,
+            scale_down_threshold_seconds=15,
             debug=True,
         )
         await ray_cluster.start()
-
-        await asyncio.sleep(5)
-        print("\n=== Cluster status ===\n", ray_cluster.status, end="\n\n")
-
-        node_id = await ray_cluster.slurm_workers.start_worker(
-            num_gpus=1,
-            num_cpus=1,
-            time_limit="00:30:00",
-        )
 
         await asyncio.sleep(5)
         print("\n=== Cluster status ===\n", ray_cluster.status, end="\n\n")
@@ -981,14 +977,18 @@ if __name__ == "__main__":
 
             return f"Successfully run a task in a runtime environment on the worker node!"
 
-        obj_ref = test_remote.remote()
-        print(await asyncio.to_thread(ray.get, obj_ref))
+        # Submit some test tasks
+        obj_refs = [test_remote.remote() for _ in range(5)]
 
-        # Test closing a worker node
-        await ray_cluster.slurm_workers.stop_worker(node_id)
+        await ray_cluster.notify(delay_s=5)
+
+        results = await asyncio.gather(*obj_refs)
+        print("\n=== Test Remote Function Results ===\n", results, end="\n\n")
+
+        print("\n=== Cluster status ===\n", ray_cluster.status, end="\n\n")
 
         await ray_cluster.stop()
 
     # Run the tests
-    asyncio.run(test_ray_cluster_single_machine())
+    # asyncio.run(test_ray_cluster_single_machine())
     asyncio.run(test_ray_cluster_slurm())

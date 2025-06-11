@@ -5,7 +5,7 @@ Manages Ray cluster lifecycle BioEngine Apps and Datasets on HPC systems, single
 Provides a Hypha service interface for streaming datasets, executing python code remotely or deploying models through Ray.
 
 The BioEngine worker comes in three modes:
-- `slurm`: Start a latent BioEngine worker service with very low resource consumption that activates upon usage and scales a Ray cluster by submitting SLURM jobs to recruit additional workers. An autoscaler will handle up- and down-scaling.
+- `slurm`: Start a latent BioEngine worker service with very low resource consumption that activates upon usage and scales a Ray cluster by submitting SLURM jobs to recruit additional workers. An autoscaling system will handle up- and down-scaling.
 - `single-machine`: Start a local BioEngine worker with Ray running on a single machine.
 - `connect`: Start a BioEngine worker with data access, but execute all computations on a remote Ray cluster.
 

@@ -13,7 +13,7 @@ import yaml
 from ray import serve
 
 from bioengine_worker import __version__
-from bioengine_worker.ray_autoscaler import RayAutoscaler
+from bioengine_worker.ray_cluster import RayCluster
 from bioengine_worker.utils import create_logger, format_time
 
 
@@ -31,7 +31,7 @@ class AppsManager:
         cache_dir: str = "/tmp/bioengine",
         data_dir: str = "/data",
         startup_deployments: Optional[List[str]] = None,
-        autoscaler: Optional[RayAutoscaler] = None,
+        ray_cluster: Optional[RayCluster] = None,
         # Logger
         log_file: Optional[str] = None,
         debug: bool = False,
@@ -44,7 +44,7 @@ class AppsManager:
             deployment_cache_dir: Caching directory used in Ray Serve deployments
             mode: Mode of operation for the worker. Can be 'slurm', 'single-machine', or 'connect'.
             startup_deployments: List of artifact IDs to start on initialization
-            autoscaler: Optional RayAutoscaler instance
+            ray_cluster: Optional RayCluster instance
             logger: Optional logger instance
             debug: Enable debug logging
         """
@@ -66,7 +66,7 @@ class AppsManager:
         self.data_dir = (
             Path(data_dir).resolve() if mode == "single-machine" else Path("/data")
         )
-        self.autoscaler = autoscaler
+        self.ray_cluster = ray_cluster
 
         # Initialize state variables
         self.server = None
@@ -718,12 +718,10 @@ class AppsManager:
             # Store the task with a strong reference to prevent garbage collection
             self._deployment_tasks[artifact_id] = task
 
-            # Notify the autoscaler of the new deployment after a short delay
-            if self.autoscaler:
-                # Wait a moment for the deployment to start initializing
-                await asyncio.sleep(1)
-                # Notify the autoscaler
-                await self.autoscaler.notify()
+            # Notify the autoscaling of the new deployment after a short delay
+            if self.ray_cluster.mode == "slurm":
+                # Notify the autoscaling
+                await self.ray_cluster.notify()
 
             # Wait for the deployment task to complete
             await task

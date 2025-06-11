@@ -21,10 +21,43 @@ from bioengine_worker.utils import create_logger, format_time, stream_logging_fo
 
 
 class BioEngineWorker:
-    """Manages Ray cluster lifecycle and model deployments on HPC systems or pre-existing Ray environments.
+    """
+    Manages Ray cluster lifecycle and model deployments on HPC systems or pre-existing Ray environments.
 
-    Provides a Hypha service interface for controlling Ray cluster operations,
-    autoscaling, and model deployments through Ray Serve.
+    This class provides a unified interface for managing BioEngine workers across different
+    deployment environments, handling Ray cluster operations, autoscaling, and model
+    deployments through Ray Serve. It integrates with the Hypha server to provide
+    remote access and management capabilities.
+
+    The BioEngineWorker orchestrates multiple component managers:
+    - RayCluster: Manages Ray cluster lifecycle and worker nodes
+    - AppsManager: Handles model deployment and artifact management
+    - DatasetsManager: Manages dataset loading and access
+
+    Key Features:
+    - Multi-environment support (SLURM, single-machine, connect to existing)
+    - Hypha server integration for remote management
+    - Automatic Ray cluster management with autoscaling
+    - Model deployment and artifact management
+    - Dataset management and access
+    - Python code execution in Ray tasks
+    - Comprehensive status monitoring and logging
+
+    Attributes:
+        mode (str): Deployment mode ('slurm', 'single-machine', 'connect')
+        admin_users (List[str]): List of user emails with admin permissions
+        cache_dir (Path): Directory for temporary files and Ray data
+        data_dir (Path): Directory for dataset storage
+        startup_deployments (List[str]): List of deployments to start automatically
+        server_url (str): URL of the Hypha server
+        workspace (str): Hypha workspace name
+        client_id (str): Client ID for Hypha connection
+        service_id (str): Service ID for registration
+        ray_cluster (RayCluster): Ray cluster manager instance
+        deployment_manager (AppsManager): Model deployment manager
+        dataset_manager (DatasetsManager): Dataset manager
+        server: Hypha server connection
+        logger: Logger instance for worker operations
     """
 
     def __init__(
@@ -45,26 +78,29 @@ class BioEngineWorker:
         log_file: Optional[str] = None,
         debug: bool = False,
     ):
-        """Initialize BioEngine worker with component managers.
+        """
+        Initialize BioEngine worker with component managers.
+
+        Sets up the worker with the specified configuration and initializes
+        all component managers (RayCluster, AppsManager, DatasetsManager).
+        Handles authentication with the Hypha server and configures logging.
 
         Args:
-            server_url: URL of the Hypha server to register the worker with.
-            workspace: Hypha workspace to connect to. Defaults to user's workspace.
-            token: Optional authentication token for the Hypha server.
-            client_id: Optional client ID for the worker. If not provided, a new one will be generated.
-            service_id: Service ID used when registering with the Hypha server.
-            admin_users: List of user IDs or emails with admin permissions. If not set, defaults to the logged-in user.
-            mode: Mode of operation for the worker. Can be 'slurm', 'single-machine', or 'connect'.
-            ray_cluster_config: Configuration for RayCluster component.
-            clean_up_previous_cluster: Flag to indicate whether to cleanup of previous Ray cluster.
-            ray_autoscaler_config: Configuration for the RayAutoscaler component.
-            ray_connection_config: Optional arguments passed to `ray.init()` to connect to an existing ray cluster. If provided, disables cluster management.
-            ray_deployment_config: Configuration for the AppsManager component.
-            dataset_config: Optional configuration for data management.
-            cache_dir: Directory for temporary files and Ray data. Defaults to `/tmp/bioengine`.
-            logger: Optional custom logger. If not provided, a default logger will be created.
-            log_file: File for logging output.
-            debug: Enable debug logging.
+            mode: Deployment mode ('slurm', 'single-machine', 'connect')
+            admin_users: List of user emails with admin permissions
+            cache_dir: Directory for temporary files and Ray data
+            data_dir: Directory for dataset storage
+            startup_deployments: List of deployments to start automatically
+            server_url: URL of the Hypha server to register with
+            workspace: Hypha workspace to connect to (defaults to user's workspace)
+            token: Authentication token for Hypha server (uses HYPHA_TOKEN env var if None)
+            client_id: Client ID for Hypha connection (auto-generated if None)
+            ray_cluster_config: Configuration dictionary for RayCluster component
+            log_file: File path for logging output (auto-generated if None)
+            debug: Enable debug-level logging
+
+        Raises:
+            Exception: If initialization of any component fails
         """
         self.mode = mode
         self.admin_users = admin_users or []
@@ -134,7 +170,7 @@ class BioEngineWorker:
                 cache_dir=self.cache_dir / "apps",
                 data_dir=self.data_dir,
                 startup_deployments=self.startup_deployments,
-                autoscaler=self.ray_cluster.autoscaler,
+                ray_cluster=self.ray_cluster,
                 log_file=log_file,
                 debug=debug,
             )
@@ -157,6 +193,18 @@ class BioEngineWorker:
         value: Any,
         overwrite: bool = True,
     ) -> dict:
+        """
+        Set parameter in configuration dictionary with optional overwrite control.
+        
+        Args:
+            kwargs: Configuration dictionary to modify
+            key: Parameter key to set
+            value: Value to set for the parameter
+            overwrite: Whether to overwrite existing values
+            
+        Returns:
+            Modified configuration dictionary
+        """
         if overwrite:
             if key in kwargs and kwargs[key] != value:
                 self.logger.warning(
@@ -168,12 +216,14 @@ class BioEngineWorker:
                 kwargs[key] = value
 
     async def _connect_to_server(self) -> None:
-        """Connect to Hypha server using provided URL.
+        """
+        Connect to Hypha server and authenticate user.
 
-        Args:
-            server_url: URL of the Hypha server
-            token: Token for authentication
-            workspace: Workspace to connect to
+        Establishes connection to the specified Hypha server using the provided
+        token and workspace. Updates admin users list with the authenticated user.
+
+        Raises:
+            ValueError: If connection to Hypha server fails
         """
         self.logger.info(f"Connecting to Hypha server at {self.server_url}...")
         self.server = await connect_to_server(
@@ -204,13 +254,17 @@ class BioEngineWorker:
         self.logger.info(f"Admin users for this worker: {', '.join(self.admin_users)}")
 
     async def _register(self) -> None:
-        """Initialize connection to Hypha and register service interface.
+        """
+        Initialize connection to Hypha and register service interface.
 
-        Args:
-            server: Hypha server connection
+        Registers the BioEngineWorker as a Hypha service with all available
+        methods exposed. Creates service descriptions based on the deployment mode.
 
         Returns:
-            bool: True if initialization successful
+            str: Service ID assigned after successful registration
+
+        Raises:
+            Exception: If service registration fails
         """
         # Register service interface
         description = "Manages BioEngine Apps and Datasets"
@@ -254,11 +308,20 @@ class BioEngineWorker:
         return sid
 
     async def start(self) -> str:
-        """Start the BioEngine worker by initializing the Ray cluster or attaching to an existing one,
-        connecting to the Hypha server, and initializing the deployment manager.
+        """
+        Start the BioEngine worker and all component services.
+        
+        Initializes the Ray cluster (or connects to existing one), establishes
+        connection to the Hypha server, registers the service interface, and
+        starts all component managers. Also deploys any configured startup
+        deployments.
 
         Returns:
-            The service ID assigned after successful registration with Hypha.
+            str: Service ID assigned after successful registration with Hypha
+
+        Raises:
+            RuntimeError: If Ray is already initialized when connecting to existing cluster
+            Exception: If startup of any component fails
         """
         self.start_time = time.time()
 
@@ -288,7 +351,15 @@ class BioEngineWorker:
         return sid
 
     async def serve(self) -> None:
-        """Keep the BioEngine worker running and serving requests."""
+        """
+        Keep the BioEngine worker running and serving requests.
+        
+        Maintains the worker in an active state to handle incoming requests
+        from the Hypha server. This method blocks until cleanup() is called.
+        
+        Raises:
+            RuntimeError: If server is not initialized or Ray is not running
+        """
         if not self.server or not ray.is_initialized():
             raise RuntimeError("Server not initialized. Call start() first.")
 
@@ -296,12 +367,23 @@ class BioEngineWorker:
         await self.serve_event.wait()
 
     async def cleanup(self, context: Optional[Dict[str, Any]] = None) -> None:
-        """Clean up resources and stop the Ray cluster if managed by this worker."""
+        """
+        Clean up resources and stop the Ray cluster if managed by this worker.
+        
+        Performs cleanup of all components including datasets, deployments, and
+        the Ray cluster. Signals the serve loop to exit gracefully.
+        
+        Args:
+            context: Optional context information from Hypha request
+            
+        Raises:
+            Exception: If cleanup of any component fails
+        """
         if ray.is_initialized():
             self.logger.info("Cleaning up resources...")
             await self.dataset_manager.cleanup_datasets()
             await self.deployment_manager.cleanup_deployments()
-            await self.ray_cluster.shutdown()
+            await self.ray_cluster.stop()
         else:
             self.logger.warning("Ray is not initialized. No cleanup needed.")
 
@@ -309,10 +391,24 @@ class BioEngineWorker:
         self.serve_event.set()
 
     async def get_status(self, context: Optional[Dict[str, Any]] = None) -> dict:
-        """Get comprehensive status of the Ray cluster or connected Ray instance.
+        """
+        Get comprehensive status of the BioEngine worker and all components.
+
+        Returns detailed status information including service uptime, Ray cluster
+        status, deployment status, and dataset status.
+
+        Args:
+            context: Optional context information from Hypha request
 
         Returns:
-            Dict containing service, cluster, autoscaler and deployment status.
+            Dict containing:
+                - service: Service start time and uptime information
+                - ray_cluster: Ray cluster status and worker node information
+                - bioengine_apps: Deployment manager status and active deployments
+                - bioengine_datasets: Dataset manager status and loaded datasets
+
+        Raises:
+            RuntimeError: If Ray is not initialized
         """
         if not ray.is_initialized():
             raise RuntimeError("Ray is not initialized. Call start() first.")
@@ -344,7 +440,37 @@ class BioEngineWorker:
         write_stderr: Optional[callable] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> dict:
-        """Execute Python code in a Ray task."""
+        """
+        Execute Python code in a Ray task with resource allocation and output streaming.
+
+        Executes user-provided Python code either from source or pickled function
+        in a Ray task with specified resource requirements. Supports both synchronous
+        and asynchronous functions with output streaming capabilities.
+
+        Args:
+            code: Python source code string containing the function to execute
+            function_name: Name of the function to execute from the source code
+            func_bytes: Pickled function bytes (used when mode='pickle')
+            mode: Execution mode - 'source' for code string, 'pickle' for serialized function
+            remote_options: Ray remote options for resource allocation (num_cpus, num_gpus, etc.)
+            args: Positional arguments to pass to the function
+            kwargs: Keyword arguments to pass to the function
+            write_stdout: Optional callback function for streaming stdout output
+            write_stderr: Optional callback function for streaming stderr output
+            context: Optional context information from Hypha request
+
+        Returns:
+            Dict containing:
+                - result: Function return value (if successful)
+                - error: Error message (if function failed)
+                - traceback: Full traceback (if function failed)
+                - stdout: Captured stdout output
+                - stderr: Captured stderr output
+
+        Raises:
+            RuntimeError: If Ray is not initialized
+            Exception: If function deserialization or execution fails
+        """
         self.logger.info("Executing Python code in Ray task...")
 
         args = args or []
@@ -406,7 +532,7 @@ class BioEngineWorker:
         RemoteRayTask = ray.remote(**remote_options)(ray_task)
         future = RemoteRayTask.remote(user_func, args, kwargs)
         if self.mode == "slurm":
-            await self.ray_cluster.autoscaler.notify()
+            await self.ray_cluster.notify()
         result = await asyncio.get_event_loop().run_in_executor(None, ray.get, future)
 
         # Stream output to client
@@ -449,7 +575,7 @@ if __name__ == "__main__":
                         / f"bioengine-worker_{__version__}.sif"
                     ),
                 },
-                ray_autoscaler_config={
+                ray_autoscaling_config={
                     "metrics_interval_seconds": 10,
                 },
                 ray_deployment_config={

@@ -139,22 +139,18 @@ class BioEngineWorker:
                 print("Login completed successfully!")
                 print("=" * 60, end="\n\n")
 
-            # Set temporary directory for Ray runtime installation
-            os.environ["TMPDIR"] = str(self.cache_dir)
-            # os.environ["HOME"] = str(self.cache_dir)
-
             # Set parameters for RayCluster
             ray_cluster_config = ray_cluster_config or {}
 
-            # Overwrite existing 'mode', 'log_file', and 'debug' parameters if provided
+            # Overwrite existing 'mode', 'ray_temp_dir', 'force_clean_up', 'log_file', and 'debug' parameters if provided
             self._set_parameter(ray_cluster_config, "mode", mode)
-            self._set_parameter(ray_cluster_config, "log_file", log_file)
-            self._set_parameter(ray_cluster_config, "debug", debug)
             self._set_parameter(
                 ray_cluster_config, "ray_temp_dir", self.cache_dir / "ray"
             )
             force_clean_up = not ray_cluster_config.pop("skip_cleanup", False)
             self._set_parameter(ray_cluster_config, "force_clean_up", force_clean_up)
+            self._set_parameter(ray_cluster_config, "log_file", log_file)
+            self._set_parameter(ray_cluster_config, "debug", debug)
 
             # Initialize RayCluster and update mode
             self.ray_cluster = RayCluster(**ray_cluster_config)

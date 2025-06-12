@@ -73,7 +73,8 @@ class RayCluster:
         ray_temp_dir: str = "/tmp/bioengine/ray",
         head_num_cpus: int = 0,
         head_num_gpus: int = 0,
-        ray_connection_address: str = "auto",  # 'auto' or 'ip:port' format
+        runtime_env_pip_cache_size_gb: int = 30,  # Ray default is 10 GB
+        connection_address: str = "auto",  # 'auto' or 'ip:port' format
         force_clean_up: bool = True,
         # Cluster Monitoring parameters
         status_interval_seconds: int = 10,
@@ -117,7 +118,8 @@ class RayCluster:
             ray_temp_dir: Temporary directory for Ray. Default '/tmp/bioengine/ray'.
             head_num_cpus: Number of CPUs for head node (single-machine mode). Default 0.
             head_num_gpus: Number of GPUs for head node (single-machine mode). Default 0.
-            ray_connection_address: Address to connect to existing cluster ('auto' or 'ip:port').
+            runtime_env_pip_cache_size_gb: Size of pip cache for runtime environments in GB. Default 30.
+            connection_address: Address to connect to existing cluster ('auto' or 'ip:port').
             force_clean_up: Force cleanup of previous Ray cluster on start. Default True.
             image: Container image for workers (SLURM mode). Default bioengine-worker.
             worker_cache_dir: Cache directory mounted to worker containers (SLURM mode).
@@ -162,13 +164,13 @@ class RayCluster:
         if self.mode == "slurm":
             self._check_slurm_available()
         elif self.mode == "connect":
-            if ray_connection_address != "auto":
+            if connection_address != "auto":
                 try:
                     # Regular expression to parse address and port
                     # Supports: ray://hostname:port, IPv4:port, [IPv6]:port, hostname:port
                     import re
                     pattern = r'^(?:(ray://[^:]+)|(\[[^\]]+\])|([^:]+)):(\d+)$'
-                    match = re.match(pattern, ray_connection_address.strip())
+                    match = re.match(pattern, connection_address.strip())
                     
                     if not match:
                         raise ValueError("Invalid address format")
@@ -187,7 +189,7 @@ class RayCluster:
                         
                 except (ValueError, AttributeError):
                     raise ValueError(
-                        "Invalid ray_connection_address format. Use formats like 'ip:port' or 'ray://hostname:port'."
+                        "Invalid connection address format. Use formats like 'ip:port' or 'ray://hostname:port'."
                     )
 
         elif self.mode != "single-machine":
@@ -227,6 +229,18 @@ class RayCluster:
             "head_num_gpus": head_num_gpus,
             "force_clean_up": force_clean_up,
         }
+
+        # Set runtime environment pip cache size
+        if runtime_env_pip_cache_size_gb <= 0:
+            raise ValueError(
+                "runtime_env_pip_cache_size_gb must be greater than 0"
+            )
+        os.environ["RAY_RUNTIME_ENV_PIP_CACHE_SIZE_GB"] = str(
+            runtime_env_pip_cache_size_gb
+        )
+        self.logger.debug(
+            f"Setting RAY_RUNTIME_ENV_PIP_CACHE_SIZE_GB to {runtime_env_pip_cache_size_gb}"
+        )
 
         if self.mode == "slurm":
             self.slurm_worker_config = {
@@ -490,7 +504,7 @@ class RayCluster:
                 "--include-dashboard=True",
                 f"--dashboard-port={self.ray_cluster_config['dashboard_port']}",
                 f"--redis-password={self.ray_cluster_config['redis_password']}",
-                f"--temp-dir={self.ray_cluster_config['ray_temp_dir']}",
+                f"--temp-dir={ray_temp_dir}",
             ]
             proc = await asyncio.create_subprocess_exec(
                 self.ray_exec_path,
@@ -548,9 +562,7 @@ class RayCluster:
 
             # Change '<ray_temp_dir>/session_latest' symlink to use relative path instead of absolute (container) path
             # (needed when starting ray in container)
-            symlink_path = (
-                Path(self.ray_cluster_config["ray_temp_dir"]) / "session_latest"
-            )
+            symlink_path = ray_temp_dir / "session_latest"
 
             def update_symlink():
                 if symlink_path.is_symlink():

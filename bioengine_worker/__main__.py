@@ -222,7 +222,13 @@ def create_parser():
         help="Number of GPUs for head node if starting locally",
     )
     ray_cluster_group.add_argument(
-        "--ray_connection_address",
+        "--runtime_env_pip_cache_size_gb",
+        type=int,
+        default=30,
+        help="Size of the pip cache in GB for Ray runtime environment",
+    )
+    ray_cluster_group.add_argument(
+        "--connection_address",
         type=str,
         default="auto",
         help="Address of existing Ray cluster to connect to (format: 'auto' for auto-discovery, 'ip:port' for specific address).",

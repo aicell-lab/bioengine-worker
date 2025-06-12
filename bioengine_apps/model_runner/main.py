@@ -11,10 +11,9 @@ class ModelRunner:
     def __init__(self, cache_n_models: int = 10):
         # Set up working directory
         workdir = Path(os.environ["BIOENGINE_WORKDIR"])
-        workdir.mkdir(parents=True, exist_ok=True)
 
         # Set up cache directory for bioimageio
-        bioimageio_cache_path = workdir / ".cache"
+        bioimageio_cache_path = workdir / ".bioimageio_cache"
         bioimageio_cache_path.mkdir(parents=True, exist_ok=True)
         os.environ["BIOIMAGEIO_CACHE_PATH"] = str(bioimageio_cache_path)
 

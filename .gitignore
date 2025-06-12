@@ -159,5 +159,5 @@ cython_debug/
 .vscode/
 
 # BioEngine
-\.bioengine/
+.bioengine
 data/

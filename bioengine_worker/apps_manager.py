@@ -362,11 +362,14 @@ class AppsManager:
         }
 
         if self.ray_cluster.mode == "slurm":
-            num_worker_jobs = await self.ray_cluster.slurm_workers._get_num_worker_jobs()
-            
-        if (self.ray_cluster.mode == "single-machine" or 
-            (self.ray_cluster.mode == "slurm" and 
-             num_worker_jobs == self.ray_cluster.slurm_workers.max_workers)):
+            num_worker_jobs = (
+                await self.ray_cluster.slurm_workers._get_num_worker_jobs()
+            )
+
+        if self.ray_cluster.mode == "single-machine" or (
+            self.ray_cluster.mode == "slurm"
+            and num_worker_jobs == self.ray_cluster.slurm_workers.max_workers
+        ):
             for key in ["num_cpus", "num_gpus", "memory"]:
                 if ray_actor_options.get(key, 0) > available_resources[key]:
                     raise ValueError(
@@ -591,7 +594,9 @@ class AppsManager:
 
             # Run async init if provided
             if self._deployed_artifacts[artifact_id]["bioengine_initialize"]:
-                app_handle = await asyncio.to_thread(serve.get_app_handle, name=deployment_name)
+                app_handle = await asyncio.to_thread(
+                    serve.get_app_handle, name=deployment_name
+                )
                 self.logger.info(
                     f"Calling __bioengine_initialize__ on deployment '{deployment_name}'"
                 )

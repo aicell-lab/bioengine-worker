@@ -284,7 +284,7 @@ class ModelRunner:
             # Always use _get_model to leverage Ray's multiplex caching
             print(f"Getting model: {model_id} (Ray multiplex will handle caching)")
             model = await self._get_model(model_id)
-            
+
             source = model
 
         # Test the model

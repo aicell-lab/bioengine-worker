@@ -102,7 +102,9 @@ class AppsManager:
             else Path("/tmp/bioengine/apps")
         )
         self.apps_data_dir = (
-            Path(apps_data_dir).resolve() if ray_cluster.mode == "single-machine" else Path("/data")
+            Path(apps_data_dir).resolve()
+            if ray_cluster.mode == "single-machine"
+            else Path("/data")
         )
         self.ray_cluster = ray_cluster
 
@@ -118,12 +120,12 @@ class AppsManager:
     async def _get_full_artifact_id(self, artifact_id: str) -> str:
         """
         Convert artifact ID to a full artifact ID.
-        
+
         Prepends workspace prefix if the artifact ID doesn't already contain one.
-        
+
         Args:
             artifact_id: The artifact ID to convert
-        
+
         Returns:
             str: The converted full artifact ID in format 'workspace/artifact_id'
         """
@@ -230,16 +232,16 @@ class AppsManager:
     async def _create_deployment_name(self, artifact_id: str) -> str:
         """
         Create a valid deployment name from an artifact ID.
-        
+
         Converts the artifact ID to a valid Python identifier by replacing
         special characters with underscores and ensuring it meets naming requirements.
-        
+
         Args:
             artifact_id: The artifact ID to convert
-            
+
         Returns:
             str: A valid deployment name suitable for Ray Serve
-            
+
         Raises:
             ValueError: If the artifact ID cannot be converted to a valid identifier
         """
@@ -261,18 +263,18 @@ class AppsManager:
     ) -> bool:
         """
         Check if the user in the context is authorized to access the deployment.
-        
+
         Validates user permissions against the authorized users list for specific
         deployment operations.
-        
+
         Args:
             context: Request context containing user information
             authorized_users: List of authorized user IDs/emails or single user string
             resource_name: Name of the resource being accessed for logging
-            
+
         Returns:
             bool: True if user is authorized
-            
+
         Raises:
             PermissionError: If user is not authorized to access the resource
         """
@@ -286,12 +288,14 @@ class AppsManager:
             and user["id"] not in authorized_users
             and user["email"] not in authorized_users
         ):
-            raise PermissionError(f"User {user['id']} is not authorized to access {resource_name}")
+            raise PermissionError(
+                f"User {user['id']} is not authorized to access {resource_name}"
+            )
 
     async def _update_services(self) -> None:
         """
         Update Hypha services based on currently deployed applications.
-        
+
         Registers all currently deployed artifacts as callable Hypha services,
         enabling remote access to the deployed applications through the Hypha platform.
 
@@ -402,13 +406,13 @@ class AppsManager:
     async def initialize(self, server) -> None:
         """
         Initialize the deployment manager with a Hypha server connection.
-        
+
         Establishes connection to the Hypha server and artifact manager service
         for deployment operations.
 
         Args:
             server: Hypha server connection instance
-            
+
         Raises:
             Exception: If server connection or artifact manager initialization fails
         """
@@ -431,10 +435,10 @@ class AppsManager:
     async def initialize_deployments(self) -> None:
         """
         Deploy all startup deployments defined in the manager.
-        
+
         Automatically deploys all artifacts specified in the startup_deployments
         list during initialization. Uses admin user context for authentication.
-        
+
         Raises:
             RuntimeError: If server or artifact manager is not initialized
             Exception: If deployment of any startup artifact fails
@@ -871,7 +875,7 @@ class AppsManager:
         self,
         artifact_id: str,
         context: Dict[str, Any],
-        _skip_update: bool=False,
+        _skip_update: bool = False,
     ) -> None:
         """
         Remove a deployment from Ray Serve.
@@ -1095,9 +1099,7 @@ class AppsManager:
         # Update services after all deployments
         await self._update_services()
 
-    async def cleanup_deployments(
-        self, context: Dict[str, Any]
-    ) -> None:
+    async def cleanup_deployments(self, context: Dict[str, Any]) -> None:
         """
         Clean up all Ray Serve deployments and associated resources.
 
@@ -1340,10 +1342,14 @@ if __name__ == "__main__":
             # Call the deployed application
             deployment_name = deployment_status[artifact_id]["deployment_name"]
             response = await deployment_service[deployment_name]["ping"]()
-            deployment_manager.logger.info(f"Response from deployed application: {response}")
+            deployment_manager.logger.info(
+                f"Response from deployed application: {response}"
+            )
 
             response = await deployment_service[deployment_name]["train"]()
-            deployment_manager.logger.info(f"Response from deployed application: {response}")
+            deployment_manager.logger.info(
+                f"Response from deployed application: {response}"
+            )
 
             # Keep server running if requested
             if keep_running:

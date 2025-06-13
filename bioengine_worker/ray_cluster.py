@@ -169,15 +169,16 @@ class RayCluster:
                     # Regular expression to parse address and port
                     # Supports: ray://hostname:port, IPv4:port, [IPv6]:port, hostname:port
                     import re
-                    pattern = r'^(?:(ray://[^:]+)|(\[[^\]]+\])|([^:]+)):(\d+)$'
+
+                    pattern = r"^(?:(ray://[^:]+)|(\[[^\]]+\])|([^:]+)):(\d+)$"
                     match = re.match(pattern, connection_address.strip())
-                    
+
                     if not match:
                         raise ValueError("Invalid address format")
-                    
+
                     ray_address, ipv6_address, other_address, port_str = match.groups()
                     port = int(port_str)
-                    
+
                     if ray_address:
                         # Ray client address
                         head_node_address = ray_address
@@ -186,7 +187,7 @@ class RayCluster:
                         # IP address or hostname
                         head_node_address = ipv6_address or other_address
                         head_node_port = port
-                        
+
                 except (ValueError, AttributeError):
                     raise ValueError(
                         "Invalid connection address format. Use formats like 'ip:port' or 'ray://hostname:port'."
@@ -209,7 +210,9 @@ class RayCluster:
                     "Ignoring 'head_num_gpus' setting in 'SLURM' mode - will be set to 0"
                 )
                 head_num_gpus = 0
-        elif self.mode == "single-machine" and head_num_cpus <= 0 and head_num_gpus <= 0:
+        elif (
+            self.mode == "single-machine" and head_num_cpus <= 0 and head_num_gpus <= 0
+        ):
             raise ValueError(
                 "When SLURM is not available, either head_num_cpus or head_num_gpus must be greater than 0"
             )
@@ -232,9 +235,7 @@ class RayCluster:
 
         # Set runtime environment pip cache size
         if runtime_env_pip_cache_size_gb <= 0:
-            raise ValueError(
-                "runtime_env_pip_cache_size_gb must be greater than 0"
-            )
+            raise ValueError("runtime_env_pip_cache_size_gb must be greater than 0")
         os.environ["RAY_RUNTIME_ENV_PIP_CACHE_SIZE_GB"] = str(
             runtime_env_pip_cache_size_gb
         )
@@ -310,7 +311,7 @@ class RayCluster:
             raise RuntimeError(
                 "Ray cluster has not been started yet. Please start the cluster first."
             )
-        
+
         if self.ray_start_time == "N/A":
             status = {
                 "head_address": self.ray_cluster_config["head_node_address"],

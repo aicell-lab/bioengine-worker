@@ -1,6 +1,6 @@
 # !/bin/bash
 
-VERSION=0.1.19
+VERSION=0.1.20
 DEFAULT_IMAGE="ghcr.io/aicell-lab/bioengine-worker:$VERSION"
 WORKING_DIR=$(pwd)
 

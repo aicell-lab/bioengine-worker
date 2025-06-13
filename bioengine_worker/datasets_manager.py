@@ -247,7 +247,7 @@ class DatasetsManager:
         service_info = await self.server.register_service(
             {
                 "id": dataset_service_id,
-                "name": "BioEngine Worker Files",
+                "name": "BioEngine Worker Datasets",
                 "description": "Streaming files from BioEngine Worker",
                 "type": "asgi",
                 "serve": serve_fastapi,

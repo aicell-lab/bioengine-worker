@@ -269,7 +269,7 @@ class BioEngineWorker:
         service_info = await self.server.register_service(
             {
                 "id": self.service_id,
-                "name": "BioEngine worker",
+                "name": "BioEngine Worker",
                 "type": "bioengine-worker",
                 "description": description,
                 "config": {

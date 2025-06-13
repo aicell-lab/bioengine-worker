@@ -36,7 +36,7 @@ class AppsManager:
 
     Key Features:
     - Artifact-based deployment system with versioning support
-    - Dynamic Hypha service registration for deployed models
+    - Dynamic Hypha service registration for deployed applications
     - Multi-mode deployment configurations
     - Resource-aware deployment with CPU/GPU allocation
     - Permission-based access control for deployments
@@ -199,8 +199,8 @@ class AppsManager:
                 raise ValueError(
                     f"{class_config['class_name']} not found in {artifact_id}"
                 )
-            model = safe_globals[class_config["class_name"]]
-            if not model:
+            deployment = safe_globals[class_config["class_name"]]
+            if not deployment:
                 raise RuntimeError(
                     f"Error loading {class_config['class_name']} from {artifact_id}"
                 )
@@ -212,16 +212,16 @@ class AppsManager:
                     "max_num_models_per_replica"
                 ]
 
-                orig_method = getattr(model, method_name)
+                orig_method = getattr(deployment, method_name)
                 decorated_method = serve.multiplexed(
                     orig_method, max_num_models_per_replica=max_num_models_per_replica
                 )
-                setattr(model, method_name, decorated_method)
+                setattr(deployment, method_name, decorated_method)
 
             self.logger.info(
                 f"Loaded class '{class_config['class_name']}' from {artifact_id}"
             )
-            return model
+            return deployment
 
         except Exception as e:
             self.logger.error(f"Error loading deployment code for {artifact_id}: {e}")
@@ -290,11 +290,11 @@ class AppsManager:
 
     async def _update_services(self) -> None:
         """
-        Update Hypha services based on currently deployed models.
+        Update Hypha services based on currently deployed applications.
         
         Registers all currently deployed artifacts as callable Hypha services,
-        enabling remote access to the deployed models through the Hypha platform.
-        
+        enabling remote access to the deployed applications through the Hypha platform.
+
         Raises:
             RuntimeError: If Hypha server connection is not available
             Exception: If service registration fails
@@ -373,13 +373,13 @@ class AppsManager:
                         authorized_users="*",
                     )
 
-            # Register all model functions as a single service
+            # Register all deployment functions as a single service
             service_info = await self.server.register_service(
                 {
                     "id": self.service_id,
-                    "name": "BioEngine Worker Deployments",
+                    "name": "BioEngine Worker Apps",
                     "type": "bioengine-apps",
-                    "description": "Deployed Ray Serve models",
+                    "description": "Calling deployed Ray Serve applications",
                     "config": {"visibility": "public", "require_context": True},
                     **service_functions,
                 },
@@ -747,7 +747,6 @@ class AppsManager:
         manifest = artifact["manifest"]
 
         # Get the deployment configuration
-        deployment_name = await self._create_deployment_name(artifact_id)
         deployment_config = manifest["deployment_config"]
         class_config = manifest["deployment_class"]
         deployment_config["name"] = class_config["class_name"]
@@ -784,19 +783,23 @@ class AppsManager:
         env_vars["TMPDIR"] = deployment_workdir
         env_vars["HOME"] = deployment_workdir
 
+        # Pass user workspace and token to the deployment
+        env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
+        env_vars["HYPHA_TOKEN"] = self.server.config.token
+
         # Load the deployment code
-        model = await self._load_deployment_code(
+        deployment_class = await self._load_deployment_code(
             class_config,
             artifact_id,
             version=version,
         )
 
         # Create the Ray Serve deployment
-        model_deployment = serve.deployment(**deployment_config)(model)
+        deployment = serve.deployment(**deployment_config)(deployment_class)
 
         # Bind the arguments to the deployment and return an Application
         kwargs = class_config.get("kwargs", {})
-        app = model_deployment.bind(**kwargs)
+        app = deployment.bind(**kwargs)
 
         # Store the deployment information first so it's available to other tasks
         self._deployed_artifacts[artifact_id] = {
@@ -841,6 +844,14 @@ class AppsManager:
             if self.ray_cluster.mode == "slurm":
                 # Notify the autoscaling
                 await self.ray_cluster.notify()
+
+            # Check if `deployment_class` has a class method __bioengine_initialize__
+            if hasattr(deployment_class, "__bioengine_initialize__"):
+                app_handle = serve.get_app_handle(name=deployment_name)
+                self.logger.info(
+                    f"Calling __bioengine_initialize__ on deployment '{deployment_name}'"
+                )
+                await app_handle.__bioengine_initialize__.remote()
 
             # Wait for the deployment task to complete
             await task
@@ -1173,7 +1184,7 @@ async def create_demo_artifact(deployment_manager, artifact_id=None):
 
 
 if __name__ == "__main__":
-    """Test the AppsManager functionality with a real Ray cluster and model deployment."""
+    """Test the AppsManager functionality with a real Ray cluster and deployment."""
 
     from hypha_rpc import connect_to_server, login
 
@@ -1321,13 +1332,13 @@ if __name__ == "__main__":
             deployment_service_id = deployment_status["service_id"]
             deployment_service = await server.get_service(deployment_service_id)
 
-            # Call the deployed model
+            # Call the deployed application
             deployment_name = deployment_status[artifact_id]["deployment_name"]
             response = await deployment_service[deployment_name]["ping"]()
-            deployment_manager.logger.info(f"Response from deployed model: {response}")
+            deployment_manager.logger.info(f"Response from deployed application: {response}")
 
             response = await deployment_service[deployment_name]["train"]()
-            deployment_manager.logger.info(f"Response from deployed model: {response}")
+            deployment_manager.logger.info(f"Response from deployed application: {response}")
 
             # Keep server running if requested
             if keep_running:

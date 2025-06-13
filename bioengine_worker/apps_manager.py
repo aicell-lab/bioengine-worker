@@ -776,6 +776,27 @@ class AppsManager:
         ray_actor_options.setdefault("num_cpus", 1)
         ray_actor_options.setdefault("num_gpus", 0)
 
+        # Check if the required resources are available
+        available_resources = await asyncio.to_thread(ray.cluster_resources)
+        available_resources = {
+            "num_cpus": available_resources["CPU"],
+            "num_gpus": available_resources.get("GPU", 0),
+            "memory": available_resources["memory"],
+        }
+
+        if self.ray_cluster.mode == "single-machine" or (
+            self.ray_cluster.mode == "slurm"
+            and await self.ray_cluster.slurm_workers._get_num_worker_jobs()
+            == self.ray_cluster.slurm_workers.max_workers
+        ):
+            for key in ["num_cpus", "num_gpus", "memory"]:
+                if ray_actor_options.get(key, 0) > available_resources[key]:
+                    raise ValueError(
+                        f"Insufficient resources for {key}. "
+                        f"Requested: {ray_actor_options[key]}, "
+                        f"Available: {available_resources[key]}"
+                    )
+
         # Add cache path to deployment config environment
         runtime_env = ray_actor_options.setdefault("runtime_env", {})
         env_vars = runtime_env.setdefault("env_vars", {})
@@ -1126,7 +1147,7 @@ class AppsManager:
         failed_attempts = 0
         for artifact_id in artifact_ids:
             try:
-                await self.undeploy_artifact(artifact_id, context)
+                await self.undeploy_artifact(artifact_id, context, _skip_update=True)
             except Exception as e:
                 failed_attempts += 1
                 self.logger.error(f"Failed to undeploy {artifact_id}: {e}")
@@ -1152,6 +1173,8 @@ class AppsManager:
             self.logger.warning(
                 f"Failed to clean up all deployments, {failed_attempts} remaining."
             )
+
+        await self._update_services()
 
 
 async def create_demo_artifact(deployment_manager, artifact_id=None):

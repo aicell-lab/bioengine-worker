@@ -453,7 +453,7 @@ class SlurmWorkers:
 
         # Ensure autoscaling stops if we break from the loop
         if self.is_running:
-            asyncio.create_task(self.stop())
+            asyncio.create_task(self.stop(), name="SlurmWorkers.stop")
 
     def _create_sbatch_script(
         self,
@@ -1086,7 +1086,10 @@ class SlurmWorkers:
             self.is_running = True
 
             # Create monitoring task
-            self.monitoring_task = asyncio.create_task(self._monitoring_loop())
+            self.monitoring_task = asyncio.create_task(
+                self._monitoring_loop(),
+                name="AutoscalingMonitoringLoop",
+            )
 
         except Exception as e:
             self.logger.error(f"Failed to start autoscaling: {e}")

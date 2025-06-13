@@ -52,7 +52,10 @@ async def main(group_configs):
                     "email": bioengine_worker.admin_users[1],
                 }
             }
-            asyncio.create_task(bioengine_worker.cleanup(context=admin_context))
+            asyncio.create_task(
+                bioengine_worker.cleanup(context=admin_context),
+                name="BioEngineWorker.cleanup",
+            )
 
     # Register signal handlers
     loop = asyncio.get_running_loop()

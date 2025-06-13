@@ -1,13 +1,9 @@
-# Demo Deployment - World Clock
+# Demo Deployment
 
-This deployment provides two endpoints:
+This deployment provides available methods and does not require a separate runtime environment.
 
-- **Ping:**  
-  Open this URL to check if the service is alive.  
-  `https://hypha.aicell.io/<your_workspace>/services/bioengine-apps/bioimage_io_demo_deployment.ping`
+- **ping:**  
+  Click on this method to check if the service is alive.
 
-- **Get Time:**  
-  Open this URL to get the current server time for a given city.  
-  `https://hypha.aicell.io/<your_workspace>/services/bioengine-apps/bioimage_io_demo_deployment.get_time?city_name=Stockholm`
-
-Replace `<your_workspace>` with your workspace name and try out different cities.
+- **ascii_art:**  
+  Click on this method to generate ASCII art. Note: Enable pretty print to see the result.

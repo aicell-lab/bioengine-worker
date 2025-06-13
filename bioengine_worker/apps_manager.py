@@ -4,7 +4,7 @@ import logging
 import os
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
 import numpy as np
@@ -28,11 +28,11 @@ class AppsManager:
 
     The AppsManager orchestrates:
     - Artifact creation and management through Hypha
-    - Ray Serve deployment lifecycle management
+    - Ray Serve deployment lifecycle management with proper task tracking
     - Dynamic service registration and exposure
     - Resource allocation and monitoring
     - Permission-based access control
-    - Graceful deployment and undeployment operations
+    - Graceful deployment and undeployment operations with automatic cleanup
 
     Key Features:
     - Artifact-based deployment system with versioning support
@@ -40,9 +40,15 @@ class AppsManager:
     - Multi-mode deployment configurations
     - Resource-aware deployment with CPU/GPU allocation
     - Permission-based access control for deployments
-    - Comprehensive error handling and logging
+    - Comprehensive error handling and logging with proper state management
     - Startup deployment automation
     - Real-time deployment status monitoring
+    - Robust deployment task tracking and cleanup
+
+    Deployment State Management:
+    The class maintains deployment state in `_deployed_artifacts` dictionary where each
+    entry contains deployment metadata, resource allocation, and an active asyncio task
+    reference. Proper cleanup ensures no resource leaks or orphaned deployments.
 
     Attributes:
         service_id (str): Service ID for Hypha registration
@@ -55,6 +61,7 @@ class AppsManager:
         service_info: Registered Hypha service information
         startup_deployments (List[str]): Deployments to start automatically
         logger: Logger instance for deployment operations
+        _deployed_artifacts (Dict): Internal tracking of active deployments with task references
     """
 
     def __init__(
@@ -114,8 +121,6 @@ class AppsManager:
         self.service_info = None
         self.startup_deployments = startup_deployments or []
         self._deployed_artifacts = {}
-        self._deployment_tasks = {}
-        self._undeploying_artifacts = set()
 
     async def _get_full_artifact_id(self, artifact_id: str) -> str:
         """
@@ -201,8 +206,8 @@ class AppsManager:
                 raise ValueError(
                     f"{class_config['class_name']} not found in {artifact_id}"
                 )
-            deployment = safe_globals[class_config["class_name"]]
-            if not deployment:
+            deployment_class = safe_globals[class_config["class_name"]]
+            if not deployment_class:
                 raise RuntimeError(
                     f"Error loading {class_config['class_name']} from {artifact_id}"
                 )
@@ -214,16 +219,16 @@ class AppsManager:
                     "max_num_models_per_replica"
                 ]
 
-                orig_method = getattr(deployment, method_name)
+                orig_method = getattr(deployment_class, method_name)
                 decorated_method = serve.multiplexed(
                     orig_method, max_num_models_per_replica=max_num_models_per_replica
                 )
-                setattr(deployment, method_name, decorated_method)
+                setattr(deployment_class, method_name, decorated_method)
 
             self.logger.info(
                 f"Loaded class '{class_config['class_name']}' from {artifact_id}"
             )
-            return deployment
+            return deployment_class
 
         except Exception as e:
             self.logger.error(f"Error loading deployment code for {artifact_id}: {e}")
@@ -292,6 +297,131 @@ class AppsManager:
                 f"User {user['id']} is not authorized to access {resource_name}"
             )
 
+    async def _create_deployment(
+        self, artifact_id: str, mode: str, version: str
+    ) -> serve.Application:
+        """
+        Create a Ray Serve deployment from an artifact with proper state tracking.
+
+        Downloads artifact metadata, configures Ray Serve deployment parameters,
+        validates resource requirements, and initializes deployment state tracking.
+        The deployment info is stored in _deployed_artifacts for lifecycle management.
+
+        Args:
+            artifact_id: Full artifact ID to deploy
+            mode: Deployment mode for multi-mode artifacts
+            version: Artifact version to deploy
+
+        Returns:
+            serve.Application: Configured Ray Serve application ready for deployment
+
+        Raises:
+            ValueError: If mode is invalid, resources insufficient, or artifact malformed
+            Exception: If artifact download or deployment creation fails
+        """
+
+        # Get deployment name from artifact ID
+        deployment_name = await self._create_deployment_name(artifact_id)
+
+        # Read the manifest to get deployment configuration
+        artifact = await self.artifact_manager.read(artifact_id, version=version)
+        manifest = artifact["manifest"]
+
+        # Get the deployment configuration
+        deployment_config = manifest["deployment_config"]
+        class_config = manifest["deployment_class"]
+        deployment_config["name"] = class_config["class_name"]
+
+        # Check if different modes are supported
+        modes = deployment_config.pop("modes", None)
+        if modes:
+            mode_key = mode or list(modes.keys())[0]
+            mode_key = mode_key.lower()
+            if mode_key not in modes:
+                raise ValueError(
+                    f"Mode '{mode_key}' not found in artifact '{artifact_id}'"
+                )
+
+            # Update deployment config with the selected mode
+            for key, value in modes[mode_key].items():
+                deployment_config[key] = value
+
+            self.logger.info(f"Using mode '{mode_key}' for deployment '{artifact_id}'")
+
+        # Add default ray_actor_options if not present
+        ray_actor_options = deployment_config.setdefault("ray_actor_options", {})
+        ray_actor_options.setdefault("num_cpus", 1)
+        ray_actor_options.setdefault("num_gpus", 0)
+
+        # Check if the required resources are available
+        available_resources = await asyncio.to_thread(ray.cluster_resources)
+        available_resources = {
+            "num_cpus": available_resources["CPU"],
+            "num_gpus": available_resources.get("GPU", 0),
+            "memory": available_resources["memory"],
+        }
+
+        if self.ray_cluster.mode == "slurm":
+            num_worker_jobs = await self.ray_cluster.slurm_workers._get_num_worker_jobs()
+            
+        if (self.ray_cluster.mode == "single-machine" or 
+            (self.ray_cluster.mode == "slurm" and 
+             num_worker_jobs == self.ray_cluster.slurm_workers.max_workers)):
+            for key in ["num_cpus", "num_gpus", "memory"]:
+                if ray_actor_options.get(key, 0) > available_resources[key]:
+                    raise ValueError(
+                        f"Insufficient resources for {key}. "
+                        f"Requested: {ray_actor_options[key]}, "
+                        f"Available: {available_resources[key]}"
+                    )
+
+        # Add cache path to deployment config environment
+        runtime_env = ray_actor_options.setdefault("runtime_env", {})
+        env_vars = runtime_env.setdefault("env_vars", {})
+        deployment_workdir = str(self.apps_cache_dir / deployment_name)
+        env_vars["BIOENGINE_WORKDIR"] = deployment_workdir
+        env_vars["BIOENGINE_DATA_DIR"] = str(self.apps_data_dir)
+
+        # Ensure the deployment only uses the specified workdir
+        env_vars["TMPDIR"] = deployment_workdir
+        env_vars["HOME"] = deployment_workdir
+
+        # Pass user workspace and token to the deployment
+        env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
+        env_vars["HYPHA_TOKEN"] = self.server.config.reconnection_token
+
+        # Load the deployment code
+        deployment_class = await self._load_deployment_code(
+            class_config,
+            artifact_id,
+            version=version,
+        )
+
+        # Store the deployment information first so it's available to other tasks
+        deployment_info = {
+            "deployment_name": deployment_name,
+            "class_config": class_config,
+            "resources": {
+                "num_cpus": deployment_config["ray_actor_options"]["num_cpus"],
+                "num_gpus": deployment_config["ray_actor_options"]["num_gpus"],
+                "memory": deployment_config["ray_actor_options"].get("memory"),
+            },
+            "bioengine_initialize": hasattr(
+                deployment_class, "__bioengine_initialize__"
+            ),
+            "deployment_task": None,  # Will be set by deploy_artifact
+        }
+        self._deployed_artifacts[artifact_id] = deployment_info
+
+        # Create the Ray Serve deployment
+        deployment = serve.deployment(**deployment_config)(deployment_class)
+
+        # Bind the arguments to the deployment and return an Application
+        kwargs = class_config.get("kwargs", {})
+        app = deployment.bind(**kwargs)
+
+        return app
+
     async def _update_services(self) -> None:
         """
         Update Hypha services based on currently deployed applications.
@@ -359,7 +489,7 @@ class AppsManager:
             for deployment_info in self._deployed_artifacts.values():
                 deployment_name = deployment_info["deployment_name"]
                 service_functions[deployment_name] = {}
-                class_config = deployment_info["deployment_class"]
+                class_config = deployment_info["class_config"]
                 exposed_methods = class_config.get("exposed_methods", {})
                 if exposed_methods:
                     for method_name, method_config in exposed_methods.items():
@@ -402,6 +532,107 @@ class AppsManager:
         except Exception as e:
             self.logger.error(f"Error updating services: {e}")
             raise e
+
+    async def _deploy_artifact(
+        self,
+        artifact_id: str,
+        deployment_name: str,
+        app: serve.Application,
+    ) -> None:
+        """
+        Execute deployment of a Ray Serve application with comprehensive lifecycle management.
+
+        This method runs the actual deployment process, monitors the deployment status,
+        executes initialization hooks, and maintains the deployment until cancellation.
+        It ensures proper cleanup of both Ray Serve resources and internal state tracking
+        regardless of how the deployment ends (success, failure, or cancellation).
+
+        The method runs indefinitely to keep the deployment active until explicitly
+        cancelled, at which point it performs automatic cleanup including:
+        - Removal from Ray Serve
+        - Deletion from internal deployment tracking
+        - Service registration updates
+
+        Args:
+            artifact_id: Full artifact ID being deployed
+            deployment_name: Ray Serve deployment name
+            app: Configured Ray Serve application
+
+        Raises:
+            RuntimeError: If deployment validation fails
+            Exception: If deployment startup or initialization fails
+
+        Note:
+            This method is designed to run as a long-lived asyncio task and will
+            only exit when cancelled or on error. Cleanup is guaranteed via finally block.
+        """
+        try:
+            self.logger.info(
+                f"Starting deployment process for artifact '{artifact_id}'"
+            )
+            await asyncio.to_thread(
+                serve.run,
+                target=app,
+                name=deployment_name,
+                route_prefix=None,
+                blocking=False,
+            )
+
+            # Validate the deployment's status
+            serve_status = serve.status()
+            if deployment_name in serve_status.applications.keys():
+                self.logger.info(
+                    f"Successfully completed deployment of artifact '{artifact_id}'"
+                )
+            else:
+                raise RuntimeError(
+                    f"Deployment name '{deployment_name}' not found in serve status."
+                )
+
+            # Run async init if provided
+            if self._deployed_artifacts[artifact_id]["bioengine_initialize"]:
+                app_handle = await asyncio.to_thread(serve.get_app_handle, name=deployment_name)
+                self.logger.info(
+                    f"Calling __bioengine_initialize__ on deployment '{deployment_name}'"
+                )
+                await app_handle.__bioengine_initialize__.remote()
+
+            # Keep the deployment task running until cancelled
+            while True:
+                await asyncio.sleep(1)
+
+        except asyncio.CancelledError:
+            self.logger.info(
+                f"Deployment task for artifact '{artifact_id}' was cancelled"
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Failed to deploy artifact '{artifact_id}' with error: {e}"
+            )
+            raise e
+        finally:
+            # Cleanup: Remove from Ray Serve and update tracking
+            try:
+                await asyncio.to_thread(serve.delete, deployment_name)
+                self.logger.info(
+                    f"Successfully deleted Ray Serve deployment '{deployment_name}'"
+                )
+            except Exception as delete_err:
+                self.logger.error(
+                    f"Error deleting deployment {deployment_name}: {delete_err}"
+                )
+
+            # Remove from deployment tracking
+            if artifact_id in self._deployed_artifacts:
+                del self._deployed_artifacts[artifact_id]
+                self.logger.info(
+                    f"Removed artifact '{artifact_id}' from deployment tracking"
+                )
+
+            # Update services
+            await self._update_services()
+
+            self.logger.info(f"Undeployment of artifact '{artifact_id}' completed")
 
     async def initialize(self, server) -> None:
         """
@@ -676,13 +907,18 @@ class AppsManager:
         version: str = None,
         context: Optional[Dict[str, Any]] = None,
         _skip_update=False,
-    ) -> str:
+    ) -> None:
         """
-        Deploy a single artifact to Ray Serve.
+        Deploy a single artifact to Ray Serve with comprehensive state management.
 
         Downloads the artifact from Hypha, loads the deployment code, configures
-        the Ray Serve deployment with appropriate resources, and registers it as
-        a callable service.
+        the Ray Serve deployment with appropriate resources, creates a managed
+        deployment task, and registers it as a callable service. The deployment
+        is tracked in _deployed_artifacts for proper lifecycle management.
+
+        The method prevents duplicate deployments by checking existing state and
+        ensures proper task creation and tracking. Returns immediately after
+        starting the deployment task, which runs independently.
 
         Args:
             artifact_id: ID of the artifact to deploy
@@ -691,14 +927,15 @@ class AppsManager:
             context: Optional context information from Hypha request containing user info
             _skip_update: Skip updating Hypha services after deployment (for batch operations)
 
-        Returns:
-            str: The deployment name assigned to the artifact
-
         Raises:
             RuntimeError: If server, artifact manager, or Ray is not initialized
             PermissionError: If user lacks permission to deploy artifacts
             ValueError: If artifact mode is invalid or deployment configuration is malformed
-            Exception: If artifact deployment fails
+            Exception: If artifact deployment initialization fails
+
+        Note:
+            The actual deployment runs asynchronously. Use get_status() to monitor
+            deployment progress and success.
         """
         # Verify client is connected to Hypha server
         if not self.server:
@@ -716,6 +953,22 @@ class AppsManager:
         if not ray.is_initialized():
             raise RuntimeError("Ray cluster is not running. Call initialize() first.")
 
+        # Get the full artifact ID
+        artifact_id = await self._get_full_artifact_id(artifact_id)
+
+        # Check if the artifact is already deployed
+        if artifact_id in self._deployed_artifacts:
+            deployment_info = self._deployed_artifacts[artifact_id]
+            if (
+                deployment_info is not None
+                and deployment_info["deployment_task"] is not None
+                and not deployment_info["deployment_task"].done()
+            ):
+                self.logger.debug(
+                    f"Artifact '{artifact_id}' is already deployed. Skipping deployment."
+                )
+                return deployment_info["deployment_name"]
+
         # Check user permissions
         await self._check_permissions(
             context,
@@ -724,195 +977,74 @@ class AppsManager:
         )
         user_id = context["user"]["id"]
 
-        # Get the full artifact ID
-        artifact_id = await self._get_full_artifact_id(artifact_id)
-
         # Check if the artifact is already deployed
         deployment_name = await self._create_deployment_name(artifact_id)
         serve_status = serve.status()
-        if deployment_name not in serve_status.applications.keys():
+        if deployment_name in serve_status.applications.keys():
+            self.logger.info(
+                f"User '{user_id}' is updating existing deployment for artifact '{artifact_id}'"
+            )
+        else:
             self.logger.info(
                 f"User '{user_id}' is starting a new deployment for artifact '{artifact_id}'"
             )
-        else:
-            application = serve_status.applications[deployment_name]
-            if application.status.value == "DEPLOYING":
-                self.logger.info(
-                    f"Artifact '{artifact_id}' is currently being deployed. Skipping deployment."
-                )
-                return
-            else:
-                self.logger.info(
-                    f"Updating existing deployment for artifact '{artifact_id}'"
-                )
 
-        # Read the manifest to get deployment configuration
-        artifact = await self.artifact_manager.read(artifact_id, version=version)
-        manifest = artifact["manifest"]
-
-        # Get the deployment configuration
-        deployment_config = manifest["deployment_config"]
-        class_config = manifest["deployment_class"]
-        deployment_config["name"] = class_config["class_name"]
-
-        # Check if different modes are supported
-        modes = deployment_config.pop("modes", None)
-        if modes:
-            mode_key = mode or list(modes.keys())[0]
-            mode_key = mode_key.lower()
-            if mode_key not in modes:
-                raise ValueError(
-                    f"Mode '{mode_key}' not found in artifact '{artifact_id}'"
-                )
-
-            # Update deployment config with the selected mode
-            for key, value in modes[mode_key].items():
-                deployment_config[key] = value
-
-            self.logger.info(f"Using mode '{mode_key}' for deployment '{artifact_id}'")
-
-        # Add default ray_actor_options if not present
-        ray_actor_options = deployment_config.setdefault("ray_actor_options", {})
-        ray_actor_options.setdefault("num_cpus", 1)
-        ray_actor_options.setdefault("num_gpus", 0)
-
-        # Check if the required resources are available
-        available_resources = await asyncio.to_thread(ray.cluster_resources)
-        available_resources = {
-            "num_cpus": available_resources["CPU"],
-            "num_gpus": available_resources.get("GPU", 0),
-            "memory": available_resources["memory"],
-        }
-
-        if self.ray_cluster.mode == "single-machine" or (
-            self.ray_cluster.mode == "slurm"
-            and await self.ray_cluster.slurm_workers._get_num_worker_jobs()
-            == self.ray_cluster.slurm_workers.max_workers
-        ):
-            for key in ["num_cpus", "num_gpus", "memory"]:
-                if ray_actor_options.get(key, 0) > available_resources[key]:
-                    raise ValueError(
-                        f"Insufficient resources for {key}. "
-                        f"Requested: {ray_actor_options[key]}, "
-                        f"Available: {available_resources[key]}"
-                    )
-
-        # Add cache path to deployment config environment
-        runtime_env = ray_actor_options.setdefault("runtime_env", {})
-        env_vars = runtime_env.setdefault("env_vars", {})
-        deployment_workdir = str(self.apps_cache_dir / deployment_name)
-        env_vars["BIOENGINE_WORKDIR"] = deployment_workdir
-        env_vars["BIOENGINE_DATA_DIR"] = str(self.apps_data_dir)
-
-        # Ensure the deployment only uses the specified workdir
-        env_vars["TMPDIR"] = deployment_workdir
-        env_vars["HOME"] = deployment_workdir
-
-        # Pass user workspace and token to the deployment
-        env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
-        env_vars["HYPHA_TOKEN"] = self.server.config.reconnection_token
-
-        # Load the deployment code
-        deployment_class = await self._load_deployment_code(
-            class_config,
-            artifact_id,
+        # Create the deployment from the artifact
+        app = await self._create_deployment(
+            artifact_id=artifact_id,
+            mode=mode,
             version=version,
         )
 
-        # Create the Ray Serve deployment
-        deployment = serve.deployment(**deployment_config)(deployment_class)
+        # Create and start the deployment task
+        deployment_task = asyncio.create_task(
+            self._deploy_artifact(
+                artifact_id=artifact_id,
+                deployment_name=deployment_name,
+                app=app,
+            ),
+            name=f"Deploy-{artifact_id}",
+        )
+        self._deployed_artifacts[artifact_id]["deployment_task"] = deployment_task
 
-        # Bind the arguments to the deployment and return an Application
-        kwargs = class_config.get("kwargs", {})
-        app = deployment.bind(**kwargs)
+        # Notify the autoscaling system of the new deployment
+        if self.ray_cluster.mode == "slurm":
+            # Notify the autoscaling
+            await self.ray_cluster.notify()
 
-        # Store the deployment information first so it's available to other tasks
-        self._deployed_artifacts[artifact_id] = {
-            "deployment_name": deployment_name,
-            "deployment_class": class_config,
-            "resources": {
-                "num_cpus": deployment_config["ray_actor_options"]["num_cpus"],
-                "num_gpus": deployment_config["ray_actor_options"]["num_gpus"],
-            },
-        }
-
-        # Deploy the application in a separate task to avoid blocking
-        async def deploy_task():
-            self.logger.info(f"Started deployment process for artifact '{artifact_id}'")
-            await asyncio.to_thread(
-                serve.run, app, name=deployment_name, route_prefix=None
-            )
-
-            # Check if the deployment was successful
-            serve_status = serve.status()
-            if deployment_name in serve_status.applications.keys():
-                self.logger.info(
-                    f"Successfully completed deployment of artifact '{artifact_id}'"
-                )
-                # Update services if not skipped
-                if not _skip_update:
-                    await self._update_services()
-            else:
-                self.logger.error(
-                    f"Deployment of artifact '{artifact_id}' failed. Deployment name '{deployment_name}' not found in serve status."
-                )
-                self._deployed_artifacts.pop(artifact_id, None)
-
-        try:
-            # Create and start the deployment task
-            task = asyncio.create_task(deploy_task(), name=f"deploy-{artifact_id}")
-
-            # Store the task with a strong reference to prevent garbage collection
-            self._deployment_tasks[artifact_id] = task
-
-            # Notify the autoscaling of the new deployment after a short delay
-            if self.ray_cluster.mode == "slurm":
-                # Notify the autoscaling
-                await self.ray_cluster.notify()
-
-            # Check if `deployment_class` has a class method __bioengine_initialize__
-            if hasattr(deployment_class, "__bioengine_initialize__"):
-                app_handle = serve.get_app_handle(name=deployment_name)
-                self.logger.info(
-                    f"Calling __bioengine_initialize__ on deployment '{deployment_name}'"
-                )
-                await app_handle.__bioengine_initialize__.remote()
-
-            # Wait for the deployment task to complete
-            await task
-        except asyncio.CancelledError as cancel_err:
-            self.logger.info(f"Deployment of artifact '{artifact_id}' was cancelled")
-            raise cancel_err
-        except Exception as e:
-            self.logger.error(
-                f"Error during deployment of artifact '{artifact_id}': {e}"
-            )
-            raise e
-        finally:
-            # Clean up the deployment task reference
-            self._deployment_tasks.pop(artifact_id, None)
+        # Update services if not skipped
+        if not _skip_update:
+            await self._update_services()
 
     async def undeploy_artifact(
         self,
         artifact_id: str,
         context: Dict[str, Any],
-        _skip_update: bool = False,
     ) -> None:
         """
-        Remove a deployment from Ray Serve.
+        Remove a deployment from Ray Serve with proper task management.
 
-        Gracefully undeploys an artifact by canceling any ongoing deployment tasks,
-        removing the Ray Serve deployment, and cleaning up associated resources.
+        Gracefully undeploys an artifact by canceling the active deployment task,
+        which triggers automatic cleanup including removal from Ray Serve and
+        deletion from internal state tracking. Validates that the artifact is
+        currently deployed before attempting undeployment.
+
+        The method cancels the deployment task, which causes the _deploy_artifact
+        method to exit and perform cleanup in its finally block. This ensures
+        consistent cleanup regardless of deployment state.
 
         Args:
             artifact_id: ID of the artifact to undeploy
-            context: Optional context information from Hypha request containing user info
+            context: Context information from Hypha request containing user info
             _skip_update: Skip updating Hypha services after undeployment (for batch operations)
 
         Raises:
             RuntimeError: If server, artifact manager, or Ray is not initialized
             PermissionError: If user lacks permission to undeploy artifacts
-            Exception: If artifact undeployment fails
+
+        Note:
+            The method returns immediately after canceling the deployment task.
+            Actual cleanup happens asynchronously in the deployment task's finally block.
         """
         # Verify client is connected to Hypha server
         if not self.server:
@@ -941,87 +1073,52 @@ class AppsManager:
         # Get the full artifact ID
         artifact_id = await self._get_full_artifact_id(artifact_id)
 
-        # Check if artifact exists in deployed artifacts
-        deployment_name = await self._create_deployment_name(artifact_id)
-        serve_status = serve.status()
-        if deployment_name not in serve_status.applications.keys():
-            self.logger.warning(
-                f"Artifact '{artifact_id}' is not deployed. Skipping undeployment."
+        # Check if artifact is currently deployed
+        if artifact_id not in self._deployed_artifacts:
+            self.logger.debug(
+                f"Artifact '{artifact_id}' is not currently deployed. No action taken."
             )
             return
 
-        # Check if artifact is already being undeployed
-        if artifact_id in self._undeploying_artifacts:
+        deployment_info = self._deployed_artifacts[artifact_id]
+        if (
+            deployment_info["deployment_task"] is not None
+            and not deployment_info["deployment_task"].done()
+        ):
             self.logger.info(
-                f"Artifact '{artifact_id}' is already being undeployed. Skipping duplicate request."
+                f"User '{user_id}' is starting undeployment of artifact '{artifact_id}'"
             )
-            return
-
-        try:
-            self.logger.info(
-                f"User '{user_id}' is undeploying artifact '{artifact_id}'..."
+            deployment_info["deployment_task"].cancel()
+        else:
+            self.logger.debug(
+                f"Artifact '{artifact_id}' deployment task is not running. No action taken."
             )
-            self._undeploying_artifacts.add(artifact_id)
-
-            # Check if there's an ongoing deployment task for this artifact
-            deployment_task = self._deployment_tasks.get(artifact_id)
-            if deployment_task and not deployment_task.done():
-                # Cancel the task
-                self.logger.info(f"Cancelling ongoing deployment for '{artifact_id}'")
-                deployment_task.cancel()
-
-                # Wait for the task to finish or be cancelled
-                timeout = 30
-                try:
-                    await asyncio.wait_for(deployment_task, timeout=timeout)
-                except asyncio.TimeoutError:
-                    self.logger.warning(
-                        f"Deployment task for '{artifact_id}' did not finish in time ({timeout} seconds)"
-                    )
-                except Exception as e:
-                    self.logger.error(
-                        f"Error waiting for deployment task cancellation: {e}"
-                    )
-
-            # Delete the deployment asynchronously
-            try:
-                await asyncio.to_thread(serve.delete, deployment_name)
-            except Exception as delete_err:
-                self.logger.error(
-                    f"Error deleting deployment {deployment_name}: {delete_err}"
-                )
-                raise delete_err
-
-            # Remove the artifact from deployed artifacts
-            self._deployed_artifacts.pop(artifact_id, None)
-
-            if not _skip_update:
-                await self._update_services()
-
-            self.logger.info(f"Successfully undeployed {artifact_id}")
-
-        except Exception as e:
-            self.logger.error(f"Error undeploying '{artifact_id}': {e}")
-            raise e
-        finally:
-            # Clean up the undeploying artifacts reference
-            self._undeploying_artifacts.discard(artifact_id)
 
     async def get_status(self) -> Dict[str, Any]:
         """
-        Get comprehensive status of all deployed artifacts.
+        Get comprehensive status of all deployed artifacts with task state validation.
 
-        Returns detailed status information for all currently deployed artifacts,
+        Returns detailed status information for all currently tracked deployments,
         including deployment metadata, resource usage, and service availability.
+        Validates deployment state against both internal tracking and Ray Serve status
+        to ensure consistency.
+
+        The method cross-references _deployed_artifacts with Ray Serve status to
+        identify any inconsistencies and provides warnings for deployments that
+        may be in an unexpected state.
 
         Returns:
             Dict containing:
                 - service_id: Hypha service ID for deployments (if registered)
                 - Per artifact: deployment name, available methods, timing info,
-                  status, replica states, and resource allocation
+                  status, replica states, resource allocation, and task state
 
         Raises:
             RuntimeError: If Ray cluster is not running
+
+        Note:
+            Only deployments that exist in both internal tracking and Ray Serve
+            status are included in the output to ensure accuracy.
         """
         if not ray.is_initialized():
             self.logger.error("Can not get deployments - Ray cluster is not running")
@@ -1044,13 +1141,14 @@ class AppsManager:
             return output
 
         for artifact_id in list(self._deployed_artifacts.keys()):
-            deployment_name = self._deployed_artifacts[artifact_id]["deployment_name"]
+            deployment_info = self._deployed_artifacts[artifact_id]
+
+            deployment_name = deployment_info["deployment_name"]
             if deployment_name not in serve_status.applications:
-                # ? Clean up if deployment is not found
-                self.logger.warning(
+                self.logger.debug(
                     f"Deployment '{deployment_name}' for artifact '{artifact_id}' not found in Ray Serve status."
                 )
-                # del self._deployed_artifacts[artifact_id]
+                # TODO: remove from _deployed_artifacts??
                 continue
 
             application = serve_status.applications[deployment_name]
@@ -1058,11 +1156,10 @@ class AppsManager:
             if len(application.deployments) > 1:
                 raise NotImplementedError
 
-            class_config = self._deployed_artifacts[artifact_id]["deployment_class"]
+            class_config = deployment_info["class_config"]
             class_methods = class_config.get("exposed_methods", {})
             class_name = class_config["class_name"]
             deployment = application.deployments.get(class_name)
-            resources = self._deployed_artifacts[artifact_id]["resources"]
             output[artifact_id] = {
                 "deployment_name": deployment_name,
                 "available_methods": list(class_methods.keys()),
@@ -1071,7 +1168,7 @@ class AppsManager:
                 "uptime": formatted_time["uptime"],
                 "status": application.status.value,
                 "replica_states": deployment.replica_states if deployment else None,
-                "resources": resources,
+                "resources": deployment_info["resources"],
             }
 
         return output
@@ -1082,21 +1179,29 @@ class AppsManager:
         context: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         """
-        Deploy all artifacts in the deployment collection to Ray Serve.
+        Deploy all artifacts in the deployment collection to Ray Serve with batch processing.
 
         Iterates through all artifacts in the specified collection and deploys
-        each one to Ray Serve. Updates Hypha services after all deployments complete.
+        each one to Ray Serve using individual deployment tasks. Updates Hypha
+        services once after all deployments are initiated to improve efficiency.
+
+        Each artifact is deployed independently with proper state tracking, allowing
+        for partial success scenarios where some deployments succeed while others fail.
 
         Args:
             deployment_collection_id: Artifact collection ID for deployments
             context: Optional context information from Hypha request containing user info
 
         Returns:
-            List of artifact IDs that were successfully deployed
+            List of artifact IDs that were successfully initiated for deployment
 
         Raises:
             ValueError: If artifact manager is not initialized
-            Exception: If deployment of any artifact fails
+            Exception: If deployment of any artifact fails to initiate
+
+        Note:
+            The method returns after initiating all deployments. Use get_status()
+            to monitor individual deployment progress and success.
         """
         self.logger.info(
             f"Deploying all artifacts in collection '{deployment_collection_id}'..."
@@ -1122,59 +1227,83 @@ class AppsManager:
 
     async def cleanup_deployments(self, context: Dict[str, Any]) -> None:
         """
-        Clean up all Ray Serve deployments and associated resources.
+        Clean up all Ray Serve deployments and associated resources with robust task management.
 
-        Gracefully undeploys all artifacts, cancels any ongoing deployment tasks,
-        and performs comprehensive cleanup of deployment resources.
+        Gracefully undeploys all artifacts by canceling deployment tasks and waiting
+        for cleanup completion. Handles timeout scenarios and provides comprehensive
+        logging of cleanup status. Ensures proper removal from both Ray Serve and
+        internal state tracking.
+
+        The method creates a snapshot of current deployments to avoid modification
+        during iteration, cancels all deployment tasks, and waits for cleanup
+        completion with timeout handling for robust operation.
 
         Args:
-            context: Optional context information from Hypha request containing user info
+            context: Context information from Hypha request containing user info
 
         Raises:
-            RuntimeError: If Ray cluster is not running
-            Exception: If cleanup of deployments fails
-        """
-        # Ensure Ray is initialized
-        if not ray.is_initialized():
-            raise RuntimeError("Ray cluster is not running")
+            RuntimeError: If Ray cluster is not running or connections unavailable
+            PermissionError: If user lacks admin permissions for cleanup
 
-        artifact_ids = list(self._deployed_artifacts.keys())
-        if not artifact_ids:
+        Note:
+            Failed cleanup attempts are logged but don't prevent the method from
+            completing. Service registration is updated after cleanup regardless
+            of individual task failures.
+        """
+        # Verify client is connected to Hypha server
+        if not self.server:
+            raise RuntimeError(
+                "Hypha server connection not available. Call initialize() first."
+            )
+
+        # Ensure artifact manager is available
+        if not self.artifact_manager:
+            raise RuntimeError(
+                "Artifact manager not initialized. Call initialize() first."
+            )
+
+        # Verify Ray is initialized
+        if not ray.is_initialized():
+            raise RuntimeError("Ray cluster is not running. Call initialize() first.")
+
+        if not self._deployed_artifacts:
             self.logger.info("No applications are currently deployed.")
             return
 
-        self.logger.info("Cleaning up all deployments...")
+        # Check user permissions
+        await self._check_permissions(
+            context,
+            self.admin_users,
+            resource_name="cleanup of all deployments",
+        )
+        user_id = context["user"]["id"]
+
+        self.logger.info(f"User '{user_id}' is starting cleanup of all deployments...")
+
+        # Cancel all deployment tasks
+        for artifact_id in list(self._deployed_artifacts.keys()):
+            await self.undeploy_artifact(artifact_id, context)
+
+        # Wait for all undeployment tasks to complete
         failed_attempts = 0
-        for artifact_id in artifact_ids:
-            try:
-                await self.undeploy_artifact(artifact_id, context, _skip_update=True)
-            except Exception as e:
-                failed_attempts += 1
-                self.logger.error(f"Failed to undeploy {artifact_id}: {e}")
-
-        # Cancel any remaining deployment tasks
-        pending_tasks = []
-        for artifact_id, task in list(self._deployment_tasks.items()):
-            if not task.done():
-                pending_tasks.append(task)
-                task.cancel()
-
-        # Wait for all tasks to complete or be cancelled
-        if pending_tasks:
-            self.logger.warning(
-                f"Cancelling {len(pending_tasks)} remaining deployment tasks"
-            )
-            try:
-                await asyncio.wait(pending_tasks, timeout=5)
-            except Exception as e:
-                self.logger.error(f"Error waiting for tasks to cancel: {e}")
+        for artifact_id in list(self._deployed_artifacts.keys()):
+            deployment_info = self._deployed_artifacts.get(artifact_id)
+            if deployment_info and deployment_info.get("deployment_task"):
+                try:
+                    await asyncio.wait_for(
+                        deployment_info["deployment_task"],
+                        timeout=60,
+                    )
+                except asyncio.TimeoutError:
+                    failed_attempts += 1
+                    self.logger.error(
+                        f"Deployment task for {artifact_id} did not complete within timeout"
+                    )
 
         if failed_attempts != 0:
             self.logger.warning(
                 f"Failed to clean up all deployments, {failed_attempts} remaining."
             )
-
-        await self._update_services()
 
 
 async def create_demo_artifact(deployment_manager, artifact_id=None):

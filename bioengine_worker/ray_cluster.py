@@ -878,7 +878,10 @@ class RayCluster:
                 await self._start_cluster()
 
             # Start the monitoring loop
-            self.monitoring_task = asyncio.create_task(self._monitoring_loop())
+            self.monitoring_task = asyncio.create_task(
+                self._monitoring_loop(),
+                name="RayClusterMonitoringLoop",
+            )
             self.logger.debug(
                 f"Monitoring task started with status interval: {self.status_interval_seconds}s"
             )

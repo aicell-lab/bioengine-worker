@@ -1,7 +1,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 from fastapi import FastAPI, HTTPException, Request
@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from bioengine_worker.utils import create_logger
 
 
+# TODO: Add user authorization checks
 class DatasetsManager:
     def __init__(
         self,
@@ -304,7 +305,7 @@ class DatasetsManager:
             self.logger.error(f"Error closing dataset {dataset_id}: {e}")
             raise e
 
-    async def cleanup_datasets(self) -> str:
+    async def cleanup_datasets(self, context: Dict[str, Any]) -> str:
         """Close all loaded datasets."""
         try:
             if not self.loaded_datasets:

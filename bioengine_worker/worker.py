@@ -233,14 +233,18 @@ class BioEngineWorker:
 
         self.workspace = self.server.config.workspace
         self.logger.info(
-            f"User {user_id} connected to workspace '{self.workspace}' with client ID '{self.server.config.client_id}'"
+            f"User '{user_id}' connected to workspace '{self.workspace}' with client ID '{self.server.config.client_id}'"
         )
 
-        # Add the logged-in user to admin users if not already present
-        if user_email not in self.admin_users:
-            self.admin_users.append(user_email)
-            self.deployment_manager.admin_users = self.admin_users
-            self.dataset_manager.admin_users = self.admin_users
+        # Update admin users list with the authenticated user and ensure it's at the top
+        if user_id in self.admin_users:
+            self.admin_users.remove(user_id)
+        if user_email in self.admin_users:
+            self.admin_users.remove(user_email)
+        self.admin_users.insert(0, user_id)
+        self.admin_users.insert(1, user_email)
+        self.deployment_manager.admin_users = self.admin_users
+        self.dataset_manager.admin_users = self.admin_users
 
         self.logger.info(f"Admin users for this worker: {', '.join(self.admin_users)}")
 
@@ -344,7 +348,7 @@ class BioEngineWorker:
         self.serve_event = asyncio.Event()
         await self.serve_event.wait()
 
-    async def cleanup(self, context: Optional[Dict[str, Any]] = None) -> None:
+    async def cleanup(self, context: Dict[str, Any]) -> None:
         """
         Clean up resources and stop the Ray cluster if managed by this worker.
 
@@ -359,8 +363,8 @@ class BioEngineWorker:
         """
         if ray.is_initialized():
             self.logger.info("Cleaning up resources...")
-            await self.dataset_manager.cleanup_datasets()
-            await self.deployment_manager.cleanup_deployments()
+            await self.dataset_manager.cleanup_datasets(context)
+            await self.deployment_manager.cleanup_deployments(context)
             await self.ray_cluster.stop()
         else:
             self.logger.warning("Ray is not initialized. No cleanup needed.")
@@ -616,7 +620,13 @@ if __name__ == "__main__":
             raise e
         finally:
             # Cleanup
-            await bioengine_worker.cleanup()
+            admin_context = {
+                "user": {
+                    "id": bioengine_worker.admin_users[0],
+                    "email": bioengine_worker.admin_users[1],
+                }
+            }
+            await bioengine_worker.cleanup(context=admin_context)
 
     # Run the test
     asyncio.run(test_bioengine_worker())

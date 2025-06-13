@@ -276,17 +276,17 @@ class AppsManager:
         Raises:
             PermissionError: If user is not authorized to access the resource
         """
+        if context is None or "user" not in context:
+            raise PermissionError("Context is missing user information")
         user = context["user"]
         if isinstance(authorized_users, str):
             authorized_users = [authorized_users]
         if (
             "*" not in authorized_users
             and user["id"] not in authorized_users
-            and user.get("email", "no-email") not in authorized_users
+            and user["email"] not in authorized_users
         ):
-            msg = f"User {user['id']} is not authorized to access {resource_name}"
-            self.logger.warning(msg)
-            raise PermissionError(msg)
+            raise PermissionError(f"User {user['id']} is not authorized to access {resource_name}")
 
     async def _update_services(self) -> None:
         """
@@ -452,16 +452,16 @@ class AppsManager:
             self.logger.info(
                 f"Starting deployments for artifacts: {', '.join(self.startup_deployments)}"
             )
-            context = {
+            admin_context = {
                 "user": {
-                    "id": "startup",
-                    "email": (self.admin_users[0] if self.admin_users else "anonymous"),
+                    "id": self.admin_users[0],
+                    "email": self.admin_users[1],
                 }
             }
             deployment_tasks = [
                 self.deploy_artifact(
                     artifact_id,
-                    context=context,
+                    context=admin_context,
                     _skip_update=True,
                 )
                 for artifact_id in self.startup_deployments
@@ -785,7 +785,7 @@ class AppsManager:
 
         # Pass user workspace and token to the deployment
         env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
-        env_vars["HYPHA_TOKEN"] = self.server.config.token
+        env_vars["HYPHA_TOKEN"] = self.server.config.reconnection_token
 
         # Load the deployment code
         deployment_class = await self._load_deployment_code(
@@ -870,8 +870,8 @@ class AppsManager:
     async def undeploy_artifact(
         self,
         artifact_id: str,
-        context: Optional[Dict[str, Any]] = None,
-        _skip_update=False,
+        context: Dict[str, Any],
+        _skip_update: bool=False,
     ) -> None:
         """
         Remove a deployment from Ray Serve.
@@ -1096,7 +1096,7 @@ class AppsManager:
         await self._update_services()
 
     async def cleanup_deployments(
-        self, context: Optional[Dict[str, Any]] = None
+        self, context: Dict[str, Any]
     ) -> None:
         """
         Clean up all Ray Serve deployments and associated resources.
@@ -1111,17 +1111,20 @@ class AppsManager:
             RuntimeError: If Ray cluster is not running
             Exception: If cleanup of deployments fails
         """
-        self.logger.info("Cleaning up all deployments...")
-
         # Ensure Ray is initialized
         if not ray.is_initialized():
             raise RuntimeError("Ray cluster is not running")
 
         artifact_ids = list(self._deployed_artifacts.keys())
+        if not artifact_ids:
+            self.logger.info("No applications are currently deployed.")
+            return
+
+        self.logger.info("Cleaning up all deployments...")
         failed_attempts = 0
         for artifact_id in artifact_ids:
             try:
-                await self.undeploy_artifact(artifact_id)
+                await self.undeploy_artifact(artifact_id, context)
             except Exception as e:
                 failed_attempts += 1
                 self.logger.error(f"Failed to undeploy {artifact_id}: {e}")
@@ -1259,6 +1262,13 @@ if __name__ == "__main__":
         try:
             print("\n===== Testing AppsManager in single-machine mode =====\n")
 
+            # Connect to Hypha server using token from environment
+            token = os.environ.get("HYPHA_TOKEN") or await login(
+                {"server_url": server_url}
+            )
+            server = await connect_to_server({"server_url": server_url, "token": token})
+
+            # Start Ray cluster in single-machine mode
             bioengine_cache_dir = Path(os.environ["HOME"]) / ".bioengine"
             ray_cluster = RayCluster(
                 mode="single-machine",
@@ -1275,15 +1285,10 @@ if __name__ == "__main__":
             # Create deployment manager
             deployment_manager = AppsManager(
                 ray_cluster=ray_cluster,
+                admin_users=[server.config.user["email"]],
                 apps_cache_dir=bioengine_cache_dir / "apps",
                 debug=True,
             )
-
-            # Connect to Hypha server using token from environment
-            token = os.environ.get("HYPHA_TOKEN") or await login(
-                {"server_url": server_url}
-            )
-            server = await connect_to_server({"server_url": server_url, "token": token})
 
             # Initialize deployment manager
             await deployment_manager.initialize(server)
@@ -1346,7 +1351,7 @@ if __name__ == "__main__":
                 await server.serve()
 
             # Undeploy the test artifact
-            await deployment_manager.undeploy_artifact(artifact_id)
+            await deployment_manager.undeploy_artifact(artifact_id, server.context)
 
             # Deploy again
             await deployment_manager.deploy_artifact(artifact_id)

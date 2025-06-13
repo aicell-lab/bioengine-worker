@@ -16,7 +16,7 @@ tags: [demo, bioengine]
 type: application
 deployment_class:
   python_file: main.py
-  class_name: DemoModel
+  class_name: DemoDeployment
   exposed_methods:
     ping:
       authorized_users: "*"

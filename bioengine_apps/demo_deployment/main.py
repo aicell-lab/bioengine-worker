@@ -1,6 +1,12 @@
-class DemoModel(object):
+class DemoDeployment(object):
     def __init__(self):
         pass
+
+    async def __bioengine_initialize__(self) -> None:
+      """This method is called when the Bioengine app is initialized and can be used to set up any asynchronous tasks or initial configurations."""
+      import asyncio
+
+      await asyncio.sleep(1)
 
     async def ping(self) -> str:
         return "pong"

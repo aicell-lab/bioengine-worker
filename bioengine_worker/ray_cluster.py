@@ -373,8 +373,8 @@ class RayCluster:
         try:
             if "ray://" in connection_string:
                 # If the connection string starts with 'ray://', it is a Ray client address
-                hostname_port = connection_string.split("://")[1]
-                address, port = hostname_port.split(":")
+                port = connection_string.split(":")[-1]
+                address = connection_string[:-(len(port)+1)]
                 self.ray_cluster_config["head_node_address"] = address
                 self.ray_cluster_config["client_server_port"] = int(port)
             else:

@@ -4,4 +4,3 @@ from .logger import (
     file_logging_format,
     date_format,
 )
-from .format_time import format_time

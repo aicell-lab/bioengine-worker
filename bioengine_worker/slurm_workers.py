@@ -7,7 +7,7 @@ import time
 from typing import Dict, List, Optional, Set
 
 import ray
-from ray.util.state import get_node, list_nodes, summarize_actors, summarize_tasks
+from ray.util.state.common import StateResource
 
 from bioengine_worker import __version__
 from bioengine_worker.utils import create_logger
@@ -36,29 +36,6 @@ class SlurmWorkers:
     - Comprehensive error handling with retry mechanisms
     - Customizable SLURM job parameters and resource allocation
     - Real-time monitoring and logging for operational visibility
-
-    Attributes:
-        ray_cluster: Reference to the Ray cluster manager instance
-        image (str): Container image path for worker nodes
-        job_name (str): SLURM job name prefix for worker identification
-        worker_cache_dir (str): Cache directory mounted to worker containers
-        worker_data_dir (str): Optional data directory mounted to worker containers
-        default_num_gpus (int): Default GPU allocation per worker
-        default_num_cpus (int): Default CPU allocation per worker
-        default_mem_per_cpu (int): Default memory (GB) per CPU
-        default_time_limit (str): Default SLURM job time limit
-        further_slurm_args (List[str]): Additional SLURM arguments
-        min_workers (int): Minimum number of workers to maintain
-        max_workers (int): Maximum number of workers allowed
-        check_interval (int): Interval in seconds between scaling checks
-        scale_down_threshold (int): Idle time in seconds before scaling down
-        scale_up_cooldown (int): Cooldown period in seconds between scale-ups
-        scale_down_cooldown (int): Cooldown period in seconds between scale-downs
-        is_running (bool): Whether the autoscaling monitoring loop is active
-        monitoring_task (asyncio.Task): Background monitoring task handle
-        last_scaling_decision (float): Timestamp of last scaling decision
-        last_scale_up_time (float): Timestamp of last scale-up action
-        last_scale_down_time (float): Timestamp of last scale-down action
     """
 
     def __init__(
@@ -76,12 +53,12 @@ class SlurmWorkers:
         # Autoscaling configuration parameters
         min_workers: int = 0,
         max_workers: int = 4,
-        check_interval_seconds: int = 60,  # Check scaling once per minute
-        scale_down_threshold_seconds: int = 300,  # 5 minutes of idleness before scale down
         scale_up_cooldown_seconds: int = 30,  # 30 seconds between scale ups
+        scale_down_check_interval_seconds: int = 60,  # Check for idle workers every 60 seconds
+        scale_down_threshold_seconds: int = 300,  # 5 minutes of idleness before scale down
         scale_down_cooldown_seconds: int = 60,  # 1 minute between scale downs
         grace_period: int = 60,  # Grace period for job cancellation
-        # Logger
+        # Logger configuration
         log_file: Optional[str] = None,
         debug: bool = False,
     ):
@@ -143,317 +120,16 @@ class SlurmWorkers:
         # Autoscaling configuration parameters
         self.min_workers = min_workers
         self.max_workers = max_workers
-        self.check_interval = check_interval_seconds
-        self.scale_down_threshold = scale_down_threshold_seconds
         self.scale_up_cooldown = scale_up_cooldown_seconds
+        self.scale_down_check_interval = scale_down_check_interval_seconds
+        self.scale_down_threshold = scale_down_threshold_seconds
         self.scale_down_cooldown = scale_down_cooldown_seconds
         self.grace_period = grace_period
 
         # Initialize state variables
-        self.last_scaling_decision = 0
         self.last_scale_up_time = 0
+        self.last_scale_down_check = 0
         self.last_scale_down_time = 0
-
-        # Background task
-        self.monitoring_task = None
-        self.is_running = False
-
-    async def _get_num_pending_tasks_actors(self) -> int:
-        """
-        Get the number of pending tasks and actors in the Ray cluster.
-
-        Queries the Ray cluster to count tasks that are waiting for node assignment.
-        These tasks indicate demand for additional worker resources.
-
-        Returns:
-            Number of tasks with PENDING_NODE_ASSIGNMENT state
-
-        Raises:
-            Exception: If task summary retrieval fails due to Ray connection issues
-        """
-        task_summary = await asyncio.to_thread(
-            summarize_tasks, address=self.ray_cluster.head_node_address
-        )
-        num_pending_tasks = sum(
-            task["state_counts"].get("PENDING_NODE_ASSIGNMENT", 0)
-            for task in task_summary["cluster"]["summary"].values()
-        )
-        actor_summary = await asyncio.to_thread(
-            summarize_actors, address=self.ray_cluster.head_node_address
-        )
-        num_pending_actors = sum(
-            actor["state_counts"].get("PENDING_CREATION", 0)
-            for actor in actor_summary["cluster"]["summary"].values()
-        )
-        return num_pending_tasks + num_pending_actors
-
-    async def _get_num_worker_jobs(self) -> int:
-        """
-        Get number of SLURM workers in the cluster (configuring, pending or running).
-
-        Queries SLURM for all BioEngine worker jobs regardless of their current state.
-        This includes jobs that are pending in the queue, configuring, or actively running.
-
-        Returns:
-            Total count of BioEngine worker jobs in all states
-
-        Raises:
-            Exception: If job query fails due to SLURM connection issues
-        """
-        return len(await self._get_jobs())
-
-    async def _try_scale_up(self, n_worker_jobs: int, num_pending_tasks: int) -> None:
-        """
-        Attempt to scale up the cluster by adding a new worker.
-
-        Checks if scaling up is allowed based on cooldown periods and worker limits.
-        If conditions are met, submits a new SLURM job with default resource allocation.
-
-        Args:
-            n_worker_jobs: Current number of worker jobs in SLURM
-            num_pending_tasks: Number of pending tasks requiring resources
-
-        Returns:
-            None
-
-        Raises:
-            Exception: If worker creation fails
-        """
-        # SCALE UP LOGIC
-        can_scale_up = (
-            # Cooldown period has passed
-            (time.time() - self.last_scale_up_time) > self.scale_up_cooldown
-            # Not at max worker limit
-            and n_worker_jobs < self.max_workers
-        )
-        if not can_scale_up:
-            return
-
-        # TODO: Check if any pending task needs more resources than default
-        # for task in pending_tasks:
-        #     task_req = task.get("required_resources", {}) or {}
-        #     if task_req.get("GPU", 0) > num_gpus:
-        #         num_gpus = max(num_gpus, int(task_req.get("GPU", 1)))
-        #     if task_req.get("CPU", 0) > num_cpus:
-        #         num_cpus = max(num_cpus, int(task_req.get("CPU", 4)))
-
-        num_gpus = None or self.default_num_gpus
-        num_cpus = None or self.default_num_cpus
-        mem_per_cpu = None or self.default_mem_per_cpu
-        time_limit = None or self.default_time_limit
-        further_slurm_args = None or self.further_slurm_args
-
-        self.logger.info(
-            f"Scaling up with {num_gpus} GPU(s) and {num_cpus} CPU(s) due to {num_pending_tasks} pending task(s)"
-        )
-        await self.add(
-            num_gpus=num_gpus,
-            num_cpus=num_cpus,
-            mem_per_cpu=mem_per_cpu,
-            time_limit=time_limit,
-            further_slurm_args=further_slurm_args,
-        )
-        self.last_scale_up_time = time.time()
-
-    async def _check_is_idle(self, node_info: Dict) -> bool:
-        """
-        Check if a worker node is idle based on its GPU and CPU utilization.
-
-        A node is considered idle if it has no active CPU or GPU usage.
-
-        Args:
-            node_info: Dictionary containing node resource information with keys
-                      'total_cpu', 'available_cpu', 'total_gpu', 'available_gpu'
-
-        Returns:
-            True if the node is completely idle (no used CPUs or GPUs), False otherwise
-        """
-        used_cpus = node_info["total_cpu"] - node_info["available_cpu"]
-        # GPU nodes
-        if node_info["total_gpu"] > 0:
-            used_gpus = node_info["total_gpu"] - node_info["available_gpu"]
-        else:
-            used_gpus = 0
-
-        # Node is idle if no GPUs or CPUs are used
-        return used_gpus == 0 and used_cpus == 0
-
-    async def _find_idle_nodes(self, running_nodes: List) -> Set[str]:
-        """
-        Find idle worker nodes based on GPU and CPU utilization metrics.
-
-        Iterates through all running nodes and identifies those that are completely idle
-        (no GPU or CPU usage).
-
-        Args:
-            running_nodes: List of node information dictionaries from Ray cluster
-
-        Returns:
-            Set of node_ids that are currently idle
-        """
-        idle_nodes = set()
-        for node_info in running_nodes:
-            if await self._check_is_idle(node_info):
-                # Node is completely idle
-                self.logger.debug(
-                    f"Node {node_info['node_id']} is completely idle (no used GPUs or CPUs)"
-                )
-                idle_nodes.add(node_info["node_id"])
-
-        return idle_nodes
-
-    async def _try_scale_down(self, n_worker_jobs) -> None:
-        """
-        Attempt to scale down the cluster by removing idle workers.
-
-        Checks if scaling down is allowed based on cooldown periods and worker limits.
-        If conditions are met, identifies the longest idle node and removes it.
-
-        Args:
-            n_worker_jobs: Current number of worker jobs in SLURM
-
-        Returns:
-            None
-
-        Raises:
-            Exception: If worker removal fails
-        """
-        # SCALE DOWN LOGIC
-        current_time = time.time()
-        can_scale_down = (
-            # Cooldown period has passed
-            (current_time - self.last_scale_down_time) > self.scale_down_cooldown
-            # Not at min worker limit
-            and n_worker_jobs > self.min_workers
-        )
-        if not can_scale_down:
-            return
-
-        # Get the longest idle node
-        longest_idle_nodes = None
-        idle_time = 0
-        for i, (timepoint, nodes_status) in enumerate(
-            reversed(self.ray_cluster.worker_nodes_history.items())
-        ):
-            running_nodes = nodes_status.get("RUNNING", [])
-            idle_nodes = await self._find_idle_nodes(running_nodes)
-
-            # If no idle nodes found, we can stop checking further
-            if not idle_nodes:
-                break
-
-            # If this is the first iteration, initialize longest_idle_nodes
-            if i == 0:
-                longest_idle_nodes = idle_nodes
-            else:
-                # Otherwise, find the intersection of longest idle nodes and current idle nodes
-                overlap = longest_idle_nodes & idle_nodes
-                if len(overlap) == 0:
-                    # No overlap means no common idle nodes, we can stop checking further
-                    break
-
-                longest_idle_nodes = overlap
-
-            # Calculate idle time for the current timepoint
-            idle_time = current_time - timepoint
-
-            if len(longest_idle_nodes) == 1:
-                # If we have only one idle node, we can stop checking further
-                break
-
-        if longest_idle_nodes and idle_time > self.scale_down_threshold:
-            # Get the first longest idle node (if there are multiple nodes with the same idle time)
-            for idle_node_id in list(longest_idle_nodes):
-                # Check worker status
-                worker_status = await asyncio.to_thread(
-                    get_node,
-                    id=idle_node_id,
-                    address=self.ray_cluster.head_node_address,
-                )
-                # Check if worker is still idle
-                # TODO: Check if node is still idle
-                if worker_status:
-                    self.logger.info(
-                        f"Scaling down worker '{idle_node_id}' due to inactivity for {idle_time:.1f}s"
-                    )
-                    await self._close(idle_node_id)
-                    self.last_scale_down_time = current_time
-
-    async def _make_scaling_decisions(self) -> None:
-        """
-        Make scaling decisions based on resource utilization and pending tasks.
-
-        Evaluates the current cluster state including pending tasks and worker jobs,
-        then decides whether to scale up (if there are pending tasks) or scale down
-        (if workers are idle). Updates the last scaling decision timestamp.
-
-        Raises:
-            Exception: If Ray is not initialized or scaling decision fails
-        """
-        current_time = time.time()
-        # Check if Ray is still initialized
-        if not ray.is_initialized():
-            self.logger.warning("Ray is not initialized, skipping scaling decision")
-            self.last_scaling_decision = current_time
-            return
-
-        num_pending_tasks = await self._get_num_pending_tasks_actors()
-        n_worker_jobs = await self._get_num_worker_jobs()
-
-        # If at least one task needs resources, check scale up, otherwise check scale down
-        if num_pending_tasks > 0:
-            await self._try_scale_up(n_worker_jobs, num_pending_tasks)
-        else:
-            await self._try_scale_down(n_worker_jobs)
-        self.last_scaling_decision = current_time
-
-    async def _monitoring_loop(self, max_consecutive_errors: int = 3) -> None:
-        """
-        Main monitoring loop for autoscaling.
-
-        Continuously monitors the cluster state and makes scaling decisions at regular
-        intervals. Handles errors gracefully and stops after consecutive failures.
-
-        Args:
-            max_consecutive_errors: Maximum number of consecutive errors before stopping
-
-        Raises:
-            Exception: If max consecutive errors is reached or monitoring fails
-        """
-        consecutive_errors = 0
-
-        while self.is_running:
-            try:
-                await asyncio.sleep(1)
-                if time.time() - self.last_scaling_decision < self.check_interval:
-                    continue
-
-                # Check if a scaling decision is needed
-                self.logger.debug("Starting autoscaling monitoring iteration")
-                await self._make_scaling_decisions()
-
-                consecutive_errors = 0  # Reset error counter on success
-
-            except asyncio.CancelledError:
-                self.logger.info("Autoscaling monitoring loop cancelled")
-                break
-
-            except Exception as e:
-                self.logger.error(f"Error in monitoring loop: {e}")
-                consecutive_errors += 1
-
-                if consecutive_errors >= max_consecutive_errors:
-                    self.logger.error(
-                        f"Stopping monitoring loop after {consecutive_errors} consecutive errors"
-                    )
-                    raise e
-
-            # Update last scaling decision time
-            self.last_scaling_decision = time.time()
-
-        # Ensure autoscaling stops if we break from the loop
-        if self.is_running:
-            asyncio.create_task(self.stop(), name="SlurmWorkers.stop")
 
     def _create_sbatch_script(
         self,
@@ -827,7 +503,7 @@ class SlurmWorkers:
             self.logger.error(f"Failed to cancel jobs: {e}")
             raise e
 
-    async def add(
+    async def _add(
         self,
         num_gpus: Optional[int] = None,
         num_cpus: Optional[int] = None,
@@ -908,9 +584,8 @@ class SlurmWorkers:
                     )
 
                 # Check if the worker node has already been added to the Ray cluster
-                all_nodes = await asyncio.to_thread(
-                    list_nodes,
-                    address=self.ray_cluster.head_node_address,
+                all_nodes = await self.ray_cluster.list_resources(
+                    resource=StateResource.NODES,
                     filters=[("state", "=", "ALIVE"), ("is_head_node", "=", False)],
                 )
                 for node in all_nodes:
@@ -952,8 +627,9 @@ class SlurmWorkers:
                 raise RuntimeError("Ray is not initialized. Call start() first.")
 
             # Check worker status
-            worker_status = await asyncio.to_thread(
-                get_node, id=node_id, address=self.ray_cluster.head_node_address
+            worker_status = await self.ray_cluster.get_resource(
+                resource=StateResource.NODES,
+                id=node_id,
             )
             if worker_status is None:
                 raise RuntimeError(f"Worker '{node_id}' not found in cluster")
@@ -993,8 +669,8 @@ class SlurmWorkers:
                 start_time = time.time()
                 while time.time() - start_time < self.grace_period:
                     await asyncio.sleep(3)
-                    worker_status = await asyncio.to_thread(
-                        get_node, id=node_id, address=self.ray_cluster.head_node_address
+                    worker_status = await self.ray_cluster.get_resource(
+                        resource=StateResource.NODES, id=node_id
                     )
                     if worker_status is None or worker_status.state != "ALIVE":
                         break
@@ -1010,8 +686,221 @@ class SlurmWorkers:
         except Exception as e:
             self.logger.error(f"Error shutting down worker {node_id}: {e}")
             raise e
+        
+    async def _get_num_worker_jobs(self) -> int:
+        """
+        Get number of SLURM workers in the cluster (configuring, pending or running).
 
-    async def _close_all(self) -> None:
+        Queries SLURM for all BioEngine worker jobs regardless of their current state.
+        This includes jobs that are pending in the queue, configuring, or actively running.
+
+        Returns:
+            Total count of BioEngine worker jobs in all states
+
+        Raises:
+            Exception: If job query fails due to SLURM connection issues
+        """
+        return len(await self._get_jobs())
+    
+    async def _check_scale_up(self, n_worker_jobs: int) -> None:
+        """
+        Attempt to scale up the cluster by adding a new worker.
+
+        Checks if scaling up is allowed based on cooldown periods and worker limits.
+        If conditions are met, submits a new SLURM job with default resource allocation.
+
+        Args:
+            n_worker_jobs: Current number of worker jobs in SLURM
+
+        Returns:
+            None
+
+        Raises:
+            Exception: If worker creation fails
+        """
+        # SCALE UP LOGIC
+        can_scale_up = (
+            # Cooldown period has passed
+            (time.time() - self.last_scale_up_time) > self.scale_up_cooldown
+            # Not at max worker limit
+            and n_worker_jobs < self.max_workers
+        )
+        if not can_scale_up:
+            return
+
+        # TODO: Check if any pending task needs more resources than default
+        # for task in pending_tasks:
+        #     task_req = task.get("required_resources", {}) or {}
+        #     if task_req.get("GPU", 0) > num_gpus:
+        #         num_gpus = max(num_gpus, int(task_req.get("GPU", 1)))
+        #     if task_req.get("CPU", 0) > num_cpus:
+        #         num_cpus = max(num_cpus, int(task_req.get("CPU", 4)))
+
+        num_gpus = None or self.default_num_gpus
+        num_cpus = None or self.default_num_cpus
+        mem_per_cpu = None or self.default_mem_per_cpu
+        time_limit = None or self.default_time_limit
+        further_slurm_args = None or self.further_slurm_args
+
+        self.logger.info(
+            f"Scaling up with {num_gpus} GPU(s) and {num_cpus} CPU(s) due to pending resources"
+        )
+        await self._add(
+            num_gpus=num_gpus,
+            num_cpus=num_cpus,
+            mem_per_cpu=mem_per_cpu,
+            time_limit=time_limit,
+            further_slurm_args=further_slurm_args,
+        )
+        self.last_scale_up_time = time.time()
+
+    async def _check_is_idle(self, node_info: Dict) -> bool:
+        """
+        Check if a worker node is idle based on its GPU and CPU utilization.
+
+        A node is considered idle if it has no active CPU or GPU usage.
+
+        Args:
+            node_info: Dictionary containing node resource information with keys
+                      'total_cpu', 'available_cpu', 'total_gpu', 'available_gpu'
+
+        Returns:
+            True if the node is completely idle (no used CPUs or GPUs), False otherwise
+        """
+        used_cpus = node_info["total_cpu"] - node_info["available_cpu"]
+        # GPU nodes
+        if node_info["total_gpu"] > 0:
+            used_gpus = node_info["total_gpu"] - node_info["available_gpu"]
+        else:
+            used_gpus = 0
+
+        # Node is idle if no GPUs or CPUs are used
+        return used_gpus == 0 and used_cpus == 0
+
+    async def _find_idle_nodes(self, running_nodes: List) -> Set[str]:
+        """
+        Find idle worker nodes based on GPU and CPU utilization metrics.
+
+        Iterates through all running nodes and identifies those that are completely idle
+        (no GPU or CPU usage).
+
+        Args:
+            running_nodes: List of node information dictionaries from Ray cluster
+
+        Returns:
+            Set of node_ids that are currently idle
+        """
+        idle_nodes = set()
+        for node_info in running_nodes:
+            if await self._check_is_idle(node_info):
+                # Node is completely idle
+                self.logger.debug(
+                    f"Node {node_info['node_id']} is completely idle (no used GPUs or CPUs)"
+                )
+                idle_nodes._add(node_info["node_id"])
+
+        return idle_nodes
+
+    async def _check_scale_down(self, n_worker_jobs) -> None:
+        """
+        Attempt to scale down the cluster by removing idle workers.
+
+        Checks if scaling down is allowed based on cooldown periods and worker limits.
+        If conditions are met, identifies the longest idle node and removes it.
+
+        Args:
+            n_worker_jobs: Current number of worker jobs in SLURM
+
+        Returns:
+            None
+
+        Raises:
+            Exception: If worker removal fails
+        """
+        # SCALE DOWN LOGIC
+        self.logger.debug("Checking scaling decision...")
+        current_time = time.time()
+        
+        # Check if we can scale down based on cooldown and worker limits
+        can_scale_down = (
+            # Idle node check interval has passed
+            (current_time - self.last_scale_down_check) > self.scale_down_check_interval
+            # Cool down period has passed
+            and (current_time - self.last_scale_down_time) > self.scale_down_cooldown
+            # Not at min worker limit
+            and n_worker_jobs > self.min_workers
+        )
+        self.last_scale_down_check = current_time
+        if not can_scale_down:
+            return
+
+        # Get the longest idle node
+        longest_idle_nodes = None
+        idle_time = 0
+        for i, (timepoint, nodes_status) in enumerate(
+            reversed(self.ray_cluster.worker_nodes_history.items())
+        ):
+            running_nodes = nodes_status.get("RUNNING", [])
+            idle_nodes = await self._find_idle_nodes(running_nodes)
+
+            # If no idle nodes found, we can stop checking further
+            if not idle_nodes:
+                break
+
+            # If this is the first iteration, initialize longest_idle_nodes
+            if i == 0:
+                longest_idle_nodes = idle_nodes
+            else:
+                # Otherwise, find the intersection of longest idle nodes and current idle nodes
+                overlap = longest_idle_nodes & idle_nodes
+                if len(overlap) == 0:
+                    # No overlap means no common idle nodes, we can stop checking further
+                    break
+
+                longest_idle_nodes = overlap
+
+            # Calculate idle time for the current timepoint
+            idle_time = current_time - timepoint
+
+            if len(longest_idle_nodes) == 1:
+                # If we have only one idle node, we can stop checking further
+                break
+
+        if longest_idle_nodes and idle_time > self.scale_down_threshold:
+            # Get the first longest idle node (if there are multiple nodes with the same idle time)
+            for idle_node_id in list(longest_idle_nodes):
+                # Check worker status
+                worker_status = await self.ray_cluster.get_resource(
+                    resource=StateResource.NODES, id=idle_node_id
+                )
+                # Check if worker is still idle
+                # TODO: Check if node is still idle
+                if worker_status:
+                    self.logger.info(
+                        f"Scaling down worker '{idle_node_id}' due to inactivity for {idle_time:.1f}s"
+                    )
+                    await self._close(idle_node_id)
+                    self.last_scale_down_time = current_time
+    
+    async def check_scaling(self) -> None:
+        """
+        Make scaling decisions based on resource utilization and pending tasks.
+
+        Evaluates the current cluster state including pending tasks and worker jobs,
+        then decides whether to scale up (if there are pending tasks) or scale down
+        (if workers are idle). Updates the last scaling decision timestamp.
+
+        Raises:
+            Exception: If Ray is not initialized or scaling decision fails
+        """
+        # Logic: If at least one task needs resources, check scale up, otherwise check scale down
+        n_worker_jobs = await self._get_num_worker_jobs()
+        if self.ray_cluster.status["cluster"]["pending_resources"] > 0:
+            await self._check_scale_up(n_worker_jobs)
+        else:
+            await self._check_scale_down(n_worker_jobs)
+
+    async def close_all(self):
         """
         Shut down all SLURM worker nodes from the Ray cluster.
 
@@ -1028,9 +917,8 @@ class SlurmWorkers:
                 raise RuntimeError("Ray is not initialized. Call start() first.")
 
             # Get all worker nodes
-            worker_nodes = await asyncio.to_thread(
-                list_nodes,
-                address=self.ray_cluster.head_node_address,
+            worker_nodes = await self.ray_cluster.list_resources(
+                resource=StateResource.NODES,
                 filters=[("state", "=", "ALIVE"), ("is_head_node", "=", False)],
             )
 
@@ -1060,94 +948,4 @@ class SlurmWorkers:
 
         except Exception as e:
             self.logger.error(f"Error shutting down all workers: {e}")
-            raise e
-
-    async def start(self):
-        """
-        Start the autoscaling monitoring task.
-
-        Initializes and starts the background monitoring loop that handles
-        automatic scaling decisions. Requires Ray to be initialized.
-
-        Raises:
-            RuntimeError: If Ray cluster is not running
-            Exception: If autoscaling startup fails
-        """
-        try:
-            if self.is_running:
-                self.logger.warning("Autoscaling is already running")
-                return
-
-            if not ray.is_initialized():
-                raise RuntimeError(
-                    "Ray cluster is not running. Please start the Ray cluster first."
-                )
-
-            self.is_running = True
-
-            # Create monitoring task
-            self.monitoring_task = asyncio.create_task(
-                self._monitoring_loop(),
-                name="AutoscalingMonitoringLoop",
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to start autoscaling: {e}")
-            self.is_running = False
-            self.monitoring_task = None
-            raise e
-
-    async def stop(self):
-        """
-        Stop the autoscaling monitoring task.
-
-        Gracefully stops the background monitoring loop and cancels any ongoing
-        monitoring tasks. Ensures proper cleanup of autoscaling resources.
-
-        Raises:
-            Exception: If error occurs during shutdown process
-        """
-        if not self.is_running:
-            self.logger.warning("Autoscaling is not running")
-            return
-
-        self.logger.info("Stopping Ray autoscaling")
-        self.is_running = False
-
-        try:
-            # Cancel monitoring task with timeout
-            if self.monitoring_task:
-                self.monitoring_task.cancel()
-                try:
-                    await asyncio.wait_for(self.monitoring_task, timeout=5.0)
-                except asyncio.TimeoutError:
-                    self.logger.warning("Timeout waiting for monitoring task to cancel")
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    self.logger.error(f"Error while stopping monitoring task: {e}")
-                finally:
-                    self.monitoring_task = None
-
-            # Close all worker nodes
-            await self._close_all()
-
-        except Exception as e:
-            self.logger.error(f"Error during autoscaling shutdown: {e}")
-            # Ensure monitoring_task is cleared even if there's an error
-            self.monitoring_task = None
-            raise e
-
-    async def notify(self, delay_s: int = 3) -> None:
-        """
-        Notify the autoscaling system of a change in cluster state.
-
-        This method is called when the cluster state changes, such as when a new
-        task is submitted or a node is added/removed. It triggers a scaling decision
-        after a specified delay by adjusting the last scaling decision timestamp.
-
-        Args:
-            delay_s: Delay in seconds before triggering scaling decision
-        """
-        self.logger.info("Notifying autoscaling system of cluster state change")
-        self.last_scaling_decision = time.time() - self.check_interval + delay_s
+            raise e  

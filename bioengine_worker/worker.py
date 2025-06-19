@@ -17,7 +17,7 @@ from bioengine_worker import __version__
 from bioengine_worker.apps_manager import AppsManager
 from bioengine_worker.datasets_manager import DatasetsManager
 from bioengine_worker.ray_cluster import RayCluster
-from bioengine_worker.utils import create_logger, format_time, stream_logging_format
+from bioengine_worker.utils import create_logger
 
 
 class BioEngineWorker:
@@ -392,16 +392,10 @@ class BioEngineWorker:
         Raises:
             RuntimeError: If Ray is not initialized
         """
-        if not ray.is_initialized():
-            raise RuntimeError("Ray is not initialized. Call start() first.")
+        self.ray_cluster.check_connection()
 
-        formatted_service_time = format_time(self.start_time)
         status = {
-            "service": {
-                "start_time_s": self.start_time,
-                "start_time": formatted_service_time["start_time"],
-                "uptime": formatted_service_time["uptime"],
-            },
+            "service_start_time": self.start_time,
             "ray_cluster": self.ray_cluster.status,
             "bioengine_apps": await self.deployment_manager.get_status(),
             "bioengine_datasets": await self.dataset_manager.get_status(),

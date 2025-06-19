@@ -4,6 +4,7 @@ import logging
 import os
 from functools import partial
 from pathlib import Path
+from time import time
 from typing import Any, Dict, List, Optional, Union
 
 import httpx
@@ -14,7 +15,7 @@ from ray import serve
 
 from bioengine_worker import __version__
 from bioengine_worker.ray_cluster import RayCluster
-from bioengine_worker.utils import create_logger, format_time
+from bioengine_worker.utils import create_logger
 
 
 class AppsManager:
@@ -354,11 +355,12 @@ class AppsManager:
         ray_actor_options.setdefault("num_gpus", 0)
 
         # Check if the required resources are available
-        available_resources = await asyncio.to_thread(ray.cluster_resources)
+        cluster_status = self.ray_cluster.status["cluster"]
         available_resources = {
-            "num_cpus": available_resources["CPU"],
-            "num_gpus": available_resources.get("GPU", 0),
-            "memory": available_resources["memory"],
+            "num_cpus": cluster_status.get("total_cpu", 0),
+            "num_gpus": cluster_status.get("total_gpu", 0),
+            "memory": cluster_status.get("total_memory", 0),
+            # TODO: Does it make sense to check total memory?
         }
 
         if self.ray_cluster.mode == "slurm":
@@ -955,8 +957,7 @@ class AppsManager:
             )
 
         # Verify Ray is initialized
-        if not ray.is_initialized():
-            raise RuntimeError("Ray cluster is not running. Call initialize() first.")
+        self.ray_cluster.check_connection()
 
         # Get the full artifact ID
         artifact_id = await self._get_full_artifact_id(artifact_id)
@@ -1064,8 +1065,7 @@ class AppsManager:
             )
 
         # Verify Ray is initialized
-        if not ray.is_initialized():
-            raise RuntimeError("Ray cluster is not running. Call initialize() first.")
+        self.ray_cluster.check_connection()
 
         # Check user permissions
         await self._check_permissions(
@@ -1125,10 +1125,6 @@ class AppsManager:
             Only deployments that exist in both internal tracking and Ray Serve
             status are included in the output to ensure accuracy.
         """
-        if not ray.is_initialized():
-            self.logger.error("Can not get deployments - Ray cluster is not running")
-            raise RuntimeError("Ray cluster is not running")
-
         output = {}
         if self.service_info:
             output["service_id"] = self.service_info.id
@@ -1157,7 +1153,6 @@ class AppsManager:
                 continue
 
             application = serve_status.applications[deployment_name]
-            formatted_time = format_time(application.last_deployed_time_s)
             if len(application.deployments) > 1:
                 raise NotImplementedError
 
@@ -1168,9 +1163,7 @@ class AppsManager:
             output[artifact_id] = {
                 "deployment_name": deployment_name,
                 "available_methods": list(class_methods.keys()),
-                "start_time_s": application.last_deployed_time_s,
-                "start_time": formatted_time["start_time"],
-                "uptime": formatted_time["uptime"],
+                "start_time": application.last_deployed_time_s,
                 "status": application.status.value,
                 "replica_states": deployment.replica_states if deployment else None,
                 "resources": deployment_info["resources"],
@@ -1267,10 +1260,7 @@ class AppsManager:
                 "Artifact manager not initialized. Call initialize() first."
             )
 
-        # Verify Ray is initialized
-        if not ray.is_initialized():
-            raise RuntimeError("Ray cluster is not running. Call initialize() first.")
-
+        # Check if any deployments exist
         if not self._deployed_artifacts:
             self.logger.info("No applications are currently deployed.")
             return

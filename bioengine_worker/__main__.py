@@ -233,8 +233,7 @@ def create_parser():
     ray_cluster_group.add_argument(
         "--connection_address",
         type=str,
-        default="auto",
-        help="Address of existing Ray cluster to connect to (format: 'auto' for auto-discovery, 'ip:port' for specific address).",
+        help="Address of existing Ray cluster to connect to (format: 'ip:port' for specific address).",
     )
     ray_cluster_group.add_argument(
         "--skip_cleanup",
@@ -320,7 +319,7 @@ def create_parser():
     )
     ray_autoscaling_group.add_argument(
         "--scale_up_cooldown_seconds",
-        default=180,
+        default=60,
         type=int,
         help="Cooldown period between scaling up operations",
     )

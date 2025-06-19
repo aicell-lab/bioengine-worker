@@ -1,7 +1,7 @@
 authors:
 - {affiliation: KTH, github_user: nilsmechtel, name: Nils Mechtel}
 covers: []
-description: Demo deployment model for BioEngine.
+description: BioEngine demo application
 documentation: README.md
 tutorial: ''
 format_version: 0.5.0

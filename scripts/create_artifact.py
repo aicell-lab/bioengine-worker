@@ -116,36 +116,36 @@ async def manage_artifact(
         )
         logger.info(f"Artifact created with ID: {artifact.id}")
 
-    # Upload manifest.yaml
-    upload_url = await artifact_manager.put_file(artifact.id, file_path="manifest.yaml")
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.put(upload_url, data=yaml.dump(deployment_manifest))
-        response.raise_for_status()
-        logger.info(f"Uploaded manifest.yaml to artifact")
-
-    # Upload the entry point
-    python_file = deployment_manifest.get("python_file", "main.py")
-    with open(deployment_dir / python_file, "r") as f:
-        deployment_content = f.read()
-    logger.info(f"Deployment content loaded from {python_file}")
-
-    upload_url = await artifact_manager.put_file(artifact.id, file_path=python_file)
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.put(upload_url, data=deployment_content)
-        response.raise_for_status()
-        logger.info(f"Uploaded {python_file} to artifact")
-
-    # Upload the README.md
-    readme_file = deployment_manifest.get("readme_file", "README.md")
-    with open(deployment_dir / readme_file, "r") as f:
-        readme_content = f.read()
-    logger.info(f"README content loaded from {readme_file}")
-
-    upload_url = await artifact_manager.put_file(artifact.id, file_path=readme_file)
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.put(upload_url, data=readme_content)
-        response.raise_for_status()
-        logger.info(f"Uploaded {readme_file} to artifact")
+    # Upload all files in the deployment directory
+    for file_path in deployment_dir.rglob("*"):
+        if file_path.is_file():
+            relative_path = file_path.relative_to(deployment_dir)
+            
+            # Get upload URL
+            upload_url = await artifact_manager.put_file(artifact.id, file_path=str(relative_path))
+            
+            # Read file content and upload
+            try:
+                # Try to read as text first
+                with open(file_path, "r", encoding="utf-8") as f:
+                    file_content = f.read()
+                
+                # Upload as text
+                async with httpx.AsyncClient(timeout=30) as client:
+                    response = await client.put(upload_url, data=file_content)
+                    response.raise_for_status()
+                    logger.info(f"Uploaded {relative_path} to artifact (text)")
+                    
+            except UnicodeDecodeError:
+                # If text reading fails, read as binary
+                with open(file_path, "rb") as f:
+                    file_content = f.read()
+                
+                # Upload as binary
+                async with httpx.AsyncClient(timeout=30) as client:
+                    response = await client.put(upload_url, content=file_content)
+                    response.raise_for_status()
+                    logger.info(f"Uploaded {relative_path} to artifact (binary)")
 
     # Commit the artifact
     await artifact_manager.commit(

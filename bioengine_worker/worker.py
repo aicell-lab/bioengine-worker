@@ -54,7 +54,7 @@ class BioEngineWorker:
         client_id (str): Client ID for Hypha connection
         service_id (str): Service ID for registration
         ray_cluster (RayCluster): Ray cluster manager instance
-        deployment_manager (AppsManager): Model deployment manager
+        apps_manager (AppsManager): Model deployment manager
         dataset_manager (DatasetsManager): Dataset manager
         server: Hypha server connection
         logger: Logger instance for worker operations
@@ -159,7 +159,7 @@ class BioEngineWorker:
             self.ray_cluster = RayCluster(**ray_cluster_config)
 
             # Initialize AppsManager
-            self.deployment_manager = AppsManager(
+            self.apps_manager = AppsManager(
                 ray_cluster=self.ray_cluster,
                 admin_users=self.admin_users,
                 apps_cache_dir=self.cache_dir / "apps",
@@ -246,7 +246,7 @@ class BioEngineWorker:
             self.admin_users.remove(user_email)
         self.admin_users.insert(0, user_id)
         self.admin_users.insert(1, user_email)
-        self.deployment_manager.admin_users = self.admin_users
+        self.apps_manager.admin_users = self.admin_users
         self.dataset_manager.admin_users = self.admin_users
 
         self.logger.info(f"Admin users for this worker: {', '.join(self.admin_users)}")
@@ -287,11 +287,11 @@ class BioEngineWorker:
                 "load_dataset": self.dataset_manager.load_dataset,
                 "close_dataset": self.dataset_manager.close_dataset,
                 "execute_python_code": self.execute_python_code,
-                "create_artifact": self.deployment_manager.create_artifact,
-                "deploy_artifact": self.deployment_manager.deploy_artifact,
-                "undeploy_artifact": self.deployment_manager.undeploy_artifact,
-                "deploy_all_artifacts": self.deployment_manager.deploy_all_artifacts,
-                "cleanup_deployments": self.deployment_manager.cleanup_deployments,
+                "create_artifact": self.apps_manager.create_artifact,
+                "deploy_artifact": self.apps_manager.deploy_artifact,
+                "undeploy_artifact": self.apps_manager.undeploy_artifact,
+                "deploy_all_artifacts": self.apps_manager.deploy_all_artifacts,
+                "cleanup_deployments": self.apps_manager.cleanup_deployments,
                 "cleanup": self.cleanup,
             },
             {"overwrite": True},
@@ -328,10 +328,10 @@ class BioEngineWorker:
 
         # Connect to the Hypha server and register the service
         await self._connect_to_server()
-        await self.deployment_manager.initialize(self.server)
+        await self.apps_manager.initialize(self.server)
         await self.dataset_manager.initialize(self.server)
         sid = await self._register()
-        await self.deployment_manager.initialize_deployments()
+        await self.apps_manager.initialize_deployments()
 
         return sid
 
@@ -367,7 +367,7 @@ class BioEngineWorker:
         if ray.is_initialized():
             self.logger.info("Cleaning up resources...")
             await self.dataset_manager.cleanup_datasets(context)
-            await self.deployment_manager.cleanup_deployments(context)
+            await self.apps_manager.cleanup_deployments(context)
             await self.ray_cluster.stop()
         else:
             self.logger.warning("Ray is not initialized. No cleanup needed.")
@@ -400,7 +400,7 @@ class BioEngineWorker:
         status = {
             "service_start_time": self.start_time,
             "ray_cluster": self.ray_cluster.status,
-            "bioengine_apps": await self.deployment_manager.get_status(),
+            "bioengine_apps": await self.apps_manager.get_status(),
             "bioengine_datasets": await self.dataset_manager.get_status(),
         }
 
@@ -617,13 +617,7 @@ if __name__ == "__main__":
             raise e
         finally:
             # Cleanup
-            admin_context = {
-                "user": {
-                    "id": bioengine_worker.admin_users[0],
-                    "email": bioengine_worker.admin_users[1],
-                }
-            }
-            await bioengine_worker.cleanup(context=admin_context)
+            await bioengine_worker.cleanup(context=bioengine_worker.apps_manager._get_admin_context())
 
     # Run the test
     asyncio.run(test_bioengine_worker())

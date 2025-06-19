@@ -123,6 +123,20 @@ class AppsManager:
         self.startup_deployments = startup_deployments or []
         self._deployed_artifacts = {}
 
+    def _get_admin_context(self) -> Dict[str, Any]:
+        """
+        Get context for admin users.
+        
+        Returns:
+            Dict: Context dictionary containing admin user information
+        """
+        return {
+            "user": {
+                "id": self.admin_users[0] if self.admin_users else "",
+                "email": self.admin_users[1] if self.admin_users else "",
+            }
+        }
+
     async def _get_full_artifact_id(self, artifact_id: str) -> str:
         """
         Convert artifact ID to a full artifact ID.
@@ -694,16 +708,10 @@ class AppsManager:
             self.logger.info(
                 f"Starting deployments for artifacts: {', '.join(self.startup_deployments)}"
             )
-            admin_context = {
-                "user": {
-                    "id": self.admin_users[0],
-                    "email": self.admin_users[1],
-                }
-            }
             deployment_tasks = [
                 self.deploy_artifact(
                     artifact_id,
-                    context=admin_context,
+                    context=self._get_admin_context(),
                     _skip_update=True,
                 )
                 for artifact_id in self.startup_deployments
@@ -1133,11 +1141,8 @@ class AppsManager:
 
         # Get status of actively running deployments
         serve_status = serve.status()
-        self.logger.debug(
-            f"Current deployments: {list(serve_status.applications.keys())}"
-        )
 
-        if not serve_status.applications:
+        if not self._deployed_artifacts:
             output["note"] = "Currently no artifacts are deployed."
             return output
 
@@ -1146,10 +1151,10 @@ class AppsManager:
 
             deployment_name = deployment_info["deployment_name"]
             if deployment_name not in serve_status.applications:
-                self.logger.debug(
+                self.logger.warning(
                     f"Deployment '{deployment_name}' for artifact '{artifact_id}' not found in Ray Serve status."
                 )
-                # TODO: remove from _deployed_artifacts??
+                await self.undeploy_artifact(artifact_id, context=self._get_admin_context())
                 continue
 
             application = serve_status.applications[deployment_name]
@@ -1301,11 +1306,11 @@ class AppsManager:
             )
 
 
-async def create_demo_artifact(deployment_manager, artifact_id=None):
+async def create_demo_artifact(apps_manager, artifact_id=None):
     """Helper function to create a demo artifact from demo deployment files
 
     Args:
-        deployment_manager: AppsManager instance (must be initialized)
+        apps_manager: AppsManager instance (must be initialized)
         artifact_id: Optional custom artifact ID
 
     Returns:
@@ -1329,7 +1334,7 @@ async def create_demo_artifact(deployment_manager, artifact_id=None):
     ]
 
     # Create the artifact
-    created_artifact_id = await deployment_manager.create_artifact(
+    created_artifact_id = await apps_manager.create_artifact(
         files, artifact_id=artifact_id
     )
     return created_artifact_id
@@ -1341,12 +1346,12 @@ if __name__ == "__main__":
     from hypha_rpc import connect_to_server, login
 
     async def test_create_artifact(
-        deployment_manager=None, server_url="https://hypha.aicell.io"
+        apps_manager=None, server_url="https://hypha.aicell.io"
     ):
         """Test the create_artifact function with demo deployment files
 
         Args:
-            deployment_manager: Optional existing deployment manager (must be initialized)
+            apps_manager: Optional existing deployment manager (must be initialized)
             server_url: Server URL if creating new connection
 
         Returns:
@@ -1355,10 +1360,10 @@ if __name__ == "__main__":
         print("\n===== Testing create_artifact function =====\n")
 
         # Use existing deployment manager or create new one
-        if deployment_manager is None:
+        if apps_manager is None:
             try:
                 # Create deployment manager (no Ray cluster needed for artifact creation)
-                deployment_manager = AppsManager(debug=True)
+                apps_manager = AppsManager(debug=True)
 
                 # Connect to Hypha server using token from environment
                 token = os.environ.get("HYPHA_TOKEN") or await login(
@@ -1369,7 +1374,7 @@ if __name__ == "__main__":
                 )
 
                 # Initialize deployment manager
-                await deployment_manager.initialize(server)
+                await apps_manager.initialize(server)
 
             except Exception as e:
                 print(f"❌ Failed to initialize deployment manager: {e}")
@@ -1378,13 +1383,13 @@ if __name__ == "__main__":
         try:
             # Test creating artifact without specifying artifact_id (should use ID from manifest)
             print("Testing create_artifact without specifying artifact_id...")
-            created_artifact_id = await create_demo_artifact(deployment_manager)
+            created_artifact_id = await create_demo_artifact(apps_manager)
             print(f"Successfully created artifact: {created_artifact_id}")
 
             # Test updating the same artifact
             print(f"\nTesting update of existing artifact: {created_artifact_id}")
             updated_artifact_id = await create_demo_artifact(
-                deployment_manager, artifact_id=created_artifact_id
+                apps_manager, artifact_id=created_artifact_id
             )
             print(f"Successfully updated artifact: {updated_artifact_id}")
 
@@ -1392,7 +1397,7 @@ if __name__ == "__main__":
             print("\nTesting create_artifact with custom artifact_id...")
             custom_artifact_id = "test-demo-deployment"
             custom_created_id = await create_demo_artifact(
-                deployment_manager, artifact_id=custom_artifact_id
+                apps_manager, artifact_id=custom_artifact_id
             )
             print(f"Successfully created custom artifact: {custom_created_id}")
 
@@ -1432,7 +1437,7 @@ if __name__ == "__main__":
             print("\n=== Cluster status ===\n", ray_cluster.status, end="\n\n")
 
             # Create deployment manager
-            deployment_manager = AppsManager(
+            apps_manager = AppsManager(
                 ray_cluster=ray_cluster,
                 admin_users=[server.config.user["email"]],
                 apps_cache_dir=bioengine_cache_dir / "apps",
@@ -1440,19 +1445,19 @@ if __name__ == "__main__":
             )
 
             # Initialize deployment manager
-            await deployment_manager.initialize(server)
+            await apps_manager.initialize(server)
 
             # Test create_artifact function
-            created_artifact_id = await test_create_artifact(deployment_manager)
+            created_artifact_id = await test_create_artifact(apps_manager)
 
             # Test deploying the newly created artifact
             print(
                 f"\n--- Testing deployment of created artifact: {created_artifact_id} ---"
             )
-            await deployment_manager.deploy_artifact(created_artifact_id)
+            await apps_manager.deploy_artifact(created_artifact_id)
 
             # Test the deployed artifact
-            deployment_status = await deployment_manager.get_status()
+            deployment_status = await apps_manager.get_status()
             if created_artifact_id in deployment_status:
                 print(f"Successfully deployed created artifact: {created_artifact_id}")
 
@@ -1477,9 +1482,9 @@ if __name__ == "__main__":
 
             # Deploy the example deployment
             artifact_id = "example-deployment"
-            await deployment_manager.deploy_artifact(artifact_id)
+            await apps_manager.deploy_artifact(artifact_id)
 
-            deployment_status = await deployment_manager.get_status()
+            deployment_status = await apps_manager.get_status()
             assert artifact_id in deployment_status
 
             # Test registered Hypha service
@@ -1489,12 +1494,12 @@ if __name__ == "__main__":
             # Call the deployed application
             deployment_name = deployment_status[artifact_id]["deployment_name"]
             response = await deployment_service[deployment_name]["ping"]()
-            deployment_manager.logger.info(
+            apps_manager.logger.info(
                 f"Response from deployed application: {response}"
             )
 
             response = await deployment_service[deployment_name]["train"]()
-            deployment_manager.logger.info(
+            apps_manager.logger.info(
                 f"Response from deployed application: {response}"
             )
 
@@ -1504,13 +1509,13 @@ if __name__ == "__main__":
                 await server.serve()
 
             # Undeploy the test artifact
-            await deployment_manager.undeploy_artifact(artifact_id, server.context)
+            await apps_manager.undeploy_artifact(artifact_id, server.context)
 
             # Deploy again
-            await deployment_manager.deploy_artifact(artifact_id)
+            await apps_manager.deploy_artifact(artifact_id)
 
             # Clean up deployments
-            await deployment_manager.cleanup_deployments()
+            await apps_manager.cleanup_deployments()
 
         except Exception as e:
             print(f"An error occurred: {e}")

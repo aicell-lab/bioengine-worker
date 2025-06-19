@@ -108,10 +108,10 @@ class RayCluster:
         # Autoscaling configuration parameters
         min_workers: int = 0,
         max_workers: int = 4,
-        check_interval_seconds: int = 60,  # Check scaling once per minute
-        scale_down_threshold_seconds: int = 300,  # 5 minutes of idleness before scale down
-        scale_up_cooldown_seconds: int = 180,  # 3 minutes between scale ups
-        scale_down_cooldown_seconds: int = 60,  # 1 minute between scale downs
+        scale_up_cooldown_seconds: int = 60,
+        scale_down_check_interval_seconds: int = 60,
+        scale_down_threshold_seconds: int = 300,
+        scale_down_cooldown_seconds: int = 60,
         # Logger configuration
         log_file: Optional[str] = None,
         debug: bool = False,
@@ -186,15 +186,15 @@ class RayCluster:
             )
 
         # Check number of CPUs and GPUs
-        if self.mode == "slurm":
+        if self.mode in ["slurm", "connect"]:
             if head_num_cpus > 0:
                 self.logger.warning(
-                    "Ignoring 'head_num_cpus' setting in 'SLURM' mode - will be set to 0"
+                    f"Ignoring 'head_num_cpus' setting in '{self.mode}' mode - will be set to 0"
                 )
                 head_num_cpus = 0
             if head_num_gpus > 0:
                 self.logger.warning(
-                    "Ignoring 'head_num_gpus' setting in 'SLURM' mode - will be set to 0"
+                    f"Ignoring 'head_num_gpus' setting in '{self.mode}' mode - will be set to 0"
                 )
                 head_num_gpus = 0
         elif (
@@ -245,9 +245,9 @@ class RayCluster:
                 "further_slurm_args": further_slurm_args or [],
                 "min_workers": min_workers,
                 "max_workers": max_workers,
-                "check_interval_seconds": check_interval_seconds,
-                "scale_down_threshold_seconds": scale_down_threshold_seconds,
                 "scale_up_cooldown_seconds": scale_up_cooldown_seconds,
+                "scale_down_check_interval_seconds": scale_down_check_interval_seconds,
+                "scale_down_threshold_seconds": scale_down_threshold_seconds,
                 "scale_down_cooldown_seconds": scale_down_cooldown_seconds,
                 "log_file": log_file,
                 "debug": debug,
@@ -533,6 +533,9 @@ class RayCluster:
                 f"--redis-password={self.ray_cluster_config['redis_password']}",
                 f"--temp-dir={ray_temp_dir}",
             ]
+            if self.mode != "single-machine":
+                args.append("--memory=0")  # Disable memory limit for head node in SLURM and connect modes
+
             proc = await asyncio.create_subprocess_exec(
                 self.ray_exec_path,
                 *args,
@@ -607,7 +610,6 @@ class RayCluster:
                 self.slurm_workers = SlurmWorkers(
                     ray_cluster=self, **self.slurm_worker_config
                 )
-                await self.slurm_workers.start()
 
         except subprocess.CalledProcessError as e:
             self.logger.error(
@@ -665,6 +667,8 @@ class RayCluster:
             # ray.nodes() took on average 0.0012 seconds
             # list_nodes() took on average 0.0074 seconds
 
+            # TODO: use client_mode_hook to access per node cluster resources
+            # TODO: set memory of head node to 0 if running in SLURM mode
             cluster_resources = await asyncio.to_thread(ray.cluster_resources)
             available_resources = await asyncio.to_thread(ray.available_resources)
             cluster_status = {
@@ -743,7 +747,7 @@ class RayCluster:
         
             # Shutdown all SLURM workers if running in SLURM mode
             if self.slurm_workers:
-                await self.slurm_workers.stop()
+                await self.slurm_workers.close_all()
 
             # Shutdown the Ray cluster head node if it is not in connect mode
             if self.mode != "connect":
@@ -874,7 +878,7 @@ class RayCluster:
         """
         # Initialize Ray if RayCluster is running and Ray is not initialized
         if self.start_time is None:
-            raise RuntimeError("Ray cluster has not been started yet")
+            raise RuntimeError("Ray cluster is not running")
             
         if not ray.is_initialized():
             self.logger.warning(f"Ray client disconnected. Reconnecting...")

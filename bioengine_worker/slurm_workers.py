@@ -53,7 +53,7 @@ class SlurmWorkers:
         # Autoscaling configuration parameters
         min_workers: int = 0,
         max_workers: int = 4,
-        scale_up_cooldown_seconds: int = 30,  # 30 seconds between scale ups
+        scale_up_cooldown_seconds: int = 60,  # 1 minute between scale ups
         scale_down_check_interval_seconds: int = 60,  # Check for idle workers every 60 seconds
         scale_down_threshold_seconds: int = 300,  # 5 minutes of idleness before scale down
         scale_down_cooldown_seconds: int = 60,  # 1 minute between scale downs
@@ -550,10 +550,6 @@ class SlurmWorkers:
                 else self.further_slurm_args
             )
 
-            # Check if Ray cluster is running
-            if not ray.is_initialized():
-                raise RuntimeError("Ray is not initialized. Call start() first.")
-
             # Create sbatch script using SlurmManager
             sbatch_script = await asyncio.to_thread(
                 self._create_sbatch_script,
@@ -622,10 +618,6 @@ class SlurmWorkers:
             Exception: If worker shutdown fails for any other reason
         """
         try:
-            # Check if Ray cluster is running
-            if not ray.is_initialized():
-                raise RuntimeError("Ray is not initialized. Call start() first.")
-
             # Check worker status
             worker_status = await self.ray_cluster.get_resource(
                 resource=StateResource.NODES,
@@ -686,21 +678,6 @@ class SlurmWorkers:
         except Exception as e:
             self.logger.error(f"Error shutting down worker {node_id}: {e}")
             raise e
-        
-    async def _get_num_worker_jobs(self) -> int:
-        """
-        Get number of SLURM workers in the cluster (configuring, pending or running).
-
-        Queries SLURM for all BioEngine worker jobs regardless of their current state.
-        This includes jobs that are pending in the queue, configuring, or actively running.
-
-        Returns:
-            Total count of BioEngine worker jobs in all states
-
-        Raises:
-            Exception: If job query fails due to SLURM connection issues
-        """
-        return len(await self._get_jobs())
     
     async def _check_scale_up(self, n_worker_jobs: int) -> None:
         """
@@ -719,22 +696,26 @@ class SlurmWorkers:
             Exception: If worker creation fails
         """
         # SCALE UP LOGIC
+        self.logger.debug("Checking scale up conditions...")
+        current_time = time.time()
+        
+        # TODO: Consider workers in set-up / runtime creation when checking scale up
+        # Check if there are already pending slurm jobs
+        # Check if there are any runtime environment creations in progress
+
         can_scale_up = (
             # Cooldown period has passed
-            (time.time() - self.last_scale_up_time) > self.scale_up_cooldown
+            (current_time - self.last_scale_up_time) > self.scale_up_cooldown
             # Not at max worker limit
             and n_worker_jobs < self.max_workers
         )
         if not can_scale_up:
             return
+        
+        # Check if Ray cluster is initialized and connected
+        await self.ray_cluster.check_connection()
 
-        # TODO: Check if any pending task needs more resources than default
-        # for task in pending_tasks:
-        #     task_req = task.get("required_resources", {}) or {}
-        #     if task_req.get("GPU", 0) > num_gpus:
-        #         num_gpus = max(num_gpus, int(task_req.get("GPU", 1)))
-        #     if task_req.get("CPU", 0) > num_cpus:
-        #         num_cpus = max(num_cpus, int(task_req.get("CPU", 4)))
+        # TODO: Check if any pending resource needs more resources than default
 
         num_gpus = None or self.default_num_gpus
         num_cpus = None or self.default_num_cpus
@@ -752,7 +733,7 @@ class SlurmWorkers:
             time_limit=time_limit,
             further_slurm_args=further_slurm_args,
         )
-        self.last_scale_up_time = time.time()
+        self.last_scale_up_time = current_time
 
     async def _check_is_idle(self, node_info: Dict) -> bool:
         """
@@ -818,7 +799,7 @@ class SlurmWorkers:
             Exception: If worker removal fails
         """
         # SCALE DOWN LOGIC
-        self.logger.debug("Checking scaling decision...")
+        self.logger.debug("Checking scale down conditions...")
         current_time = time.time()
         
         # Check if we can scale down based on cooldown and worker limits
@@ -833,6 +814,9 @@ class SlurmWorkers:
         self.last_scale_down_check = current_time
         if not can_scale_down:
             return
+        
+        # Check if Ray cluster is initialized and connected
+        await self.ray_cluster.check_connection()
 
         # Get the longest idle node
         longest_idle_nodes = None
@@ -881,6 +865,21 @@ class SlurmWorkers:
                     )
                     await self._close(idle_node_id)
                     self.last_scale_down_time = current_time
+
+    async def get_num_worker_jobs(self) -> int:
+        """
+        Get number of SLURM workers in the cluster (configuring, pending or running).
+
+        Queries SLURM for all BioEngine worker jobs regardless of their current state.
+        This includes jobs that are pending in the queue, configuring, or actively running.
+
+        Returns:
+            Total count of BioEngine worker jobs in all states
+
+        Raises:
+            Exception: If job query fails due to SLURM connection issues
+        """
+        return len(await self._get_jobs())
     
     async def check_scaling(self) -> None:
         """
@@ -894,7 +893,7 @@ class SlurmWorkers:
             Exception: If Ray is not initialized or scaling decision fails
         """
         # Logic: If at least one task needs resources, check scale up, otherwise check scale down
-        n_worker_jobs = await self._get_num_worker_jobs()
+        n_worker_jobs = await self.get_num_worker_jobs()
         if self.ray_cluster.status["cluster"]["pending_resources"] > 0:
             await self._check_scale_up(n_worker_jobs)
         else:
@@ -912,9 +911,8 @@ class SlurmWorkers:
             Exception: If worker shutdown fails for any other reason
         """
         try:
-            # Check if Ray cluster is running
-            if not ray.is_initialized():
-                raise RuntimeError("Ray is not initialized. Call start() first.")
+            # Check if Ray cluster is initialized and connected
+            await self.ray_cluster.check_connection()
 
             # Get all worker nodes
             worker_nodes = await self.ray_cluster.list_resources(

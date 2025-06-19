@@ -48,8 +48,8 @@ async def main(group_configs):
             # TODO: when running in Apptainer, the container’s overlay filesystem is torn down before the graceful shutdown completes -> results in OSError [Errno 107] because executables like Ray or scancel are not found
             admin_context = {
                 "user": {
-                    "id": bioengine_worker.admin_users[0],
-                    "email": bioengine_worker.admin_users[1],
+                    "id": bioengine_worker.admin_users[0] if bioengine_worker.admin_users else "",
+                    "email": bioengine_worker.admin_users[1] if bioengine_worker.admin_users else "",
                 }
             }
             asyncio.create_task(
@@ -325,10 +325,16 @@ def create_parser():
         help="Maximum number of worker nodes",
     )
     ray_autoscaling_group.add_argument(
-        "--check_interval_seconds",
+        "--scale_up_cooldown_seconds",
+        default=180,
+        type=int,
+        help="Cooldown period between scaling up operations",
+    )
+    ray_autoscaling_group.add_argument(
+        "--scale_down_check_interval_seconds",
         default=60,
         type=int,
-        help="Interval in seconds to check scale up/down",
+        help="Interval in seconds to check for scale down",
     )
     ray_autoscaling_group.add_argument(
         "--scale_down_threshold_seconds",
@@ -337,16 +343,10 @@ def create_parser():
         help="Time threshold before scaling down idle nodes",
     )
     ray_autoscaling_group.add_argument(
-        "--scale_up_cooldown_seconds",
-        default=180,
-        type=int,
-        help="Cooldown period before scaling up",
-    )
-    ray_autoscaling_group.add_argument(
         "--scale_down_cooldown_seconds",
         default=60,
         type=int,
-        help="Cooldown period before scaling down",
+        help="Cooldown period between scaling down operations",
     )
 
     parser.add_argument(

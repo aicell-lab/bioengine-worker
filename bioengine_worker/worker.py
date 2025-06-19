@@ -128,6 +128,9 @@ class BioEngineWorker:
             level=logging.DEBUG if debug else logging.INFO,
             log_file=log_file,
         )
+        self.logger.info(
+            f"Initializing BioEngineWorker v{__version__} with mode '{mode}'"
+        )
         try:
             # If token is not provided, attempt to login
             if not self._token:
@@ -392,7 +395,7 @@ class BioEngineWorker:
         Raises:
             RuntimeError: If Ray is not initialized
         """
-        self.ray_cluster.check_connection()
+        await self.ray_cluster.check_connection()
 
         status = {
             "service_start_time": self.start_time,

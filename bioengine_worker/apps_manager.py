@@ -365,7 +365,7 @@ class AppsManager:
 
         if self.ray_cluster.mode == "slurm":
             num_worker_jobs = (
-                await self.ray_cluster.slurm_workers._get_num_worker_jobs()
+                await self.ray_cluster.slurm_workers.get_num_worker_jobs()
             )
 
         if self.ray_cluster.mode == "single-machine" or (
@@ -957,7 +957,7 @@ class AppsManager:
             )
 
         # Verify Ray is initialized
-        self.ray_cluster.check_connection()
+        await self.ray_cluster.check_connection()
 
         # Get the full artifact ID
         artifact_id = await self._get_full_artifact_id(artifact_id)
@@ -1065,7 +1065,7 @@ class AppsManager:
             )
 
         # Verify Ray is initialized
-        self.ray_cluster.check_connection()
+        await self.ray_cluster.check_connection()
 
         # Check user permissions
         await self._check_permissions(

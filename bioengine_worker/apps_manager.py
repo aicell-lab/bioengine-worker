@@ -407,6 +407,8 @@ class AppsManager:
 
         # Pass user workspace and token to the deployment
         env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
+        env_vars["HYPHA_CLIENT_ID"] = self.server.config.client_id
+        env_vars["HYPHA_SERVICE_ID"] = self.service_id
         env_vars["HYPHA_TOKEN"] = self.server.config.reconnection_token
 
         # Load the deployment code

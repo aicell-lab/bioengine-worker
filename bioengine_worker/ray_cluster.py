@@ -296,16 +296,11 @@ class RayCluster:
                 - uptime: Human-readable uptime string
                 - worker_nodes: Most recent worker nodes status grouped by state
         """
-        if self.mode == "connect":
-            status = {
-                "head_address": self.ray_cluster_config["head_node_address"],
-                "start_time": "N/A",
-            }
-        else:
-            status = {
-                "head_address": self.ray_cluster_config["head_node_address"],
-                "start_time": self.start_time,
-            }
+        status = {
+            "head_address": self.ray_cluster_config["head_node_address"],
+            "start_time": self.start_time if self.mode != "connect" else "N/A",
+            "mode": self.mode,
+        }
 
         last_status = (
             next(reversed(self.cluster_status_history.values()))
@@ -535,6 +530,10 @@ class RayCluster:
             ]
             if self.mode != "single-machine":
                 args.append("--memory=0")  # Disable memory limit for head node in SLURM and connect modes
+
+            self.logger.debug(
+                f"Ray start command: {self.ray_exec_path} {' '.join(args)}"
+            )
 
             proc = await asyncio.create_subprocess_exec(
                 self.ray_exec_path,

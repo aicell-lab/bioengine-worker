@@ -343,6 +343,13 @@ def create_parser():
     )
 
     parser.add_argument(
+        "--dashboard_url",
+        type=str,
+        default="https://dev.bioimage.io/#/bioengine",
+        help="URL of the BioEngine dashboard",
+    )
+
+    parser.add_argument(
         "--debug",
         action="store_true",
         default=False,

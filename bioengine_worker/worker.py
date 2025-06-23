@@ -74,6 +74,8 @@ class BioEngineWorker:
         client_id: Optional[str] = None,
         # Ray cluster configuration
         ray_cluster_config: Optional[Dict] = None,
+        # BioEngine dashboard URL
+        dashboard_url: str = "https://dev.bioimage.io/#/bioengine",
         # Logger configuration
         log_file: Optional[str] = None,
         debug: bool = False,
@@ -106,6 +108,7 @@ class BioEngineWorker:
         self.cache_dir = Path(cache_dir).resolve()
         self.data_dir = Path(data_dir).resolve()
         self.startup_deployments = startup_deployments or []
+        self.dashboard_url = dashboard_url.rstrip("/")
 
         self.server_url = server_url
         self.workspace = workspace
@@ -300,7 +303,7 @@ class BioEngineWorker:
 
         self.logger.info(f"BioEngine worker service registered with ID '{sid}'")
         self.logger.info(
-            f"Manage BioEngine worker at: https://dev.bioimage.io/#/bioengine/worker?service_id={sid}"
+            f"Manage BioEngine worker at: {self.dashboard_url}/worker?service_id={sid}"
         )
 
         return sid

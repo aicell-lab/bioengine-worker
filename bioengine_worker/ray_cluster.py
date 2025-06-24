@@ -514,8 +514,13 @@ class RayCluster:
                     "--memory=0"
                 )  # Disable memory limit for head node in SLURM and connect modes
 
+            # Prevent logging of Redis password in debug logs
+            censored_args = [
+                arg if "redis-password" not in arg else "--redis-password=****"
+                for arg in args
+            ]
             self.logger.debug(
-                f"Ray start command: {self.ray_exec_path} {' '.join(args)}"
+                f"Ray start command: {self.ray_exec_path} {' '.join(censored_args)}"
             )
 
             proc = await asyncio.create_subprocess_exec(

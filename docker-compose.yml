@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/aicell-lab/bioengine-worker:0.1.21
+    image: ghcr.io/aicell-lab/bioengine-worker:0.2.0
     container_name: bioengine_worker
     user: "${UID}:${GID}"  # add UID and GID to .env file if not found
     # user: "nobody:nogroup"

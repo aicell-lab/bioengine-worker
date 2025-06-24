@@ -1,5 +1,6 @@
 import re
 from typing import Dict, Optional, Union
+from dataclasses import asdict
 
 import ray
 from ray._private.state import GlobalState
@@ -20,7 +21,6 @@ class ClusterState:
     ):
         # Get the GCS address using ray._private.worker
         gcs_address = ray._private.worker.global_worker.gcs_client.address
-        print(f"Using GCS address: {gcs_address}")
 
         # Create GCS client options
         gcs_options = GcsClientOptions.create(
@@ -42,47 +42,64 @@ class ClusterState:
         self.exclude_head_node = exclude_head_node
         self.check_pending_resources = check_pending_resources
 
-    def _get_pending_actors(self) -> int:
-        """Get the number of pending actors in the cluster."""
-        return self.state_api_client.list(
-            resource=StateResource.ACTORS,
-            options=ListApiOptions(
-                limit=DEFAULT_LIMIT,
-                timeout=DEFAULT_RPC_TIMEOUT,
-                filters=[("state", "=", "PENDING_CREATION")],
-                detail=False,
-                explain=False,
-            ),
-            raise_on_missing_output=True,
-        )
-
-    def _get_pending_tasks(self) -> int:
-        """Get the number of pending tasks in the cluster."""
-        return self.state_api_client.list(
-            resource=StateResource.TASKS,
-            options=ListApiOptions(
-                limit=DEFAULT_LIMIT,
-                timeout=DEFAULT_RPC_TIMEOUT,
-                filters=[("state", "=", "PENDING_NODE_ASSIGNMENT")],
-                detail=False,
-                explain=False,
-            ),
-            raise_on_missing_output=True,
-        )
+        print("ClusterState initialized with GCS address:", gcs_address)
 
     def _get_pending_jobs(self) -> int:
         """Get the number of pending jobs in the cluster."""
-        return self.state_api_client.list(
+        pending_jobs = self.state_api_client.list(
             resource=StateResource.JOBS,
             options=ListApiOptions(
                 limit=DEFAULT_LIMIT,
                 timeout=DEFAULT_RPC_TIMEOUT,
                 filters=[("status", "=", "PENDING")],
-                detail=False,
+                detail=True,
                 explain=False,
             ),
             raise_on_missing_output=True,
         )
+        return [asdict(job) for job in pending_jobs]
+
+    def _get_pending_actors(self) -> int:
+        """Get the number of pending actors in the cluster."""
+        pending_actors = self.state_api_client.list(
+            resource=StateResource.ACTORS,
+            options=ListApiOptions(
+                limit=DEFAULT_LIMIT,
+                timeout=DEFAULT_RPC_TIMEOUT,
+                filters=[("state", "=", "PENDING_CREATION")],
+                detail=True,
+                explain=False,
+            ),
+            raise_on_missing_output=True,
+        )
+        return [asdict(actor) for actor in pending_actors]
+
+    def _get_pending_tasks(self) -> int:
+        """Get the number of pending tasks in the cluster."""
+        pending_tasks = self.state_api_client.list(
+            resource=StateResource.TASKS,
+            options=ListApiOptions(
+                limit=DEFAULT_LIMIT,
+                timeout=DEFAULT_RPC_TIMEOUT,
+                filters=[
+                    ("state", "=", "PENDING_NODE_ASSIGNMENT"),
+                    (
+                        "name",
+                        "!=",
+                        "ClusterState.get_state",
+                    ),  # Exclude this method itself
+                    (
+                        "type",
+                        "!=",
+                        "ACTOR_CREATION_TASK",
+                    ),  # Avoid duplicates with actors
+                ],
+                detail=True,
+                explain=False,
+            ),
+            raise_on_missing_output=True,
+        )
+        return [asdict(task) for task in pending_tasks]
 
     def _get_node_ip(self, resources: Dict[str, float]) -> Optional[str]:
         """Get the node IP address from the resources dictionary."""
@@ -169,12 +186,18 @@ class ClusterState:
                 cluster_state["cluster"][resource_name] += node_value
 
         if self.check_pending_resources:
-            # TODO: Don't count task/actor/job runtime creation
+            # TODO: Don't count task/actor/job in runtime creation
             # Check if there are any runtime environment creations in progress
-            cluster_state["cluster"]["n_pending_resources"] = (
-                len(self._get_pending_actors())
-                + len(self._get_pending_tasks())
-                + len(self._get_pending_jobs())
+            cluster_state["cluster"]["pending_resources"] = {
+                "actors": self._get_pending_actors(),
+                "jobs": self._get_pending_jobs(),
+                "tasks": self._get_pending_tasks(),
+            }
+            cluster_state["cluster"]["pending_resources"]["total"] = sum(
+                len(pending_resources)
+                for pending_resources in cluster_state["cluster"][
+                    "pending_resources"
+                ].values()
             )
 
         return cluster_state

@@ -105,7 +105,7 @@ def create_parser():
         "--mode",
         default="slurm",
         type=str,
-        choices=["slurm", "single-machine", "connect"],
+        choices=["slurm", "single-machine", "external-cluster"],
         help="Mode of operation: 'slurm' for managing a Ray cluster with SLURM jobs, 'single-machine' for local Ray cluster, 'connect' for connecting to an existing Ray cluster.",
     )
     # TODO: use --head_node_address and --client_server_port to connect to existing Ray cluster
@@ -334,12 +334,6 @@ def create_parser():
         default=300,
         type=int,
         help="Time threshold before scaling down idle nodes",
-    )
-    ray_autoscaling_group.add_argument(
-        "--scale_down_cooldown_seconds",
-        default=60,
-        type=int,
-        help="Cooldown period between scaling down operations",
     )
 
     parser.add_argument(

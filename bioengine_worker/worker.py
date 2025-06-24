@@ -62,7 +62,7 @@ class BioEngineWorker:
 
     def __init__(
         self,
-        mode: Literal["slurm", "single-machine", "connect"] = "slurm",
+        mode: Literal["slurm", "single-machine", "external-cluster"] = "slurm",
         admin_users: Optional[List[str]] = None,
         cache_dir: str = "/tmp/bioengine",
         data_dir: str = "/data",
@@ -107,7 +107,6 @@ class BioEngineWorker:
         self.admin_users = admin_users or []
         self.cache_dir = Path(cache_dir).resolve()
         self.data_dir = Path(data_dir).resolve()
-        self.startup_deployments = startup_deployments or []
         self.dashboard_url = dashboard_url.rstrip("/")
 
         self.server_url = server_url
@@ -167,7 +166,7 @@ class BioEngineWorker:
                 admin_users=self.admin_users,
                 apps_cache_dir=self.cache_dir / "apps",
                 apps_data_dir=self.data_dir,
-                startup_deployments=self.startup_deployments,
+                startup_deployments=startup_deployments,
                 log_file=log_file,
                 debug=debug,
             )
@@ -334,7 +333,12 @@ class BioEngineWorker:
         await self.apps_manager.initialize(self.server)
         await self.dataset_manager.initialize(self.server)
         sid = await self._register()
-        await self.apps_manager.initialize_deployments()
+
+        # Deploy any startup artifacts
+        await self.apps_manager.deploy_artifacts(
+            artifact_ids=self.apps_manager.startup_deployments,
+            context=self.apps_manager._get_admin_context()
+        )
 
         return sid
 
@@ -457,7 +461,8 @@ class BioEngineWorker:
 
         args = args or []
         kwargs = kwargs or {}
-        remote_options = remote_options or {}
+        # The @ray.remote decorator requires arguments when using parentheses
+        remote_options = remote_options or {"num_cpus": 1}
 
         # Deserialize function before Ray execution
         if mode == "pickle":
@@ -481,6 +486,7 @@ class BioEngineWorker:
                 }
 
         # The Ray task itself (pure, pickle-safe)
+        @ray.remote(**remote_options)
         def ray_task(func, args, kwargs):
             import asyncio
             import contextlib
@@ -511,11 +517,10 @@ class BioEngineWorker:
                         "stderr": stderr_buffer.getvalue(),
                     }
 
-        RemoteRayTask = ray.remote(**remote_options)(ray_task)
-        future = RemoteRayTask.remote(user_func, args, kwargs)
+        obj_ref = ray_task.remote(user_func, args, kwargs)
         if self.ray_cluster.mode == "slurm":
             await self.ray_cluster.notify()
-        result = await asyncio.get_event_loop().run_in_executor(None, ray.get, future)
+        result = await asyncio.wait_for(obj_ref, timeout=600)
 
         # Stream output to client
         if write_stdout and result.get("stdout"):
@@ -620,7 +625,9 @@ if __name__ == "__main__":
             raise e
         finally:
             # Cleanup
-            await bioengine_worker.cleanup(context=bioengine_worker.apps_manager._get_admin_context())
+            await bioengine_worker.cleanup(
+                context=bioengine_worker.apps_manager._get_admin_context()
+            )
 
     # Run the test
     asyncio.run(test_bioengine_worker())

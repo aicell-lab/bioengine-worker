@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import time
 from typing import Dict, List, Optional, Set
+import math
 
 import ray
 
@@ -55,7 +56,6 @@ class SlurmWorkers:
         scale_up_cooldown_seconds: int = 60,  # 1 minute between scale ups
         scale_down_check_interval_seconds: int = 60,  # Check for idle workers every 60 seconds
         scale_down_threshold_seconds: int = 300,  # 5 minutes of idleness before scale down
-        scale_down_cooldown_seconds: int = 60,  # 1 minute between scale downs
         grace_period: int = 60,  # Grace period for job cancellation
         # Logger configuration
         log_file: Optional[str] = None,
@@ -79,7 +79,6 @@ class SlurmWorkers:
             check_interval_seconds: Interval in seconds between scaling checks
             scale_down_threshold_seconds: Idle time in seconds before scaling down
             scale_up_cooldown_seconds: Cooldown period in seconds between scale-ups
-            scale_down_cooldown_seconds: Cooldown period in seconds between scale-downs
             grace_period: Grace period in seconds for job cancellation
             log_file: Optional log file to write logs to
             debug: Enable debug logging
@@ -122,13 +121,11 @@ class SlurmWorkers:
         self.scale_up_cooldown = scale_up_cooldown_seconds
         self.scale_down_check_interval = scale_down_check_interval_seconds
         self.scale_down_threshold = scale_down_threshold_seconds
-        self.scale_down_cooldown = scale_down_cooldown_seconds
         self.grace_period = grace_period
 
         # Initialize state variables
         self.last_scale_up_time = 0
         self.last_scale_down_check = 0
-        self.last_scale_down_time = 0
         self.worker_creation_task = None
         self.worker_deletion_tasks = {}
 
@@ -679,14 +676,43 @@ class SlurmWorkers:
         )
         if not can_scale_up:
             return
+        
 
-        # TODO: Check if any pending resource needs more resources than default
-        num_gpus = None or self.default_num_gpus
-        num_cpus = None or self.default_num_cpus
-        mem_per_cpu = None or self.default_mem_per_cpu
-        time_limit = None or self.default_time_limit
-        further_slurm_args = None or self.further_slurm_args
+        # Get the required resources
+        required_resources = None
+        for resource_type, pending_resources in self.ray_cluster.status["cluster"][
+            "pending_resources"
+        ].items():
+            if not pending_resources or resource_type not in [
+                "actors",
+                "jobs",
+                "tasks",
+            ]:
+                continue
+            required_resources = pending_resources[-1]["required_resources"]
+            break
+        if not required_resources:
+            self.logger.error("No pending resources found, skipping scale up")
+            return
 
+        num_cpus = required_resources.get("CPU", 1)
+        num_gpus = required_resources.get("GPU", 0)
+        memory = required_resources.get("memory", 0) / 1024**3  # Convert bytes to GB
+        mem_per_cpu = math.ceil(memory / num_cpus)  # Calculate memory in GB per CPU
+
+        if num_cpus < self.default_num_cpus:
+            num_cpus = self.default_num_cpus
+        if num_gpus < self.default_num_gpus:
+            num_gpus = self.default_num_gpus
+        if mem_per_cpu < self.default_mem_per_cpu:
+            mem_per_cpu = self.default_mem_per_cpu
+
+        # TODO: Check how to pass time limit and further SLURM args
+        time_limit = self.default_time_limit
+        further_slurm_args = self.further_slurm_args
+
+        # Update last scale up time
+        self.last_scale_up_time = current_time
         self.logger.info(
             f"Scaling up with {num_gpus} GPU(s) and {num_cpus} CPU(s) due to pending resources"
         )
@@ -700,9 +726,6 @@ class SlurmWorkers:
                 further_slurm_args=further_slurm_args,
             )
         )
-
-        # Update last scale up time
-        self.last_scale_up_time = current_time
 
     async def _check_is_idle(self, node_resources: Dict) -> bool:
         """
@@ -744,9 +767,6 @@ class SlurmWorkers:
         for node_id, node_resources in worker_nodes.items():
             is_idle = await self._check_is_idle(node_resources)
             if is_idle:
-                self.logger.debug(
-                    f"Node '{node_id}' is completely idle (no used GPUs or CPUs)"
-                )
                 idle_nodes.add(node_id)
 
         return idle_nodes
@@ -772,8 +792,6 @@ class SlurmWorkers:
             # Idle node check interval has passed
             and (current_time - self.last_scale_down_check)
             > self.scale_down_check_interval
-            # Cool down period has passed
-            and (current_time - self.last_scale_down_time) > self.scale_down_cooldown
             # Not at min worker limit
             and n_worker_jobs > self.min_workers
         )
@@ -783,60 +801,61 @@ class SlurmWorkers:
         self.logger.debug("Checking for idle workers to scale down...")
         self.last_scale_down_check = current_time
 
-        # Get the longest idle node
-        longest_idle_nodes = None
-        idle_time = 0
-        for i, (timepoint, nodes_status) in enumerate(
+        # Find nodes that have been idle for at least the threshold duration
+        nodes_to_remove = None
+        max_idle_time = 0
+        
+        for i, (timepoint, cluster_status) in enumerate(
             reversed(self.ray_cluster.cluster_status_history.items())
         ):
-            running_nodes = nodes_status.get("RUNNING", [])
-            idle_nodes = await self._find_idle_nodes(running_nodes)
+            idle_nodes = await self._find_idle_nodes(cluster_status["nodes"])
+            idle_time = current_time - timepoint
 
-            # If no idle nodes found, we can stop checking further
+            # If no idle nodes found at this timepoint, stop checking further back
             if not idle_nodes:
                 break
 
-            # If this is the first iteration, initialize longest_idle_nodes
+            # If this is the first iteration, initialize nodes_to_remove
             if i == 0:
-                longest_idle_nodes = idle_nodes
+                nodes_to_remove = idle_nodes
+                max_idle_time = idle_time
             else:
-                # Otherwise, find the intersection of longest idle nodes and current idle nodes
-                overlap = longest_idle_nodes & idle_nodes
+                # Find intersection of nodes to remove and current idle nodes
+                overlap = nodes_to_remove & idle_nodes
                 if len(overlap) == 0:
-                    # No overlap means no common idle nodes, we can stop checking further
+                    # No overlap means no persistently idle nodes, stop checking
                     break
 
-                longest_idle_nodes = overlap
+                nodes_to_remove = overlap
+                max_idle_time = idle_time
 
-            # Calculate idle time for the current timepoint
-            idle_time = current_time - timepoint
+                # If we've found nodes idle for longer than threshold, we can stop
+                if idle_time > self.scale_down_threshold:
+                    break
 
-            if len(longest_idle_nodes) == 1:
-                # If we have only one idle node, we can stop checking further
-                break
-
-        if longest_idle_nodes and idle_time > self.scale_down_threshold:
-            cluster_state = (
-                await self.ray_cluster.cluster_state_handle.get_state.remote()
-            )
-
-            # Get the first longest idle node (if there are multiple nodes with the same idle time)
-            for idle_node_id in list(longest_idle_nodes):
-                # Check worker status
-                worker_resources = cluster_state["nodes"].get(idle_node_id)
+        # Remove all nodes that have been idle for at least the threshold
+        if nodes_to_remove and max_idle_time > self.scale_down_threshold:
+            workers_removed = False
+            for idle_node_id in list(nodes_to_remove):
+                # Double-check current worker status to ensure it's still idle
+                worker_resources = self.ray_cluster.status["nodes"].get(idle_node_id)
                 if worker_resources and await self._check_is_idle(worker_resources):
                     self.logger.info(
-                        f"Scaling down worker '{idle_node_id}' due to inactivity for {idle_time:.1f}s"
+                        f"Scaling down worker '{idle_node_id}' due to inactivity for at least {max_idle_time:.1f}s"
                     )
                     job_id = worker_resources["slurm_job_id"]
                     self.worker_deletion_tasks[idle_node_id] = asyncio.create_task(
-                        self._close_worker(node_id=idle_node_id, job_id=job_id)
+                        self._close_worker(node_id=idle_node_id, job_id=job_id),
+                        name=f"scale_down_worker_{idle_node_id}",
                     )
-                    self.last_scale_down_time = current_time
-
-        self.logger.debug(
-            f"No idle workers found to scale down. Longest idle nodes: {longest_idle_nodes}, Idle time: {idle_time:.1f}s"
-        )
+                    workers_removed = True
+            
+            if not workers_removed:
+                self.logger.debug("No workers met the criteria for removal after final validation")
+        else:
+            self.logger.debug(
+                f"No idle workers found to scale down. Max idle time: {max_idle_time:.1f}s (threshold: {self.scale_down_threshold}s)"
+            )
 
     async def get_num_worker_jobs(self) -> int:
         """
@@ -865,7 +884,7 @@ class SlurmWorkers:
             Exception: If Ray is not initialized or scaling decision fails
         """
         # Logic: If at least one task needs resources, check scale up, otherwise check scale down
-        if self.ray_cluster.status["cluster"]["pending_resources"] > 0:
+        if self.ray_cluster.status["cluster"]["pending_resources"]["total"] > 0:
             await self._check_scale_up()
         else:
             await self._check_scale_down()
@@ -898,7 +917,10 @@ class SlurmWorkers:
             # Stop each worker node
             for node_id, node_resources in worker_nodes.items():
                 job_id = node_resources["slurm_job_id"]
-                await self._close_worker(node_id=node_id, job_id=job_id)
+                self.worker_deletion_tasks[node_id] = asyncio.create_task(
+                    self._close_worker(node_id=node_id, job_id=job_id),
+                    name=f"scale_down_worker_{node_id}",
+                )
 
             # Make sure no jobs are left running
             remaining_jobs = await self._get_job_ids()

@@ -93,7 +93,6 @@ class RayCluster:
         scale_up_cooldown_seconds: int = 60,
         scale_down_check_interval_seconds: int = 60,
         scale_down_threshold_seconds: int = 300,
-        scale_down_cooldown_seconds: int = 60,
         # Logger configuration
         log_file: Optional[str] = None,
         debug: bool = False,
@@ -135,7 +134,6 @@ class RayCluster:
             cpu_idle_threshold: CPU idle threshold for scaling decisions. Default 0.1.
             scale_down_threshold_seconds: Idle time before scaling down. Default 300.
             scale_up_cooldown_seconds: Cooldown between scale-up operations. Default 120.
-            scale_down_cooldown_seconds: Cooldown between scale-down operations. Default 600.
             node_grace_period_seconds: Grace period for new nodes. Default 600.
             log_file: File path for logging output. Uses console if None.
             debug: Enable debug-level logging. Default False.
@@ -162,13 +160,14 @@ class RayCluster:
         self.mode = mode
         if self.mode == "slurm":
             self._check_slurm_available()
-        elif self.mode not in ["single-machine", "connect"]:
+        elif self.mode not in ["single-machine", "external-cluster"]:
             raise ValueError(
                 f"Invalid mode '{self.mode}'. Supported modes are 'slurm', 'single-machine' and 'connect'."
             )
 
         # Check number of CPUs and GPUs
         if self.mode == "slurm":
+            # TODO: Consider having a CPU with little memory for SLURM head node to run ray tasks on
             if head_num_cpus > 0 or head_num_gpus > 0:
                 raise ValueError(
                     "In SLURM mode, 'head_num_cpus' and 'head_num_gpus' must be 0. Use SLURM worker configuration instead."
@@ -196,7 +195,7 @@ class RayCluster:
             "force_clean_up": force_clean_up,
         }
 
-        if self.mode == "connect":
+        if self.mode == "external-cluster":
             self._parse_connection_address(connection_address)
 
         # Set runtime environment pip cache size
@@ -224,7 +223,6 @@ class RayCluster:
                 "scale_up_cooldown_seconds": scale_up_cooldown_seconds,
                 "scale_down_check_interval_seconds": scale_down_check_interval_seconds,
                 "scale_down_threshold_seconds": scale_down_threshold_seconds,
-                "scale_down_cooldown_seconds": scale_down_cooldown_seconds,
                 "log_file": log_file,
                 "debug": debug,
             }
@@ -275,7 +273,7 @@ class RayCluster:
         """
         status = {
             "head_address": self.ray_cluster_config["head_node_address"],
-            "start_time": self.start_time if self.mode != "connect" else "N/A",
+            "start_time": self.start_time if self.mode != "external-cluster" else "N/A",
             "mode": self.mode,
         }
 
@@ -374,6 +372,13 @@ class RayCluster:
             Exception: If connection to the Ray cluster fails.
         """
         try:
+            # Connect to the Ray cluster
+            context = await asyncio.to_thread(
+                ray.init,
+                address=self.head_node_address,
+                logging_format=stream_logging_format,
+            )
+
             # Create ClusterState actor to manage cluster state
             exclude_head_node = self.mode == "slurm"
             check_pending_resources = self.mode == "slurm"
@@ -381,13 +386,6 @@ class RayCluster:
             self.cluster_state_handle = ClusterState.remote(
                 exclude_head_node=exclude_head_node,
                 check_pending_resources=check_pending_resources,
-            )
-
-            # Connect to the Ray cluster
-            context = await asyncio.to_thread(
-                ray.init,
-                address=self.head_node_address,
-                logging_format=stream_logging_format,
             )
 
             return context
@@ -631,7 +629,7 @@ class RayCluster:
                 await self.slurm_workers.close_all()
 
             # Shutdown the Ray cluster head node if it is not in connect mode
-            if self.mode != "connect":
+            if self.mode != "external-cluster":
                 self.logger.info("Starting shutdown of Ray head node...")
                 proc = await asyncio.create_subprocess_exec(
                     self.ray_exec_path,
@@ -791,7 +789,7 @@ class RayCluster:
             )
 
         try:
-            if self.mode != "connect":
+            if self.mode != "external-cluster":
                 await self._start_cluster()
 
             await self._connect_to_cluster()

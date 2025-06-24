@@ -397,7 +397,7 @@ class AppsManager:
                 insufficient_resources = False
 
         if insufficient_resources:
-            if self.ray_cluster.mode != "connect":
+            if self.ray_cluster.mode != "external-cluster":
                 raise ValueError(
                     f"Insufficient resources for deployment '{deployment_name}'. "
                     f"Requested: {ray_actor_options}"
@@ -498,15 +498,17 @@ class AppsManager:
                     self.logger.info(
                         f"User '{user_id}' is calling deployment '{deployment_name}' with method '{method_name}'"
                     )
-                    app_handle = serve.get_app_handle(name=deployment_name)
+                    app_handle = await asyncio.to_thread(
+                        serve.get_app_handle, name=deployment_name
+                    )
 
                     # Recursively put args and kwargs into ray object storage
                     args = [
-                        ray.put(arg) if isinstance(arg, np.ndarray) else arg
+                        await asyncio.to_thread(ray.put, arg) if isinstance(arg, np.ndarray) else arg
                         for arg in args
                     ]
                     kwargs = {
-                        k: ray.put(v) if isinstance(v, np.ndarray) else v
+                        k: await asyncio.to_thread(ray.put, v) if isinstance(v, np.ndarray) else v
                         for k, v in kwargs.items()
                     }
 
@@ -574,6 +576,7 @@ class AppsManager:
         artifact_id: str,
         deployment_name: str,
         app: serve.Application,
+        _skip_update: bool = False,
     ) -> None:
         """
         Execute deployment of a Ray Serve application with comprehensive lifecycle management.
@@ -606,7 +609,7 @@ class AppsManager:
             self.logger.info(
                 f"Starting deployment process for artifact '{artifact_id}'"
             )
-            await asyncio.to_thread(
+            coroutine = asyncio.to_thread(
                 serve.run,
                 target=app,
                 name=deployment_name,
@@ -614,8 +617,15 @@ class AppsManager:
                 blocking=False,
             )
 
+            if not _skip_update and self.ray_cluster.mode == "slurm":
+                # Notify the autoscaling system of the new deployment
+                await self.ray_cluster.notify()
+
+            # Await the coroutine to start the deployment
+            await coroutine
+
             # Validate the deployment's status
-            serve_status = serve.status()
+            serve_status = await asyncio.to_thread(serve.status)
             if deployment_name in serve_status.applications.keys():
                 self.logger.info(
                     f"Successfully completed deployment of artifact '{artifact_id}'"
@@ -668,7 +678,8 @@ class AppsManager:
                 )
 
             # Update services
-            await self._update_services()
+            if not _skip_update:
+                await self._update_services()
 
             self.logger.info(f"Undeployment of artifact '{artifact_id}' completed")
 
@@ -701,7 +712,7 @@ class AppsManager:
             self.artifact_manager = None
             raise e
 
-    async def initialize_deployments(self) -> None:
+    async def deploy_artifacts(self, artifact_ids: List[str], context: dict) -> None:
         """
         Deploy all startup deployments defined in the manager.
 
@@ -720,23 +731,33 @@ class AppsManager:
             raise RuntimeError(
                 "Artifact manager not initialized. Call initialize() first."
             )
+        
+        if not artifact_ids:
+            return
 
-        if self.startup_deployments:
-            self.logger.info(
-                f"Starting deployments for artifacts: {', '.join(self.startup_deployments)}"
+        self.logger.info(
+            f"Starting deployments for artifacts: {', '.join(artifact_ids)}"
+        )
+        for artifact_id in artifact_ids:
+            await self.deploy_artifact(
+                artifact_id,
+                context=context,
+                _skip_update=True,
             )
-            deployment_tasks = [
-                self.deploy_artifact(
-                    artifact_id,
-                    context=self._get_admin_context(),
-                    _skip_update=True,
-                )
-                for artifact_id in self.startup_deployments
-            ]
-            await asyncio.gather(*deployment_tasks)
 
-            # Update services after startup deployments
-            await self._update_services()
+        if self.ray_cluster.mode == "slurm":
+            # Notify the autoscaling system of the new deployment
+            await self.ray_cluster.notify()
+
+        # Wait for all deployments to complete
+        deployment_tasks = [
+            self._deployed_artifacts[artifact_id]["deployment_task"]
+            for artifact_id in artifact_ids
+        ]
+        await asyncio.gather(*deployment_tasks)
+
+        # Update services after startup deployments
+        await self._update_services()
 
     async def create_artifact(
         self, files: List[dict], artifact_id: str = None, context: Optional[dict] = None
@@ -1010,7 +1031,7 @@ class AppsManager:
 
         # Check if the artifact is already deployed
         deployment_name = await self._create_deployment_name(artifact_id)
-        serve_status = serve.status()
+        serve_status = await asyncio.to_thread(serve.status)
         if deployment_name in serve_status.applications.keys():
             self.logger.info(
                 f"User '{user_id}' is updating existing deployment for artifact '{artifact_id}'"
@@ -1033,19 +1054,11 @@ class AppsManager:
                 artifact_id=artifact_id,
                 deployment_name=deployment_name,
                 app=app,
+                _skip_update=_skip_update,
             ),
             name=f"Deploy-{artifact_id}",
         )
         self._deployed_artifacts[artifact_id]["deployment_task"] = deployment_task
-
-        # Notify the autoscaling system of the new deployment
-        if self.ray_cluster.mode == "slurm":
-            # Notify the autoscaling
-            await self.ray_cluster.notify()
-
-        # Update services if not skipped
-        if not _skip_update:
-            await self._update_services()
 
     async def undeploy_artifact(
         self,
@@ -1157,7 +1170,7 @@ class AppsManager:
             output["service_id"] = None
 
         # Get status of actively running deployments
-        serve_status = serve.status()
+        serve_status = await asyncio.to_thread(serve.status)
 
         if not self._deployed_artifacts:
             output["note"] = "Currently no artifacts are deployed."
@@ -1236,16 +1249,7 @@ class AppsManager:
         artifacts = await self.artifact_manager.list(parent_id=deployment_collection_id)
 
         # Deploy each artifact
-        for artifact in artifacts:
-            try:
-                artifact_id = artifact["id"]
-                await self.deploy_artifact(artifact_id, _skip_update=True)
-            except Exception as e:
-                self.logger.error(f"Failed to deploy {artifact_id}: {e}")
-                raise e
-
-        # Update services after all deployments
-        await self._update_services()
+        await self.deploy_artifacts(artifact_ids=artifacts, context=context)
 
     async def cleanup_deployments(self, context: Dict[str, Any]) -> None:
         """

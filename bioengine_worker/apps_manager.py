@@ -126,7 +126,7 @@ class AppsManager:
     def _get_admin_context(self) -> Dict[str, Any]:
         """
         Get context for admin users.
-        
+
         Returns:
             Dict: Context dictionary containing admin user information
         """
@@ -367,32 +367,47 @@ class AppsManager:
         ray_actor_options = deployment_config.setdefault("ray_actor_options", {})
         ray_actor_options.setdefault("num_cpus", 1)
         ray_actor_options.setdefault("num_gpus", 0)
+        ray_actor_options.setdefault("memory", 0)
 
         # Check if the required resources are available
-        cluster_status = self.ray_cluster.status["cluster"]
-        available_resources = {
-            "num_cpus": cluster_status.get("total_cpu", 0),
-            "num_gpus": cluster_status.get("total_gpu", 0),
-            "memory": cluster_status.get("total_memory", 0),
-            # TODO: Does it make sense to check total memory?
-        }
+        insufficient_resources = True
+        for node_resource in self.ray_cluster.status["nodes"].values():
+            if (
+                node_resource["available_cpu"] >= ray_actor_options["num_cpus"]
+                and node_resource["available_gpu"] >= ray_actor_options["num_gpus"]
+                and node_resource["available_memory"] >= ray_actor_options["memory"]
+            ):
+                insufficient_resources = False
 
-        if self.ray_cluster.mode == "slurm":
-            num_worker_jobs = (
-                await self.ray_cluster.slurm_workers.get_num_worker_jobs()
+        if self.ray_cluster.mode == "slurm" and insufficient_resources:
+            # Check if additional SLURM workers can be created that meet the resource requirements
+            # TODO: Remove resource check when SLURM workers can adjust resources dynamically
+            num_worker_jobs = await self.ray_cluster.slurm_workers.get_num_worker_jobs()
+            default_num_cpus = self.ray_cluster.slurm_workers.default_num_cpus
+            default_num_gpus = self.ray_cluster.slurm_workers.default_num_gpus
+            default_memory = (
+                self.ray_cluster.slurm_workers.default_mem_per_cpu * default_num_cpus
             )
+            if (
+                num_worker_jobs < self.ray_cluster.slurm_workers.max_workers
+                and default_num_cpus >= ray_actor_options["num_cpus"]
+                and default_num_gpus >= ray_actor_options["num_gpus"]
+                and default_memory >= ray_actor_options["memory"]
+            ):
+                insufficient_resources = False
 
-        if self.ray_cluster.mode == "single-machine" or (
-            self.ray_cluster.mode == "slurm"
-            and num_worker_jobs == self.ray_cluster.slurm_workers.max_workers
-        ):
-            for key in ["num_cpus", "num_gpus", "memory"]:
-                if ray_actor_options.get(key, 0) > available_resources[key]:
-                    raise ValueError(
-                        f"Insufficient resources for {key}. "
-                        f"Requested: {ray_actor_options[key]}, "
-                        f"Available: {available_resources[key]}"
-                    )
+        if insufficient_resources:
+            if self.ray_cluster.mode != "connect":
+                raise ValueError(
+                    f"Insufficient resources for deployment '{deployment_name}'. "
+                    f"Requested: {ray_actor_options}"
+                )
+            else:
+                self.logger.warning(
+                    f"Currently insufficient resources for deployment '{deployment_name}'. "
+                    "Assuming Ray autoscaling is available. "
+                    f"Requested resources: {ray_actor_options}"
+                )
 
         # Add cache path to deployment config environment
         runtime_env = ray_actor_options.setdefault("runtime_env", {})
@@ -1156,7 +1171,9 @@ class AppsManager:
                 self.logger.warning(
                     f"Deployment '{deployment_name}' for artifact '{artifact_id}' not found in Ray Serve status."
                 )
-                await self.undeploy_artifact(artifact_id, context=self._get_admin_context())
+                await self.undeploy_artifact(
+                    artifact_id, context=self._get_admin_context()
+                )
                 continue
 
             application = serve_status.applications[deployment_name]
@@ -1496,14 +1513,10 @@ if __name__ == "__main__":
             # Call the deployed application
             deployment_name = deployment_status[artifact_id]["deployment_name"]
             response = await deployment_service[deployment_name]["ping"]()
-            apps_manager.logger.info(
-                f"Response from deployed application: {response}"
-            )
+            apps_manager.logger.info(f"Response from deployed application: {response}")
 
             response = await deployment_service[deployment_name]["train"]()
-            apps_manager.logger.info(
-                f"Response from deployed application: {response}"
-            )
+            apps_manager.logger.info(f"Response from deployed application: {response}")
 
             # Keep server running if requested
             if keep_running:

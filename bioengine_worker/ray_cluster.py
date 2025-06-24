@@ -11,27 +11,9 @@ from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
 import ray
-from ray.util.state import StateApiClient
-from ray.util.state.common import (
-    DEFAULT_LIMIT,
-    DEFAULT_RPC_TIMEOUT,
-    ActorState,
-    ClusterEventState,
-    GetApiOptions,
-    JobState,
-    ListApiOptions,
-    NodeState,
-    ObjectState,
-    PlacementGroupState,
-    PredicateType,
-    RuntimeEnvState,
-    StateResource,
-    SupportedFilterType,
-    TaskState,
-    WorkerState,
-)
 
 from bioengine_worker import __version__
+from bioengine_worker.ray_cluster_state import ClusterState
 from bioengine_worker.slurm_workers import SlurmWorkers
 from bioengine_worker.utils import create_logger, stream_logging_format
 
@@ -186,17 +168,11 @@ class RayCluster:
             )
 
         # Check number of CPUs and GPUs
-        if self.mode in ["slurm", "connect"]:
-            if head_num_cpus > 0:
-                self.logger.warning(
-                    f"Ignoring 'head_num_cpus' setting in '{self.mode}' mode - will be set to 0"
+        if self.mode == "slurm":
+            if head_num_cpus > 0 or head_num_gpus > 0:
+                raise ValueError(
+                    "In SLURM mode, 'head_num_cpus' and 'head_num_gpus' must be 0. Use SLURM worker configuration instead."
                 )
-                head_num_cpus = 0
-            if head_num_gpus > 0:
-                self.logger.warning(
-                    f"Ignoring 'head_num_gpus' setting in '{self.mode}' mode - will be set to 0"
-                )
-                head_num_gpus = 0
         elif (
             self.mode == "single-machine" and head_num_cpus <= 0 and head_num_gpus <= 0
         ):
@@ -253,6 +229,7 @@ class RayCluster:
                 "debug": debug,
             }
 
+        self.cluster_state_handle = None
         self.cluster_status_history = OrderedDict()
         self.last_cluster_status = 0
         self.max_status_history_length = max_status_history_length
@@ -294,7 +271,7 @@ class RayCluster:
                 - start_time_s: Start time as Unix timestamp
                 - start_time: Formatted start time string
                 - uptime: Human-readable uptime string
-                - worker_nodes: Most recent worker nodes status grouped by state
+                - nodes: Most recent worker nodes status grouped by state
         """
         status = {
             "head_address": self.ray_cluster_config["head_node_address"],
@@ -308,7 +285,7 @@ class RayCluster:
             else None
         )
         status["cluster"] = last_status["cluster"] if last_status else {}
-        status["worker_nodes"] = last_status["nodes"] if last_status else {}
+        status["nodes"] = last_status["nodes"] if last_status else {}
 
         return status
 
@@ -369,7 +346,7 @@ class RayCluster:
             if "ray://" in connection_string:
                 # If the connection string starts with 'ray://', it is a Ray client address
                 port = connection_string.split(":")[-1]
-                address = connection_string[:-(len(port)+1)]
+                address = connection_string[: -(len(port) + 1)]
                 self.ray_cluster_config["head_node_address"] = address
                 self.ray_cluster_config["client_server_port"] = int(port)
             else:
@@ -381,7 +358,7 @@ class RayCluster:
             raise ValueError(
                 "Invalid connection address format. Use formats like 'ip:port' or 'ray://hostname:port'."
             )
-        
+
     async def _connect_to_cluster(self) -> ray.client_builder.ClientContext:
         """Connect to the Ray cluster using the configured head node address.
 
@@ -397,22 +374,28 @@ class RayCluster:
             Exception: If connection to the Ray cluster fails.
         """
         try:
-            # Calls ray.init() when connecting to a Ray client address
-            self._state_api_client = await asyncio.to_thread(
-                StateApiClient, address=self.head_node_address
+            # Create ClusterState actor to manage cluster state
+            exclude_head_node = self.mode == "slurm"
+            check_pending_resources = self.mode == "slurm"
+
+            self.cluster_state_handle = ClusterState.remote(
+                exclude_head_node=exclude_head_node,
+                check_pending_resources=check_pending_resources,
             )
 
+            # Connect to the Ray cluster
             context = await asyncio.to_thread(
                 ray.init,
                 address=self.head_node_address,
                 logging_format=stream_logging_format,
             )
+
             return context
         except Exception as e:
             self.logger.error(f"Failed to connect to existing Ray cluster: {e}")
             raise e
 
-    async def _find_available_port(self, port: int, step: int = 1) -> int:
+    def _find_available_port(self, port: int, step: int = 1) -> int:
         """
         Find next available port starting from given port number.
 
@@ -435,7 +418,7 @@ class RayCluster:
         available = False
         out_port = port
         while not available:
-            available = await asyncio.to_thread(check_port, out_port)
+            available = check_port(out_port)
             if not available:
                 out_port += step
 
@@ -445,7 +428,7 @@ class RayCluster:
             )
         return out_port
 
-    async def _set_cluster_ports(self) -> None:
+    def _set_cluster_ports(self) -> None:
         """Update cluster configuration with available ports.
 
         Checks for port availability and updates the ray_cluster_config
@@ -453,27 +436,25 @@ class RayCluster:
         Also sets worker port ranges based on the client server port.
         """
         # Update ports to available ones
-        self.ray_cluster_config["head_node_port"] = await self._find_available_port(
+        self.ray_cluster_config["head_node_port"] = self._find_available_port(
             self.ray_cluster_config["head_node_port"], step=1
         )
-        self.ray_cluster_config["node_manager_port"] = await self._find_available_port(
+        self.ray_cluster_config["node_manager_port"] = self._find_available_port(
             self.ray_cluster_config["node_manager_port"], step=100
         )
-        self.ray_cluster_config["object_manager_port"] = (
-            await self._find_available_port(
-                self.ray_cluster_config["object_manager_port"], step=100
-            )
+        self.ray_cluster_config["object_manager_port"] = self._find_available_port(
+            self.ray_cluster_config["object_manager_port"], step=100
         )
-        self.ray_cluster_config["redis_shard_port"] = await self._find_available_port(
+        self.ray_cluster_config["redis_shard_port"] = self._find_available_port(
             self.ray_cluster_config["redis_shard_port"], step=100
         )
-        self.ray_cluster_config["serve_port"] = await self._find_available_port(
+        self.ray_cluster_config["serve_port"] = self._find_available_port(
             self.ray_cluster_config["serve_port"], step=1
         )
-        self.ray_cluster_config["dashboard_port"] = await self._find_available_port(
+        self.ray_cluster_config["dashboard_port"] = self._find_available_port(
             self.ray_cluster_config["dashboard_port"], step=1
         )
-        self.ray_cluster_config["client_server_port"] = await self._find_available_port(
+        self.ray_cluster_config["client_server_port"] = self._find_available_port(
             self.ray_cluster_config["client_server_port"], step=10000
         )
         self.ray_cluster_config["min_worker_port"] = (
@@ -503,7 +484,7 @@ class RayCluster:
             self.logger.info("Starting Ray cluster...")
 
             # Check and set cluster ports
-            await self._set_cluster_ports()
+            await asyncio.to_thread(self._set_cluster_ports)
 
             # Make sure the temporary directory exists (triggers better error message than Ray)
             ray_temp_dir = Path(self.ray_cluster_config["ray_temp_dir"])
@@ -529,7 +510,9 @@ class RayCluster:
                 f"--temp-dir={ray_temp_dir}",
             ]
             if self.mode != "single-machine":
-                args.append("--memory=0")  # Disable memory limit for head node in SLURM and connect modes
+                args.append(
+                    "--memory=0"
+                )  # Disable memory limit for head node in SLURM and connect modes
 
             self.logger.debug(
                 f"Ray start command: {self.ray_exec_path} {' '.join(args)}"
@@ -554,10 +537,11 @@ class RayCluster:
             )
 
             # Start Ray Serve
+            ray_address = self.head_node_address
             args = [
                 "start",
                 "--address",
-                self.head_node_address,
+                ray_address,
                 "--http-host",
                 "0.0.0.0",
                 "--http-port",
@@ -576,12 +560,6 @@ class RayCluster:
                 raise subprocess.CalledProcessError(
                     proc.returncode, f"serve start", stderr=error_msg
                 )
-
-            # Log the start time and head node address
-            ray_address = self.head_node_address
-            self.logger.info(
-                f"Ray cluster with Ray Serve started on '{ray_address}'"
-            )
 
             # Change '<ray_temp_dir>/session_latest' symlink to use relative path instead of absolute (container) path
             # (needed when starting ray in container)
@@ -610,6 +588,8 @@ class RayCluster:
                     ray_cluster=self, **self.slurm_worker_config
                 )
 
+            self.logger.info(f"Ray cluster with Ray Serve started on '{ray_address}'")
+
         except subprocess.CalledProcessError as e:
             self.logger.error(
                 f"Ray start command failed with error code {e.returncode}:\n{e.stderr}"
@@ -618,110 +598,7 @@ class RayCluster:
         except Exception as e:
             self.logger.error(f"Error starting Ray cluster: {e}")
             raise e
-        
-    async def _get_pending_resources(self) -> int:
-        """
-        Check if there are any pending resources in the cluster.
-        """
-        pending_actors = await self.list_resources(
-            resource=StateResource.ACTORS,
-            filters=[("state", "=", "PENDING_CREATION")],
-        )
-        pending_tasks = await self.list_resources(
-            resource=StateResource.TASKS,
-            filters=[("state", "=", "PENDING_NODE_ASSIGNMENT")],
-        )
-        pending_jobs = await self.list_resources(
-            resource=StateResource.JOBS,
-            # TODO: check if status is correct
-            filters=[("status", "=", "PENDING")],
-        )
-        return len(pending_actors) + len(pending_tasks) + len(pending_jobs)
 
-    async def _get_cluster_status(self) -> Dict[str, Union[str, dict]]:
-        """Get current cluster state including head node and worker information.
-
-        Returns a detailed status report including information about all worker nodes
-        including their resources and SLURM job IDs if applicable. This method
-        excludes the head node unless running in single-machine mode.
-
-        Returns:
-            Dict containing worker nodes grouped by state (e.g., 'ALIVE', 'DEAD').
-            Each node entry includes:
-                - node_id: Unique identifier for the node
-                - node_ip: IP address of the worker node
-                - total_gpu: GPU resource information
-                - available_gpu: Available GPU resource information
-                - total_cpu: CPU resource information
-                - available_cpu: Available CPU resource information
-                - total_memory: Memory resource information
-                - available_memory: Available memory resource information
-
-        Raises:
-            RuntimeError: If Ray cluster is not initialized.
-            Exception: For other cluster status retrieval errors.
-        """
-        try:
-            # Get the status and resources of all nodes (run in thread to avoid blocking)
-            # ray.nodes() took on average 0.0012 seconds
-            # list_nodes() took on average 0.0074 seconds
-
-            # TODO: use client_mode_hook to access per node cluster resources
-            # TODO: set memory of head node to 0 if running in SLURM mode
-            cluster_resources = await asyncio.to_thread(ray.cluster_resources)
-            available_resources = await asyncio.to_thread(ray.available_resources)
-            cluster_status = {
-                "cluster": {
-                    "total_gpu": cluster_resources.get("GPU", 0),
-                    "available_gpu": available_resources.get("GPU", 0),
-                    "total_cpu": cluster_resources.get("CPU", 0),
-                    "available_cpu": available_resources.get("CPU", 0),
-                    "total_memory": cluster_resources.get("memory", 0),
-                    "available_memory": available_resources.get("memory", 0),
-                    "total_object_store_memory": cluster_resources.get(
-                        "object_store_memory", 0
-                    ),
-                    "available_object_store_memory": available_resources.get(
-                        "object_store_memory", 0
-                    ),
-                },
-                "nodes": {},
-            }
-
-            # Skip the head node if it is not a worker node
-            filters = (
-                [("is_head_node", "=", False)]
-                if self.mode != "single-machine"
-                else None
-            )
-
-            all_nodes = await self.list_resources(
-                resource=StateResource.NODES, filters=filters
-            )
-            for node in all_nodes:
-                if not node.resources_total:
-                    self.logger.warning(
-                        f"Encountered worker node without node resources and state '{node.state}'"
-                    )
-                node_status = {
-                    "node_id": node.node_id,
-                    "node_ip": node.node_ip,
-                    "total_gpu": node.resources_total.get("GPU", 0),
-                    "total_cpu": node.resources_total.get("CPU", 0),
-                    "total_memory": node.resources_total.get("memory", 0),
-                }
-                cluster_status["nodes"].setdefault(node.state, []).append(node_status)
-
-            if self.mode == "slurm":
-                n_pending_resources = await self._get_pending_resources()
-                cluster_status["cluster"]["pending_resources"] = n_pending_resources
-
-            return cluster_status
-
-        except Exception as e:
-            self.logger.error(f"Error checking ray cluster: {e}")
-            raise e
-        
     async def _shutdown_ray(self, grace_period: int = 60) -> None:
         """Stop Ray cluster and all worker nodes.
 
@@ -743,7 +620,7 @@ class RayCluster:
                 # Disconnect current client from Ray cluster
                 self.logger.info("Disconnecting from Ray cluster...")
                 await asyncio.to_thread(ray.shutdown)
-        
+
             # Shutdown all SLURM workers if running in SLURM mode
             if self.slurm_workers:
                 await self.slurm_workers.close_all()
@@ -825,14 +702,18 @@ class RayCluster:
         while self.start_time:
             try:
                 current_time = time.time()
-                if current_time - self.last_cluster_status < self.status_interval_seconds:
+                if (
+                    current_time - self.last_cluster_status
+                    < self.status_interval_seconds
+                ):
                     continue  # Skip if within check interval
                 self.last_cluster_status = current_time
 
                 # Check if Ray cluster is initialized and connected
                 await self.check_connection()
-                # Get the current status of the cluster
-                cluster_status = await self._get_cluster_status()
+
+                # Get the current status of the cluster from the ClusterState actor
+                cluster_status = await self.cluster_state_handle.get_state.remote()
                 self.cluster_status_history[time.time()] = cluster_status
 
                 # Limit the history size
@@ -842,20 +723,21 @@ class RayCluster:
                 # Check if SLURM workers need to scale
                 if self.slurm_workers:
                     await self.slurm_workers.check_scaling()
-                consecutive_errors = 0  # Reset error counter on success
 
-                
+                # Reset error counter on success
+                consecutive_errors = 0
+
             except Exception as e:
                 self.logger.error(f"Error in monitoring task: {e}")
                 consecutive_errors += 1
+                # Don't raise the exception to avoid crashing the monitoring task
+                # Instead, continue monitoring until the maximum of consecutive errors is reached
+
                 if consecutive_errors >= max_consecutive_errors:
                     self.logger.error(
                         f"Stopping monitoring loop after {consecutive_errors} consecutive errors"
                     )
                     self.start_time = None
-
-                # Don't raise the exception to avoid crashing the monitoring task
-                # Instead, wait a bit and continue monitoring
 
             # Sleep for 1 second before next iteration
             await asyncio.sleep(1)
@@ -878,11 +760,11 @@ class RayCluster:
         # Initialize Ray if RayCluster is running and Ray is not initialized
         if self.start_time is None:
             raise RuntimeError("Ray cluster is not running")
-            
+
         if not ray.is_initialized():
             self.logger.warning(f"Ray client disconnected. Reconnecting...")
             await self._connect_to_cluster()
-            
+
     async def start(self) -> None:
         """Start the Ray cluster based on the configured mode.
 
@@ -897,7 +779,7 @@ class RayCluster:
         """
         if self.start_time is not None:
             raise RuntimeError("Ray cluster is already running")
-        
+
         if ray.is_initialized():
             raise RuntimeError(
                 "Ray is already initialized. Please stop the existing Ray instance before starting the cluster."
@@ -943,8 +825,10 @@ class RayCluster:
 
         if self.slurm_workers:
             self.logger.info("Notifying SLURM workers of cluster state change")
-            self.last_cluster_status = time.time() - self.status_interval_seconds + delay_s
-        
+            self.last_cluster_status = (
+                time.time() - self.status_interval_seconds + delay_s
+            )
+
     async def stop(self) -> None:
         """Stop the Ray cluster"""
 
@@ -956,117 +840,6 @@ class RayCluster:
             await self.monitoring_task
         else:
             await self._shutdown_ray()
-
-    async def list_resources(
-        self,
-        resource: StateResource,
-        filters: Optional[List[Tuple[str, PredicateType, SupportedFilterType]]] = None,
-        limit: int = DEFAULT_LIMIT,
-        timeout: int = DEFAULT_RPC_TIMEOUT,
-        detail: bool = False,
-        raise_on_missing_output: bool = True,
-        _explain: bool = False,
-    ) -> List[
-        Union[
-            ActorState,
-            JobState,
-            NodeState,
-            TaskState,
-            ObjectState,
-            PlacementGroupState,
-            RuntimeEnvState,
-            WorkerState,
-            ClusterEventState,
-        ]
-    ]:
-        """List resources states
-
-        Args:
-            resource: State resource to list, e.g. `StateResource.ACTORS`.
-            options: List options. See `ListApiOptions` for details.
-            raise_on_missing_output: When True, raise an exception if the output
-                is incomplete. Output can be incomplete if
-                (1) there's a partial network failure when the source is distributed.
-                (2) data is truncated because it is too large.
-                Set it to False to avoid throwing an exception on missing data.
-            _explain: Print the API information such as API
-                latency or failed query information.
-
-        Returns:
-            A list of queried result from `ListApiResponse`,
-
-        Raises:
-            Exception: This doesn't catch any exceptions raised when the
-                underlying request call raises exceptions. For example, it could
-                raise `requests.Timeout` when timeout occurs.
-
-        """
-        return await asyncio.to_thread(
-            self._state_api_client.list,
-            resource=resource,
-            options=ListApiOptions(
-                limit=limit,
-                timeout=timeout,
-                filters=filters,
-                detail=detail,
-                explain=_explain,
-            ),
-            raise_on_missing_output=raise_on_missing_output,
-        )
-
-    async def get_resource(
-        self,
-        resource: StateResource,
-        id: str,
-        timeout: int = DEFAULT_RPC_TIMEOUT,
-        _explain: bool = False,
-    ) -> Optional[
-        Union[
-            ActorState,
-            PlacementGroupState,
-            NodeState,
-            WorkerState,
-            TaskState,
-            List[ObjectState],
-            JobState,
-        ]
-    ]:
-        """Get resources states by id
-
-        Args:
-            resource: State resource to get, e.g. `StateResource.Nodes`.
-            id: ID for the resource, i.e. 'node_id' for nodes.
-            timeout: Timeout for the request in seconds.
-            _explain: Print the API information such as API
-                latency or failed query information.
-
-        Returns:
-            None if not found, and if found:
-            - ActorState for actors
-            - PlacementGroupState for placement groups
-            - NodeState for nodes
-            - WorkerState for workers
-            - TaskState for tasks
-            - JobState for jobs
-
-            Empty list for objects if not found, or list of ObjectState for objects
-
-        Raises:
-            Exception: This doesn't catch any exceptions raised when the underlying request
-                call raises exceptions. For example, it could raise `requests.Timeout`
-                when timeout occurs.
-            ValueError:
-                if the resource could not be GET by id, i.e. jobs and runtime-envs.
-
-        """
-        return await asyncio.to_thread(
-            self._state_api_client.get,
-            resource=resource,
-            id=id,
-            options=GetApiOptions(timeout=timeout),
-            _explain=_explain,
-        )
-
 
 
 if __name__ == "__main__":

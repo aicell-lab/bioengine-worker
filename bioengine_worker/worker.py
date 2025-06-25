@@ -44,7 +44,7 @@ class BioEngineWorker:
     - Comprehensive status monitoring and logging
 
     Attributes:
-        mode (str): Deployment mode ('slurm', 'single-machine', 'connect')
+        mode (str): Deployment mode ('slurm', 'single-machine', 'external-cluster')
         admin_users (List[str]): List of user emails with admin permissions
         cache_dir (Path): Directory for temporary files and Ray data
         data_dir (Path): Directory for dataset storage
@@ -88,7 +88,7 @@ class BioEngineWorker:
         Handles authentication with the Hypha server and configures logging.
 
         Args:
-            mode: Ray cluster mode ('slurm', 'single-machine', 'connect')
+            mode: Ray cluster mode ('slurm', 'single-machine', 'external-cluster')
             admin_users: List of user emails with admin permissions
             cache_dir: Directory for temporary files and Ray data
             data_dir: Directory for dataset storage

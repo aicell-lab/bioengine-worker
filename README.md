@@ -7,7 +7,7 @@ Provides a Hypha service interface for streaming datasets, executing python code
 The BioEngine worker comes in three modes:
 - `slurm`: Start a latent BioEngine worker service with very low resource consumption that activates upon usage and scales a Ray cluster by submitting SLURM jobs to recruit additional workers. An autoscaling system will handle up- and down-scaling.
 - `single-machine`: Start a local BioEngine worker with Ray running on a single machine.
-- `connect`: Start a BioEngine worker with data access, but execute all computations on a remote Ray cluster.
+- `external-cluster`: Start a BioEngine worker with data access, but execute all computations on a remote Ray cluster.
 
 ## Start your own BioEngine worker
 
@@ -26,7 +26,7 @@ This assumes the following directories in the current working directory for moun
 A token for the Hypha workspace can either be added using the tag `--token` or provided in the `.env` file as `HYPHA_TOKEN`. Otherwise, you will be prompted to login when starting the worker.
 The default workspace can be changed using the tag `--workspace`.
 
-By default, the BioEngine worker will start a local Ray cluster with the provided resources `--head_num_gpus` and `--head_num_cpus`. To connect to a running Ray cluster, change the tag `--mode` to `"connect"`.
+By default, the BioEngine worker will start a local Ray cluster with the provided resources `--head_num_gpus` and `--head_num_cpus`. To connect to a running Ray cluster, change the tag `--mode` to `"external-cluster"`.
 
 An overview of all tags for the BioEngine worker can be accessed via:
 ```bash

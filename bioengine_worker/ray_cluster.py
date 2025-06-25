@@ -33,7 +33,7 @@ class RayCluster:
     automatic port allocation to avoid conflicts, and comprehensive monitoring.
 
     Key Features:
-    - Multi-environment support (SLURM, single-machine, connect)
+    - Multi-environment support (SLURM, single-machine, external-cluster)
     - Dynamic port allocation with conflict resolution
     - Container-based worker deployment via SLURM with Apptainer/Singularity
     - Automatic scaling based on resource utilization and task demand
@@ -43,7 +43,7 @@ class RayCluster:
     - Robust error handling with automatic reconnection
 
     Attributes:
-        mode (str): Deployment mode ('slurm', 'single-machine', 'connect')
+        mode (str): Deployment mode ('slurm', 'single-machine', 'external-cluster')
         ray_cluster_config (dict): Configuration for Ray head node
         slurm_worker_config (dict): Configuration for SLURM workers (if applicable)
         is_running (bool): Whether the cluster is currently active
@@ -103,7 +103,7 @@ class RayCluster:
         SLURM networking caveats: https://github.com/ray-project/ray/blob/1000ae9671967994f7bfdf7b1e1399223ad4fc61/doc/source/cluster/vms/user-guides/community/slurm.rst#id22
 
         Args:
-            mode: Mode of operation ('slurm', 'single-machine', or 'connect').
+            mode: Mode of operation ('slurm', 'single-machine', or 'external-cluster').
             head_node_address: IP address for head node. Uses first system IP if None.
             head_node_port: Port for Ray head node and GCS server. Default 6379.
             node_manager_port: Base port for Ray node manager services. Default 6700.
@@ -162,7 +162,7 @@ class RayCluster:
             self._check_slurm_available()
         elif self.mode not in ["single-machine", "external-cluster"]:
             raise ValueError(
-                f"Invalid mode '{self.mode}'. Supported modes are 'slurm', 'single-machine' and 'connect'."
+                f"Invalid mode '{self.mode}'. Supported modes are 'slurm', 'single-machine' and 'external-cluster'."
             )
 
         # Check number of CPUs and GPUs
@@ -510,7 +510,7 @@ class RayCluster:
             if self.mode != "single-machine":
                 args.append(
                     "--memory=0"
-                )  # Disable memory limit for head node in SLURM and connect modes
+                )  # Disable memory limit for head node in slurm and external-cluster modes
 
             # Prevent logging of Redis password in debug logs
             censored_args = [
@@ -628,7 +628,7 @@ class RayCluster:
             if self.slurm_workers:
                 await self.slurm_workers.close_all()
 
-            # Shutdown the Ray cluster head node if it is not in connect mode
+            # Shutdown the Ray cluster head node if it is not in external-cluster mode
             if self.mode != "external-cluster":
                 self.logger.info("Starting shutdown of Ray head node...")
                 proc = await asyncio.create_subprocess_exec(

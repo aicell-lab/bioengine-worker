@@ -435,12 +435,13 @@ class AppsManager:
         )
 
         # Store the deployment information first so it's available to other tasks
-        deployment_emoji = (
+        artifact_emoji = (
             manifest["id_emoji"] + " " if manifest.get("id_emoji") else ""
         )
-        deployment_name = manifest.get("name", manifest["id"])
+        artifact_name = manifest.get("name", manifest["id"])
         deployment_info = {
-            "display_name": deployment_emoji + deployment_name,
+            "display_name": artifact_emoji + artifact_name,
+            "description": manifest.get("description", ""),
             "deployment_name": deployment_name,
             "class_config": class_config,
             "resources": {
@@ -1214,6 +1215,7 @@ class AppsManager:
             deployment = application.deployments.get(class_name)
             output[artifact_id] = {
                 "display_name": deployment_info["display_name"],
+                "description": deployment_info["description"],
                 "deployment_name": deployment_name,
                 "available_methods": list(class_methods.keys()),
                 "start_time": application.last_deployed_time_s,

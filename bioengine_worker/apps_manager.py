@@ -661,6 +661,10 @@ class AppsManager:
                 )
                 await app_handle.__bioengine_initialize__.remote()
 
+            # Update services with the new deployment
+            if not _skip_update:
+                await self._update_services()
+
             # Keep the deployment task running until cancelled
             while True:
                 await asyncio.sleep(1)
@@ -693,7 +697,7 @@ class AppsManager:
                     f"Removed artifact '{artifact_id}' from deployment tracking"
                 )
 
-            # Update services
+            # Update services with removed deployment
             if not _skip_update:
                 await self._update_services()
 

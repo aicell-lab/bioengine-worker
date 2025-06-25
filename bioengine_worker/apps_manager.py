@@ -265,6 +265,7 @@ class AppsManager:
         Raises:
             ValueError: If the artifact ID cannot be converted to a valid identifier
         """
+        # TODO: Convert artifact ID to a URL- and Ray-safe unique name
         deployment_name = artifact_id.lower()
         for char in ["|", "/", "-", "."]:
             deployment_name = deployment_name.replace(char, "_")
@@ -434,7 +435,12 @@ class AppsManager:
         )
 
         # Store the deployment information first so it's available to other tasks
+        deployment_emoji = (
+            manifest["id_emoji"] + " " if manifest.get("id_emoji") else ""
+        )
+        deployment_name = manifest.get("name", manifest["id"])
         deployment_info = {
+            "display_name": deployment_emoji + deployment_name,
             "deployment_name": deployment_name,
             "class_config": class_config,
             "resources": {
@@ -443,7 +449,8 @@ class AppsManager:
                 "memory": deployment_config["ray_actor_options"].get("memory"),
             },
             "bioengine_initialize": hasattr(
-                deployment_class, "__bioengine_initialize__"
+                deployment_class,
+                "__bioengine_initialize__",  # TODO: change to __async_init__
             ),
             "deployment_task": None,  # Will be set by deploy_artifact
         }
@@ -504,11 +511,19 @@ class AppsManager:
 
                     # Recursively put args and kwargs into ray object storage
                     args = [
-                        await asyncio.to_thread(ray.put, arg) if isinstance(arg, np.ndarray) else arg
+                        (
+                            await asyncio.to_thread(ray.put, arg)
+                            if isinstance(arg, np.ndarray)
+                            else arg
+                        )
                         for arg in args
                     ]
                     kwargs = {
-                        k: await asyncio.to_thread(ray.put, v) if isinstance(v, np.ndarray) else v
+                        k: (
+                            await asyncio.to_thread(ray.put, v)
+                            if isinstance(v, np.ndarray)
+                            else v
+                        )
                         for k, v in kwargs.items()
                     }
 
@@ -731,7 +746,7 @@ class AppsManager:
             raise RuntimeError(
                 "Artifact manager not initialized. Call initialize() first."
             )
-        
+
         if not artifact_ids:
             return
 
@@ -1198,6 +1213,7 @@ class AppsManager:
             class_name = class_config["class_name"]
             deployment = application.deployments.get(class_name)
             output[artifact_id] = {
+                "display_name": deployment_info["display_name"],
                 "deployment_name": deployment_name,
                 "available_methods": list(class_methods.keys()),
                 "start_time": application.last_deployed_time_s,

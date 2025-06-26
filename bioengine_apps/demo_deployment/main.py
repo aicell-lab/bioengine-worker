@@ -9,7 +9,8 @@ from typing import Any
 
 class DemoDeployment(object):
     def __init__(self):
-        pass
+        """Initialize the application."""
+        self.start_time = time.time()
 
     # === Internal Bioengine App Methods ===
 

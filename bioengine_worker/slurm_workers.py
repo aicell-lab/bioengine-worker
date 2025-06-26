@@ -676,7 +676,6 @@ class SlurmWorkers:
         )
         if not can_scale_up:
             return
-        
 
         # Get the required resources
         required_resources = None
@@ -805,7 +804,7 @@ class SlurmWorkers:
         # Find nodes that have been idle for at least the threshold duration
         nodes_to_remove = None
         max_idle_time = 0
-        
+
         for i, (timepoint, cluster_status) in enumerate(
             reversed(self.ray_cluster.cluster_status_history.items())
         ):
@@ -850,9 +849,11 @@ class SlurmWorkers:
                         name=f"WorkerScaleDownTask_{idle_node_id}",
                     )
                     workers_removed = True
-            
+
             if not workers_removed:
-                self.logger.debug("No workers met the criteria for removal after final validation")
+                self.logger.debug(
+                    "No workers met the criteria for removal after final validation"
+                )
         else:
             self.logger.debug(
                 f"No idle workers found to scale down. Max idle time: {max_idle_time:.1f}s (threshold: {self.scale_down_threshold}s)"

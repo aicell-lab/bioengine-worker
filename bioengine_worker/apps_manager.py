@@ -305,18 +305,20 @@ class AppsManager:
                     f"Error loading {class_config['class_name']} from {artifact_id}"
                 )
 
-            if "multiplexed" in class_config:
-                # Add @serve.multiplexed decorator to specified class method
-                method_name = class_config["multiplexed"]["method_name"]
-                max_num_models_per_replica = class_config["multiplexed"][
-                    "max_num_models_per_replica"
-                ]
-
-                orig_method = getattr(deployment_class, method_name)
+            if not hasattr(deployment_class, "_get_model"):
+                # Add @serve.multiplexed decorator to the class method `_get_model`
+                max_num_models_per_replica = int(
+                    class_config.get("max_num_models_per_replica", 3)
+                )
+                orig_method = getattr(deployment_class, "_get_model")
                 decorated_method = serve.multiplexed(
                     orig_method, max_num_models_per_replica=max_num_models_per_replica
                 )
-                setattr(deployment_class, method_name, decorated_method)
+                setattr(deployment_class, "_get_model", decorated_method)
+                self.logger.info(
+                    f"Added @serve.multiplexed decorator to method '_get_model' in class '{class_config['class_name']}' "
+                    f"(max_num_models_per_replica={max_num_models_per_replica})"
+                )
 
             self.logger.info(
                 f"Loaded class '{class_config['class_name']}' from {artifact_id}"
@@ -458,14 +460,16 @@ class AppsManager:
             "num_gpus": deployment_config["ray_actor_options"]["num_gpus"],
             "memory": deployment_config["ray_actor_options"].get("memory"),
         }
-        deployment_info["async_init"] = hasattr(deployment_class, "async_init")
+        deployment_info["async_init"] = hasattr(deployment_class, "_async_init")
+        deployment_info["test_deployment"] = hasattr(
+            deployment_class, "_test_deployment"
+        )
 
         # Create the Ray Serve deployment
         deployment = serve.deployment(**deployment_config)(deployment_class)
 
         # Bind the arguments to the deployment and return an Application
-        kwargs = class_config.get("kwargs", {})
-        app = deployment.bind(**kwargs)
+        app = deployment.bind()
 
         return app
 
@@ -660,26 +664,32 @@ class AppsManager:
             # Await the coroutine to start the deployment
             await deployment_coroutine
 
-            # Validate the deployment's status
-            serve_status = await asyncio.to_thread(serve.status)
-            if deployment_name in serve_status.applications.keys():
-                self.logger.info(
-                    f"Successfully completed deployment of artifact '{artifact_id}'"
+            # Validate the deployment status can be retrieved
+            try:
+                app_handle = await asyncio.to_thread(
+                    serve.get_app_handle, name=deployment_name
                 )
-            else:
+            except Exception as e:
                 raise RuntimeError(
-                    f"Deployment name '{deployment_name}' not found in serve status."
+                    f"Failed to get app handle for deployment '{deployment_name}': {e}"
                 )
 
             # Run async init if provided
             if self._deployed_artifacts[artifact_id]["async_init"]:
-                app_handle = await asyncio.to_thread(
-                    serve.get_app_handle, name=deployment_name
-                )
                 self.logger.info(
-                    f"Calling async_init on deployment '{deployment_name}'"
+                    f"Calling _async_init on deployment '{deployment_name}'"
                 )
-                await app_handle.async_init.remote()
+                await app_handle._async_init.remote()
+
+            if self._deployed_artifacts[artifact_id]["test_deployment"]:
+                self.logger.info(
+                    f"Calling _test_deployment on deployment '{deployment_name}'"
+                )
+                test_result = await app_handle._test_deployment.remote()
+                if test_result is not True:
+                    raise RuntimeError(
+                        f"Deployment '{deployment_name}' failed its test check"
+                    )
 
             # Update services with the new deployment
             if not skip_update:
@@ -687,6 +697,9 @@ class AppsManager:
 
             # Track the deployment in the internal state
             self._deployed_artifacts[artifact_id]["is_deployed"] = True
+            self.logger.info(
+                f"Successfully completed deployment of artifact '{artifact_id}'"
+            )
 
             # Keep the deployment task running until cancelled
             while True:
@@ -816,7 +829,9 @@ class AppsManager:
                     deployment_info["deployment_task"].cancel()
                     timeout = 10
                     try:
-                        await asyncio.wait_for(deployment_info["deployment_task"], timeout=timeout)
+                        await asyncio.wait_for(
+                            deployment_info["deployment_task"], timeout=timeout
+                        )
                     except asyncio.TimeoutError:
                         self.logger.warning(
                             f"Cancellation of existing deployment task for artifact '{artifact_id}' "
@@ -836,6 +851,7 @@ class AppsManager:
                 "class_config": {},
                 "resources": {},
                 "async_init": False,
+                "test_deployment": False,
                 "deployment_task": None,
                 "is_deployed": False,  # Track if the deployment has been started
                 "remove_on_exit": True,  # Default to remove on exit

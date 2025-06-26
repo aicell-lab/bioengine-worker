@@ -337,7 +337,7 @@ class BioEngineWorker:
         # Deploy any startup artifacts
         await self.apps_manager.deploy_artifacts(
             artifact_ids=self.apps_manager.startup_deployments,
-            context=self.apps_manager._get_admin_context()
+            context=self.apps_manager._get_admin_context(),
         )
 
         return sid

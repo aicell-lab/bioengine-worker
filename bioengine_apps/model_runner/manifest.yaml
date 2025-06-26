@@ -18,13 +18,7 @@ version: 0.0.1
 deployment_class:
   python_file: main.py
   class_name: ModelRunner
-  kwargs:
-    cache_n_models: 10  # Number of models to cache in memory
-  multiplexed:
-    # This is a multiplexed deployment, meaning that multiple models can be loaded
-    # Note: Only works for async methods; method requires exactly one argument: model_id
-    method_name: _get_model
-    max_num_models_per_replica: 5
+  max_num_models_per_replica: 5
   exposed_methods:
     get_model_rdf:
       authorized_users: "*"

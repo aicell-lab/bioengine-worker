@@ -47,7 +47,9 @@ async def main(group_configs):
         if bioengine_worker:
             # TODO: when running in Apptainer, the container’s overlay filesystem is torn down before the graceful shutdown completes -> results in OSError [Errno 107] because executables like Ray or scancel are not found
             asyncio.create_task(
-                bioengine_worker.cleanup(context=bioengine_worker.apps_manager._get_admin_context()),
+                bioengine_worker.cleanup(
+                    context=bioengine_worker.apps_manager._get_admin_context()
+                ),
                 name="BioEngineWorker.cleanup",
             )
 

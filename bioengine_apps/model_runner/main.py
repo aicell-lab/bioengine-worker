@@ -410,7 +410,15 @@ class ModelRunner:
             # Handle single array input by creating a proper dictionary
             if isinstance(inputs, np.ndarray):
                 # Get the first input tensor ID
-                input_id = pipeline.model_description.inputs[0].id
+                if hasattr(pipeline.model_description.inputs[0], "id"):
+                    input_id = pipeline.model_description.inputs[0].id
+                elif hasattr(pipeline.model_description.inputs[0], "name"):
+                    input_id = pipeline.model_description.inputs[0].name
+                else:
+                    # TODO Handle this case
+                    raise ValueError(
+                        "Input tensor must have an 'id' or 'name' attribute."
+                    )
                 input_dict = {str(input_id): inputs}
             else:
                 input_dict = inputs
@@ -610,7 +618,7 @@ if __name__ == "__main__":
         print(f"Test result: {test_result}")
 
         # Test the model with an ID
-        model_id = "creative-panda"  # choose different bioimage.io model
+        model_id = "discreet-rooster"
 
         print(f"Testing model {model_id}...")
         test_result = await model_runner.test(model_id)
@@ -626,18 +634,14 @@ if __name__ == "__main__":
 
         # Test inference
         image = await fetch_image(
-            "https://zenodo.org/api/records/5906839/files/sample_input_0.tif/content"
+            "https://raw.githubusercontent.com/aicell-lab/bioengine-worker/refs/heads/main/tests/example_image.tiff"
         )
         image = image.astype("float32")
-        print("example image downloaded: ", image.shape)
+        print(f"Example image downloaded: {image.shape}")
 
-        input_image_shape = tuple(model_rdf["inputs"][0]["shape"][1:])
-        print("Input image shape", input_image_shape)
-        input_image = image[..., None]
-        assert (
-            input_image.shape == input_image_shape
-        ), f"Wrong shape ({input_image.shape}), expected: {input_image_shape}"
-        print("Valid image shape, ready to go!")
+        # Reshape to match expected format: (batch=1, y, x, channels=1)
+        input_image = image[np.newaxis, :, :, np.newaxis]
+        print(f"Final image shape: {input_image.shape}")
 
         outputs = await model_runner.infer(model_id, input_image)
 

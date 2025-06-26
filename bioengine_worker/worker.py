@@ -292,7 +292,7 @@ class BioEngineWorker:
                 "create_artifact": self.apps_manager.create_artifact,
                 "deploy_artifact": self.apps_manager.deploy_artifact,
                 "undeploy_artifact": self.apps_manager.undeploy_artifact,
-                "deploy_all_artifacts": self.apps_manager.deploy_all_artifacts,
+                "deploy_collection": self.apps_manager.deploy_collection,
                 "cleanup_deployments": self.apps_manager.cleanup_deployments,
                 "cleanup": self.cleanup,
             },

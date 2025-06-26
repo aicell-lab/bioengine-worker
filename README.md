@@ -114,7 +114,7 @@ The worker service provides the following functions:
 - `create_artifact(files, artifact_id)`
 - `deploy_artifact(artifact_id)`
 - `undeploy_artifact(artifact_id)`
-- `deploy_all_artifacts(deployment_collection_id)`
+- `deploy_collection(deployment_collection_id)`
 - `cleanup_deployments()`
 - `cleanup()`
 

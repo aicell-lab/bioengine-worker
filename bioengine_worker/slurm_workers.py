@@ -724,7 +724,8 @@ class SlurmWorkers:
                 mem_per_cpu=mem_per_cpu,
                 time_limit=time_limit,
                 further_slurm_args=further_slurm_args,
-            )
+            ),
+            name="WorkerScaleUpTask",
         )
 
     async def _check_is_idle(self, node_resources: Dict) -> bool:
@@ -846,7 +847,7 @@ class SlurmWorkers:
                     job_id = worker_resources["slurm_job_id"]
                     self.worker_deletion_tasks[idle_node_id] = asyncio.create_task(
                         self._close_worker(node_id=idle_node_id, job_id=job_id),
-                        name=f"scale_down_worker_{idle_node_id}",
+                        name=f"WorkerScaleDownTask_{idle_node_id}",
                     )
                     workers_removed = True
             
@@ -919,7 +920,7 @@ class SlurmWorkers:
                 job_id = node_resources["slurm_job_id"]
                 self.worker_deletion_tasks[node_id] = asyncio.create_task(
                     self._close_worker(node_id=node_id, job_id=job_id),
-                    name=f"scale_down_worker_{node_id}",
+                    name=f"WorkerScaleDownTask_{node_id}",
                 )
 
             # Make sure no jobs are left running

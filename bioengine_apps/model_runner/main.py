@@ -21,21 +21,10 @@ class ModelRunner:
         pipeline_idle_timeout: float = 300.0,
         max_pipeline_cache_size: int = 3,
     ):
-        # Set up working directory
-        workdir = Path(os.environ["BIOENGINE_WORKDIR"])
-
-        # Set up cache directory for bioimageio
-        bioimageio_cache_path = workdir / ".bioimageio_cache"
-        bioimageio_cache_path.mkdir(parents=True, exist_ok=True)
-        os.environ["BIOIMAGEIO_CACHE_PATH"] = str(bioimageio_cache_path)
-
-        # Change to the cache directory (for keras models which create files in the current directory)
-        os.chdir(bioimageio_cache_path)
-
         # Set up model directory
-        model_dir = workdir / "models"
-        model_dir.mkdir(parents=True, exist_ok=True)
-        self.model_dir = model_dir
+        models_dir = Path().resolve() / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        self.models_dir = models_dir
 
         self.cache_n_models = cache_n_models
         self.cached_models = []
@@ -56,7 +45,7 @@ class ModelRunner:
         self._cleanup_task = None
         self._start_cleanup_task()
 
-        print(f"✅ Initialized ModelRunner with working directory: {workdir}")
+        print(f"✅ Initialized ModelRunner with working directory: {os.getcwd()}")
         print(
             f"📊 Pipeline cache: max_size={max_pipeline_cache_size}, idle_timeout={pipeline_idle_timeout}s"
         )
@@ -209,7 +198,7 @@ class ModelRunner:
     ) -> Path:
         """Get the path to a URL-based model, downloading if necessary."""
         cache_key = self._get_cache_key_for_url(model_url)
-        package_path = self.model_dir / cache_key
+        package_path = self.models_dir / cache_key
 
         # Handle cache skipping
         if skip_cache and package_path.exists():
@@ -234,7 +223,7 @@ class ModelRunner:
         from bioimageio.spec import save_bioimageio_package_as_folder
 
         print(f"📥 Downloading model {model_id}...")
-        model_path = self.model_dir / model_id
+        model_path = self.models_dir / model_id
         os.makedirs(model_path, exist_ok=True)
         model_path = Path(
             save_bioimageio_package_as_folder(model_id, output_path=str(model_path))
@@ -273,7 +262,7 @@ class ModelRunner:
             # Check cache size
             if len(self.cached_models) > self.cache_n_models:
                 remove_model_id = self.cached_models.pop(0)
-                remove_model_path = self.model_dir / remove_model_id
+                remove_model_path = self.models_dir / remove_model_id
                 if remove_model_path.exists():
                     try:
                         shutil.rmtree(str(remove_model_path))
@@ -281,7 +270,7 @@ class ModelRunner:
                     except:
                         pass
 
-            model_source = str(self.model_dir / model_id / "rdf.yaml")
+            model_source = str(self.models_dir / model_id / "rdf.yaml")
 
         print(f"📖 Loading model description from: {model_source}")
         model = load_model_description(model_source)
@@ -502,7 +491,7 @@ class ModelRunner:
                 # Check cache size and cleanup if needed
                 if len(self.cached_models) > self.cache_n_models:
                     remove_cache_key = self.cached_models.pop(0)
-                    remove_model_path = self.model_dir / remove_cache_key
+                    remove_model_path = self.models_dir / remove_cache_key
                     if remove_model_path.exists():
                         try:
                             shutil.rmtree(str(remove_model_path))
@@ -602,7 +591,6 @@ if __name__ == "__main__":
             / "apps"
             / "bioimage_io_model_runner"
         )
-        os.environ["BIOENGINE_WORKDIR"] = deployment_workdir
         os.environ["TMPDIR"] = deployment_workdir
         os.environ["HOME"] = deployment_workdir
 

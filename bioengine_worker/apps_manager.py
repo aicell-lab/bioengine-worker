@@ -2,10 +2,9 @@ import asyncio
 import base64
 import logging
 import os
-from functools import partial
+from functools import partial, wraps
 from pathlib import Path
-from time import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, OrderedDict, Union
 
 import httpx
 import numpy as np
@@ -231,6 +230,38 @@ class AppsManager:
             )
         return deployment_name
 
+    def _wrap_init_with_workdir(self, init_method):
+        @wraps(init_method)
+        def wrapper(self, *args, **kwargs):
+            import os
+            from pathlib import Path
+
+            workdir = Path(os.environ["BIOENGINE_WORKDIR"])
+            workdir.mkdir(parents=True, exist_ok=True)
+            os.chdir(workdir)
+            return init_method(self, *args, **kwargs)
+
+        return wrapper
+
+    def _wrap_method_with_ray_put(self, method):
+        @wraps(method)
+        async def wrapper(self, *args, _ray_put=False, **kwargs):
+            import asyncio
+
+            import ray
+
+            # Ray Serve will automatically get each provided ObjectRef and return its value
+            result = await method(self, *args, **kwargs)
+
+            # If _ray_put is True, put the result into Ray object store to send it back
+            if _ray_put:
+                return await asyncio.to_thread(ray.put, result)
+
+            # Otherwise, return the result directly -> method can be used within the deployment
+            return result
+
+        return wrapper
+
     async def _load_deployment_code(
         self,
         class_config: dict,
@@ -305,8 +336,14 @@ class AppsManager:
                     f"Error loading {class_config['class_name']} from {artifact_id}"
                 )
 
-            if not hasattr(deployment_class, "_get_model"):
-                # Add @serve.multiplexed decorator to the class method `_get_model`
+            # Wrap the class __init__ method to ensure it uses the workdir
+            orig_init = getattr(
+                deployment_class, "__init__", lambda *args, **kwargs: None
+            )
+            deployment_class.__init__ = self._wrap_init_with_workdir(orig_init)
+
+            # If the class has a `_get_model` method, decorate it with @serve.multiplexed
+            if hasattr(deployment_class, "_get_model"):
                 max_num_models_per_replica = int(
                     class_config.get("max_num_models_per_replica", 3)
                 )
@@ -319,6 +356,16 @@ class AppsManager:
                     f"Added @serve.multiplexed decorator to method '_get_model' in class '{class_config['class_name']}' "
                     f"(max_num_models_per_replica={max_num_models_per_replica})"
                 )
+
+            # For each exposed method, wrap it to ensure it puts results into Ray object store
+            for method_name in class_config.get("exposed_methods", []):
+                orig_method = getattr(deployment_class, method_name, None)
+                if not orig_method:
+                    raise ValueError(
+                        f"Method '{method_name}' not found in class '{class_config['class_name']}'"
+                    )
+                wrapped_method = self._wrap_method_with_ray_put(orig_method)
+                setattr(deployment_class, method_name, wrapped_method)
 
             self.logger.info(
                 f"Loaded class '{class_config['class_name']}' from {artifact_id}"
@@ -422,16 +469,18 @@ class AppsManager:
                     f"Requested resources: {ray_actor_options}"
                 )
 
-        # Add cache path to deployment config environment
+        # Add extra environment variables to the deployment
         runtime_env = ray_actor_options.setdefault("runtime_env", {})
         env_vars = runtime_env.setdefault("env_vars", {})
-        deployment_workdir = str(self.apps_cache_dir / deployment_name)
-        env_vars["BIOENGINE_WORKDIR"] = deployment_workdir
-        env_vars["BIOENGINE_DATA_DIR"] = str(self.apps_data_dir)
 
-        # Ensure the deployment only uses the specified workdir
-        env_vars["TMPDIR"] = deployment_workdir
-        env_vars["HOME"] = deployment_workdir
+        # Set standard directories to ensure it only uses the specified workdir
+        deployment_workdir = self.apps_cache_dir / deployment_name
+        env_vars["BIOENGINE_WORKDIR"] = str(deployment_workdir)
+        env_vars["HOME"] = str(deployment_workdir)
+        env_vars["TMPDIR"] = str(deployment_workdir / "tmp")
+
+        # Pass the data directory to the deployment
+        env_vars["BIOENGINE_DATA_DIR"] = str(self.apps_data_dir)
 
         # Pass user workspace and token to the deployment
         env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
@@ -492,6 +541,17 @@ class AppsManager:
                 self.service_info = None
                 return
 
+            def should_skip(obj):
+                if isinstance(obj, (type(None), int, float, bool, type)):
+                    return True
+                if isinstance(obj, (str, bytes)) and len(obj) < 1000:
+                    return True
+                if isinstance(obj, (list, tuple, set)) and len(obj) < 100:
+                    return all(should_skip(item) for item in obj)
+                if isinstance(obj, (dict, OrderedDict)) and len(obj) < 100:
+                    return all(should_skip(v) for v in obj.values())
+                return False
+
             async def create_deployment_function(
                 deployment_name,
                 method_name,
@@ -509,34 +569,55 @@ class AppsManager:
                     user_id = context["user"]["id"]
 
                     self.logger.info(
-                        f"User '{user_id}' is calling deployment '{deployment_name}' with method '{method_name}'"
+                        f"User '{user_id}' is calling deployment '{deployment_name}' "
+                        f"with method '{method_name}'"
                     )
-                    app_handle = await asyncio.to_thread(
+                    app_handle_task = asyncio.to_thread(
                         serve.get_app_handle, name=deployment_name
                     )
 
-                    # Recursively put args and kwargs into ray object storage
-                    args = [
-                        (
-                            await asyncio.to_thread(ray.put, arg)
-                            if isinstance(arg, np.ndarray)
-                            else arg
-                        )
-                        for arg in args
-                    ]
-                    kwargs = {
-                        k: (
-                            await asyncio.to_thread(ray.put, v)
-                            if isinstance(v, np.ndarray)
-                            else v
-                        )
-                        for k, v in kwargs.items()
-                    }
+                    # Separate items that need to be put into Ray object storage from those that should be skipped
+                    args_to_put = []
+                    args_indices = []
+                    for i, arg in enumerate(args):
+                        if not should_skip(arg):
+                            args_to_put.append(asyncio.to_thread(ray.put, arg))
+                            args_indices.append(i)
 
-                    result = await getattr(app_handle, method_name).remote(
-                        *args, **kwargs
+                    kwargs_to_put = []
+                    kwargs_keys = []
+                    for key, value in kwargs.items():
+                        if not should_skip(value):
+                            kwargs_to_put.append(asyncio.to_thread(ray.put, value))
+                            kwargs_keys.append(key)
+
+                    # Get the app handle and process Ray object storage concurrently
+                    all_put_results = await asyncio.gather(
+                        app_handle_task,
+                        *args_to_put,
+                        *kwargs_to_put,
                     )
-                    return result
+
+                    # Extract results
+                    app_handle = all_put_results[0]
+                    args_put_results = all_put_results[1:1 + len(args_to_put)]
+                    kwargs_put_results = all_put_results[1 + len(args_to_put):]
+
+                    # Reconstruct args and kwargs with original order
+                    processed_args = list(args)  # Start with original args
+                    for i, result in zip(args_indices, args_put_results):
+                        processed_args[i] = result
+
+                    processed_kwargs = dict(kwargs)  # Start with original kwargs
+                    for key, result in zip(kwargs_keys, kwargs_put_results):
+                        processed_kwargs[key] = result
+
+                    # Call the method on the app handle and put the result into Ray object store
+                    result = await getattr(app_handle, method_name).remote(
+                        *processed_args, _ray_put=True, **processed_kwargs
+                    )
+                    # Return the result from Ray object store
+                    return await asyncio.to_thread(ray.get, result)
                 except Exception as e:
                     self.logger.error(
                         f"Failed to call deployment '{deployment_name}': {e}"
@@ -1332,227 +1413,3 @@ class AppsManager:
         self.logger.info(f"Committed artifact with ID: {artifact.id}")
 
         return artifact.id
-
-
-async def create_demo_artifact(apps_manager, artifact_id=None):
-    """Helper function to create a demo artifact from demo deployment files
-
-    Args:
-        apps_manager: AppsManager instance (must be initialized)
-        artifact_id: Optional custom artifact ID
-
-    Returns:
-        str: The created artifact ID
-    """
-    # Read demo deployment files
-    demo_deployment_dir = Path(__file__).parent / "deployments" / "demo_deployment"
-
-    # Read manifest.yaml
-    with open(demo_deployment_dir / "manifest.yaml", "r") as f:
-        manifest_content = f.read()
-
-    # Read main.py
-    with open(demo_deployment_dir / "main.py", "r") as f:
-        main_py_content = f.read()
-
-    # Prepare files for create_artifact
-    files = [
-        {"name": "manifest.yaml", "content": manifest_content, "type": "text"},
-        {"name": "main.py", "content": main_py_content, "type": "text"},
-    ]
-
-    # Create the artifact
-    created_artifact_id = await apps_manager.create_artifact(
-        files, artifact_id=artifact_id
-    )
-    return created_artifact_id
-
-
-if __name__ == "__main__":
-    """Test the AppsManager functionality with a real Ray cluster and deployment."""
-
-    from hypha_rpc import connect_to_server, login
-
-    async def test_create_artifact(
-        apps_manager=None, server_url="https://hypha.aicell.io"
-    ):
-        """Test the create_artifact function with demo deployment files
-
-        Args:
-            apps_manager: Optional existing deployment manager (must be initialized)
-            server_url: Server URL if creating new connection
-
-        Returns:
-            str: The artifact ID of the last created artifact (for use in other tests)
-        """
-        print("\n===== Testing create_artifact function =====\n")
-
-        # Use existing deployment manager or create new one
-        if apps_manager is None:
-            try:
-                # Create deployment manager (no Ray cluster needed for artifact creation)
-                apps_manager = AppsManager(debug=True)
-
-                # Connect to Hypha server using token from environment
-                token = os.environ.get("HYPHA_TOKEN") or await login(
-                    {"server_url": server_url}
-                )
-                server = await connect_to_server(
-                    {"server_url": server_url, "token": token}
-                )
-
-                # Initialize deployment manager
-                await apps_manager.initialize(server)
-
-            except Exception as e:
-                print(f"❌ Failed to initialize deployment manager: {e}")
-                raise e
-
-        try:
-            # Test creating artifact without specifying artifact_id (should use ID from manifest)
-            print("Testing create_artifact without specifying artifact_id...")
-            created_artifact_id = await create_demo_artifact(apps_manager)
-            print(f"Successfully created artifact: {created_artifact_id}")
-
-            # Test updating the same artifact
-            print(f"\nTesting update of existing artifact: {created_artifact_id}")
-            updated_artifact_id = await create_demo_artifact(
-                apps_manager, artifact_id=created_artifact_id
-            )
-            print(f"Successfully updated artifact: {updated_artifact_id}")
-
-            # Test creating artifact with custom artifact_id
-            print("\nTesting create_artifact with custom artifact_id...")
-            custom_artifact_id = "test-demo-deployment"
-            custom_created_id = await create_demo_artifact(
-                apps_manager, artifact_id=custom_artifact_id
-            )
-            print(f"Successfully created custom artifact: {custom_created_id}")
-
-            print("\n✅ All create_artifact tests passed!")
-
-            # Return the last created artifact ID for use in other tests
-            return custom_created_id
-
-        except Exception as e:
-            print(f"❌ create_artifact test failed: {e}")
-            raise e
-
-    async def test_apps_manager(
-        server_url="https://hypha.aicell.io", keep_running=False
-    ):
-        try:
-            print("\n===== Testing AppsManager in single-machine mode =====\n")
-
-            # Connect to Hypha server using token from environment
-            token = os.environ.get("HYPHA_TOKEN") or await login(
-                {"server_url": server_url}
-            )
-            server = await connect_to_server({"server_url": server_url, "token": token})
-
-            # Start Ray cluster in single-machine mode
-            bioengine_cache_dir = Path(os.environ["HOME"]) / ".bioengine"
-            ray_cluster = RayCluster(
-                mode="single-machine",
-                head_num_cpus=1,
-                head_num_gpus=0,
-                ray_temp_dir=bioengine_cache_dir / "ray",
-                status_interval_seconds=3,
-                debug=True,
-            )
-            await ray_cluster.start()
-
-            print("\n=== Cluster status ===\n", ray_cluster.status, end="\n\n")
-
-            # Create deployment manager
-            apps_manager = AppsManager(
-                ray_cluster=ray_cluster,
-                admin_users=[server.config.user["email"]],
-                apps_cache_dir=bioengine_cache_dir / "apps",
-                debug=True,
-            )
-
-            # Initialize deployment manager
-            await apps_manager.initialize(server)
-
-            # Test create_artifact function
-            created_artifact_id = await test_create_artifact(apps_manager)
-
-            # Test deploying the newly created artifact
-            print(
-                f"\n--- Testing deployment of created artifact: {created_artifact_id} ---"
-            )
-            await apps_manager.deploy_artifact(created_artifact_id)
-
-            # Test the deployed artifact
-            deployment_status = await apps_manager.get_status()
-            if created_artifact_id in deployment_status:
-                print(f"Successfully deployed created artifact: {created_artifact_id}")
-
-                # Test the service
-                deployment_service_id = deployment_status["service_id"]
-                deployment_service = await server.get_service(deployment_service_id)
-                deployment_name = deployment_status[created_artifact_id][
-                    "deployment_name"
-                ]
-
-                # Test ping method
-                response = await deployment_service[deployment_name]["ping"]()
-                print(f"Ping response from created artifact: {response}")
-
-                # Test get_time method
-                response = await deployment_service[deployment_name]["get_time"](
-                    "Stockholm"
-                )
-                print(f"Time response from created artifact: {response}")
-            else:
-                print(f"Failed to deploy created artifact: {created_artifact_id}")
-
-            # Deploy the example deployment
-            artifact_id = "example-deployment"
-            await apps_manager.deploy_artifact(artifact_id)
-
-            deployment_status = await apps_manager.get_status()
-            assert artifact_id in deployment_status
-
-            # Test registered Hypha service
-            deployment_service_id = deployment_status["service_id"]
-            deployment_service = await server.get_service(deployment_service_id)
-
-            # Call the deployed application
-            deployment_name = deployment_status[artifact_id]["deployment_name"]
-            response = await deployment_service[deployment_name]["ping"]()
-            apps_manager.logger.info(f"Response from deployed application: {response}")
-
-            response = await deployment_service[deployment_name]["train"]()
-            apps_manager.logger.info(f"Response from deployed application: {response}")
-
-            # Keep server running if requested
-            if keep_running:
-                print("Server running. Press Ctrl+C to stop.")
-                await server.serve()
-
-            # Undeploy the test artifact
-            await apps_manager.undeploy_artifact(artifact_id, server.context)
-
-            # Deploy again
-            await apps_manager.deploy_artifact(artifact_id)
-
-            # Clean up deployments
-            await apps_manager.cleanup_deployments()
-
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            raise e
-        finally:
-            await ray_cluster.stop()
-
-    # Run the test
-    import sys
-
-    if len(sys.argv) > 1 and sys.argv[1] == "test_create_artifact":
-        # Run only the create_artifact test (no Ray cluster needed)
-        asyncio.run(test_create_artifact())
-    else:
-        # Run the full deployment manager test
-        asyncio.run(test_apps_manager(keep_running=True))

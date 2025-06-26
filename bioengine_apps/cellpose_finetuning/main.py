@@ -14,13 +14,8 @@ class CellposeFinetune(object):
     """
 
     def __init__(self):
-        # Set up working directory
-        workdir = Path(os.environ["BIOENGINE_WORKDIR"])
-        workdir.mkdir(parents=True, exist_ok=True)
-        self.workdir = workdir
-
         # Set up model directory
-        models_dir = self.workdir / "models"
+        models_dir = Path().resolve() / "models"
         models_dir.mkdir(parents=True, exist_ok=True)
         os.environ["CELLPOSE_LOCAL_MODELS_PATH"] = str(models_dir)
 
@@ -326,7 +321,7 @@ class CellposeFinetune(object):
             )
 
         # Create a temporary directory to save the downloaded file
-        with tempfile.TemporaryDirectory(dir=self.workdir) as tmp:
+        with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmp:
             tmp_dir = Path(tmp)
 
             # Download the data from the provided URL

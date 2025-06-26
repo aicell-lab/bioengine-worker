@@ -37,6 +37,7 @@ class DemoDeployment(object):
         - Must be an async method.
         - Must accept exactly one argument: model_id (str).
         - Must return the loaded model (can be any type, e.g., a machine learning model).
+        - Can not be called using a keyword argument.
 
         The entry `deployment_class.max_num_models_per_replica = <int>` in the manifest
         can be used to change the default maximum number of models per replica (default is 3).
@@ -58,12 +59,13 @@ class DemoDeployment(object):
         - Must return a boolean value indicating whether the deployment is working correctly.
         """
         try:
-            model = await self._get_model(model_id="test_model")
+            model = await self._get_model("test_model")
             return True
         except Exception as e:
+            print(f"Deployment test failed: {e}")
             return False
 
-    # === Replace with your own methods ===
+    # === Replace with your own asynchronous methods ===
 
     async def ping(self) -> str:
         """An example method to test connectivity."""
@@ -71,7 +73,7 @@ class DemoDeployment(object):
             "status": "ok",
             "message": "Hello from the DemoDeployment!",
             "timestamp": datetime.now().isoformat(),
-            "uptime": time.time() - self.start_time
+            "uptime": time.time() - self.start_time,
         }
 
     async def ascii_art(self) -> dict:

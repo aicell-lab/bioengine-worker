@@ -1,5 +1,7 @@
 # All standard python libraries can be imported at the top of this file.
 import asyncio
+import time
+from datetime import datetime
 from typing import Any
 
 # All non standard libraries need to be imported in each method where they are used.
@@ -63,8 +65,13 @@ class DemoDeployment(object):
     # === Replace with your own methods ===
 
     async def ping(self) -> str:
-        """An example method that returns 'pong'."""
-        return "pong"
+        """An example method to test connectivity."""
+        return {
+            "status": "ok",
+            "message": "Hello from the DemoDeployment!",
+            "timestamp": datetime.now().isoformat(),
+            "uptime": time.time() - self.start_time
+        }
 
     async def ascii_art(self) -> dict:
         """An example method that returns ASCII art of the word 'Bioengine'."""

@@ -21,7 +21,7 @@ deployment_class:
   exposed_methods:
     ping:
       authorized_users: "*"  # Allow all users to ping the model
-      description: "Ping the model to check if it is alive."
+      description: "Ping the model to test connectivity."
     ascii_art:
       authorized_users: "*"  # Allow all users to get the ASCII art
       description: "Get an ASCII art representation of the word 'Bioengine'."

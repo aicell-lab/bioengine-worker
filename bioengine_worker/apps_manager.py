@@ -850,6 +850,8 @@ class AppsManager:
             # Create service functions for each deployment
             service_functions = {}
             for deployment_info in self._deployed_artifacts.values():
+                if deployment_info["is_deployed"] is False:
+                    continue
                 deployment_name = deployment_info["deployment_name"]
                 service_functions[deployment_name] = {}
                 class_config = deployment_info["class_config"]
@@ -1024,13 +1026,14 @@ class AppsManager:
                     raise RuntimeError(
                         f"Deployment '{deployment_name}' failed its test check"
                     )
+                
+            self._deployed_artifacts[artifact_id]["is_deployed"] = True
 
             # Update services with the new deployment
             if not skip_update:
                 await self._update_services()
 
             # Track the deployment in the internal state
-            self._deployed_artifacts[artifact_id]["is_deployed"] = True
             self.logger.info(
                 f"Successfully completed deployment of artifact '{artifact_id}'"
             )
@@ -1233,7 +1236,8 @@ class AppsManager:
 
         # Wait for all deployments to complete
         while not all(
-            self._deployed_artifacts[artifact_id].get("is_deployed", False)
+            self._deployed_artifacts.get(artifact_id)
+            and self._deployed_artifacts.get(artifact_id)["is_deployed"]
             for artifact_id in artifact_ids
         ):
             await asyncio.sleep(1)

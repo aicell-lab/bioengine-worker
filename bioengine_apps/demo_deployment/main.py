@@ -65,7 +65,7 @@ class DemoDeployment(object):
             print(f"Deployment test failed: {e}")
             return False
 
-    # === Replace with your own asynchronous methods ===
+    # === Replace with your own synchronous or asynchronous methods ===
 
     async def ping(self) -> str:
         """An example method to test connectivity."""

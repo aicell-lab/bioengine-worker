@@ -4,12 +4,10 @@ import json
 import logging
 import pickle
 from functools import partial, wraps
-from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import httpx
-import numpy as np
 import yaml
 from ray import serve
 
@@ -271,6 +269,12 @@ class AppsManager:
 
             async def __call__(self, request):
                 """Handle HTTP requests directly without FastAPI."""
+                import asyncio
+                import json
+                import pickle
+
+                from starlette.responses import JSONResponse, StreamingResponse
+
                 try:
                     # Parse the request path to get the method name
                     path = request.url.path
@@ -282,8 +286,6 @@ class AppsManager:
 
                     # Check if method is exposed or if it's the default call
                     if method_name not in self.callable_methods:
-                        from starlette.responses import JSONResponse
-
                         return JSONResponse(
                             {
                                 "success": False,
@@ -301,7 +303,8 @@ class AppsManager:
                         elif "application/octet-stream" in content_type:
                             # Handle streamed/chunked data
                             body = await request.body()
-                            request_data = _deserialize_data(body)
+                            # Deserialize the body using pickle
+                            request_data = await asyncio.to_thread(pickle.loads, body)
                         else:
                             request_data = {}
                     else:
@@ -329,16 +332,8 @@ class AppsManager:
 
                     # Try JSON serialization first, fall back to streaming if it fails
                     try:
-                        # Always stream if it contains non-JSON-serializable data
-                        if _contains_non_json_serializable(result):
-                            raise TypeError(
-                                "Contains non-JSON-serializable data, should be streamed"
-                            )
-
-                        # Try to JSON serialize the result (using module imported at top of file)
-                        json.dumps(result)  # Test if it's JSON serializable
-
-                        from starlette.responses import JSONResponse
+                        # Try to JSON serialize the result - fastest check
+                        json.dumps(result)
 
                         print(f"Returning JSON result from method '{method_name}'")
                         # Return small JSON-serializable data as JSON
@@ -348,16 +343,26 @@ class AppsManager:
 
                     except (TypeError, ValueError):
                         # JSON serialization failed or data is large, stream it instead
-                        from starlette.responses import StreamingResponse
-
                         print(
                             f"Streaming non-JSON-serializable result from method '{method_name}'"
                         )
+
+                        # Handle memoryview objects by converting to bytes first
+                        if isinstance(result, memoryview):
+                            result = bytes(result)
+
                         # Serialize and chunk the result for streaming
-                        serialized_data = _serialize_data(result)
+                        serialized_data = await asyncio.to_thread(pickle.dumps, result)
 
                         async def stream_chunks():
-                            chunks = _chunk_data(serialized_data)
+                            # Split large data into chunks for streaming.
+                            chunk_size = class_config.get(
+                                "streaming_chunk_size", 1024 * 1024
+                            )  # Default to 1MB
+                            chunks = [
+                                serialized_data[i : i + chunk_size]
+                                for i in range(0, len(serialized_data), chunk_size)
+                            ]
                             for chunk in chunks:
                                 yield chunk
 
@@ -368,8 +373,6 @@ class AppsManager:
                         )
 
                 except Exception as e:
-                    from starlette.responses import JSONResponse
-
                     print(f"Error in HTTP request: {e}")
                     return JSONResponse(
                         {
@@ -664,6 +667,10 @@ class AppsManager:
         serve_base_url = self._get_serve_http_url()
         deployment_url = f"{serve_base_url}/{deployment_name}"
 
+        self.logger.info(
+            f"Checking connection to Ray Serve deployment '{deployment_name}' at {deployment_url}"
+        )
+
         # Check if deployment is accessible
         max_retries = 30
         for attempt in range(max_retries):
@@ -726,7 +733,12 @@ class AppsManager:
 
             # Determine if we need to stream the request
             # Check if request_data contains any non-JSON-serializable data
-            needs_streaming = _contains_non_json_serializable(request_data)
+            try:
+                json.dumps(request_data)
+                needs_streaming = False
+            except (TypeError, ValueError):
+                # JSON serialization failed, so it contains non-serializable data
+                needs_streaming = True
 
             # Get Ray Serve HTTP URL
             serve_base_url = self._get_serve_http_url()
@@ -736,8 +748,14 @@ class AppsManager:
             timeout = httpx.Timeout(connect=30.0, read=300.0, write=300.0, pool=30.0)
             async with httpx.AsyncClient(timeout=timeout) as client:
                 if needs_streaming:
+                    # Handle memoryview objects by converting to bytes first
+                    if isinstance(request_data, memoryview):
+                        request_data = bytes(request_data)
+                    serialized_data = await asyncio.to_thread(
+                        pickle.dumps, request_data
+                    )
+
                     # Send data as binary stream
-                    serialized_data = _serialize_data(request_data)
                     response = await client.post(
                         endpoint_url,
                         content=serialized_data,
@@ -765,7 +783,8 @@ class AppsManager:
                     async for chunk in response.aiter_bytes():
                         chunks.append(chunk)
                     reassembled_data = b"".join(chunks)
-                    return _deserialize_data(reassembled_data)
+                    # Deserialize the reassembled data
+                    return await asyncio.to_thread(pickle.loads, reassembled_data)
                 else:
                     # Return raw bytes
                     return await response.aread()
@@ -784,6 +803,7 @@ class AppsManager:
                         f"Non-JSON response received: {response.text[:200]}"
                     )
                     return response.text
+
         except Exception as e:
             raise RuntimeError(
                 f"Failed to call '{method_name}' on deployment '{deployment_name}': {e}"
@@ -1619,68 +1639,3 @@ class AppsManager:
         self.logger.info(f"Committed artifact with ID: {artifact.id}")
 
         return artifact.id
-
-
-def _serialize_data(data: Any) -> bytes:
-    """
-    Serialize data using pickle for transmission over HTTP.
-
-    Args:
-        data: The data to serialize
-
-    Returns:
-        bytes: Serialized data
-    """
-    # Handle memoryview objects by converting to bytes first
-    if isinstance(data, memoryview):
-        data = bytes(data)
-    return pickle.dumps(data)
-
-
-def _deserialize_data(data: bytes) -> Any:
-    """
-    Deserialize data from bytes using pickle.
-
-    Args:
-        data: Serialized data bytes
-
-    Returns:
-        Any: Deserialized data
-    """
-    return pickle.loads(data)
-
-
-def _chunk_data(data: bytes, chunk_size: int = 1024 * 1024) -> List[bytes]:
-    """
-    Split large data into chunks for streaming.
-
-    Args:
-        data: Data bytes to chunk
-        chunk_size: Size of each chunk in bytes (default 1MB)
-
-    Returns:
-        List of data chunks
-    """
-    return [data[i : i + chunk_size] for i in range(0, len(data), chunk_size)]
-
-
-def _contains_non_json_serializable(obj: Any) -> bool:
-    """
-    Recursively check if an object contains any non-JSON-serializable data.
-
-    This checks nested structures like dictionaries and lists for numpy arrays
-    and other types that cannot be JSON serialized.
-
-    Args:
-        obj: Object to check recursively
-
-    Returns:
-        bool: True if object contains non-JSON-serializable data
-    """
-    try:
-        # Try JSON serialization first - fastest check
-        json.dumps(obj)
-        return False
-    except (TypeError, ValueError):
-        # JSON serialization failed, so it contains non-serializable data
-        return True

@@ -1,14 +1,15 @@
 import asyncio
 import base64
+import json
 import logging
-import os
+import pickle
 from functools import partial, wraps
+from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, OrderedDict, Union
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
 import numpy as np
-import ray
 import yaml
 from ray import serve
 
@@ -171,7 +172,7 @@ class AppsManager:
         context: Dict[str, Any],
         authorized_users: Union[List[str], str],
         resource_name: str,
-    ) -> bool:
+    ) -> None:
         """
         Check if the user in the context is authorized to access the deployment.
 
@@ -230,7 +231,7 @@ class AppsManager:
             )
         return deployment_name
 
-    def _wrap_init_with_workdir(self, init_method):
+    def _wrap_init_with_workdir(self, init_method: callable) -> callable:
         @wraps(init_method)
         def wrapper(self, *args, **kwargs):
             import os
@@ -243,24 +244,143 @@ class AppsManager:
 
         return wrapper
 
-    def _wrap_method_with_ray_put(self, method):
-        @wraps(method)
-        async def wrapper(self, *args, _ray_put=False, **kwargs):
-            import asyncio
+    def _create_http_deployment_wrapper(
+        self, deployment_class: type, class_config: dict
+    ) -> type:
+        """
+        Create a FastAPI-based wrapper for the deployment class to handle HTTP streaming.
 
-            import ray
+        Args:
+            deployment_class: The original deployment class
+            class_config: Configuration for the class including exposed methods
 
-            # Ray Serve will automatically get each provided ObjectRef and return its value
-            result = await method(self, *args, **kwargs)
+        Returns:
+            A new class that wraps the original with HTTP handling
+        """
 
-            # If _ray_put is True, put the result into Ray object store to send it back
-            if _ray_put:
-                return await asyncio.to_thread(ray.put, result)
+        class HTTPDeploymentWrapper:
+            def __init__(self, *args, **kwargs):
+                # Initialize the original deployment
+                self.deployment = deployment_class(*args, **kwargs)
+                self.callable_methods = [
+                    "__call__",
+                    "_async_init",
+                    "_test_deployment",
+                    *class_config.get("exposed_methods", {}).keys(),
+                ]
 
-            # Otherwise, return the result directly -> method can be used within the deployment
-            return result
+            async def __call__(self, request):
+                """Handle HTTP requests directly without FastAPI."""
+                try:
+                    # Parse the request path to get the method name
+                    path = request.url.path
+                    # Remove leading slashes and get the method name
+                    path_parts = [p for p in path.split("/") if p]
+                    method_name = path_parts[-1] if path_parts else "__call__"
 
-        return wrapper
+                    print(f"Handling HTTP request for method '{method_name}'")
+
+                    # Check if method is exposed or if it's the default call
+                    if method_name not in self.callable_methods:
+                        from starlette.responses import JSONResponse
+
+                        return JSONResponse(
+                            {
+                                "success": False,
+                                "error": f"Method '{method_name}' not found or not exposed",
+                                "error_type": "MethodNotFound",
+                            },
+                            status_code=404,
+                        )
+
+                    # Parse request data
+                    if request.method == "POST":
+                        content_type = request.headers.get("content-type", "")
+                        if "application/json" in content_type:
+                            request_data = await request.json()
+                        elif "application/octet-stream" in content_type:
+                            # Handle streamed/chunked data
+                            body = await request.body()
+                            request_data = _deserialize_data(body)
+                        else:
+                            request_data = {}
+                    else:
+                        request_data = dict(request.query_params)
+
+                    # Extract args and kwargs from request
+                    args = request_data.get("args", [])
+                    kwargs = request_data.get("kwargs", {})
+
+                    print(
+                        f"Calling method '{method_name}' with {len(args)} args and {len(kwargs)} kwargs"
+                    )
+
+                    # Get the method from the deployment
+                    if method_name == "__call__":
+                        method = self.deployment
+                    else:
+                        method = getattr(self.deployment, method_name)
+
+                    # Call the method
+                    if asyncio.iscoroutinefunction(method):
+                        result = await method(*args, **kwargs)
+                    else:
+                        result = method(*args, **kwargs)
+
+                    # Try JSON serialization first, fall back to streaming if it fails
+                    try:
+                        # Always stream if it contains non-JSON-serializable data
+                        if _contains_non_json_serializable(result):
+                            raise TypeError(
+                                "Contains non-JSON-serializable data, should be streamed"
+                            )
+
+                        # Try to JSON serialize the result (using module imported at top of file)
+                        json.dumps(result)  # Test if it's JSON serializable
+
+                        from starlette.responses import JSONResponse
+
+                        print(f"Returning JSON result from method '{method_name}'")
+                        # Return small JSON-serializable data as JSON
+                        return JSONResponse(
+                            {"success": True, "result": result, "data_type": "json"}
+                        )
+
+                    except (TypeError, ValueError):
+                        # JSON serialization failed or data is large, stream it instead
+                        from starlette.responses import StreamingResponse
+
+                        print(
+                            f"Streaming non-JSON-serializable result from method '{method_name}'"
+                        )
+                        # Serialize and chunk the result for streaming
+                        serialized_data = _serialize_data(result)
+
+                        async def stream_chunks():
+                            chunks = _chunk_data(serialized_data)
+                            for chunk in chunks:
+                                yield chunk
+
+                        return StreamingResponse(
+                            stream_chunks(),
+                            media_type="application/octet-stream",
+                            headers={"X-Data-Type": "chunked-pickle"},
+                        )
+
+                except Exception as e:
+                    from starlette.responses import JSONResponse
+
+                    print(f"Error in HTTP request: {e}")
+                    return JSONResponse(
+                        {
+                            "success": False,
+                            "error": str(e),
+                            "error_type": type(e).__name__,
+                        },
+                        status_code=500,
+                    )
+
+        return HTTPDeploymentWrapper
 
     async def _load_deployment_code(
         self,
@@ -357,15 +477,10 @@ class AppsManager:
                     f"(max_num_models_per_replica={max_num_models_per_replica})"
                 )
 
-            # For each exposed method, wrap it to ensure it puts results into Ray object store
-            for method_name in class_config.get("exposed_methods", []):
-                orig_method = getattr(deployment_class, method_name, None)
-                if not orig_method:
-                    raise ValueError(
-                        f"Method '{method_name}' not found in class '{class_config['class_name']}'"
-                    )
-                wrapped_method = self._wrap_method_with_ray_put(orig_method)
-                setattr(deployment_class, method_name, wrapped_method)
+            # Create HTTP wrapper class for streaming support
+            deployment_class = self._create_http_deployment_wrapper(
+                deployment_class, class_config
+            )
 
             self.logger.info(
                 f"Loaded class '{class_config['class_name']}' from {artifact_id}"
@@ -522,6 +637,158 @@ class AppsManager:
 
         return app
 
+    def _get_serve_http_url(self) -> str:
+        """
+        Get the Ray Serve HTTP API base URL.
+
+        Returns:
+            str: Base URL for Ray Serve HTTP API
+        """
+        head_address = self.ray_cluster.ray_cluster_config["head_node_address"]
+        serve_port = self.ray_cluster.ray_cluster_config["serve_port"]
+        return f"http://{head_address}:{serve_port}"
+
+    async def _check_connection(self, deployment_name: str) -> None:
+        """
+        Check if the Ray Serve deployment is accessible via HTTP.
+        This method attempts to connect to the Ray Serve deployment's HTTP endpoint
+        and verifies that it responds correctly, indicating that the deployment is
+        running and reachable.
+
+        Args:
+            deployment_name: Name of the Ray Serve deployment to check
+
+        Raises:
+            RuntimeError: If the deployment is not accessible after multiple attempts
+        """
+        serve_base_url = self._get_serve_http_url()
+        deployment_url = f"{serve_base_url}/{deployment_name}"
+
+        # Check if deployment is accessible
+        max_retries = 30
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    response = await client.get(deployment_url)
+                    # Accept any HTTP response as proof that Ray Serve is running and responding
+                    # Even 400/404/405 means the server is up and the deployment route exists
+                    if (
+                        response.status_code < 500
+                    ):  # Any response that's not a server error
+                        self.logger.debug(
+                            f"Deployment '{deployment_name}' is accessible (HTTP {response.status_code})"
+                        )
+                        break
+            except Exception as e:
+                self.logger.debug(
+                    f"Attempt {attempt + 1} to reach deployment '{deployment_name}': {e}"
+                )
+
+            if attempt == max_retries - 1:
+                raise RuntimeError(
+                    f"Failed to connect to deployment '{deployment_name}' after {max_retries} attempts"
+                )
+
+            await asyncio.sleep(1)
+
+    async def _ray_serve_http_request(
+        self,
+        deployment_name: str,
+        method_name: str,
+        user_id: str,
+        args: list,
+        kwargs: dict,
+    ) -> Any:
+        """
+        Make an HTTP request to a Ray Serve deployment.
+        This method handles both JSON and binary streaming requests to the Ray Serve
+        HTTP API, allowing for flexible data handling based on the request content.
+
+        Args:
+            deployment_name: Name of the Ray Serve deployment
+            method_name: Method to call on the deployment
+            args: Positional arguments for the method
+            kwargs: Keyword arguments for the method
+
+        Returns:
+            Any: The result of the method call, either as JSON or binary data
+
+        Raises:
+            RuntimeError: If the HTTP request fails or returns an error
+            ValueError: If the response cannot be parsed as JSON
+        """
+        try:
+            self.logger.info(
+                f"User '{user_id}' is calling method '{method_name}' on deployment '{deployment_name}'"
+            )
+            # Prepare request data
+            request_data = {"args": args, "kwargs": kwargs}
+
+            # Determine if we need to stream the request
+            # Check if request_data contains any non-JSON-serializable data
+            needs_streaming = _contains_non_json_serializable(request_data)
+
+            # Get Ray Serve HTTP URL
+            serve_base_url = self._get_serve_http_url()
+            endpoint_url = f"{serve_base_url}/{deployment_name}/{method_name}"
+
+            # Make HTTP request to Ray Serve
+            timeout = httpx.Timeout(connect=30.0, read=300.0, write=300.0, pool=30.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                if needs_streaming:
+                    # Send data as binary stream
+                    serialized_data = _serialize_data(request_data)
+                    response = await client.post(
+                        endpoint_url,
+                        content=serialized_data,
+                        headers={"Content-Type": "application/octet-stream"},
+                    )
+                else:
+                    # Send data as JSON
+                    response = await client.post(
+                        endpoint_url,
+                        json=request_data,
+                        headers={"Content-Type": "application/json"},
+                    )
+
+            # Handle response
+            if response.status_code != 200:
+                error_msg = f"HTTP {response.status_code}: {response.text}"
+                raise RuntimeError(error_msg)
+
+            content_type = response.headers.get("content-type", "")
+            if "application/octet-stream" in content_type:
+                # Handle streamed response
+                if response.headers.get("X-Data-Type") == "chunked-pickle":
+                    # Reassemble chunks
+                    chunks = []
+                    async for chunk in response.aiter_bytes():
+                        chunks.append(chunk)
+                    reassembled_data = b"".join(chunks)
+                    return _deserialize_data(reassembled_data)
+                else:
+                    # Return raw bytes
+                    return await response.aread()
+            else:
+                # Handle JSON response
+                try:
+                    response_data = response.json()
+                    if not response_data.get("success", True):
+                        error_type = response_data.get("error_type", "Unknown")
+                        error_msg = response_data.get("error", "Unknown error")
+                        raise RuntimeError(f"{error_type}: {error_msg}")
+                    return response_data.get("result")
+                except (json.JSONDecodeError, ValueError) as e:
+                    # Handle non-JSON responses
+                    self.logger.warning(
+                        f"Non-JSON response received: {response.text[:200]}"
+                    )
+                    return response.text
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to call '{method_name}' on deployment '{deployment_name}': {e}"
+            )
+
     async def _update_services(self) -> None:
         """
         Update Hypha services based on currently deployed applications.
@@ -541,17 +808,6 @@ class AppsManager:
                 self.service_info = None
                 return
 
-            def should_skip(obj):
-                if isinstance(obj, (type(None), int, float, bool, type)):
-                    return True
-                if isinstance(obj, (str, bytes)) and len(obj) < 1000:
-                    return True
-                if isinstance(obj, (list, tuple, set)) and len(obj) < 100:
-                    return all(should_skip(item) for item in obj)
-                if isinstance(obj, (dict, OrderedDict)) and len(obj) < 100:
-                    return all(should_skip(v) for v in obj.values())
-                return False
-
             async def create_deployment_function(
                 deployment_name,
                 method_name,
@@ -560,69 +816,20 @@ class AppsManager:
                 context=None,
                 **kwargs,
             ):
-                try:
-                    self._check_permissions(
-                        context=context,
-                        authorized_users=authorized_users,
-                        resource_name=f"deployment '{deployment_name}' method '{method_name}'",
-                    )
-                    user_id = context["user"]["id"]
+                self._check_permissions(
+                    context=context,
+                    authorized_users=authorized_users,
+                    resource_name=f"deployment '{deployment_name}' method '{method_name}'",
+                )
 
-                    self.logger.info(
-                        f"User '{user_id}' is calling deployment '{deployment_name}' "
-                        f"with method '{method_name}'"
-                    )
-                    app_handle_task = asyncio.to_thread(
-                        serve.get_app_handle, name=deployment_name
-                    )
-
-                    # Separate items that need to be put into Ray object storage from those that should be skipped
-                    args_to_put = []
-                    args_indices = []
-                    for i, arg in enumerate(args):
-                        if not should_skip(arg):
-                            args_to_put.append(asyncio.to_thread(ray.put, arg))
-                            args_indices.append(i)
-
-                    kwargs_to_put = []
-                    kwargs_keys = []
-                    for key, value in kwargs.items():
-                        if not should_skip(value):
-                            kwargs_to_put.append(asyncio.to_thread(ray.put, value))
-                            kwargs_keys.append(key)
-
-                    # Get the app handle and process Ray object storage concurrently
-                    all_put_results = await asyncio.gather(
-                        app_handle_task,
-                        *args_to_put,
-                        *kwargs_to_put,
-                    )
-
-                    # Extract results
-                    app_handle = all_put_results[0]
-                    args_put_results = all_put_results[1:1 + len(args_to_put)]
-                    kwargs_put_results = all_put_results[1 + len(args_to_put):]
-
-                    # Reconstruct args and kwargs with original order
-                    processed_args = list(args)  # Start with original args
-                    for i, result in zip(args_indices, args_put_results):
-                        processed_args[i] = result
-
-                    processed_kwargs = dict(kwargs)  # Start with original kwargs
-                    for key, result in zip(kwargs_keys, kwargs_put_results):
-                        processed_kwargs[key] = result
-
-                    # Call the method on the app handle and put the result into Ray object store
-                    result = await getattr(app_handle, method_name).remote(
-                        *processed_args, _ray_put=True, **processed_kwargs
-                    )
-                    # Return the result from Ray object store
-                    return await asyncio.to_thread(ray.get, result)
-                except Exception as e:
-                    self.logger.error(
-                        f"Failed to call deployment '{deployment_name}': {e}"
-                    )
-                    raise e
+                # Call the deployment method via Ray Serve HTTP API
+                return await self._ray_serve_http_request(
+                    deployment_name=deployment_name,
+                    method_name=method_name,
+                    user_id=context["user"]["id"],
+                    args=args,
+                    kwargs=kwargs,
+                )
 
             # Create service functions for each deployment
             service_functions = {}
@@ -729,12 +936,12 @@ class AppsManager:
                 deployment_name=deployment_name,
             )
 
-            # Run the deployment in Ray Serve
+            # Run the deployment in Ray Serve with unique route prefix
             deployment_coroutine = asyncio.to_thread(
                 serve.run,
                 target=app,
                 name=deployment_name,
-                route_prefix=None,
+                route_prefix=f"/{deployment_name}",
                 blocking=False,
             )
 
@@ -745,28 +952,27 @@ class AppsManager:
             # Await the coroutine to start the deployment
             await deployment_coroutine
 
-            # Validate the deployment status can be retrieved
-            try:
-                app_handle = await asyncio.to_thread(
-                    serve.get_app_handle, name=deployment_name
-                )
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to get app handle for deployment '{deployment_name}': {e}"
-                )
+            # Validate the deployment is accessible via HTTP
+            await self._check_connection(deployment_name)
 
             # Run async init if provided
             if self._deployed_artifacts[artifact_id]["async_init"]:
-                self.logger.info(
-                    f"Calling _async_init on deployment '{deployment_name}'"
+                await self._ray_serve_http_request(
+                    deployment_name=deployment_name,
+                    method_name="_async_init",
+                    user_id=user_id,
+                    args=[],
+                    kwargs={},
                 )
-                await app_handle._async_init.remote()
 
             if self._deployed_artifacts[artifact_id]["test_deployment"]:
-                self.logger.info(
-                    f"Calling _test_deployment on deployment '{deployment_name}'"
+                test_result = await self._ray_serve_http_request(
+                    deployment_name=deployment_name,
+                    method_name="_test_deployment",
+                    user_id=user_id,
+                    args=[],
+                    kwargs={},
                 )
-                test_result = await app_handle._test_deployment.remote()
                 if test_result is not True:
                     raise RuntimeError(
                         f"Deployment '{deployment_name}' failed its test check"
@@ -1413,3 +1619,68 @@ class AppsManager:
         self.logger.info(f"Committed artifact with ID: {artifact.id}")
 
         return artifact.id
+
+
+def _serialize_data(data: Any) -> bytes:
+    """
+    Serialize data using pickle for transmission over HTTP.
+
+    Args:
+        data: The data to serialize
+
+    Returns:
+        bytes: Serialized data
+    """
+    # Handle memoryview objects by converting to bytes first
+    if isinstance(data, memoryview):
+        data = bytes(data)
+    return pickle.dumps(data)
+
+
+def _deserialize_data(data: bytes) -> Any:
+    """
+    Deserialize data from bytes using pickle.
+
+    Args:
+        data: Serialized data bytes
+
+    Returns:
+        Any: Deserialized data
+    """
+    return pickle.loads(data)
+
+
+def _chunk_data(data: bytes, chunk_size: int = 1024 * 1024) -> List[bytes]:
+    """
+    Split large data into chunks for streaming.
+
+    Args:
+        data: Data bytes to chunk
+        chunk_size: Size of each chunk in bytes (default 1MB)
+
+    Returns:
+        List of data chunks
+    """
+    return [data[i : i + chunk_size] for i in range(0, len(data), chunk_size)]
+
+
+def _contains_non_json_serializable(obj: Any) -> bool:
+    """
+    Recursively check if an object contains any non-JSON-serializable data.
+
+    This checks nested structures like dictionaries and lists for numpy arrays
+    and other types that cannot be JSON serialized.
+
+    Args:
+        obj: Object to check recursively
+
+    Returns:
+        bool: True if object contains non-JSON-serializable data
+    """
+    try:
+        # Try JSON serialization first - fastest check
+        json.dumps(obj)
+        return False
+    except (TypeError, ValueError):
+        # JSON serialization failed, so it contains non-serializable data
+        return True

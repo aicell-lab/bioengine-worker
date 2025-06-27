@@ -307,135 +307,147 @@ class AppsManager:
                         f"Method '{method_name}' specified in 'exposed_methods' "
                         f"does not exist in class {deployment_class.__name__}."
                     )
- 
-                exposed_methods[method_name]["method"] = getattr(deployment_class, method_name)
         else:
             raise ValueError(
                 f"Class {deployment_class.__name__} must define 'exposed_methods' "
                 "to specify which methods are accessible via HTTP."
             )
         
-        # Create the HTTP handler method that acts as __call__
-        async def http_handler(self, request):
-            import asyncio
-            import json
-            import pickle
-            
-            from starlette.responses import JSONResponse, StreamingResponse
-            
-            try:
-                # Parse the request path to get the method name
-                path = request.url.path
-                # Remove deployment prefix and get method name
-                path_parts = [p for p in path.split('/') if p]
+        # Store HTTP handler configuration on the class to avoid closure references
+        deployment_class._bioengine_http_config = {
+            'exposed_methods': list(exposed_methods.keys()),
+            'streaming_chunk_size': streaming_chunk_size
+        }
+        
+        # Create completely self-contained HTTP handler that gets config from class attributes
+        def create_http_handler():
+            async def http_handler(self, request):
+                import asyncio
+                import json
+                import pickle
                 
-                # Determine which method to call
-                method_name = None
+                from starlette.responses import JSONResponse, StreamingResponse
                 
-                if len(path_parts) > 1:
-                    # Method specified in path: /deployment/method_name
-                    potential_method = path_parts[-1]
-                    if potential_method in exposed_methods:
-                        method_name = potential_method
-                    else:
-                        return JSONResponse({
-                            "success": False,
-                            "error": f"Method '{potential_method}' not found in exposed methods: {list(exposed_methods.keys())}",
-                            "error_type": "MethodNotFound"
-                        }, status_code=404)
-                else:
-                    # No method specified in path: /deployment
-                    if len(exposed_methods) == 1:
-                        # If only one method is exposed, use it as default
-                        method_name = list(exposed_methods.keys())[0]
-                    else:
-                        # Multiple methods available, must specify one
-                        return JSONResponse({
-                            "success": False,
-                            "error": f"No method specified in path. Available methods: {list(exposed_methods.keys())}",
-                            "error_type": "MethodNotFound"
-                        }, status_code=404)
-                
-                print(f"Handling HTTP request for method '{method_name}'")
-                
-                # Parse request data
-                if request.method == "POST":
-                    content_type = request.headers.get("content-type", "")
-                    if "application/json" in content_type:
-                        request_data = await request.json()
-                    elif "application/octet-stream" in content_type:
-                        # Handle streamed/chunked data
-                        body = await request.body()
-                        # Deserialize the body using pickle
-                        request_data = await asyncio.to_thread(pickle.loads, body)
-                    else:
-                        request_data = {}
-                else:
-                    request_data = dict(request.query_params)
-
-                # Extract args and kwargs from request
-                args = request_data.get("args", [])
-                kwargs = request_data.get("kwargs", {})
-
-                print(f"Calling method '{method_name}' with {len(args)} args and {len(kwargs)} kwargs")
-
-                # Get and call the target method
-                target_method = exposed_methods[method_name]["method"]
-
-                # Call the method
-                if asyncio.iscoroutinefunction(target_method):
-                    result = await target_method(self, *args, **kwargs)
-                else:
-                    result = await asyncio.to_thread(target_method, self, *args, **kwargs)
-
-                # Try JSON serialization first, fall back to streaming if it fails
                 try:
-                    # Try to JSON serialize the result
-                    json.dumps(result)
+                    # Get configuration from class attribute (no closure references)
+                    config = getattr(self.__class__, '_bioengine_http_config', {})
+                    exposed_method_names = config.get('exposed_methods', [])
+                    streaming_chunk_size = config.get('streaming_chunk_size', 1024 * 1024)
+                    
+                    # Parse the request path to get the method name
+                    path = request.url.path
+                    # Remove deployment prefix and get method name
+                    path_parts = [p for p in path.split('/') if p]
+                    
+                    # Determine which method to call
+                    method_name = None
+                    
+                    if len(path_parts) > 1:
+                        # Method specified in path: /deployment/method_name
+                        potential_method = path_parts[-1]
+                        if potential_method in exposed_method_names:
+                            method_name = potential_method
+                        else:
+                            return JSONResponse({
+                                "success": False,
+                                "error": f"Method '{potential_method}' not found in exposed methods: {exposed_method_names}",
+                                "error_type": "MethodNotFound"
+                            }, status_code=404)
+                    else:
+                        # No method specified in path: /deployment
+                        if len(exposed_method_names) == 1:
+                            # If only one method is exposed, use it as default
+                            method_name = exposed_method_names[0]
+                        else:
+                            # Multiple methods available, must specify one
+                            return JSONResponse({
+                                "success": False,
+                                "error": f"No method specified in path. Available methods: {exposed_method_names}",
+                                "error_type": "MethodNotFound"
+                            }, status_code=404)
+                    
+                    print(f"Handling HTTP request for method '{method_name}'")
+                    
+                    # Parse request data
+                    if request.method == "POST":
+                        content_type = request.headers.get("content-type", "")
+                        if "application/json" in content_type:
+                            request_data = await request.json()
+                        elif "application/octet-stream" in content_type:
+                            # Handle streamed/chunked data
+                            body = await request.body()
+                            # Deserialize the body using pickle
+                            request_data = await asyncio.to_thread(pickle.loads, body)
+                        else:
+                            request_data = {}
+                    else:
+                        request_data = dict(request.query_params)
 
-                    print(f"Returning JSON result from method '{method_name}'")
+                    # Extract args and kwargs from request
+                    args = request_data.get("args", [])
+                    kwargs = request_data.get("kwargs", {})
+
+                    print(f"Calling method '{method_name}' with {len(args)} args and {len(kwargs)} kwargs")
+
+                    # Get and call the target method from the instance
+                    target_method = getattr(self, method_name)
+
+                    # Call the method
+                    if asyncio.iscoroutinefunction(target_method):
+                        result = await target_method(*args, **kwargs)
+                    else:
+                        result = await asyncio.to_thread(target_method, *args, **kwargs)
+
+                    # Try JSON serialization first, fall back to streaming if it fails
+                    try:
+                        # Try to JSON serialize the result
+                        json.dumps(result)
+
+                        print(f"Returning JSON result from method '{method_name}'")
+                        return JSONResponse({
+                            "success": True, 
+                            "result": result, 
+                            "data_type": "json"
+                        })
+
+                    except (TypeError, ValueError):
+                        # JSON serialization failed, stream it instead
+                        print(f"Streaming non-JSON-serializable result from method '{method_name}'")
+
+                        # Handle memoryview objects by converting to bytes first
+                        if isinstance(result, memoryview):
+                            result = bytes(result)
+
+                        # Serialize and chunk the result for streaming
+                        serialized_data = await asyncio.to_thread(pickle.dumps, result)
+
+                        async def stream_chunks():
+                            # Split large data into chunks for streaming
+                            chunks = [
+                                serialized_data[i : i + streaming_chunk_size]
+                                for i in range(0, len(serialized_data), streaming_chunk_size)
+                            ]
+                            for chunk in chunks:
+                                yield chunk
+
+                        return StreamingResponse(
+                            stream_chunks(),
+                            media_type="application/octet-stream",
+                            headers={"X-Data-Type": "chunked-pickle"},
+                        )
+
+                except Exception as e:
+                    print(f"Error in HTTP request: {e}")
                     return JSONResponse({
-                        "success": True, 
-                        "result": result, 
-                        "data_type": "json"
-                    })
-
-                except (TypeError, ValueError):
-                    # JSON serialization failed, stream it instead
-                    print(f"Streaming non-JSON-serializable result from method '{method_name}'")
-
-                    # Handle memoryview objects by converting to bytes first
-                    if isinstance(result, memoryview):
-                        result = bytes(result)
-
-                    # Serialize and chunk the result for streaming
-                    serialized_data = await asyncio.to_thread(pickle.dumps, result)
-
-                    async def stream_chunks():
-                        # Split large data into chunks for streaming
-                        chunks = [
-                            serialized_data[i : i + streaming_chunk_size]
-                            for i in range(0, len(serialized_data), streaming_chunk_size)
-                        ]
-                        for chunk in chunks:
-                            yield chunk
-
-                    return StreamingResponse(
-                        stream_chunks(),
-                        media_type="application/octet-stream",
-                        headers={"X-Data-Type": "chunked-pickle"},
-                    )
-
-            except Exception as e:
-                print(f"Error in HTTP request: {e}")
-                return JSONResponse({
-                    "success": False,
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                }, status_code=500)
+                        "success": False,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                    }, status_code=500)
+            
+            return http_handler
         
         # Add the HTTP handler as __call__ method
-        deployment_class.__call__ = http_handler
+        deployment_class.__call__ = create_http_handler()
         
         return deployment_class
 

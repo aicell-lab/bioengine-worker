@@ -17,9 +17,9 @@ class ModelRunner:
 
     def __init__(
         self,
-        cache_n_models: int = 10,
+        cache_n_models: int = 30,
         pipeline_idle_timeout: float = 300.0,
-        max_pipeline_cache_size: int = 3,
+        max_pipeline_cache_size: int = 10,
     ):
         # Set up model directory
         models_dir = Path().resolve() / "models"

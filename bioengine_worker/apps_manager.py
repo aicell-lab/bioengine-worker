@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import pickle
 from functools import partial, wraps
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any, Dict, List, Optional, Union
 import httpx
 import yaml
 from ray import serve
+from starlette.requests import Request
 
 from bioengine_worker import __version__
 from bioengine_worker.ray_cluster import RayCluster
@@ -229,161 +231,213 @@ class AppsManager:
             )
         return deployment_name
 
-    def _wrap_init_with_workdir(self, init_method: callable) -> callable:
-        @wraps(init_method)
-        def wrapper(self, *args, **kwargs):
+    def _add_init_wrapper(self, deployment_class: Any) -> Any:
+        orig_init = getattr(deployment_class, "__init__")
+
+        @wraps(orig_init)
+        def wrapped_init(self, *args, **kwargs):
             import os
             from pathlib import Path
 
             workdir = Path(os.environ["BIOENGINE_WORKDIR"])
             workdir.mkdir(parents=True, exist_ok=True)
             os.chdir(workdir)
-            return init_method(self, *args, **kwargs)
+            return orig_init(self, *args, **kwargs)
 
-        return wrapper
+        deployment_class.__init__ = wrapped_init
+        return deployment_class
 
-    def _create_http_deployment_wrapper(
-        self, deployment_class: type, class_config: dict
-    ) -> type:
+    def _add_multiplexed_method(self, deployment_class: Any, class_config: dict) -> Any:
         """
-        Create a FastAPI-based wrapper for the deployment class to handle HTTP streaming.
+        Decorate the `_get_model` method with @serve.multiplexed if it exists.
 
+        This allows the method to handle multiple models per replica efficiently.
+        
         Args:
-            deployment_class: The original deployment class
-            class_config: Configuration for the class including exposed methods
-
-        Returns:
-            A new class that wraps the original with HTTP handling
+            deployment_class: The class containing the `_get_model` method
+            class_config: Configuration dictionary for the deployment class
         """
+        orig_method = getattr(deployment_class, "_get_model", None)
+        if orig_method:
+            max_num_models_per_replica = int(
+                class_config.get("max_num_models_per_replica", 3)
+            )
+            decorated_method = serve.multiplexed(
+                orig_method, max_num_models_per_replica=max_num_models_per_replica
+            )
+            deployment_class._get_model = decorated_method
+            self.logger.debug(
+                f"Added @serve.multiplexed decorator to method '_get_model' in class '{class_config['class_name']}' "
+                f"(max_num_models_per_replica={max_num_models_per_replica})"
+            )
+        return deployment_class
 
-        class HTTPDeploymentWrapper:
-            def __init__(self, *args, **kwargs):
-                # Initialize the original deployment
-                self.deployment = deployment_class(*args, **kwargs)
-                self.callable_methods = [
-                    "__call__",
-                    "_async_init",
-                    "_test_deployment",
-                    *class_config.get("exposed_methods", {}).keys(),
-                ]
-
-            async def __call__(self, request):
-                """Handle HTTP requests directly without FastAPI."""
-                import asyncio
-                import json
-                import pickle
-
-                from starlette.responses import JSONResponse, StreamingResponse
-
-                try:
-                    # Parse the request path to get the method name
-                    path = request.url.path
-                    # Remove leading slashes and get the method name
-                    path_parts = [p for p in path.split("/") if p]
-                    method_name = path_parts[-1] if path_parts else "__call__"
-
-                    print(f"Handling HTTP request for method '{method_name}'")
-
-                    # Check if method is exposed or if it's the default call
-                    if method_name not in self.callable_methods:
-                        return JSONResponse(
-                            {
-                                "success": False,
-                                "error": f"Method '{method_name}' not found or not exposed",
-                                "error_type": "MethodNotFound",
-                            },
-                            status_code=404,
-                        )
-
-                    # Parse request data
-                    if request.method == "POST":
-                        content_type = request.headers.get("content-type", "")
-                        if "application/json" in content_type:
-                            request_data = await request.json()
-                        elif "application/octet-stream" in content_type:
-                            # Handle streamed/chunked data
-                            body = await request.body()
-                            # Deserialize the body using pickle
-                            request_data = await asyncio.to_thread(pickle.loads, body)
-                        else:
-                            request_data = {}
-                    else:
-                        request_data = dict(request.query_params)
-
-                    # Extract args and kwargs from request
-                    args = request_data.get("args", [])
-                    kwargs = request_data.get("kwargs", {})
-
-                    print(
-                        f"Calling method '{method_name}' with {len(args)} args and {len(kwargs)} kwargs"
+    def _add_http_handler(self, deployment_class: Any, class_config: dict) -> Any:
+        """
+        Create a single HTTP handler that routes to exposed methods.
+        
+        The __call__ method is reserved for the HTTP handler and must not be defined
+        by the deployment class or listed in exposed_methods.
+        
+        Internal methods like _async_init and _test_deployment are never exposed via HTTP.
+        """
+        
+        streaming_chunk_size = class_config.get("streaming_chunk_size", 1024 * 1024)
+        exposed_methods = class_config.get("exposed_methods", {})
+        
+        # Validate that __call__ is not defined by the user (check if it's a custom method)
+        if "__call__" in deployment_class.__dict__:
+            raise ValueError(
+                f"Class {deployment_class.__name__} must not define '__call__' method. "
+                "The '__call__' method is reserved for the HTTP handler."
+            )
+        
+        # Validate that __call__ is not in exposed_methods
+        if "__call__" in exposed_methods:
+            raise ValueError(
+                f"'__call__' cannot be listed in exposed_methods for class {deployment_class.__name__}. "
+                "The '__call__' method is reserved for the HTTP handler."
+            )
+        
+        # Only methods in exposed_methods are accessible via HTTP
+        if exposed_methods:
+            for method_name in exposed_methods.keys():
+                if not hasattr(deployment_class, method_name):
+                    raise ValueError(
+                        f"Method '{method_name}' specified in 'exposed_methods' "
+                        f"does not exist in class {deployment_class.__name__}."
                     )
-
-                    # Get the method from the deployment
-                    if method_name == "__call__":
-                        method = self.deployment
+ 
+                exposed_methods[method_name]["method"] = getattr(deployment_class, method_name)
+        else:
+            raise ValueError(
+                f"Class {deployment_class.__name__} must define 'exposed_methods' "
+                "to specify which methods are accessible via HTTP."
+            )
+        
+        # Create the HTTP handler method that acts as __call__
+        async def http_handler(self, request):
+            import asyncio
+            import json
+            import pickle
+            
+            from starlette.responses import JSONResponse, StreamingResponse
+            
+            try:
+                # Parse the request path to get the method name
+                path = request.url.path
+                # Remove deployment prefix and get method name
+                path_parts = [p for p in path.split('/') if p]
+                
+                # Determine which method to call
+                method_name = None
+                
+                if len(path_parts) > 1:
+                    # Method specified in path: /deployment/method_name
+                    potential_method = path_parts[-1]
+                    if potential_method in exposed_methods:
+                        method_name = potential_method
                     else:
-                        method = getattr(self.deployment, method_name)
-
-                    # Call the method
-                    if asyncio.iscoroutinefunction(method):
-                        result = await method(*args, **kwargs)
-                    else:
-                        result = method(*args, **kwargs)
-
-                    # Try JSON serialization first, fall back to streaming if it fails
-                    try:
-                        # Try to JSON serialize the result - fastest check
-                        json.dumps(result)
-
-                        print(f"Returning JSON result from method '{method_name}'")
-                        # Return small JSON-serializable data as JSON
-                        return JSONResponse(
-                            {"success": True, "result": result, "data_type": "json"}
-                        )
-
-                    except (TypeError, ValueError):
-                        # JSON serialization failed or data is large, stream it instead
-                        print(
-                            f"Streaming non-JSON-serializable result from method '{method_name}'"
-                        )
-
-                        # Handle memoryview objects by converting to bytes first
-                        if isinstance(result, memoryview):
-                            result = bytes(result)
-
-                        # Serialize and chunk the result for streaming
-                        serialized_data = await asyncio.to_thread(pickle.dumps, result)
-
-                        async def stream_chunks():
-                            # Split large data into chunks for streaming.
-                            chunk_size = class_config.get(
-                                "streaming_chunk_size", 1024 * 1024
-                            )  # Default to 1MB
-                            chunks = [
-                                serialized_data[i : i + chunk_size]
-                                for i in range(0, len(serialized_data), chunk_size)
-                            ]
-                            for chunk in chunks:
-                                yield chunk
-
-                        return StreamingResponse(
-                            stream_chunks(),
-                            media_type="application/octet-stream",
-                            headers={"X-Data-Type": "chunked-pickle"},
-                        )
-
-                except Exception as e:
-                    print(f"Error in HTTP request: {e}")
-                    return JSONResponse(
-                        {
+                        return JSONResponse({
                             "success": False,
-                            "error": str(e),
-                            "error_type": type(e).__name__,
-                        },
-                        status_code=500,
+                            "error": f"Method '{potential_method}' not found in exposed methods: {list(exposed_methods.keys())}",
+                            "error_type": "MethodNotFound"
+                        }, status_code=404)
+                else:
+                    # No method specified in path: /deployment
+                    if len(exposed_methods) == 1:
+                        # If only one method is exposed, use it as default
+                        method_name = list(exposed_methods.keys())[0]
+                    else:
+                        # Multiple methods available, must specify one
+                        return JSONResponse({
+                            "success": False,
+                            "error": f"No method specified in path. Available methods: {list(exposed_methods.keys())}",
+                            "error_type": "MethodNotFound"
+                        }, status_code=404)
+                
+                print(f"Handling HTTP request for method '{method_name}'")
+                
+                # Parse request data
+                if request.method == "POST":
+                    content_type = request.headers.get("content-type", "")
+                    if "application/json" in content_type:
+                        request_data = await request.json()
+                    elif "application/octet-stream" in content_type:
+                        # Handle streamed/chunked data
+                        body = await request.body()
+                        # Deserialize the body using pickle
+                        request_data = await asyncio.to_thread(pickle.loads, body)
+                    else:
+                        request_data = {}
+                else:
+                    request_data = dict(request.query_params)
+
+                # Extract args and kwargs from request
+                args = request_data.get("args", [])
+                kwargs = request_data.get("kwargs", {})
+
+                print(f"Calling method '{method_name}' with {len(args)} args and {len(kwargs)} kwargs")
+
+                # Get and call the target method
+                target_method = exposed_methods[method_name]["method"]
+
+                # Call the method
+                if asyncio.iscoroutinefunction(target_method):
+                    result = await target_method(self, *args, **kwargs)
+                else:
+                    result = await asyncio.to_thread(target_method, self, *args, **kwargs)
+
+                # Try JSON serialization first, fall back to streaming if it fails
+                try:
+                    # Try to JSON serialize the result
+                    json.dumps(result)
+
+                    print(f"Returning JSON result from method '{method_name}'")
+                    return JSONResponse({
+                        "success": True, 
+                        "result": result, 
+                        "data_type": "json"
+                    })
+
+                except (TypeError, ValueError):
+                    # JSON serialization failed, stream it instead
+                    print(f"Streaming non-JSON-serializable result from method '{method_name}'")
+
+                    # Handle memoryview objects by converting to bytes first
+                    if isinstance(result, memoryview):
+                        result = bytes(result)
+
+                    # Serialize and chunk the result for streaming
+                    serialized_data = await asyncio.to_thread(pickle.dumps, result)
+
+                    async def stream_chunks():
+                        # Split large data into chunks for streaming
+                        chunks = [
+                            serialized_data[i : i + streaming_chunk_size]
+                            for i in range(0, len(serialized_data), streaming_chunk_size)
+                        ]
+                        for chunk in chunks:
+                            yield chunk
+
+                    return StreamingResponse(
+                        stream_chunks(),
+                        media_type="application/octet-stream",
+                        headers={"X-Data-Type": "chunked-pickle"},
                     )
 
-        return HTTPDeploymentWrapper
+            except Exception as e:
+                print(f"Error in HTTP request: {e}")
+                return JSONResponse({
+                    "success": False,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                }, status_code=500)
+        
+        # Add the HTTP handler as __call__ method
+        deployment_class.__call__ = http_handler
+        
+        return deployment_class
 
     async def _load_deployment_code(
         self,
@@ -459,31 +513,14 @@ class AppsManager:
                     f"Error loading {class_config['class_name']} from {artifact_id}"
                 )
 
-            # Wrap the class __init__ method to ensure it uses the workdir
-            orig_init = getattr(
-                deployment_class, "__init__", lambda *args, **kwargs: None
-            )
-            deployment_class.__init__ = self._wrap_init_with_workdir(orig_init)
+            # Wrap the class `__init__` method to ensure it uses the workdir
+            deployment_class = self._add_init_wrapper(deployment_class)
 
-            # If the class has a `_get_model` method, decorate it with @serve.multiplexed
-            if hasattr(deployment_class, "_get_model"):
-                max_num_models_per_replica = int(
-                    class_config.get("max_num_models_per_replica", 3)
-                )
-                orig_method = getattr(deployment_class, "_get_model")
-                decorated_method = serve.multiplexed(
-                    orig_method, max_num_models_per_replica=max_num_models_per_replica
-                )
-                setattr(deployment_class, "_get_model", decorated_method)
-                self.logger.info(
-                    f"Added @serve.multiplexed decorator to method '_get_model' in class '{class_config['class_name']}' "
-                    f"(max_num_models_per_replica={max_num_models_per_replica})"
-                )
+            # Add @serve.multiplexed decorator to the `_get_model`` method if it exists
+            deployment_class = self._add_multiplexed_method(deployment_class, class_config)
 
-            # Create HTTP wrapper class for streaming support
-            deployment_class = self._create_http_deployment_wrapper(
-                deployment_class, class_config
-            )
+            # Add HTTP handler for streaming support as the `__call__` method
+            deployment_class = self._add_http_handler(deployment_class, class_config)
 
             self.logger.info(
                 f"Loaded class '{class_config['class_name']}' from {artifact_id}"
@@ -549,6 +586,9 @@ class AppsManager:
 
         # Check if the required resources are available
         insufficient_resources = True
+        while not self.ray_cluster.status["nodes"]:
+            # Wait for Ray cluster to be ready
+            await asyncio.sleep(1)
         for node_resource in self.ray_cluster.status["nodes"].values():
             if (
                 node_resource["available_cpu"] >= ray_actor_options["num_cpus"]
@@ -651,53 +691,6 @@ class AppsManager:
         serve_port = self.ray_cluster.ray_cluster_config["serve_port"]
         return f"http://{head_address}:{serve_port}"
 
-    async def _check_connection(self, deployment_name: str) -> None:
-        """
-        Check if the Ray Serve deployment is accessible via HTTP.
-        This method attempts to connect to the Ray Serve deployment's HTTP endpoint
-        and verifies that it responds correctly, indicating that the deployment is
-        running and reachable.
-
-        Args:
-            deployment_name: Name of the Ray Serve deployment to check
-
-        Raises:
-            RuntimeError: If the deployment is not accessible after multiple attempts
-        """
-        serve_base_url = self._get_serve_http_url()
-        deployment_url = f"{serve_base_url}/{deployment_name}"
-
-        self.logger.info(
-            f"Checking connection to Ray Serve deployment '{deployment_name}' at {deployment_url}"
-        )
-
-        # Check if deployment is accessible
-        max_retries = 30
-        for attempt in range(max_retries):
-            try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    response = await client.get(deployment_url)
-                    # Accept any HTTP response as proof that Ray Serve is running and responding
-                    # Even 400/404/405 means the server is up and the deployment route exists
-                    if (
-                        response.status_code < 500
-                    ):  # Any response that's not a server error
-                        self.logger.debug(
-                            f"Deployment '{deployment_name}' is accessible (HTTP {response.status_code})"
-                        )
-                        break
-            except Exception as e:
-                self.logger.debug(
-                    f"Attempt {attempt + 1} to reach deployment '{deployment_name}': {e}"
-                )
-
-            if attempt == max_retries - 1:
-                raise RuntimeError(
-                    f"Failed to connect to deployment '{deployment_name}' after {max_retries} attempts"
-                )
-
-            await asyncio.sleep(1)
-
     async def _ray_serve_http_request(
         self,
         deployment_name: str,
@@ -742,7 +735,10 @@ class AppsManager:
 
             # Get Ray Serve HTTP URL
             serve_base_url = self._get_serve_http_url()
-            endpoint_url = f"{serve_base_url}/{deployment_name}/{method_name}"
+            if method_name == "__call__":
+                endpoint_url = f"{serve_base_url}/{deployment_name}"
+            else:
+                endpoint_url = f"{serve_base_url}/{deployment_name}/{method_name}"
 
             # Make HTTP request to Ray Serve
             timeout = httpx.Timeout(connect=30.0, read=300.0, write=300.0, pool=30.0)
@@ -857,22 +853,13 @@ class AppsManager:
                 deployment_name = deployment_info["deployment_name"]
                 service_functions[deployment_name] = {}
                 class_config = deployment_info["class_config"]
-                exposed_methods = class_config.get("exposed_methods", {})
-                if exposed_methods:
-                    for method_name, method_config in exposed_methods.items():
-                        service_functions[deployment_name][method_name] = partial(
-                            create_deployment_function,
-                            deployment_name=deployment_name,
-                            method_name=method_name,
-                            authorized_users=method_config.get("authorized_users", "*"),
-                        )
-                else:
-                    service_functions[deployment_name] = partial(
+                for method_name, method_config in class_config["exposed_methods"].items():
+                    service_functions[deployment_name][method_name] = partial(
                         create_deployment_function,
                         deployment_name=deployment_name,
-                        method_name="__call__",
-                        authorized_users="*",
-                    )
+                        method_name=method_name,
+                        authorized_users=method_config.get("authorized_users", "*"),
+                        )
 
             # Register all deployment functions as a single service
             service_info = await self.server.register_service(
@@ -899,6 +886,53 @@ class AppsManager:
         except Exception as e:
             self.logger.error(f"Error updating services: {e}")
             raise e
+
+    async def _call_async_init_via_handle(self, deployment_name: str) -> None:
+        """
+        Call the _async_init method via the app handle (not HTTP).
+        
+        Args:
+            deployment_name: Name of the Ray Serve deployment
+            
+        Raises:
+            RuntimeError: If the app handle call fails
+        """
+        try:
+            # Get the app handle
+            handle = serve.get_app_handle(deployment_name)
+            
+            # Call _async_init via the handle (this bypasses HTTP)
+            await handle._async_init.remote()
+            self.logger.info(f"Successfully called `_async_init` on deployment '{deployment_name}' via app handle")
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to call _async_init on deployment '{deployment_name}' via app handle: {e}")
+
+    async def _call_test_deployment_via_handle(self, deployment_name: str) -> bool:
+        """
+        Call the _test_deployment method via the app handle (not HTTP).
+        
+        Args:
+            deployment_name: Name of the Ray Serve deployment
+            
+        Returns:
+            bool: Test result from _test_deployment
+            
+        Raises:
+            RuntimeError: If the app handle call fails
+        """
+        try:
+            # Get the app handle
+            handle = serve.get_app_handle(deployment_name)
+            
+            # Call _test_deployment via the handle (this bypasses HTTP)
+            result = await handle._test_deployment.remote()
+            self.logger.info(f"Successfully called `_test_deployment` on deployment '{deployment_name}' via app handle")
+            
+            return result
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to call `_test_deployment` on deployment '{deployment_name}' via app handle: {e}")
 
     async def _deploy_artifact(
         self,
@@ -973,26 +1007,19 @@ class AppsManager:
             await deployment_coroutine
 
             # Validate the deployment is accessible via HTTP
-            await self._check_connection(deployment_name)
+            status = await asyncio.to_thread(serve.status)
+            application = status.applications.get(deployment_name)
+            if not application or application.status != "RUNNING":
+                raise RuntimeError(
+                    f"Deployment '{deployment_name}' failed to start or is not running"
+                )
 
             # Run async init if provided
             if self._deployed_artifacts[artifact_id]["async_init"]:
-                await self._ray_serve_http_request(
-                    deployment_name=deployment_name,
-                    method_name="_async_init",
-                    user_id=user_id,
-                    args=[],
-                    kwargs={},
-                )
+                await self._call_async_init_via_handle(deployment_name)
 
             if self._deployed_artifacts[artifact_id]["test_deployment"]:
-                test_result = await self._ray_serve_http_request(
-                    deployment_name=deployment_name,
-                    method_name="_test_deployment",
-                    user_id=user_id,
-                    args=[],
-                    kwargs={},
-                )
+                test_result = await self._call_test_deployment_via_handle(deployment_name)
                 if test_result is not True:
                     raise RuntimeError(
                         f"Deployment '{deployment_name}' failed its test check"
@@ -1205,11 +1232,11 @@ class AppsManager:
             await self.ray_cluster.notify()
 
         # Wait for all deployments to complete
-        deployment_tasks = [
-            self._deployed_artifacts[artifact_id]["deployment_task"]
+        while not all(
+            self._deployed_artifacts[artifact_id].get("is_deployed", False)
             for artifact_id in artifact_ids
-        ]
-        await asyncio.gather(*deployment_tasks)
+        ):
+            await asyncio.sleep(1)
 
         # Update services after startup deployments
         await self._update_services()
@@ -1438,7 +1465,7 @@ class AppsManager:
                 raise NotImplementedError
 
             class_config = deployment_info["class_config"]
-            class_methods = class_config.get("exposed_methods", {})
+            class_methods = class_config["exposed_methods"]
             class_name = class_config["class_name"]
             deployment = application.deployments.get(class_name)
             output[artifact_id] = {

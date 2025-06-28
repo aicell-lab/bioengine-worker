@@ -131,7 +131,7 @@ class BioEngineWorker:
             log_file=log_file,
         )
         self.logger.info(
-            f"Initializing BioEngineWorker v{__version__} with mode '{mode}'"
+            f"Initializing BioEngineWorker v{__version__} with mode '{mode}'..."
         )
         try:
             # If token is not provided, attempt to login
@@ -221,7 +221,7 @@ class BioEngineWorker:
         Raises:
             ValueError: If connection to Hypha server fails
         """
-        self.logger.info(f"Connecting to Hypha server at {self.server_url}...")
+        self.logger.debug(f"Connecting to Hypha server at {self.server_url}...")
         self.server = await connect_to_server(
             {
                 "server_url": self.server_url,
@@ -238,7 +238,7 @@ class BioEngineWorker:
 
         self.workspace = self.server.config.workspace
         self.logger.info(
-            f"User '{user_id}' connected to workspace '{self.workspace}' with client ID '{self.server.config.client_id}'"
+            f"User '{user_id}' connected to workspace '{self.workspace}' with client ID '{self.server.config.client_id}'."
         )
 
         # Update admin users list with the authenticated user and ensure it's at the top
@@ -251,7 +251,9 @@ class BioEngineWorker:
         self.apps_manager.admin_users = self.admin_users
         self.dataset_manager.admin_users = self.admin_users
 
-        self.logger.info(f"Admin users for this worker: {', '.join(self.admin_users)}")
+        self.logger.info(
+            f"Admin users for this BioEngine worker: {', '.join(self.admin_users)}"
+        )
 
     async def _register(self) -> None:
         """
@@ -301,7 +303,6 @@ class BioEngineWorker:
         )
         sid = service_info.id
 
-        self.logger.info(f"BioEngine worker service registered with ID '{sid}'")
         self.logger.info(
             f"Manage BioEngine worker at: {self.dashboard_url}/worker?service_id={sid}"
         )

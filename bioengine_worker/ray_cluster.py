@@ -164,9 +164,7 @@ class RayCluster:
             )
 
         # Check number of CPUs and GPUs
-        if (
-            self.mode == "single-machine" and head_num_cpus <= 0
-        ):
+        if self.mode == "single-machine" and head_num_cpus <= 0:
             raise ValueError(
                 "When running on a single machine, 'head_num_cpus' must be greater than 0"
             )
@@ -210,7 +208,9 @@ class RayCluster:
                 "min_workers": int(min_workers),
                 "max_workers": int(max_workers),
                 "scale_up_cooldown_seconds": int(scale_up_cooldown_seconds),
-                "scale_down_check_interval_seconds": int(scale_down_check_interval_seconds),
+                "scale_down_check_interval_seconds": int(
+                    scale_down_check_interval_seconds
+                ),
                 "scale_down_threshold_seconds": int(scale_down_threshold_seconds),
                 "log_file": str(log_file),
                 "debug": bool(debug),
@@ -552,7 +552,7 @@ class RayCluster:
         except Exception as e:
             self.logger.error(f"Error starting Ray cluster: {e}")
             raise e
-        
+
     def _set_head_node_address(self) -> None:
         """Set the head node address based on the cluster configuration."""
         head_node_address = str(self.ray_cluster_config["head_node_address"])
@@ -568,7 +568,9 @@ class RayCluster:
     def _set_serve_http_url(self) -> None:
         """Set the Ray Serve HTTP API base URL based on the head node address and port."""
         address = self.ray_cluster_config["head_node_address"].split("://")[-1]
-        self.serve_http_url = f"http://{address}:{self.ray_cluster_config['serve_port']}"
+        self.serve_http_url = (
+            f"http://{address}:{self.ray_cluster_config['serve_port']}"
+        )
         self.logger.debug(f"Ray Serve HTTP URL set to: {self.serve_http_url}")
 
     async def _shutdown_ray(self, grace_period: int = 60) -> None:
@@ -762,7 +764,7 @@ class RayCluster:
                 await self._start_cluster()
 
             self._set_head_node_address()
-            self._set_serve_address()
+            self._set_serve_http_url()
 
             await self._connect_to_cluster()
 
@@ -774,7 +776,7 @@ class RayCluster:
             self.logger.debug(
                 f"Monitoring task started with status interval: {self.status_interval_seconds}s"
             )
-            self.logger.info("Ray cluster started successfully")
+            self.logger.info("Ray cluster started successfully.")
 
         except Exception as e:
             self.logger.error(f"Error in cluster startup: {e}")

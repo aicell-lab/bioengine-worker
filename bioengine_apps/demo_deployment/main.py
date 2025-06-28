@@ -64,7 +64,7 @@ class DemoDeployment(object):
         except Exception as e:
             print(f"Deployment test failed: {e}")
             return False
-        
+
     # `__call__` method is reserved for the HTTP handler and should not be defined here.
 
     # === Replace with your own synchronous or asynchronous methods ===

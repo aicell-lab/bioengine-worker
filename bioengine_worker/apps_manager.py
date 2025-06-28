@@ -203,7 +203,7 @@ class AppsManager:
             raise PermissionError(
                 f"User {user['id']} is not authorized to access {resource_name}"
             )
-        
+
     async def _ray_serve_get_request(
         self,
         route: str,
@@ -223,16 +223,19 @@ class AppsManager:
 
         # Use appropriate timeouts for internal Ray Serve requests
         # Connect: 10s, Read: 600s (10 minutes for long-running _async_init and _test_deployment methods)
-        timeout = httpx.Timeout(connect=10.0, read=600.0)
+        # Write: 30s (sufficient for simple GET requests), Pool: 30s (connection pool timeout)
+        timeout = httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=30.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(endpoint_url)
 
         if response.status_code != 200:
-            raise RuntimeError(f"Error accessing Ray Serve URL '{endpoint_url}': "
-                               f"HTTP {response.status_code} - {response.text}")
+            raise RuntimeError(
+                f"Error accessing Ray Serve URL '{endpoint_url}': "
+                f"HTTP {response.status_code} - {response.text}"
+            )
 
         return response.json()
-    
+
     async def _get_serve_applications(self) -> Dict[str, str]:
         """
         Get all currently deployed Ray Serve applications.
@@ -291,7 +294,7 @@ class AppsManager:
         Decorate the `_get_model` method with @serve.multiplexed if it exists.
 
         This allows the method to handle multiple models per replica efficiently.
-        
+
         Args:
             deployment_class: The class containing the `_get_model` method
             class_config: Configuration dictionary for the deployment class
@@ -307,37 +310,38 @@ class AppsManager:
             deployment_class._get_model = decorated_method
             self.logger.debug(
                 f"Added @serve.multiplexed decorator to method '_get_model' in class '{class_config['class_name']}' "
-                f"(max_num_models_per_replica={max_num_models_per_replica})"
+                f"(max_num_models_per_replica={max_num_models_per_replica})."
             )
         return deployment_class
 
     def _add_http_handler(self, deployment_class: Any, class_config: dict) -> Any:
         """
         Create a single HTTP handler that routes to exposed methods.
-        
+
         The __call__ method is reserved for the HTTP handler and must not be defined
         by the deployment class or listed in exposed_methods.
-        
+
         Internal methods like _async_init and _test_deployment are never exposed via HTTP.
         """
-        
+
         streaming_chunk_size = class_config.get("streaming_chunk_size", 1024 * 1024)
         exposed_methods = class_config.get("exposed_methods", {})
-        
+
         # Validate that __call__ is not defined by the user (check if it's a custom method)
         if "__call__" in deployment_class.__dict__:
             raise ValueError(
                 f"Class {deployment_class.__name__} must not define '__call__' method. "
                 "The '__call__' method is reserved for the HTTP handler."
             )
-        
-        # Validate that __call__ is not in exposed_methods
-        if "__call__" in exposed_methods:
-            raise ValueError(
-                f"'__call__' cannot be listed in exposed_methods for class {deployment_class.__name__}. "
-                "The '__call__' method is reserved for the HTTP handler."
-            )
-        
+
+        # Validate that __call__, _async_init and _test_deployment are not in exposed_methods
+        for method_name in ["__call__", "_async_init", "_test_deployment"]:
+            if method_name in exposed_methods:
+                raise ValueError(
+                    f"Method '{method_name}' cannot be listed in exposed_methods for class {deployment_class.__name__}. "
+                    "This method is reserved for internal use and cannot be exposed."
+                )
+
         # Only methods in exposed_methods are accessible via HTTP
         if exposed_methods:
             for method_name in exposed_methods.keys():
@@ -351,75 +355,82 @@ class AppsManager:
                 f"Class {deployment_class.__name__} must define 'exposed_methods' "
                 "to specify which methods are accessible via HTTP."
             )
-        
+
         # Store HTTP handler configuration on the class to avoid closure references
         deployment_class._bioengine_http_config = {
-            'exposed_methods': list(exposed_methods.keys()),
-            'streaming_chunk_size': streaming_chunk_size
+            "exposed_methods": list(exposed_methods.keys()),
+            "streaming_chunk_size": streaming_chunk_size,
         }
-        
+
         # Create completely self-contained HTTP handler that gets config from class attributes
         def create_http_handler():
             async def http_handler(self, request):
                 import asyncio
                 import json
                 import pickle
-                
+
                 from starlette.responses import JSONResponse, StreamingResponse
-                
+
                 try:
                     # Get configuration from class attribute (no closure references)
-                    config = getattr(self.__class__, '_bioengine_http_config', {})
-                    exposed_method_names = config.get('exposed_methods', [])
-                    streaming_chunk_size = config.get('streaming_chunk_size', 1024 * 1024)
-                    
+                    config = getattr(self.__class__, "_bioengine_http_config", {})
+                    exposed_method_names = config.get("exposed_methods", [])
+                    streaming_chunk_size = config.get(
+                        "streaming_chunk_size", 1024 * 1024
+                    )
+
                     # Parse the request path to get the method name
                     path = request.url.path
                     # Remove deployment prefix and get method name
-                    path_parts = [p for p in path.split('/') if p]
-                    
+                    path_parts = [p for p in path.split("/") if p]
+
                     # Determine which method to call
                     method_name = None
-                    
+
                     if len(path_parts) > 1:
                         # Method specified in path: /deployment/method_name
                         potential_method = path_parts[-1]
-                        if potential_method in exposed_method_names:
+                        if potential_method in exposed_method_names + [
+                            "_async_init",
+                            "_test_deployment",
+                        ]:
                             method_name = potential_method
                         else:
-                            return JSONResponse({
-                                "success": False,
-                                "error": f"Method '{potential_method}' not found in exposed methods: {exposed_method_names}",
-                                "error_type": "MethodNotFound"
-                            }, status_code=404)
+                            return JSONResponse(
+                                {
+                                    "success": False,
+                                    "error": f"Method '{potential_method}' not found in exposed methods: {exposed_method_names}",
+                                    "error_type": "MethodNotFound",
+                                },
+                                status_code=404,
+                            )
                     else:
                         # No method specified in path: /deployment
                         # Check if this is a ping request (GET with no data)
                         if request.method == "GET" and not dict(request.query_params):
                             # Return ping response with basic deployment info
-                            return JSONResponse({
-                                "success": True,
-                                "result": {
-                                    "status": "healthy",
-                                    "deployment_name": getattr(self, '__class__', {}).get('__name__', 'unknown'),
-                                    "available_methods": exposed_method_names,
-                                    "timestamp": asyncio.get_event_loop().time()
-                                },
-                                "data_type": "ping"
-                            })
+                            return JSONResponse(
+                                {
+                                    "success": True,
+                                    "data_type": "ping",
+                                }
+                            )
                         elif len(exposed_method_names) == 1:
                             # If only one method is exposed, use it as default
                             method_name = exposed_method_names[0]
                         else:
                             # Multiple methods available, must specify one
-                            return JSONResponse({
-                                "success": False,
-                                "error": f"No method specified in path. Available methods: {exposed_method_names}",
-                                "error_type": "MethodNotFound"
-                            }, status_code=404)
-                    
+                            return JSONResponse(
+                                {
+                                    "success": False,
+                                    "error": f"No method specified in path. Available methods: {exposed_method_names}",
+                                    "error_type": "MethodNotFound",
+                                },
+                                status_code=404,
+                            )
+
                     print(f"Handling HTTP request for method '{method_name}'")
-                    
+
                     # Parse request data
                     if request.method == "POST":
                         content_type = request.headers.get("content-type", "")
@@ -439,7 +450,9 @@ class AppsManager:
                     args = request_data.get("args", [])
                     kwargs = request_data.get("kwargs", {})
 
-                    print(f"Calling method '{method_name}' with {len(args)} args and {len(kwargs)} kwargs")
+                    print(
+                        f"Calling method '{method_name}' with {len(args)} args and {len(kwargs)} kwargs"
+                    )
 
                     # Get and call the target method from the instance
                     target_method = getattr(self, method_name)
@@ -456,15 +469,15 @@ class AppsManager:
                         json.dumps(result)
 
                         print(f"Returning JSON result from method '{method_name}'")
-                        return JSONResponse({
-                            "success": True, 
-                            "result": result, 
-                            "data_type": "json"
-                        })
+                        return JSONResponse(
+                            {"success": True, "result": result, "data_type": "json"}
+                        )
 
                     except (TypeError, ValueError):
                         # JSON serialization failed, stream it instead
-                        print(f"Streaming non-JSON-serializable result from method '{method_name}'")
+                        print(
+                            f"Streaming non-JSON-serializable result from method '{method_name}'"
+                        )
 
                         # Handle memoryview objects by converting to bytes first
                         if isinstance(result, memoryview):
@@ -477,7 +490,9 @@ class AppsManager:
                             # Split large data into chunks for streaming
                             chunks = [
                                 serialized_data[i : i + streaming_chunk_size]
-                                for i in range(0, len(serialized_data), streaming_chunk_size)
+                                for i in range(
+                                    0, len(serialized_data), streaming_chunk_size
+                                )
                             ]
                             for chunk in chunks:
                                 yield chunk
@@ -490,17 +505,20 @@ class AppsManager:
 
                 except Exception as e:
                     print(f"Error in HTTP request: {e}")
-                    return JSONResponse({
-                        "success": False,
-                        "error": str(e),
-                        "error_type": type(e).__name__,
-                    }, status_code=500)
-            
+                    return JSONResponse(
+                        {
+                            "success": False,
+                            "error": str(e),
+                            "error_type": type(e).__name__,
+                        },
+                        status_code=500,
+                    )
+
             return http_handler
-        
+
         # Add the HTTP handler as __call__ method
         deployment_class.__call__ = create_http_handler()
-        
+
         return deployment_class
 
     async def _load_deployment_code(
@@ -508,7 +526,6 @@ class AppsManager:
         class_config: dict,
         artifact_id: str,
         version: str,
-        timeout: int,
         _local: bool = False,  # Used for development
     ) -> Any:
         """
@@ -521,7 +538,6 @@ class AppsManager:
             class_config: Configuration for the class to load including class name and file path
             artifact_id: ID of the artifact containing the deployment code
             version: Optional version of the artifact to load
-            timeout: Timeout in seconds for network requests
             _local: Whether to load from local filesystem instead of artifact
 
         Returns:
@@ -557,11 +573,18 @@ class AppsManager:
                     file_path=class_config["python_file"],
                 )
 
-                # Download the file content with timeout
-                async with httpx.AsyncClient(timeout=timeout) as client:
+                # Download the file content with timeout (30s for all operations)
+                download_timeout = httpx.Timeout(30.0)
+                async with httpx.AsyncClient(timeout=download_timeout) as client:
                     response = await client.get(download_url)
-                    response.raise_for_status()
-                    code_content = response.text
+
+                if response.status_code != 200:
+                    raise RuntimeError(
+                        f"Failed to download deployment code from {download_url}: "
+                        f"HTTP {response.status_code} - {response.text}"
+                    )
+
+                code_content = response.text
 
             # Create a restricted globals dictionary for sandboxed execution
             safe_globals = {}
@@ -581,13 +604,15 @@ class AppsManager:
             deployment_class = self._add_init_wrapper(deployment_class)
 
             # Add @serve.multiplexed decorator to the `_get_model`` method if it exists
-            deployment_class = self._add_multiplexed_method(deployment_class, class_config)
+            deployment_class = self._add_multiplexed_method(
+                deployment_class, class_config
+            )
 
             # Add HTTP handler for streaming support as the `__call__` method
             deployment_class = self._add_http_handler(deployment_class, class_config)
 
-            self.logger.info(
-                f"Loaded class '{class_config['class_name']}' from {artifact_id}"
+            self.logger.debug(
+                f"Loaded class '{class_config['class_name']}' from artifact '{artifact_id}'."
             )
             return deployment_class
 
@@ -640,7 +665,7 @@ class AppsManager:
             for key, value in modes[mode_key].items():
                 deployment_config[key] = value
 
-            self.logger.info(f"Using mode '{mode_key}' for deployment '{artifact_id}'")
+            self.logger.info(f"Using mode '{mode_key}' for deployment '{artifact_id}'.")
 
         # Add default ray_actor_options if not present
         ray_actor_options = deployment_config.setdefault("ray_actor_options", {})
@@ -715,7 +740,6 @@ class AppsManager:
             class_config=class_config,
             artifact_id=artifact_id,
             version=version,
-            timeout=60,
         )
 
         # Update the deployment tracking information
@@ -743,6 +767,56 @@ class AppsManager:
         app = deployment.bind()
 
         return app
+
+    async def _ping_deployment(self, deployment_name: str) -> None:
+        ping_result = await self._ray_serve_get_request(route=f"/{deployment_name}")
+        # Verify this is a proper ping response
+        if not (
+            isinstance(ping_result, dict)
+            and ping_result.get("success") == True
+            and ping_result.get("data_type") == "ping"
+        ):
+            raise RuntimeError(
+                f"Deployment '{deployment_name}' failed to start or is not accessible. Ping response: {ping_result}"
+            )
+        else:
+            self.logger.debug(
+                f"Deployment '{deployment_name}' is accessible and ready."
+            )
+
+    async def _run_deployment_async_init(self, deployment_name: str):
+        init_result = await self._ray_serve_get_request(
+            route=f"/{deployment_name}/_async_init"
+        )
+        if not (
+            isinstance(init_result, dict)
+            and init_result.get("success") == True
+            and init_result.get("data_type") == "json"
+            and init_result.get("result", "") is None
+        ):
+            raise RuntimeError(
+                f"Deployment '{deployment_name}' failed async initialization. Response: {init_result}"
+            )
+        else:
+            self.logger.debug(
+                f"Deployment '{deployment_name}' async initialization completed successfully."
+            )
+
+    async def _run_deployment_test(self, deployment_name: str):
+        test_result = await self._ray_serve_get_request(
+            route=f"/{deployment_name}/_test_deployment"
+        )
+        if not (
+            isinstance(test_result, dict)
+            and test_result.get("success") == True
+            and test_result.get("data_type") == "json"
+            and test_result.get("result", False) is True
+        ):
+            raise RuntimeError(
+                f"Deployment '{deployment_name}' failed its test check. Response: {test_result}"
+            )
+        else:
+            self.logger.debug(f"Deployment '{deployment_name}' passed its test check.")
 
     async def _ray_serve_post_request(
         self,
@@ -772,7 +846,7 @@ class AppsManager:
         """
         try:
             self.logger.info(
-                f"User '{user_id}' is calling method '{method_name}' on deployment '{deployment_name}'"
+                f"User '{user_id}' is calling method '{method_name}' on deployment '{deployment_name}'."
             )
             # Prepare request data
             request_data = {"args": args, "kwargs": kwargs}
@@ -875,7 +949,7 @@ class AppsManager:
             self._check_initialized()
 
             if not self._deployed_artifacts:
-                self.logger.info("No deployments to register as services")
+                self.logger.debug("No deployments to register as services.")
                 self.service_info = None
                 return
 
@@ -910,13 +984,15 @@ class AppsManager:
                 deployment_name = deployment_info["deployment_name"]
                 service_functions[deployment_name] = {}
                 class_config = deployment_info["class_config"]
-                for method_name, method_config in class_config["exposed_methods"].items():
+                for method_name, method_config in class_config[
+                    "exposed_methods"
+                ].items():
                     service_functions[deployment_name][method_name] = partial(
-                            create_deployment_function,
-                            deployment_name=deployment_name,
-                            method_name=method_name,
-                            authorized_users=method_config.get("authorized_users", "*"),
-                        )
+                        create_deployment_function,
+                        deployment_name=deployment_name,
+                        method_name=method_name,
+                        authorized_users=method_config.get("authorized_users", "*"),
+                    )
 
             # Register all deployment functions as a single service
             service_info = await self.server.register_service(
@@ -930,7 +1006,7 @@ class AppsManager:
                 },
                 {"overwrite": True},
             )
-            self.logger.info("Successfully registered deployment service")
+            self.logger.debug("Successfully registered deployment service.")
             server_url = self.server.config.public_base_url
             workspace, sid = service_info.id.split("/")
             service_url = f"{server_url}/{workspace}/services/{sid}"
@@ -985,11 +1061,11 @@ class AppsManager:
             applications = await self._get_serve_applications()
             if deployment_name in applications:
                 self.logger.info(
-                    f"User '{user_id}' is updating existing deployment for artifact '{artifact_id}'"
+                    f"User '{user_id}' is updating existing deployment for artifact '{artifact_id}'..."
                 )
             else:
                 self.logger.info(
-                    f"User '{user_id}' is starting a new deployment for artifact '{artifact_id}'"
+                    f"User '{user_id}' is starting a new deployment for artifact '{artifact_id}'..."
                 )
 
             # Create the deployment from the artifact
@@ -1016,25 +1092,17 @@ class AppsManager:
             # Await the coroutine to start the deployment
             await deployment_coroutine
 
-            # Validate the deployment is accessible via HTTP
-            try:
-                await self._ray_serve_get_request(route=f"/{deployment_name}")
-            except RuntimeError as e:
-                raise RuntimeError(
-                    f"Deployment '{deployment_name}' failed to start or is not accessible: {e}"
-                )
+            # Validate the deployment is accessible via HTTP (using ping endpoint)
+            await self._ping_deployment(deployment_name)
 
             # Run async init if provided
             if self._deployed_artifacts[artifact_id]["async_init"]:
-                await self._ray_serve_get_request(route=f"/{deployment_name}/_async_init")
+                await self._run_deployment_async_init(deployment_name)
 
+            # Run deployment test if provided
             if self._deployed_artifacts[artifact_id]["test_deployment"]:
-                test_result = await self._ray_serve_get_request(route=f"/{deployment_name}/_test_deployment")
-                if test_result is not True:
-                    raise RuntimeError(
-                        f"Deployment '{deployment_name}' failed its test check"
-                    )
-                
+                await self._run_deployment_test(deployment_name)
+
             self._deployed_artifacts[artifact_id]["is_deployed"] = True
 
             # Update services with the new deployment
@@ -1043,7 +1111,7 @@ class AppsManager:
 
             # Track the deployment in the internal state
             self.logger.info(
-                f"Successfully completed deployment of artifact '{artifact_id}'"
+                f"Successfully completed deployment of artifact '{artifact_id}'."
             )
 
             # Keep the deployment task running until cancelled
@@ -1052,7 +1120,7 @@ class AppsManager:
 
         except asyncio.CancelledError:
             self.logger.info(
-                f"Deployment task for artifact '{artifact_id}' was cancelled"
+                f"Deployment task for artifact '{artifact_id}' was cancelled."
             )
         except Exception as e:
             self.logger.error(
@@ -1063,23 +1131,25 @@ class AppsManager:
                 # Cleanup: Remove from Ray Serve and update tracking
                 try:
                     await asyncio.to_thread(serve.delete, deployment_name)
-                    self.logger.info(f"Deleted deployment '{deployment_name}'")
+                    self.logger.debug(
+                        f"Deleted Ray Serve deployment '{deployment_name}'."
+                    )
                 except Exception as delete_err:
                     self.logger.error(
-                        f"Error deleting deployment {deployment_name}: {delete_err}"
+                        f"Error deleting Ray Serve deployment {deployment_name}: {delete_err}"
                     )
 
                 # Remove from deployment tracking
                 del self._deployed_artifacts[artifact_id]
-                self.logger.info(
-                    f"Removed artifact '{artifact_id}' from deployment tracking"
+                self.logger.debug(
+                    f"Removed artifact '{artifact_id}' from deployment tracking."
                 )
 
                 # Update services with removed deployment
                 if not skip_update:
                     await self._update_services()
 
-                self.logger.info(f"Undeployment of artifact '{artifact_id}' completed")
+                self.logger.info(f"Undeployment of artifact '{artifact_id}' completed.")
 
     async def initialize(self, server) -> None:
         """
@@ -1102,7 +1172,7 @@ class AppsManager:
             self.artifact_manager = await self.server.get_service(
                 "public/artifact-manager"
             )
-            self.logger.info("Successfully connected to artifact manager")
+            self.logger.debug("Successfully connected to artifact manager.")
 
         except Exception as e:
             self.logger.error(f"Error initializing Ray Deployment Manager: {e}")
@@ -1345,7 +1415,7 @@ class AppsManager:
         # Check if artifact is currently deployed
         if artifact_id in self._deployed_artifacts:
             self.logger.info(
-                f"User '{user_id}' is starting undeployment of artifact '{artifact_id}'"
+                f"User '{user_id}' is starting undeployment of artifact '{artifact_id}'..."
             )
             self._deployed_artifacts[artifact_id]["deployment_task"].cancel()
         else:
@@ -1559,15 +1629,12 @@ class AppsManager:
 
             try:
                 # Try to edit existing artifact
-                self.logger.info(f"Editing existing artifact '{full_artifact_id}'")
+                self.logger.debug(f"Editing existing artifact '{full_artifact_id}'...")
                 artifact = await self.artifact_manager.edit(
                     artifact_id=full_artifact_id,
                     manifest=deployment_manifest,
                     type="application",
                     stage=True,
-                )
-                self.logger.info(
-                    f"Successfully edited existing artifact '{full_artifact_id}'"
                 )
             except Exception as e:
                 # If edit fails, throw an error since we expected an existing artifact
@@ -1626,11 +1693,11 @@ class AppsManager:
                         config={"permissions": {"*": "r", "@": "r+"}},
                     )
                     self.logger.info(
-                        f"Bioengine Apps collection created with ID: {collection.id}"
+                        f"Bioengine Apps collection created with ID: {collection.id}."
                     )
 
             # Create new artifact using alias
-            self.logger.info(f"Creating new artifact with alias '{alias}'")
+            self.logger.debug(f"Creating new artifact with alias '{alias}'...")
             artifact = await self.artifact_manager.create(
                 alias=alias,
                 parent_id=collection_id,
@@ -1638,7 +1705,6 @@ class AppsManager:
                 type=deployment_manifest.get("type", "application"),
                 stage=True,
             )
-            self.logger.info(f"Artifact created with ID: {artifact.id}")
 
         # Upload all files
         for file in files:
@@ -1646,7 +1712,7 @@ class AppsManager:
             file_content = file["content"]
             file_type = file["type"]
 
-            self.logger.info(f"Uploading file '{file_name}' to artifact")
+            self.logger.debug(f"Uploading file '{file_name}' to artifact...")
 
             # Get upload URL
             upload_url = await self.artifact_manager.put_file(
@@ -1664,23 +1730,24 @@ class AppsManager:
                     f"Unsupported file type '{file_type}'. Expected 'text' or 'base64'"
                 )
 
-            # Upload the file
-            async with httpx.AsyncClient(timeout=30) as client:
+            # Upload the file with timeout (30s for all operations)
+            upload_timeout = httpx.Timeout(30.0)
+            async with httpx.AsyncClient(timeout=upload_timeout) as client:
                 if file_type == "text":
                     response = await client.put(upload_url, data=upload_data)
                 else:
                     response = await client.put(upload_url, content=upload_data)
                 response.raise_for_status()
-                self.logger.info(f"Successfully uploaded '{file_name}' to artifact")
+                self.logger.debug(f"Successfully uploaded '{file_name}' to artifact.")
 
         # Commit the artifact
         await self.artifact_manager.commit(
             artifact_id=artifact.id,
         )
-        self.logger.info(f"Committed artifact with ID: {artifact.id}")
+        self.logger.info(f"Committed artifact with ID: {artifact.id}.")
 
         return artifact.id
-    
+
     async def delete_artifact(
         self, artifact_id: str, context: Optional[Dict[str, Any]] = None
     ) -> str:
@@ -1707,8 +1774,9 @@ class AppsManager:
         )
 
         # Get the full artifact ID
+        self.logger.debug(f"Deleting artifact '{artifact_id}'...")
         artifact_id = self._get_full_artifact_id(artifact_id)
 
         # Delete the artifact
         await self.artifact_manager.delete(artifact_id)
-        self.logger.info(f"Successfully deleted artifact '{artifact_id}'")
+        self.logger.info(f"Successfully deleted artifact '{artifact_id}'.")

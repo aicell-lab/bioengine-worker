@@ -290,6 +290,7 @@ class BioEngineWorker:
                 "close_dataset": self.dataset_manager.close_dataset,
                 "execute_python_code": self.execute_python_code,
                 "create_artifact": self.apps_manager.create_artifact,
+                "delete_artifact": self.apps_manager.delete_artifact,
                 "deploy_artifact": self.apps_manager.deploy_artifact,
                 "undeploy_artifact": self.apps_manager.undeploy_artifact,
                 "deploy_collection": self.apps_manager.deploy_collection,
@@ -402,8 +403,6 @@ class BioEngineWorker:
         Raises:
             RuntimeError: If Ray is not initialized
         """
-        await self.ray_cluster.check_connection()
-
         status = {
             "service_start_time": self.start_time,
             "ray_cluster": self.ray_cluster.status,

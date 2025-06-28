@@ -65,15 +65,14 @@ class RayCluster:
         node_manager_port: int = 6700,
         object_manager_port: int = 6701,
         redis_shard_port: int = 6702,
-        serve_port: int = 8100,
-        dashboard_port: int = 8269,
+        serve_port: int = 8000,
+        dashboard_port: int = 8265,
         client_server_port: int = 10001,
         redis_password: Optional[str] = None,
         ray_temp_dir: str = "/tmp/bioengine/ray",
         head_num_cpus: int = 0,
         head_num_gpus: int = 0,
         runtime_env_pip_cache_size_gb: int = 30,  # Ray default is 10 GB
-        connection_address: str = None,  # 'ip:port' format
         force_clean_up: bool = True,
         # Cluster Monitoring parameters
         status_interval_seconds: int = 10,
@@ -117,7 +116,6 @@ class RayCluster:
             head_num_cpus: Number of CPUs for head node (single-machine mode). Default 0.
             head_num_gpus: Number of GPUs for head node (single-machine mode). Default 0.
             runtime_env_pip_cache_size_gb: Size of pip cache for runtime environments in GB. Default 30.
-            connection_address: Address to connect to existing cluster ('auto' or 'ip:port').
             force_clean_up: Force cleanup of previous Ray cluster on start. Default True.
             image: Container image for workers (SLURM mode). Default bioengine-worker.
             worker_cache_dir: Cache directory mounted to worker containers (SLURM mode).
@@ -166,37 +164,28 @@ class RayCluster:
             )
 
         # Check number of CPUs and GPUs
-        if self.mode == "slurm":
-            # TODO: Consider having a CPU with little memory for SLURM head node to run ray tasks on
-            if head_num_cpus > 0 or head_num_gpus > 0:
-                raise ValueError(
-                    "In SLURM mode, 'head_num_cpus' and 'head_num_gpus' must be 0. Use SLURM worker configuration instead."
-                )
-        elif (
-            self.mode == "single-machine" and head_num_cpus <= 0 and head_num_gpus <= 0
+        if (
+            self.mode == "single-machine" and head_num_cpus <= 0
         ):
             raise ValueError(
-                "When running on a single machine, either 'head_num_cpus' or 'head_num_gpus' must be greater than 0"
+                "When running on a single machine, 'head_num_cpus' must be greater than 0"
             )
 
         self.ray_cluster_config = {
-            "head_node_address": head_node_address or self._find_internal_ip(),
-            "head_node_port": head_node_port,  # GCS server port
-            "node_manager_port": node_manager_port,
-            "object_manager_port": object_manager_port,
-            "redis_shard_port": redis_shard_port,
-            "serve_port": serve_port,
-            "dashboard_port": dashboard_port,
-            "client_server_port": client_server_port,
-            "redis_password": redis_password or os.urandom(16).hex(),
-            "ray_temp_dir": ray_temp_dir,
-            "head_num_cpus": head_num_cpus,
-            "head_num_gpus": head_num_gpus,
-            "force_clean_up": force_clean_up,
+            "head_node_address": str(head_node_address) or self._find_internal_ip(),
+            "head_node_port": int(head_node_port),  # GCS server port
+            "node_manager_port": int(node_manager_port),
+            "object_manager_port": int(object_manager_port),
+            "redis_shard_port": int(redis_shard_port),
+            "serve_port": int(serve_port),
+            "dashboard_port": int(dashboard_port),
+            "client_server_port": int(client_server_port),
+            "redis_password": str(redis_password) or os.urandom(16).hex(),
+            "ray_temp_dir": str(ray_temp_dir),
+            "head_num_cpus": int(head_num_cpus),
+            "head_num_gpus": int(head_num_gpus),
+            "force_clean_up": bool(force_clean_up),
         }
-
-        if self.mode == "external-cluster":
-            self._parse_connection_address(connection_address)
 
         # Set runtime environment pip cache size
         if runtime_env_pip_cache_size_gb <= 0:
@@ -211,50 +200,33 @@ class RayCluster:
         if self.mode == "slurm":
             self.slurm_worker_config = {
                 "image": image,
-                "worker_cache_dir": worker_cache_dir,
-                "worker_data_dir": worker_data_dir,
-                "default_num_gpus": default_num_gpus,
-                "default_num_cpus": default_num_cpus,
-                "default_mem_per_cpu": default_mem_per_cpu,
-                "default_time_limit": default_time_limit,
+                "worker_cache_dir": str(worker_cache_dir),
+                "worker_data_dir": str(worker_data_dir),
+                "default_num_gpus": int(default_num_gpus),
+                "default_num_cpus": int(default_num_cpus),
+                "default_mem_per_cpu": int(default_mem_per_cpu),
+                "default_time_limit": int(default_time_limit),
                 "further_slurm_args": further_slurm_args or [],
-                "min_workers": min_workers,
-                "max_workers": max_workers,
-                "scale_up_cooldown_seconds": scale_up_cooldown_seconds,
-                "scale_down_check_interval_seconds": scale_down_check_interval_seconds,
-                "scale_down_threshold_seconds": scale_down_threshold_seconds,
-                "log_file": log_file,
-                "debug": debug,
+                "min_workers": int(min_workers),
+                "max_workers": int(max_workers),
+                "scale_up_cooldown_seconds": int(scale_up_cooldown_seconds),
+                "scale_down_check_interval_seconds": int(scale_down_check_interval_seconds),
+                "scale_down_threshold_seconds": int(scale_down_threshold_seconds),
+                "log_file": str(log_file),
+                "debug": bool(debug),
             }
 
+        # Initialize cluster state and monitoring attributes
         self.cluster_state_handle = None
         self.cluster_status_history = OrderedDict()
+        self.head_node_address = None
         self.last_cluster_status = 0
         self.max_status_history_length = max_status_history_length
         self.monitoring_task = None
+        self.serve_http_url = None
         self.slurm_workers = None
         self.start_time = None
         self.status_interval_seconds = status_interval_seconds
-
-    @property
-    def head_node_address(self) -> str:
-        """Get the full address of the Ray head node including port.
-
-        Returns the head node address with the appropriate port based on the
-        address format. Uses client server port for ray:// addresses and
-        GCS server port for IP addresses.
-
-        Returns:
-            str: Complete head node address in format 'ip:port' or 'ray://ip:port'
-        """
-        head_node_address = str(self.ray_cluster_config["head_node_address"])
-        if head_node_address.startswith("ray://"):
-            # Choose client server port for remote head node
-            port = self.ray_cluster_config["client_server_port"]
-        else:
-            # Choose GCS server port for local head node
-            port = self.ray_cluster_config["head_node_port"]
-        return f"{head_node_address}:{port}"
 
     @property
     def status(self) -> Dict[str, Union[str, dict]]:
@@ -272,7 +244,7 @@ class RayCluster:
                 - nodes: Most recent worker nodes status grouped by state
         """
         status = {
-            "head_address": self.ray_cluster_config["head_node_address"],
+            "head_address": self.head_node_address,
             "start_time": self.start_time if self.mode != "external-cluster" else "N/A",
             "mode": self.mode,
         }
@@ -335,27 +307,6 @@ class RayCluster:
         """
         result = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
         return result.stdout.strip().split()[0]  # Take the first IP
-
-    def _parse_connection_address(self, connection_string: str) -> None:
-        """
-        Supports: ray://hostname:port, IPv4:port, [IPv6]:port, hostname:port
-        """
-        try:
-            if "ray://" in connection_string:
-                # If the connection string starts with 'ray://', it is a Ray client address
-                port = connection_string.split(":")[-1]
-                address = connection_string[: -(len(port) + 1)]
-                self.ray_cluster_config["head_node_address"] = address
-                self.ray_cluster_config["client_server_port"] = int(port)
-            else:
-                # If the connection string is an IP address or hostname, parse it
-                address, port = connection_string.split(":")
-                self.ray_cluster_config["head_node_address"] = address
-                self.ray_cluster_config["head_node_port"] = int(port)
-        except (ValueError, IndexError):
-            raise ValueError(
-                "Invalid connection address format. Use formats like 'ip:port' or 'ray://hostname:port'."
-            )
 
     async def _connect_to_cluster(self) -> ray.client_builder.ClientContext:
         """Connect to the Ray cluster using the configured head node address.
@@ -601,6 +552,24 @@ class RayCluster:
         except Exception as e:
             self.logger.error(f"Error starting Ray cluster: {e}")
             raise e
+        
+    def _set_head_node_address(self) -> None:
+        """Set the head node address based on the cluster configuration."""
+        head_node_address = str(self.ray_cluster_config["head_node_address"])
+        if head_node_address.startswith("ray://"):
+            # Choose client server port for remote head node
+            port = self.ray_cluster_config["client_server_port"]
+        else:
+            # Choose GCS server port for local head node
+            port = self.ray_cluster_config["head_node_port"]
+        self.head_node_address = f"{head_node_address}:{port}"
+        self.logger.debug(f"Head node address set to: {self.head_node_address}")
+
+    def _set_serve_http_url(self) -> None:
+        """Set the Ray Serve HTTP API base URL based on the head node address and port."""
+        address = self.ray_cluster_config["head_node_address"].split("://")[-1]
+        self.serve_http_url = f"http://{address}:{self.ray_cluster_config['serve_port']}"
+        self.logger.debug(f"Ray Serve HTTP URL set to: {self.serve_http_url}")
 
     async def _shutdown_ray(self, grace_period: int = 60) -> None:
         """Stop Ray cluster and all worker nodes.
@@ -791,6 +760,9 @@ class RayCluster:
         try:
             if self.mode != "external-cluster":
                 await self._start_cluster()
+
+            self._set_head_node_address()
+            self._set_serve_address()
 
             await self._connect_to_cluster()
 

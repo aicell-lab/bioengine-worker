@@ -194,13 +194,13 @@ def create_parser():
     ray_cluster_group.add_argument(
         "--serve_port",
         type=int,
-        default=8100,
+        default=8000,
         help="Port for Ray Serve",
     )
     ray_cluster_group.add_argument(
         "--dashboard_port",
         type=int,
-        default=8269,
+        default=8265,
         help="Port for Ray dashboard",
     )
     ray_cluster_group.add_argument(
@@ -231,11 +231,6 @@ def create_parser():
         type=int,
         default=30,
         help="Size of the pip cache in GB for Ray runtime environment",
-    )
-    ray_cluster_group.add_argument(
-        "--connection_address",
-        type=str,
-        help="Address of existing Ray cluster to connect to (format: 'ip:port' for specific address).",
     )
     ray_cluster_group.add_argument(
         "--skip_cleanup",

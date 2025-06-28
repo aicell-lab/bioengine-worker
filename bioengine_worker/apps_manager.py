@@ -203,6 +203,45 @@ class AppsManager:
             raise PermissionError(
                 f"User {user['id']} is not authorized to access {resource_name}"
             )
+        
+    async def _ray_serve_get_request(
+        self,
+        route: str,
+    ) -> Any:
+        """
+        Make a simple HTTP GET request to a Ray Serve route.
+
+        Args:
+            route: The route to call on the Ray Serve HTTP API
+
+        Returns:
+            Any: The response from the Ray Serve route
+        """
+        serve_base_url = self.ray_cluster.serve_http_url
+        route = route.lstrip("/")  # Ensure no leading slash
+        endpoint_url = f"{serve_base_url}/{route}"
+
+        # Use appropriate timeouts for internal Ray Serve requests
+        # Connect: 10s, Read: 600s (10 minutes for long-running _async_init and _test_deployment methods)
+        timeout = httpx.Timeout(connect=10.0, read=600.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(endpoint_url)
+
+        if response.status_code != 200:
+            raise RuntimeError(f"Error accessing Ray Serve URL '{endpoint_url}': "
+                               f"HTTP {response.status_code} - {response.text}")
+
+        return response.json()
+    
+    async def _get_serve_applications(self) -> Dict[str, str]:
+        """
+        Get all currently deployed Ray Serve applications.
+
+        Returns:
+        """
+        available_routes = await self._ray_serve_get_request(route="-/routes")
+
+        return list(available_routes.values())
 
     def _create_deployment_name(self, artifact_id: str) -> str:
         """
@@ -355,7 +394,20 @@ class AppsManager:
                             }, status_code=404)
                     else:
                         # No method specified in path: /deployment
-                        if len(exposed_method_names) == 1:
+                        # Check if this is a ping request (GET with no data)
+                        if request.method == "GET" and not dict(request.query_params):
+                            # Return ping response with basic deployment info
+                            return JSONResponse({
+                                "success": True,
+                                "result": {
+                                    "status": "healthy",
+                                    "deployment_name": getattr(self, '__class__', {}).get('__name__', 'unknown'),
+                                    "available_methods": exposed_method_names,
+                                    "timestamp": asyncio.get_event_loop().time()
+                                },
+                                "data_type": "ping"
+                            })
+                        elif len(exposed_method_names) == 1:
                             # If only one method is exposed, use it as default
                             method_name = exposed_method_names[0]
                         else:
@@ -692,18 +744,7 @@ class AppsManager:
 
         return app
 
-    def _get_serve_http_url(self) -> str:
-        """
-        Get the Ray Serve HTTP API base URL.
-
-        Returns:
-            str: Base URL for Ray Serve HTTP API
-        """
-        head_address = self.ray_cluster.ray_cluster_config["head_node_address"]
-        serve_port = self.ray_cluster.ray_cluster_config["serve_port"]
-        return f"http://{head_address}:{serve_port}"
-
-    async def _ray_serve_http_request(
+    async def _ray_serve_post_request(
         self,
         deployment_name: str,
         method_name: str,
@@ -746,14 +787,16 @@ class AppsManager:
                 needs_streaming = True
 
             # Get Ray Serve HTTP URL
-            serve_base_url = self._get_serve_http_url()
+            serve_base_url = self.ray_cluster.serve_http_url
             if method_name == "__call__":
                 endpoint_url = f"{serve_base_url}/{deployment_name}"
             else:
                 endpoint_url = f"{serve_base_url}/{deployment_name}/{method_name}"
 
             # Make HTTP request to Ray Serve
-            timeout = httpx.Timeout(connect=30.0, read=300.0, write=300.0, pool=30.0)
+            # Connect: 10s (consistent with other methods), Read: 300s (5 minutes for user methods),
+            # Write: 300s (for large data uploads), Pool: 30s (connection pool timeout)
+            timeout = httpx.Timeout(connect=10.0, read=300.0, write=300.0, pool=30.0)
             async with httpx.AsyncClient(timeout=timeout) as client:
                 if needs_streaming:
                     # Handle memoryview objects by converting to bytes first
@@ -851,7 +894,7 @@ class AppsManager:
                 )
 
                 # Call the deployment method via Ray Serve HTTP API
-                return await self._ray_serve_http_request(
+                return await self._ray_serve_post_request(
                     deployment_name=deployment_name,
                     method_name=method_name,
                     user_id=context["user"]["id"],
@@ -869,10 +912,10 @@ class AppsManager:
                 class_config = deployment_info["class_config"]
                 for method_name, method_config in class_config["exposed_methods"].items():
                     service_functions[deployment_name][method_name] = partial(
-                        create_deployment_function,
-                        deployment_name=deployment_name,
-                        method_name=method_name,
-                        authorized_users=method_config.get("authorized_users", "*"),
+                            create_deployment_function,
+                            deployment_name=deployment_name,
+                            method_name=method_name,
+                            authorized_users=method_config.get("authorized_users", "*"),
                         )
 
             # Register all deployment functions as a single service
@@ -900,53 +943,6 @@ class AppsManager:
         except Exception as e:
             self.logger.error(f"Error updating services: {e}")
             raise e
-
-    async def _call_async_init_via_handle(self, deployment_name: str) -> None:
-        """
-        Call the _async_init method via the app handle (not HTTP).
-        
-        Args:
-            deployment_name: Name of the Ray Serve deployment
-            
-        Raises:
-            RuntimeError: If the app handle call fails
-        """
-        try:
-            # Get the app handle
-            handle = serve.get_app_handle(deployment_name)
-            
-            # Call _async_init via the handle (this bypasses HTTP)
-            await handle._async_init.remote()
-            self.logger.info(f"Successfully called `_async_init` on deployment '{deployment_name}' via app handle")
-            
-        except Exception as e:
-            raise RuntimeError(f"Failed to call _async_init on deployment '{deployment_name}' via app handle: {e}")
-
-    async def _call_test_deployment_via_handle(self, deployment_name: str) -> bool:
-        """
-        Call the _test_deployment method via the app handle (not HTTP).
-        
-        Args:
-            deployment_name: Name of the Ray Serve deployment
-            
-        Returns:
-            bool: Test result from _test_deployment
-            
-        Raises:
-            RuntimeError: If the app handle call fails
-        """
-        try:
-            # Get the app handle
-            handle = serve.get_app_handle(deployment_name)
-            
-            # Call _test_deployment via the handle (this bypasses HTTP)
-            result = await handle._test_deployment.remote()
-            self.logger.info(f"Successfully called `_test_deployment` on deployment '{deployment_name}' via app handle")
-            
-            return result
-            
-        except Exception as e:
-            raise RuntimeError(f"Failed to call `_test_deployment` on deployment '{deployment_name}' via app handle: {e}")
 
     async def _deploy_artifact(
         self,
@@ -986,8 +982,8 @@ class AppsManager:
         try:
             # Check if the artifact is already deployed
             deployment_name = self._create_deployment_name(artifact_id)
-            serve_status = await asyncio.to_thread(serve.status)
-            if deployment_name in serve_status.applications.keys():
+            applications = await self._get_serve_applications()
+            if deployment_name in applications:
                 self.logger.info(
                     f"User '{user_id}' is updating existing deployment for artifact '{artifact_id}'"
                 )
@@ -1021,19 +1017,19 @@ class AppsManager:
             await deployment_coroutine
 
             # Validate the deployment is accessible via HTTP
-            status = await asyncio.to_thread(serve.status)
-            application = status.applications.get(deployment_name)
-            if not application or application.status != "RUNNING":
+            try:
+                await self._ray_serve_get_request(route=f"/{deployment_name}")
+            except RuntimeError as e:
                 raise RuntimeError(
-                    f"Deployment '{deployment_name}' failed to start or is not running"
+                    f"Deployment '{deployment_name}' failed to start or is not accessible: {e}"
                 )
 
             # Run async init if provided
             if self._deployed_artifacts[artifact_id]["async_init"]:
-                await self._call_async_init_via_handle(deployment_name)
+                await self._ray_serve_get_request(route=f"/{deployment_name}/_async_init")
 
             if self._deployed_artifacts[artifact_id]["test_deployment"]:
-                test_result = await self._call_test_deployment_via_handle(deployment_name)
+                test_result = await self._ray_serve_get_request(route=f"/{deployment_name}/_test_deployment")
                 if test_result is not True:
                     raise RuntimeError(
                         f"Deployment '{deployment_name}' failed its test check"
@@ -1456,6 +1452,8 @@ class AppsManager:
         else:
             output["service_id"] = None
 
+        await self.ray_cluster.check_connection()
+
         # Get status of actively running deployments
         serve_status = await asyncio.to_thread(serve.status)
 
@@ -1682,3 +1680,35 @@ class AppsManager:
         self.logger.info(f"Committed artifact with ID: {artifact.id}")
 
         return artifact.id
+    
+    async def delete_artifact(
+        self, artifact_id: str, context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Delete a deployment artifact from Hypha.
+
+        Args:
+            artifact_id: ID of the artifact to delete
+            context: Optional context information from Hypha request containing user info
+
+        Returns:
+            str: The ID of the deleted artifact
+
+        Raises:
+            ValueError: If the artifact does not exist or cannot be deleted
+        """
+        self._check_initialized()
+
+        # Check user permissions
+        self._check_permissions(
+            context=context,
+            authorized_users=self.admin_users,
+            resource_name=f"deletion of artifact '{artifact_id}'",
+        )
+
+        # Get the full artifact ID
+        artifact_id = self._get_full_artifact_id(artifact_id)
+
+        # Delete the artifact
+        await self.artifact_manager.delete(artifact_id)
+        self.logger.info(f"Successfully deleted artifact '{artifact_id}'")

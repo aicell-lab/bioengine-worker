@@ -160,7 +160,8 @@ class RayCluster:
             self._check_slurm_available()
         elif self.mode not in ["single-machine", "external-cluster"]:
             raise ValueError(
-                f"Invalid mode '{self.mode}'. Supported modes are 'slurm', 'single-machine' and 'external-cluster'."
+                f"Unsupported Ray cluster mode: '{self.mode}'. "
+                "Supported modes are 'slurm', 'single-machine' and 'external-cluster'."
             )
 
         # Check number of CPUs and GPUs

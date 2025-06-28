@@ -104,17 +104,25 @@ class AppsManager:
         # Store parameters
         self.service_id = "bioengine-apps"
         self.admin_users = admin_users or []
-        self.apps_cache_dir = (
-            Path(apps_cache_dir).resolve()
-            if ray_cluster.mode == "single-machine"
-            else Path("/tmp/bioengine/apps")
-        )
-        self.apps_data_dir = (
-            Path(apps_data_dir).resolve()
-            if ray_cluster.mode == "single-machine"
-            else Path("/data")
-        )
         self.ray_cluster = ray_cluster
+
+        if self.ray_cluster.mode == "slurm":
+            # SLURM workers always mount to /tmp/bioengine and /data
+            self.apps_cache_dir = Path("/tmp/bioengine/apps")
+            self.apps_data_dir = Path("/data")
+        elif self.ray_cluster.mode == "single-machine":
+            # Resolve local paths to ensure they are absolute
+            self.apps_cache_dir = Path(apps_cache_dir).resolve()
+            self.apps_data_dir = Path(apps_data_dir).resolve()
+        elif self.ray_cluster.mode == "external-cluster":
+            # For external clusters, use the provided paths directly
+            self.apps_cache_dir = Path(apps_cache_dir)
+            self.apps_data_dir = Path(apps_data_dir)
+        else:
+            raise ValueError(
+                f"Unsupported Ray cluster mode: {self.ray_cluster.mode}. "
+                "Supported modes are 'slurm', 'single-machine', and 'external-cluster'."
+            )
 
         # Initialize state variables
         self.server = None

@@ -110,7 +110,6 @@ def create_parser():
         choices=["slurm", "single-machine", "external-cluster"],
         help="Mode of operation: 'slurm' for managing a Ray cluster with SLURM jobs, 'single-machine' for local Ray cluster, 'external-cluster' for connecting to an existing Ray cluster.",
     )
-    # TODO: use --head_node_address and --client_server_port to connect to existing Ray cluster
     parser.add_argument(
         "--admin_users",
         type=str,

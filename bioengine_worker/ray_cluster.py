@@ -171,7 +171,7 @@ class RayCluster:
             )
 
         self.ray_cluster_config = {
-            "head_node_address": str(head_node_address) or self._find_internal_ip(),
+            "head_node_address": str(head_node_address or self._find_internal_ip()),
             "head_node_port": int(head_node_port),  # GCS server port
             "node_manager_port": int(node_manager_port),
             "object_manager_port": int(object_manager_port),
@@ -179,7 +179,7 @@ class RayCluster:
             "serve_port": int(serve_port),
             "dashboard_port": int(dashboard_port),
             "client_server_port": int(client_server_port),
-            "redis_password": str(redis_password) or os.urandom(16).hex(),
+            "redis_password": str(redis_password or os.urandom(16).hex()),
             "ray_temp_dir": str(ray_temp_dir),
             "head_num_cpus": int(head_num_cpus),
             "head_num_gpus": int(head_num_gpus),
@@ -492,7 +492,7 @@ class RayCluster:
             )
 
             # Start Ray Serve
-            ray_address = self.head_node_address
+            ray_address = f"{self.ray_cluster_config['head_node_address']}:{self.ray_cluster_config['head_node_port']}"
             args = [
                 "start",
                 "--address",

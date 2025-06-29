@@ -1551,7 +1551,8 @@ class AppsManager:
                         f"Deployment '{deployment_name}' for artifact '{artifact_id}' "
                         "is marked as deployed but not found in Ray Serve status."
                     )
-                    # TODO: This can happen if deploy_artifact and undeploy_artifact are called at the same time
+                    self._deployed_artifacts.pop(artifact_id, None)
+                    # Note: This can happen if deploy_artifact and undeploy_artifact are called at the same time
                 continue
             if len(application.deployments) > 1:
                 raise NotImplementedError

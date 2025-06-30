@@ -2,13 +2,16 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from typing import List, Dict, Union
 
 import httpx
 import requests
 from hypha_rpc import connect_to_server, login
 
 
-def analyze_test_results(test_result):
+def analyze_test_results(
+    test_result: Union[str, dict],
+) -> List[Dict[str, Union[str, int]]]:
     """Analyze test results and create test_reports field for manifest"""
     test_reports = [
         {"name": "RDF validation", "status": "failed", "runtime": "bioimageio.core"},
@@ -31,8 +34,17 @@ def analyze_test_results(test_result):
             test_reports[0]["status"] = "passed"
             break
 
-    # Check if Model Test Run passed (overall status)
-    if test_result.get("status") == "passed":
+    # Check if Model Test Run passed (all tests except "Reproduce Outputs" tests must pass)
+    non_reproduce_tests = [
+        detail
+        for detail in details
+        if not detail.get("name", "").startswith(
+            "Reproduce test outputs from test inputs"
+        )
+    ]
+    if non_reproduce_tests and all(
+        test.get("status") == "passed" for test in non_reproduce_tests
+    ):
         test_reports[1]["status"] = "passed"
 
     # Check Reproduce Outputs (all "Reproduce test outputs from test inputs" tests must pass)
@@ -75,6 +87,11 @@ async def test_bmz_models():
     result_dir = Path(__file__).resolve().parent.parent / "bmz_model_tests"
     result_dir.mkdir(parents=True, exist_ok=True)
 
+    # Initialize counters for test results
+    total_rdf_passed = 0
+    total_model_test_passed = 0
+    total_reproduce_passed = 0
+
     # Test each model
     for model_id in model_ids:
         test_results_file = result_dir / f"{model_id}.json"
@@ -90,7 +107,9 @@ async def test_bmz_models():
             with open(test_results_file, "w") as f:
                 json.dump(test_result, f, indent=2)
         else:
-            print(f"Skipping test run for already tested model: {model_id} - file exists")
+            print(
+                f"Skipping test run for already tested model: {model_id} - file exists"
+            )
             test_result = json.loads(test_results_file.read_text(encoding="utf-8"))
 
         # Update artifact with test results
@@ -112,6 +131,11 @@ async def test_bmz_models():
             # Analyze test results and add test_reports to manifest
             test_reports = analyze_test_results(test_result)
             manifest["test_reports"] = test_reports
+
+            # Update counter for test results
+            total_rdf_passed += int(test_reports[0]["status"] == "passed")
+            total_model_test_passed += int(test_reports[1]["status"] == "passed")
+            total_reproduce_passed += int(test_reports[2]["status"] == "passed")
 
             # Edit the artifact and stage it for review
             artifact = await artifact_manager.edit(
@@ -136,6 +160,48 @@ async def test_bmz_models():
 
         except Exception as e:
             print(f"Failed to update artifact {artifact_id}: {e}")
+
+    print(f"Total models tested: {len(model_ids)}")
+    print(f"Total models with valid RDF: {total_rdf_passed}")
+    print(f"Total models with passed test run: {total_model_test_passed}")
+    print(f"Total models with reproducible outputs: {total_reproduce_passed}")
+
+    # Get current artifact to read its manifest
+    collection_id = "bioimage-io/bioimage.io"
+    print(f"Updating collection artifact ({collection_id}) with test reports")
+    collection_artifact = await artifact_manager.read(collection_id)
+    manifest = collection_artifact.get("manifest", {})
+
+    # Add test reports to the manifest
+    manifest["test_reports"] = [
+        {
+            "name": "RDF validation",
+            "status": f"{total_rdf_passed}/{len(model_ids)}",
+            "runtime": "bioimageio.core",
+        },
+        {
+            "name": "Model Test Run",
+            "status": f"{total_model_test_passed}/{len(model_ids)}",
+            "runtime": "bioimageio.core",
+        },
+        {
+            "name": "Reproduce Outputs",
+            "status": f"{total_reproduce_passed}/{len(model_ids)}",
+            "runtime": "bioimageio.core",
+        },
+    ]
+
+    # Edit the artifact and stage it for review
+    artifact = await artifact_manager.edit(
+        artifact_id=collection_id,
+        manifest=manifest,
+        type=collection_artifact["type"],
+        stage=True,
+    )
+
+    # Commit the artifact
+    await artifact_manager.commit(artifact_id=artifact.id)
+    print(f"Updated artifact {collection_id} with test reports")
 
 
 if __name__ == "__main__":

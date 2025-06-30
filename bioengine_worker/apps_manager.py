@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional, Union
 import httpx
 import yaml
 from ray import serve
-from starlette.requests import Request
 
 from bioengine_worker import __version__
 from bioengine_worker.ray_cluster import RayCluster

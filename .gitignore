@@ -161,3 +161,4 @@ cython_debug/
 # BioEngine
 .bioengine
 data/
+bmz_model_tests/

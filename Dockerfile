@@ -24,8 +24,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -U pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy all project files
-COPY . .
+# Copy the rest of the application code
+COPY bioengine_worker .
+COPY pyproject.toml .
 
 # Install the bioengine_worker package
 RUN pip install --no-cache-dir .

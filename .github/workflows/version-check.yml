@@ -1,0 +1,31 @@
+name: Enforce Version Update
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0  # Ensure full history is fetched
+
+    - name: Check version update
+      id: check-version
+      run: |
+        BASE_VERSION=$(git show $(git merge-base HEAD origin/main):pyproject.toml | grep '^version' | sed 's/version = "\(.*\)"/\1/')
+        CURRENT_VERSION=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+
+        echo "Base version: $BASE_VERSION"
+        echo "Current version: $CURRENT_VERSION"
+
+        if [ "$BASE_VERSION" = "$CURRENT_VERSION" ]; then
+          echo "Error: Version in pyproject.toml was not updated (still $CURRENT_VERSION)."
+          exit 1
+        fi
+        echo "::notice ::Version check passed! Version updated from $BASE_VERSION to $CURRENT_VERSION."

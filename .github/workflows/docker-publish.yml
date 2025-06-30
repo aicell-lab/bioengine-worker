@@ -1,0 +1,57 @@
+name: Build and Publish Docker Image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/docker-publish.yml'
+      - 'bioengine_worker/**'
+      - 'requirements*.txt'
+      - 'pyproject.toml'
+      - 'Dockerfile'
+      - '.dockerignore'
+
+jobs:
+  build-and-push:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write  # Required for GitHub Actions cache
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.1.0
+        with:
+          fetch-depth: 2
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v2.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract version from project.toml
+        id: extract_version
+        run: |
+          VERSION=$(grep '^version' pyproject.toml | sed -E 's/version *= *"([0-9.]+)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_ENV
+
+      - name: Build and push Docker image (latest and version tags)
+        uses: docker/build-push-action@v5.0.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ env.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

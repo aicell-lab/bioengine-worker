@@ -397,23 +397,8 @@ class ModelRunner:
 
             # Create sample from inputs
             # Handle single array input by creating a proper dictionary
-            if isinstance(inputs, np.ndarray):
-                # Get the first input tensor ID
-                if hasattr(pipeline.model_description.inputs[0], "id"):
-                    input_id = pipeline.model_description.inputs[0].id
-                elif hasattr(pipeline.model_description.inputs[0], "name"):
-                    input_id = pipeline.model_description.inputs[0].name
-                else:
-                    # TODO Handle this case
-                    raise ValueError(
-                        "Input tensor must have an 'id' or 'name' attribute."
-                    )
-                input_dict = {str(input_id): inputs}
-            else:
-                input_dict = inputs
-
             sample = create_sample_for_model(
-                pipeline.model_description, inputs=input_dict, sample_id=sample_id
+                pipeline.model_description, inputs=inputs, sample_id=sample_id
             )
 
             # Run prediction using the pipeline

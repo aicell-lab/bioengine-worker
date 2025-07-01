@@ -961,11 +961,11 @@ class AppsManager:
                 return
 
             async def create_deployment_function(
+                *args,
+                context,
                 deployment_name,
                 method_name,
                 authorized_users,
-                *args,
-                context=None,
                 **kwargs,
             ):
                 self._check_permissions(
@@ -1018,8 +1018,8 @@ class AppsManager:
             workspace, sid = service_info.id.split("/")
             service_url = f"{server_url}/{workspace}/services/{sid}"
             for deployment_name in service_functions.keys():
-                self.logger.info(
-                    f"Access the deployment service at: {service_url}/{deployment_name}"
+                self.logger.debug(
+                    f"Access the deployment '{deployment_name}' at: {service_url}/{deployment_name}"
                 )
             self.service_info = service_info
 

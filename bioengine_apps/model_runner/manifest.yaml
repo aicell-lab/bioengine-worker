@@ -48,7 +48,7 @@ deployment_config:
               "torchvision==0.20.1",
               "tensorflow==2.16.1",
               "onnxruntime==1.20.1",
-              "bioimageio.core==0.8.0",
+              "bioimageio.core==0.9.0",
               "xarray==2025.1.2", # this is needed for bioimageio.core
               "hypha-rpc"
           ]
@@ -64,7 +64,7 @@ deployment_config:
               "torchvision==0.20.1",
               "tensorflow==2.16.1",
               "onnxruntime==1.20.1",
-              "bioimageio.core==0.8.0",
+              "bioimageio.core==0.9.0",
               "xarray==2025.1.2", # this is needed for bioimageio.core
               "hypha-rpc"
           ]

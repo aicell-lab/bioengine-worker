@@ -578,6 +578,7 @@ if __name__ == "__main__":
         )
         os.environ["TMPDIR"] = deployment_workdir
         os.environ["HOME"] = deployment_workdir
+        os.chdir(deployment_workdir)
 
         model_runner = ModelRunner()
 
@@ -586,14 +587,12 @@ if __name__ == "__main__":
 
         # Test the model with an URL
         model_id = "https://hypha.aicell.io/bioimage-io/artifacts/affable-shark/create-zip-file"
-        print(f"Testing model {model_id}...")
         test_result = await model_runner.test(model_id)
         print(f"Test result: {test_result}")
 
         # Test the model with an ID
         model_id = "discreet-rooster"
 
-        print(f"Testing model {model_id}...")
         test_result = await model_runner.test(model_id)
         print(f"Test result: {test_result}")
 
@@ -601,7 +600,6 @@ if __name__ == "__main__":
         model_rdf = await model_runner.get_model_rdf(model_id)
 
         # Validate the RDF
-        print("Validating model RDF...")
         validation_result = await model_runner.validate(model_rdf)
         print(f"Validation result: {validation_result}")
 
@@ -617,7 +615,6 @@ if __name__ == "__main__":
         print(f"Final image shape: {input_image.shape}")
 
         outputs = await model_runner.infer(model_id, input_image)
-
-        print("Outputs: ", outputs)
+        print("Infer outputs: ", outputs)
 
     asyncio.run(test_model())

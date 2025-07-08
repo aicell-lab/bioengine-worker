@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "cloudpickle",
     "httpx",
-    "hypha-rpc>=0.20.48",
+    "hypha-rpc>=0.20.64",
     "pyyaml",
     "ray[client,serve]==2.33.0",
 ]

@@ -557,12 +557,6 @@ async def test_bmz_models():
                 stage=True,
             )
 
-            # Upload test results file
-            await artifact_manager.remove_file(
-                artifact_id=artifact_id,
-                file_path="test_reports.json",
-            )
-
             upload_url = await artifact_manager.put_file(
                 artifact.id, file_path="test_reports.json"
             )

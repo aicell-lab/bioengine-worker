@@ -14,44 +14,82 @@ on:
 
 jobs:
   build-and-push:
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-      id-token: write  # Required for GitHub Actions cache
-    runs-on: ubuntu-latest
+      id-token: write
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4.1.0
-        with:
-          fetch-depth: 2
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
 
-      - name: Log in to the Container registry
-        uses: docker/login-action@v2.2.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Extract current version from pyproject.toml
+      run: |
+        VERSION=$(grep -E '^version\s*=' pyproject.toml | sed -E 's/version\s*=\s*"(.*)"/\1/')
+        if [ -z "$VERSION" ]; then
+          echo "❌ Could not extract version from pyproject.toml"
+          exit 1
+        fi
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+    - name: Extract previous version from HEAD~1
+      run: |
+        PREVIOUS_VERSION=$(git show HEAD~1:pyproject.toml | grep -E '^version\s*=' | sed -E 's/version\s*=\s*"(.*)"/\1/')
+        if [ -z "$PREVIOUS_VERSION" ]; then
+          echo "❌ Could not extract version from pyproject.toml in HEAD~1"
+          exit 1
+        fi
+        echo "PREVIOUS_VERSION=$PREVIOUS_VERSION" >> $GITHUB_ENV
 
-      - name: Extract version from project.toml
-        id: extract_version
-        run: |
-          VERSION=$(grep '^version' pyproject.toml | sed -E 's/version *= *"([0-9.]+)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_ENV
+    - name: Check that version is updated and newer
+      run: |
+        echo "📦 Previous version: $PREVIOUS_VERSION"
+        echo "📦 Current version:  $VERSION"
+        if [ "$VERSION" = "$PREVIOUS_VERSION" ]; then
+          echo "❌ Version has not been updated. Please bump the version in pyproject.toml."
+          exit 1
+        fi
+        if [ "$(printf '%s\n' "$PREVIOUS_VERSION" "$VERSION" | sort -V | head -n1)" = "$VERSION" ]; then
+          echo "❌ New version ($VERSION) is not greater than previous version ($PREVIOUS_VERSION)."
+          exit 1
+        fi
+        echo "✅ Version updated correctly."
 
-      - name: Build and push Docker image (latest and version tags)
-        uses: docker/build-push-action@v5.0.0
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ env.version }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+    - name: Check if Docker image tag already exists
+      run: |
+        IMAGE="ghcr.io/${{ github.repository }}:$VERSION"
+        echo "🔍 Checking if image $IMAGE exists..."
+        if docker pull "$IMAGE" > /dev/null 2>&1; then
+          echo "❌ Docker image tag $IMAGE already exists. Please bump the version."
+          exit 1
+        else
+          echo "✅ Docker image tag $IMAGE does not exist yet."
+        fi
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: |
+          ghcr.io/${{ github.repository }}:latest
+          ghcr.io/${{ github.repository }}:${{ env.VERSION }}
+        labels: |
+          org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max

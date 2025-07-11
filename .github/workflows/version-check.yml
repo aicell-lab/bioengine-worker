@@ -22,17 +22,36 @@ jobs:
       with:
         fetch-depth: 0  # Ensure full history is fetched
 
-    - name: Check version update
+    - name: Extract version from pyproject.toml (current branch)
+      id: extract-current-version
+      run: |
+        CURRENT_VERSION=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+        echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_ENV
+
+    - name: Extract base version from main branch
+      id: extract-base-version
+      run: |
+        BASE_VERSION=$(git show origin/main:pyproject.toml | grep '^version' | sed 's/version = "\(.*\)"/\1/')
+        echo "BASE_VERSION=$BASE_VERSION" >> $GITHUB_ENV
+
+    - name: Check version is newer
       id: check-version
       run: |
-        BASE_VERSION=$(git show $(git merge-base HEAD origin/main):pyproject.toml | grep '^version' | sed 's/version = "\(.*\)"/\1/')
-        CURRENT_VERSION=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-
         echo "Base version: $BASE_VERSION"
         echo "Current version: $CURRENT_VERSION"
-
-        if [ "$BASE_VERSION" = "$CURRENT_VERSION" ]; then
-          echo "Error: Version in pyproject.toml was not updated (still $CURRENT_VERSION)."
+        if [ "$(printf '%s\n' "$BASE_VERSION" "$CURRENT_VERSION" | sort -V | head -n1)" = "$CURRENT_VERSION" ]; then
+          echo "Error: CURRENT_VERSION ($CURRENT_VERSION) is not newer than BASE_VERSION ($BASE_VERSION)."
           exit 1
         fi
         echo "::notice ::Version check passed! Version updated from $BASE_VERSION to $CURRENT_VERSION."
+
+    - name: Check if image tag exists on GHCR
+      env:
+        IMAGE: ghcr.io/${{ github.repository }}:${{ env.CURRENT_VERSION }}
+      run: |
+        if docker pull "$IMAGE"; then
+          echo "Error: Docker image tag $IMAGE already exists."
+          exit 1
+        else
+          echo "::notice ::Docker image tag $IMAGE does not exist yet."
+        fi

@@ -47,9 +47,7 @@ async def main(group_configs):
         if bioengine_worker:
             # TODO: when running in Apptainer, the container’s overlay filesystem is torn down before the graceful shutdown completes -> results in OSError [Errno 107] because executables like Ray or scancel are not found
             asyncio.create_task(
-                bioengine_worker.cleanup(
-                    context=bioengine_worker.apps_manager._get_admin_context()
-                ),
+                bioengine_worker.cleanup(context=bioengine_worker._admin_context),
                 name="BioEngineWorker.cleanup",
             )
 
@@ -61,6 +59,17 @@ async def main(group_configs):
     try:
         # Get Bioengine worker configuration
         worker_config = group_configs["options"]
+
+        startup_deployments = []
+        for element in worker_config["startup_deployments"]:
+            if ":" in element:
+                # If the element is a tuple of (artifact_id, application_id)
+                artifact_id, application_id = element.split(":", 1)
+                startup_deployments.append((artifact_id, application_id))
+            else:
+                # If the element is just an artifact ID
+                startup_deployments.append(element)
+        worker_config["startup_deployments"] = startup_deployments
 
         # Get Hypha configuration
         hypha_config = group_configs["Hypha Options"]
@@ -85,11 +94,8 @@ async def main(group_configs):
             },
         )
 
-        # Initialize worker
+        # Initialize worker and wait until shutdown is triggered
         await bioengine_worker.start()
-
-        # Wait until shutdown is triggered
-        await bioengine_worker.serve()
 
     except Exception as e:
         logger.error(f"Exception in main: {str(e)}")
@@ -132,7 +138,7 @@ def create_parser():
         "--startup_deployments",
         type=str,
         nargs="+",
-        help="List of artifact IDs to deploy on worker startup",
+        help="List of applications to deploy on worker startup. Each element can be an artifact ID or a tuple of (artifact_id, application_id).",
     )
 
     # Hypha related options
@@ -151,7 +157,11 @@ def create_parser():
     hypha_group.add_argument(
         "--token",
         type=str,
-        help="Authentication token for Hypha server. If not set, the environment variable 'HYPHA_TOKEN' will be used, otherwise the user will be prompted to log in.",
+        help=(
+            "Authentication token for Hypha server. If not set, the environment variable 'HYPHA_TOKEN' will be "
+            "used, otherwise the user will be prompted to log in. Make sure to choose a long enough expiration time "
+            "for the token, since each application will use the same token for service registration."
+        ),
     )
     hypha_group.add_argument(
         "--client_id",

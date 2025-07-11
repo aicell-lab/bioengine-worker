@@ -6,18 +6,19 @@ import textwrap
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import cloudpickle
 import ray
 from hypha_rpc import connect_to_server
 from hypha_rpc.sync import login
+from hypha_rpc.utils.schema import schema_method
 
 from bioengine_worker import __version__
 from bioengine_worker.apps_manager import AppsManager
 from bioengine_worker.datasets_manager import DatasetsManager
 from bioengine_worker.ray_cluster import RayCluster
-from bioengine_worker.utils import create_logger
+from bioengine_worker.utils import check_permissions, create_context, create_logger
 
 
 class BioEngineWorker:
@@ -66,14 +67,15 @@ class BioEngineWorker:
         admin_users: Optional[List[str]] = None,
         cache_dir: str = "/tmp/bioengine",
         data_dir: str = "/data",
-        startup_deployments: Optional[List[str]] = None,
+        startup_deployments: Optional[List[Union[str, Tuple[str, str]]]] = None,
+        monitoring_interval_seconds: int = 10,
         # Hypha server connection configuration
         server_url: str = "https://hypha.aicell.io",
         workspace: Optional[str] = None,
         token: Optional[str] = None,
         client_id: Optional[str] = None,
         # Ray cluster configuration
-        ray_cluster_config: Optional[Dict] = None,
+        ray_cluster_config: Optional[Dict[str, Any]] = None,
         # BioEngine dashboard URL
         dashboard_url: str = "https://dev.bioimage.io/#/bioengine",
         # Logger configuration
@@ -108,6 +110,7 @@ class BioEngineWorker:
         self.cache_dir = Path(cache_dir).resolve()
         self.data_dir = Path(data_dir).resolve()
         self.dashboard_url = dashboard_url.rstrip("/")
+        self.monitoring_interval_seconds = monitoring_interval_seconds
 
         self.server_url = server_url
         self.workspace = workspace
@@ -116,8 +119,11 @@ class BioEngineWorker:
         self.service_id = "bioengine-worker"
 
         self.start_time = None
-        self.server = None
-        self.serve_event = None
+        self._last_monitoring = 0
+        self._server = None
+        self._serve_event = None
+        self._monitoring_task = None
+        self.full_service_id = None
 
         if not log_file:
             log_dir = self.cache_dir / "logs"
@@ -139,7 +145,9 @@ class BioEngineWorker:
                 print("\n" + "=" * 60)
                 print("NO HYPHA TOKEN FOUND - USER LOGIN REQUIRED")
                 print("-" * 60, end="\n\n")
-                self._token = login({"server_url": self.server_url})
+                self._token = login(
+                    {"server_url": self.server_url, "expires_in": 3600 * 24 * 365}
+                )
                 print("\n" + "-" * 60)
                 print("Login completed successfully!")
                 print("=" * 60, end="\n\n")
@@ -163,7 +171,7 @@ class BioEngineWorker:
             # Initialize AppsManager
             self.apps_manager = AppsManager(
                 ray_cluster=self.ray_cluster,
-                admin_users=self.admin_users,
+                token=self._token,
                 apps_cache_dir=self.cache_dir / "apps",
                 apps_data_dir=self.data_dir,
                 startup_deployments=startup_deployments,
@@ -174,7 +182,6 @@ class BioEngineWorker:
             # Initialize DatasetsManager
             self.dataset_manager = DatasetsManager(
                 data_dir=self.data_dir,
-                admin_users=self.admin_users,
                 log_file=log_file,
                 debug=debug,
             )
@@ -222,7 +229,7 @@ class BioEngineWorker:
             ValueError: If connection to Hypha server fails
         """
         self.logger.debug(f"Connecting to Hypha server at {self.server_url}...")
-        self.server = await connect_to_server(
+        self._server = await connect_to_server(
             {
                 "server_url": self.server_url,
                 "token": self._token,
@@ -230,15 +237,15 @@ class BioEngineWorker:
                 "client_id": self.client_id,
             }
         )
-        if not self.server:
-            raise ValueError("Failed to connect to Hypha server")
+        await self._check_hypha_connection(reconnect=False)
 
-        user_id = self.server.config.user["id"]
-        user_email = self.server.config.user["email"]
+        user_id = self._server.config.user["id"]
+        user_email = self._server.config.user["email"]
 
-        self.workspace = self.server.config.workspace
+        self.workspace = self._server.config.workspace
+        self.client_id = self._server.config.client_id
         self.logger.info(
-            f"User '{user_id}' connected to workspace '{self.workspace}' with client ID '{self.server.config.client_id}'."
+            f"User '{user_id}' connected to workspace '{self.workspace}' with client ID '{self.client_id}'."
         )
 
         # Update admin users list with the authenticated user and ensure it's at the top
@@ -248,26 +255,24 @@ class BioEngineWorker:
             self.admin_users.remove(user_email)
         self.admin_users.insert(0, user_id)
         self.admin_users.insert(1, user_email)
-        self.apps_manager.admin_users = self.admin_users
-        self.dataset_manager.admin_users = self.admin_users
-
-        self.logger.info(
+        self._admin_context = create_context(user_id, user_email)
+        self.logger.debug(
             f"Admin users for this BioEngine worker: {', '.join(self.admin_users)}"
         )
 
-    async def _register(self) -> None:
-        """
-        Initialize connection to Hypha and register service interface.
+    async def _check_hypha_connection(self, reconnect: bool = True) -> None:
+        try:
+            await asyncio.wait_for(self._server.echo("ping"), timeout=10)
+        except Exception as e:
+            if reconnect:
+                self.logger.warning(
+                    f"Hypha server connection error: {e}. Attempting to reconnect..."
+                )
+                await self._register_bioengine_worker_service()
+            else:
+                raise RuntimeError(f"Hypha server connection error: {e}")
 
-        Registers the BioEngineWorker as a Hypha service with all available
-        methods exposed. Creates service descriptions based on the deployment mode.
-
-        Returns:
-            str: Service ID assigned after successful registration
-
-        Raises:
-            Exception: If service registration fails
-        """
+    async def _register_bioengine_worker_service(self) -> None:
         # Register service interface
         description = "Manages BioEngine Apps and Datasets"
         if self.ray_cluster.mode == "slurm":
@@ -277,7 +282,8 @@ class BioEngineWorker:
         else:
             description += " in a pre-existing Ray environment."
 
-        service_info = await self.server.register_service(
+        # TODO: return more informative error messages, e.g. return error
+        service_info = await self._server.register_service(
             {
                 "id": self.service_id,
                 "name": "BioEngine Worker",
@@ -290,24 +296,116 @@ class BioEngineWorker:
                 "get_status": self.get_status,
                 "load_dataset": self.dataset_manager.load_dataset,
                 "close_dataset": self.dataset_manager.close_dataset,
+                "cleanup_datasets": self.dataset_manager.cleanup,
                 "execute_python_code": self.execute_python_code,
                 "create_artifact": self.apps_manager.create_artifact,
                 "delete_artifact": self.apps_manager.delete_artifact,
-                "deploy_artifact": self.apps_manager.deploy_artifact,
-                "undeploy_artifact": self.apps_manager.undeploy_artifact,
+                "deploy_application": self.apps_manager.deploy_application,
+                "deploy_applications": self.apps_manager.deploy_applications,
                 "deploy_collection": self.apps_manager.deploy_collection,
-                "cleanup_deployments": self.apps_manager.cleanup_deployments,
-                "cleanup": self.cleanup,
+                "undeploy_application": self.apps_manager.undeploy_application,
+                "cleanup_deployments": self.apps_manager.cleanup,
+                "stop_worker": self.stop,
             },
             {"overwrite": True},
         )
-        sid = service_info.id
+        self.full_service_id = service_info.id
 
         self.logger.info(
-            f"Manage BioEngine worker at: {self.dashboard_url}/worker?service_id={sid}"
+            f"Manage BioEngine worker at: {self.dashboard_url}/worker?service_id={self.full_service_id}"
         )
 
-        return sid
+    async def _create_monitoring_task(self, max_consecutive_errors: int = 5) -> None:
+        """Continuously monitor cluster status and update worker nodes history.
+
+        This loop runs while the cluster is active, periodically collecting
+        cluster status information and updating the history. It handles
+        connection errors by attempting to reconnect to the Ray cluster.
+
+        The monitoring task:
+        1. Collects cluster status every <status_interval_seconds>
+        2. Updates cluster_status_history with timestamped entries
+        3. Maintains history size within max_status_history_length
+        4. Handles Ray connection errors with automatic reconnection
+        5. Gracefully handles task cancellation during shutdown
+
+        Args:
+            max_consecutive_errors: Maximum number of consecutive errors before stopping
+
+        Raises:
+            Exception: If an unrecoverable error occurs during monitoring.
+        """
+        self.logger.debug(
+            "Starting monitoring task with interval "
+            f"{self.monitoring_interval_seconds} seconds..."
+        )
+
+        self.start_time = time.time()
+        consecutive_errors = 0
+        while self.start_time:
+            try:
+                current_time = time.time()
+                if (
+                    current_time - self._last_monitoring
+                    < self.monitoring_interval_seconds
+                ):
+                    continue  # Skip if within check interval
+                self._last_monitoring = current_time
+
+                # Check connection to Hypha server
+                await self._check_hypha_connection()
+
+                # Check connection to Ray cluster
+                await self.ray_cluster.check_connection()
+
+                # Run cluster monitoring
+                await self.ray_cluster.monitor_cluster()
+
+                # Run BioEngine Apps monitoring
+                await self.apps_manager.monitor_applications()
+
+                # Run BioEngine Datasets monitoring
+                await self.dataset_manager.monitor_datasets()
+
+                # Reset error counter on success
+                consecutive_errors = 0
+
+            except Exception as e:
+                self.logger.error(f"Error in monitoring task: {e}")
+                consecutive_errors += 1
+                # Don't raise the exception to avoid crashing the monitoring task
+                # Instead, continue monitoring until the maximum of consecutive errors is reached
+
+                if consecutive_errors >= max_consecutive_errors:
+                    self.logger.error(
+                        f"Stopping monitoring loop after {consecutive_errors} consecutive errors"
+                    )
+                    self.start_time = None
+
+            # Sleep for 1 second before next iteration
+            await asyncio.sleep(1)
+
+        self.logger.debug("Monitoring task stopped. Shutting down BioEngine worker...")
+
+        # Remove the service from Hypha server
+        try:
+            await self._server.unregister_service(self.full_service_id)
+            self.logger.info(
+                f"BioEngine worker service '{self.full_service_id}' removed."
+            )
+        except Exception:
+            pass
+
+        # Clean up all components
+        await self.dataset_manager.cleanup(self._admin_context)
+        await self.apps_manager.cleanup(self._admin_context)
+        await self.ray_cluster.stop()
+
+        # Signal the serve loop to exit
+        self._serve_event.set()
+
+        # Clear the monitoring task reference
+        self._monitoring_task = None
 
     async def start(self) -> str:
         """
@@ -330,37 +428,49 @@ class BioEngineWorker:
         # Start the Ray cluster
         await self.ray_cluster.start()
 
-        # Connect to the Hypha server and register the service
+        # Register the BioEngine worker service with the Hypha server
         await self._connect_to_server()
-        await self.apps_manager.initialize(self.server)
-        await self.dataset_manager.initialize(self.server)
-        sid = await self._register()
 
-        # Deploy any startup artifacts
-        await self.apps_manager.deploy_artifacts(
-            artifact_ids=self.apps_manager.startup_deployments,
-            context=self.apps_manager._get_admin_context(),
+        # Initialize component managers with the server connection
+        await self.apps_manager.initialize(
+            server=self._server, admin_users=self.admin_users
+        )
+        await self.dataset_manager.initialize(
+            server=self._server, admin_users=self.admin_users
         )
 
-        return sid
+        # Start the monitoring task
+        self._monitoring_task = asyncio.create_task(
+            self._create_monitoring_task(),
+            name="BioEngineWorker Monitoring Task",
+        )
 
-    async def serve(self) -> None:
+        # Register the BioEngine worker service interface
+        await self._register_bioengine_worker_service()
+
+        self._serve_event = asyncio.Event()
+        await self._serve_event.wait()
+
+    async def notify(self, delay_s: int = 3) -> None:
         """
-        Keep the BioEngine worker running and serving requests.
+        Notify SLURM workers' autoscaling system of a change in cluster state.
 
-        Maintains the worker in an active state to handle incoming requests
-        from the Hypha server. This method blocks until cleanup() is called.
+        This method triggers the autoscaling system to check for scaling opportunities
+        after a specified delay. It's typically called when new tasks are submitted
+        or when the cluster state changes in a way that might require scaling.
+
+        Args:
+            delay_s: Delay in seconds before triggering scaling decision
 
         Raises:
-            RuntimeError: If server is not initialized or Ray is not running
+            RuntimeError: If SLURM workers are not initialized
         """
-        if not self.server or not ray.is_initialized():
-            raise RuntimeError("Server not initialized. Call start() first.")
+        if self.ray_cluster.mode == "slurm":
+            self.logger.info("Notifying SLURM workers of cluster state change")
+            self.last_cluster_status = time.time() - self._last_monitoring + delay_s
 
-        self.serve_event = asyncio.Event()
-        await self.serve_event.wait()
-
-    async def cleanup(self, context: Dict[str, Any]) -> None:
+    @schema_method
+    async def stop(self, context: Dict[str, Any]) -> None:
         """
         Clean up resources and stop the Ray cluster if managed by this worker.
 
@@ -373,17 +483,20 @@ class BioEngineWorker:
         Raises:
             Exception: If cleanup of any component fails
         """
-        if ray.is_initialized():
-            self.logger.info("Cleaning up resources...")
-            await self.dataset_manager.cleanup_datasets(context)
-            await self.apps_manager.cleanup_deployments(context)
-            await self.ray_cluster.stop()
+        check_permissions(
+            context=context,
+            authorized_users=self.admin_users,
+            resource_name=f"shutdown the BioEngine worker",
+        )
+        self.start_time = None
+
+        # Wait for the monitoring task to finish if it is running
+        if self.monitoring_task and not self.monitoring_task.done():
+            await self.monitoring_task
         else:
-            self.logger.warning("Ray is not initialized. No cleanup needed.")
+            await self._shutdown_ray()
 
-        # Signal the serve loop to exit
-        self.serve_event.set()
-
+    @schema_method
     async def get_status(self, context: Optional[Dict[str, Any]] = None) -> dict:
         """
         Get comprehensive status of the BioEngine worker and all components.
@@ -413,6 +526,8 @@ class BioEngineWorker:
 
         return status
 
+    # TODO: Does not work for type hint 'callable'
+    # @schema_method
     async def execute_python_code(
         self,
         code: str = None,
@@ -425,7 +540,7 @@ class BioEngineWorker:
         write_stdout: Optional[callable] = None,
         write_stderr: Optional[callable] = None,
         context: Optional[Dict[str, Any]] = None,
-    ) -> dict:
+    ) -> Dict[str, Any]:
         """
         Execute Python code in a Ray task with resource allocation and output streaming.
 
@@ -457,6 +572,12 @@ class BioEngineWorker:
             RuntimeError: If Ray is not initialized
             Exception: If function deserialization or execution fails
         """
+        check_permissions(
+            context=context,
+            authorized_users=self.admin_users,
+            resource_name=f"execute Python code in a Ray task",
+        )
+
         self.logger.info("Executing Python code in Ray task...")
 
         args = args or []
@@ -625,9 +746,7 @@ if __name__ == "__main__":
             raise e
         finally:
             # Cleanup
-            await bioengine_worker.cleanup(
-                context=bioengine_worker.apps_manager._get_admin_context()
-            )
+            await bioengine_worker.cleanup(context=bioengine_worker._admin_context)
 
     # Run the test
     asyncio.run(test_bioengine_worker())

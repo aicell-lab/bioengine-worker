@@ -7,6 +7,8 @@ import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from hypha_rpc.rpc import RemoteService
+from hypha_rpc.utils.schema import schema_method
 
 from bioengine_worker.utils import create_logger
 
@@ -16,7 +18,6 @@ class DatasetsManager:
     def __init__(
         self,
         data_dir: str,
-        admin_users: Optional[List[str]] = None,
         # Logger
         log_file: Optional[str] = None,
         debug: bool = False,
@@ -37,8 +38,8 @@ class DatasetsManager:
         self.loaded_datasets = {}
         self.server = None
 
-        # TODO: Implement admin user checks if needed
-        self.admin_users = admin_users or []
+        # TODO: Implement admin user checks for opening and closing datasets
+        self.admin_users = None
 
     @property
     def datasets(self) -> Dict[str, Dict]:
@@ -263,14 +264,29 @@ class DatasetsManager:
         )
         self.logger.info(f"Access the app at: {service_info['url']}")
 
-    async def initialize(self, server) -> None:
+    async def initialize(self, server: RemoteService, admin_users: List[str]) -> None:
         """Initialize the dataset manager with a Hypha server connection
 
         Args:
             server: Hypha server connection
         """
+        # Store server connection and list of admin users
         self.server = server
+        self.admin_users = admin_users
 
+    async def get_status(self) -> Dict[str, dict]:
+        """Get the status of the dataset manager."""
+        return {
+            "available_datasets": self.datasets,
+            "loaded_datasets": self.loaded_datasets,
+        }
+
+    async def monitor_datasets(self) -> None:
+        """Monitor the datasets and log their status."""
+        # TODO: Implement monitoring
+        pass
+
+    @schema_method
     async def load_dataset(self, dataset_id, context=None) -> str:
         """Load a dataset by ID."""
         try:
@@ -287,6 +303,7 @@ class DatasetsManager:
             self.logger.error(f"Error loading dataset {dataset_id}: {e}")
             raise e
 
+    @schema_method
     async def close_dataset(self, dataset_id, context=None) -> str:
         """Close a dataset by ID."""
         try:
@@ -305,7 +322,8 @@ class DatasetsManager:
             self.logger.error(f"Error closing dataset {dataset_id}: {e}")
             raise e
 
-    async def cleanup_datasets(self, context: Dict[str, Any]) -> str:
+    @schema_method
+    async def cleanup(self, context: Dict[str, Any]) -> str:
         """Close all loaded datasets."""
         try:
             if not self.loaded_datasets:
@@ -319,46 +337,3 @@ class DatasetsManager:
         except Exception as e:
             self.logger.error(f"Error closing all datasets: {e}")
             raise e
-
-    async def get_status(self) -> Dict[str, dict]:
-        """Get the status of the dataset manager."""
-        return {
-            "available_datasets": self.datasets,
-            "loaded_datasets": self.loaded_datasets,
-        }
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    from hypha_rpc import connect_to_server, login
-
-    async def test_dataset_manager(
-        server_url="https://hypha.aicell.io", keep_running=False
-    ):
-        # Connect to Hypha server using token from environment
-        token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
-        server = await connect_to_server({"server_url": server_url, "token": token})
-
-        # Initialize DatasetsManager
-        data_dir = Path(__file__).parent.parent / "data"
-        dataset_manager = DatasetsManager(
-            data_dir=str(data_dir),
-            debug=True,
-        )
-        await dataset_manager.initialize(server)
-
-        dataset_url = await dataset_manager.load_dataset("blood")
-        print("Dataset URL:", dataset_url)
-        _ = await dataset_manager.load_dataset("liver")
-        _ = await dataset_manager.close_dataset("liver")
-
-        # Print status
-        status = await dataset_manager.get_status()
-        print("Status:", status)
-
-        if keep_running:
-            await server.serve()
-
-    # Run the test function
-    asyncio.run(test_dataset_manager(keep_running=True))

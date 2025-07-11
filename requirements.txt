@@ -1,7 +1,9 @@
 aiortc>=1.13.0
 cloudpickle>=3.1.1
+haikunator>=2.1.0
 httpx>=0.28.1
-hypha-rpc>=0.20.64
+hypha-rpc>=0.20.65
 numpy==1.26.4
+pydantic>=2.9.2
 pyyaml>=6.0.2
 ray[client,serve]==2.33.0

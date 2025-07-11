@@ -8,9 +8,13 @@ version = "0.3.0"
 description = "BioEngine Worker for managing Ray clusters and datasets"
 requires-python = ">=3.10"
 dependencies = [
+    "aiortc",
     "cloudpickle",
+    "haikunator",
     "httpx",
-    "hypha-rpc>=0.20.64",
+    "hypha-rpc>=0.20.65",
+    "numpy==1.26.4",
+    "pydantic",
     "pyyaml",
     "ray[client,serve]==2.33.0",
 ]

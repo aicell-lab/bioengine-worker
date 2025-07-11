@@ -16,7 +16,7 @@ from ray import serve
 
 
 # The deployment class must be decorated with the @ray.serve.deployment decorator.
-# If environment variables such as 'NUM_CPUS', 'NUM_GPUS', 'MEMORY', 'OBJECT_STORE_MEMORY'
+# If environment variables such as 'NUM_CPUS', 'NUM_GPUS' and 'MEMORY'
 # are used, they can be set when deploying the application using the BioEngine. See all
 # deployment parameters here:
 # https://docs.ray.io/en/latest/serve/api/doc/ray.serve.deployment_decorator.html
@@ -28,8 +28,6 @@ from ray import serve
         "num_gpus": os.environ.get("NUM_GPUS", 0),
         # Memory limit for the deployment (1 GB)
         "memory": os.environ.get("MEMORY", 1024 * 1024 * 1024),
-        # Object store memory limit for the deployment (1 GB)
-        "object_store_memory": os.environ.get("OBJECT_STORE_MEMORY", 1024 * 1024 * 1024),
         # Runtime environment for the deployment (e.g., dependencies, environment variables)
         "runtime_env": {
             "pip": [
@@ -38,7 +36,7 @@ from ray import serve
             "env_vars": {
                 "EXAMPLE_ENV_VAR": "example_value",  # Example environment variable
             },
-        }
+        },
     }
 )
 class DemoDeployment:
@@ -92,7 +90,7 @@ class DemoDeployment:
         except Exception as e:
             print(f"Deployment test failed: {e}")
             return False
-        
+
     # == Internal BioEngine App Methods - all methods starting with an underscore will not be exposed as API endpoints ==
 
     @serve.multiplexed(max_num_models_per_replica=3)
@@ -115,13 +113,13 @@ class DemoDeployment:
         model = None
 
         return model
-        
+
     # === Exposed BioEngine App Methods - docstrings will be used to generate the API documentation ===
 
     async def ping(self) -> Dict[str, Union[str, float]]:
         """
         Ping the model to test connectivity.
-        
+
         Args:
             None
 

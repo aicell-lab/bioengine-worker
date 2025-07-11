@@ -5,6 +5,7 @@
 import asyncio
 import os
 
+from hypha_rpc.utils.schema import schema_method
 from ray import serve
 from ray.serve.handle import DeploymentHandle
 
@@ -14,20 +15,19 @@ from ray.serve.handle import DeploymentHandle
 
 
 # The deployment class must be decorated with the @ray.serve.deployment decorator.
-# If environment variables such as 'NUM_CPUS', 'NUM_GPUS', 'MEMORY', 'OBJECT_STORE_MEMORY'
+# If environment variables such as 'NUM_CPUS', 'NUM_GPUS' and 'MEMORY'
 # are used, they can be set when deploying the application using the BioEngine. See all
 # deployment parameters here:
 # https://docs.ray.io/en/latest/serve/api/doc/ray.serve.deployment_decorator.html
 @serve.deployment(
     ray_actor_options={
         # Number of CPUs to allocate for the deployment
-        "num_cpus": os.environ.get("NUM_CPUS", 1),
+        # This deployment acts only as a composition of other deployments, so it does not require any CPU resources.
+        "num_cpus": 0,
         # Number of GPUs to allocate for the deployment
-        "num_gpus": os.environ.get("NUM_GPUS", 0),
+        "num_gpus": 0,
         # Memory limit for the deployment (1 GB)
-        "memory": os.environ.get("MEMORY", 1024 * 1024 * 1024),
-        # Object store memory limit for the deployment (1 GB)
-        "object_store_memory": os.environ.get("OBJECT_STORE_MEMORY", 1024 * 1024 * 1024),
+        "memory": 1024 * 1024 * 1024,
         # Runtime environment for the deployment (e.g., dependencies, environment variables)
         "runtime_env": {
             "pip": [
@@ -36,15 +36,15 @@ from ray.serve.handle import DeploymentHandle
             "env_vars": {
                 "EXAMPLE_ENV_VAR": "example_value",  # Example environment variable
             },
-        }
+        },
     }
 )
 class CompositionDeployment:
     def __init__(
-            self,
-            deployment1: DeploymentHandle,
-            deployment2: DeploymentHandle,
-        ) -> None:
+        self,
+        deployment1: DeploymentHandle,
+        deployment2: DeploymentHandle,
+    ) -> None:
         """
         Initialize the composition deployment with the given arguments. Make sure that each model
         com
@@ -96,9 +96,10 @@ class CompositionDeployment:
         except Exception as e:
             print(f"Deployment test failed: {e}")
             return False
-        
+
     # === Exposed BioEngine App Methods - docstrings will be used to generate the API documentation ===
 
+    @schema_method
     async def calculate_result(self, number: int) -> str:
         """
         Calculate the result by adding the given number to the start value of Deployment2.

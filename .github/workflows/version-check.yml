@@ -22,36 +22,45 @@ jobs:
       with:
         fetch-depth: 0  # Ensure full history is fetched
 
-    - name: Extract version from pyproject.toml (current branch)
-      id: extract-current-version
+    - name: Extract new version from pyproject.toml (PR branch)
       run: |
-        CURRENT_VERSION=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-        echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_ENV
-
-    - name: Extract base version from main branch
-      id: extract-base-version
-      run: |
-        BASE_VERSION=$(git show origin/main:pyproject.toml | grep '^version' | sed 's/version = "\(.*\)"/\1/')
-        echo "BASE_VERSION=$BASE_VERSION" >> $GITHUB_ENV
-
-    - name: Check version is newer
-      id: check-version
-      run: |
-        echo "Base version: $BASE_VERSION"
-        echo "Current version: $CURRENT_VERSION"
-        if [ "$(printf '%s\n' "$BASE_VERSION" "$CURRENT_VERSION" | sort -V | head -n1)" = "$CURRENT_VERSION" ]; then
-          echo "Error: CURRENT_VERSION ($CURRENT_VERSION) is not newer than BASE_VERSION ($BASE_VERSION)."
+        NEW_VERSION=$(grep -E '^version\s*=' pyproject.toml | sed -E 's/version\s*=\s*"(.*)"/\1/')
+        if [ -z "$NEW_VERSION" ]; then
+          echo "Error: Could not extract version from pyproject.toml"
           exit 1
         fi
-        echo "::notice ::Version check passed! Version updated from $BASE_VERSION to $CURRENT_VERSION."
+        echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
-    - name: Check if image tag exists on GHCR
-      env:
-        IMAGE: ghcr.io/${{ github.repository }}:${{ env.CURRENT_VERSION }}
+    - name: Extract old version from main branch
       run: |
-        if docker pull "$IMAGE"; then
-          echo "Error: Docker image tag $IMAGE already exists."
+        PREVIOUS_VERSION=$(git show origin/main:pyproject.toml | grep -E '^version\s*=' | sed -E 's/version\s*=\s*"(.*)"/\1/')
+        if [ -z "$PREVIOUS_VERSION" ]; then
+          echo "Error: Could not extract version from pyproject.toml on main"
+          exit 1
+        fi
+        echo "PREVIOUS_VERSION=$PREVIOUS_VERSION" >> $GITHUB_ENV
+
+    - name: Ensure new version is greater than previous
+      run: |
+        echo "Previous version: $PREVIOUS_VERSION"
+        echo "New version: $NEW_VERSION"
+        if [ "$NEW_VERSION" = "$PREVIOUS_VERSION" ]; then
+          echo "❌ Version has not been updated. Please bump the version in pyproject.toml."
+          exit 1
+        fi
+        if [ "$(printf '%s\n' "$PREVIOUS_VERSION" "$NEW_VERSION" | sort -V | head -n1)" = "$NEW_VERSION" ]; then
+          echo "❌ New version ($NEW_VERSION) is not greater than previous version ($PREVIOUS_VERSION)."
+          exit 1
+        fi
+        echo "✅ Version updated from $PREVIOUS_VERSION to $NEW_VERSION."
+
+    - name: Ensure docker image tag does not already exist on GHCR
+      run: |
+        IMAGE="ghcr.io/${{ github.repository }}:$NEW_VERSION"
+        echo "Checking if image tag $IMAGE already exists..."
+        if docker pull "$IMAGE" > /dev/null 2>&1; then
+          echo "❌ Docker image tag $IMAGE already exists. Please update the version."
           exit 1
         else
-          echo "::notice ::Docker image tag $IMAGE does not exist yet."
+          echo "✅ Docker image tag $IMAGE does not exist yet."
         fi

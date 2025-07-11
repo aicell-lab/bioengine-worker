@@ -20,30 +20,30 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
       with:
-        fetch-depth: 0  # Ensure full history is fetched
+        fetch-depth: 0  # Fetch full history for accurate origin/main reference
 
     - name: Extract new version from pyproject.toml (PR branch)
       run: |
         NEW_VERSION=$(grep -E '^version\s*=' pyproject.toml | sed -E 's/version\s*=\s*"(.*)"/\1/')
         if [ -z "$NEW_VERSION" ]; then
-          echo "Error: Could not extract version from pyproject.toml"
+          echo "❌ Could not extract version from pyproject.toml in PR branch"
           exit 1
         fi
         echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
-    - name: Extract old version from main branch
+    - name: Extract old version from origin/main branch
       run: |
         PREVIOUS_VERSION=$(git show origin/main:pyproject.toml | grep -E '^version\s*=' | sed -E 's/version\s*=\s*"(.*)"/\1/')
         if [ -z "$PREVIOUS_VERSION" ]; then
-          echo "Error: Could not extract version from pyproject.toml on main"
+          echo "❌ Could not extract version from pyproject.toml on origin/main"
           exit 1
         fi
         echo "PREVIOUS_VERSION=$PREVIOUS_VERSION" >> $GITHUB_ENV
 
     - name: Ensure new version is greater than previous
       run: |
-        echo "Previous version: $PREVIOUS_VERSION"
-        echo "New version: $NEW_VERSION"
+        echo "📦 Previous version: $PREVIOUS_VERSION"
+        echo "📦 New version: $NEW_VERSION"
         if [ "$NEW_VERSION" = "$PREVIOUS_VERSION" ]; then
           echo "❌ Version has not been updated. Please bump the version in pyproject.toml."
           exit 1
@@ -54,10 +54,10 @@ jobs:
         fi
         echo "✅ Version updated from $PREVIOUS_VERSION to $NEW_VERSION."
 
-    - name: Ensure docker image tag does not already exist on GHCR
+    - name: Ensure Docker image tag does not already exist on GHCR
       run: |
         IMAGE="ghcr.io/${{ github.repository }}:$NEW_VERSION"
-        echo "Checking if image tag $IMAGE already exists..."
+        echo "🔍 Checking if Docker image tag $IMAGE already exists..."
         if docker pull "$IMAGE" > /dev/null 2>&1; then
           echo "❌ Docker image tag $IMAGE already exists. Please update the version."
           exit 1

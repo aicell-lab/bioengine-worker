@@ -1,4 +1,5 @@
 import asyncio
+import fcntl
 import logging
 import os
 import re
@@ -72,6 +73,7 @@ class RayCluster:
         ray_temp_dir: str = "/tmp/bioengine/ray",
         head_num_cpus: int = 0,
         head_num_gpus: int = 0,
+        head_memory_in_gb: int = 0,  # Only memory limit
         runtime_env_pip_cache_size_gb: int = 30,  # Ray default is 10 GB
         force_clean_up: bool = True,
         # Cluster Monitoring parameters
@@ -83,7 +85,7 @@ class RayCluster:
         worker_data_dir: Optional[str] = None,
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
-        default_mem_per_cpu: int = 16,
+        default_mem_in_gb_per_cpu: int = 16,
         default_time_limit: str = "4:00:00",
         further_slurm_args: Optional[List[str]] = None,
         # Autoscaling configuration parameters
@@ -122,7 +124,7 @@ class RayCluster:
             worker_data_dir: Data directory mounted to worker containers (SLURM mode).
             default_num_gpus: Default GPU count per worker. Default 1.
             default_num_cpus: Default CPU count per worker. Default 8.
-            default_mem_per_cpu: Default memory per CPU in GB. Default 16.
+            default_mem_in_gb_per_cpu: Default memory per CPU in GB. Default 16.
             default_time_limit: Default SLURM job time limit. Default '4:00:00'.
             further_slurm_args: Additional SLURM arguments for job submission.
             min_workers: Minimum number of workers for autoscaling. Default 0.
@@ -183,6 +185,7 @@ class RayCluster:
             "ray_temp_dir": str(ray_temp_dir),
             "head_num_cpus": int(head_num_cpus),
             "head_num_gpus": int(head_num_gpus),
+            "head_memory_in_gb": int(head_memory_in_gb),
             "force_clean_up": bool(force_clean_up),
         }
 
@@ -203,7 +206,7 @@ class RayCluster:
                 "worker_data_dir": str(worker_data_dir),
                 "default_num_gpus": int(default_num_gpus),
                 "default_num_cpus": int(default_num_cpus),
-                "default_mem_per_cpu": int(default_mem_per_cpu),
+                "default_mem_in_gb_per_cpu": int(default_mem_in_gb_per_cpu),
                 "default_time_limit": int(default_time_limit),
                 "further_slurm_args": further_slurm_args or [],
                 "min_workers": int(min_workers),
@@ -221,10 +224,10 @@ class RayCluster:
         self.cluster_state_handle = None
         self.cluster_status_history = OrderedDict()
         self.head_node_address = None
+        self.is_ready = asyncio.Event()
         self.last_cluster_status = 0
         self.max_status_history_length = max_status_history_length
         self.monitoring_task = None
-        self.serve_http_url = None
         self.slurm_workers = None
         self.start_time = None
         self.status_interval_seconds = status_interval_seconds
@@ -343,7 +346,8 @@ class RayCluster:
         return out_port
 
     def _set_cluster_ports(self) -> None:
-        """Update cluster configuration with available ports.
+        """
+        Update cluster configuration with available ports.
 
         Checks for port availability and updates the ray_cluster_config
         dictionary with the next available ports for all Ray services.
@@ -378,6 +382,50 @@ class RayCluster:
             self.ray_cluster_config["client_server_port"] + 9998
         )
 
+    def _check_ray_session_is_active(self, ray_temp_dir: Path) -> None:
+        """
+        Check if a Ray session is already active in the specified temporary directory.
+
+        Raises an error if a Ray session is found to be active, preventing
+        multiple Ray clusters from being started in the same directory.
+        """
+        session_latest = ray_temp_dir / "session_latest"
+        lock_file = session_latest / "node_ip_address.json.lock"
+
+        if session_latest.exists() and lock_file.exists():
+            try:
+                fd = os.open(lock_file, os.O_RDWR)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                os.close(fd)
+                # Lock acquired, no Ray process is holding it
+                return
+            except BlockingIOError:
+                # Lock not acquired, Ray likely running
+                raise RuntimeError(
+                    f"Ray session is already active in '{ray_temp_dir}'. "
+                    "Please stop the existing Ray cluster before starting a new one."
+                )
+
+    def _update_symlink(self, ray_temp_dir: Path) -> None:
+        """
+        Update the 'session_latest' symlink to use a relative path.
+
+        Raises an error if the symlink does not exist or is not a symlink.
+        """
+        symlink_path = ray_temp_dir / "session_latest"
+        if symlink_path.is_symlink():
+            # Get the target of the symlink
+            symlink_target = symlink_path.readlink()
+            relative_symlink_target = Path(symlink_target.name)
+            self.logger.debug(
+                f"Changing symlink target from '{symlink_target}' to '{relative_symlink_target}'"
+            )
+            symlink_path.unlink()
+            symlink_path.symlink_to(relative_symlink_target)
+        else:
+            self.logger.error(f"Symlink '{symlink_path}' does not exist")
+            raise FileNotFoundError(f"Symlink '{symlink_path}' does not exist")
+
     async def _start_cluster(self) -> None:
         """Start Ray cluster head node with configured ports and resources.
 
@@ -404,7 +452,8 @@ class RayCluster:
             ray_temp_dir = Path(self.ray_cluster_config["ray_temp_dir"])
             await asyncio.to_thread(ray_temp_dir.mkdir, parents=True, exist_ok=True)
 
-            # TODO: Check if a Ray cluster is already running using this temporary directory
+            # Check if a Ray cluster is already running using this temporary directory
+            self._check_ray_session_is_active(ray_temp_dir)
 
             # Start ray as the head node with the specified parameters
             args = [
@@ -412,6 +461,7 @@ class RayCluster:
                 "--head",
                 f"--num-cpus={self.ray_cluster_config['head_num_cpus']}",
                 f"--num-gpus={self.ray_cluster_config['head_num_gpus']}",
+                f"--memory={self.ray_cluster_config['head_memory_in_gb'] * 1024**3}",
                 f"--node-ip-address={self.ray_cluster_config['head_node_address']}",
                 f"--port={self.ray_cluster_config['head_node_port']}",
                 f"--node-manager-port={self.ray_cluster_config['node_manager_port']}",
@@ -425,10 +475,6 @@ class RayCluster:
                 f"--redis-password={self.ray_cluster_config['redis_password']}",
                 f"--temp-dir={ray_temp_dir}",
             ]
-            if self.mode != "single-machine":
-                args.append(
-                    "--memory=0"
-                )  # Disable memory limit for head node in slurm and external-cluster modes
 
             # Prevent logging of Redis password in debug logs
             censored_args = [
@@ -484,23 +530,7 @@ class RayCluster:
 
             # Change '<ray_temp_dir>/session_latest' symlink to use relative path instead of absolute (container) path
             # (needed when starting ray in container)
-            symlink_path = ray_temp_dir / "session_latest"
-
-            def update_symlink():
-                if symlink_path.is_symlink():
-                    # Get the target of the symlink
-                    symlink_target = symlink_path.readlink()
-                    relative_symlink_target = Path(symlink_target.name)
-                    self.logger.debug(
-                        f"Changing symlink target from '{symlink_target}' to '{relative_symlink_target}'"
-                    )
-                    symlink_path.unlink()
-                    symlink_path.symlink_to(relative_symlink_target)
-                else:
-                    self.logger.error(f"Symlink '{symlink_path}' does not exist")
-                    raise FileNotFoundError(f"Symlink '{symlink_path}' does not exist")
-
-            await asyncio.to_thread(update_symlink)
+            await asyncio.to_thread(self._update_symlink, ray_temp_dir)
 
             # If running on a HPC system, use SlurmWorkers to manage worker nodes
             if self.mode == "slurm":
@@ -531,14 +561,6 @@ class RayCluster:
             port = self.ray_cluster_config["head_node_port"]
         self.head_node_address = f"{head_node_address}:{port}"
         self.logger.debug(f"Head node address set to: {self.head_node_address}")
-
-    def _set_serve_http_url(self) -> None:
-        """Set the Ray Serve HTTP API base URL based on the head node address and port."""
-        address = self.ray_cluster_config["head_node_address"].split("://")[-1]
-        self.serve_http_url = (
-            f"http://{address}:{self.ray_cluster_config['serve_port']}"
-        )
-        self.logger.debug(f"Ray Serve HTTP URL set to: {self.serve_http_url}")
 
     async def _connect_to_cluster(self) -> ray.client_builder.ClientContext:
         """Connect to the Ray cluster using the configured head node address.
@@ -601,7 +623,7 @@ class RayCluster:
             RuntimeError: If Ray is not initialized.
         """
         # Initialize Ray if RayCluster is running and Ray is not initialized
-        if self.start_time is None:
+        if not self.is_ready.is_set():
             raise RuntimeError("Ray cluster is not running")
 
         if not ray.is_initialized():
@@ -638,7 +660,7 @@ class RayCluster:
             RuntimeError: If the cluster is already running.
             Exception: For other startup errors.
         """
-        if self.start_time is not None:
+        if self.is_ready.is_set():
             raise RuntimeError("Ray cluster is already running")
 
         if ray.is_initialized():
@@ -647,15 +669,19 @@ class RayCluster:
             )
 
         try:
+            # If cluster is not an already running external cluster, start the Ray cluster head node
             if self.mode != "external-cluster":
                 await self._start_cluster()
 
+            # Connect a client to the Ray cluster
             self._set_head_node_address()
-            self._set_serve_http_url()
-
             await self._connect_to_cluster()
 
+            # Do a first cluster status check
             self.start_time = time.time()
+            await self.monitor_cluster()
+
+            self.is_ready.set()
 
             self.logger.info("Ray cluster started successfully.")
 
@@ -680,6 +706,7 @@ class RayCluster:
             Exception: For other shutdown errors.
         """
         try:
+            self.is_ready.clear()
             self.start_time = None
 
             # Disconnect from Ray cluster if it was initialized

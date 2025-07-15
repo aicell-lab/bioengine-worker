@@ -47,7 +47,7 @@ class SlurmWorkers:
         worker_data_dir: Optional[str] = None,
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
-        default_mem_per_cpu: int = 16,
+        default_mem_in_gb_per_cpu: int = 16,
         default_time_limit: str = "4:00:00",
         further_slurm_args: Optional[List[str]] = None,
         # Autoscaling configuration parameters
@@ -71,7 +71,7 @@ class SlurmWorkers:
             worker_data_dir: Optional data directory mounted to the container when starting a worker
             default_num_gpus: Default number of GPUs to allocate per worker
             default_num_cpus: Default number of CPUs to allocate per worker
-            default_mem_per_cpu: Default memory (GB) to allocate per CPU
+            default_mem_in_gb_per_cpu: Default memory (GB) to allocate per CPU
             default_time_limit: Default SLURM job time limit (HH:MM:SS format)
             further_slurm_args: Additional SLURM arguments to include in job submissions
             min_workers: Minimum number of workers to maintain
@@ -111,7 +111,7 @@ class SlurmWorkers:
         self.worker_data_dir = str(worker_data_dir) if worker_data_dir else None
         self.default_num_gpus = default_num_gpus
         self.default_num_cpus = default_num_cpus
-        self.default_mem_per_cpu = default_mem_per_cpu
+        self.default_mem_in_gb_per_cpu = default_mem_in_gb_per_cpu
         self.default_time_limit = default_time_limit
         self.further_slurm_args = further_slurm_args if further_slurm_args else []
 
@@ -133,7 +133,7 @@ class SlurmWorkers:
         self,
         num_gpus: int,
         num_cpus: int,
-        mem_per_cpu: int,
+        mem_in_gb_per_cpu: int,
         time_limit: str,
         further_slurm_args: List[str],
     ) -> str:
@@ -146,7 +146,7 @@ class SlurmWorkers:
         Args:
             num_gpus: Number of GPUs to allocate
             num_cpus: Number of CPUs to allocate
-            mem_per_cpu: Memory (GB) to allocate per CPU
+            mem_in_gb_per_cpu: Memory (GB) to allocate per CPU
             time_limit: SLURM job time limit (HH:MM:SS format)
             further_slurm_args: Additional SLURM arguments to include
 
@@ -205,7 +205,7 @@ class SlurmWorkers:
             #SBATCH --nodes=1
             #SBATCH --gpus={num_gpus}
             #SBATCH --cpus-per-task={num_cpus}
-            #SBATCH --mem-per-cpu={mem_per_cpu}G
+            #SBATCH --mem-per-cpu={mem_in_gb_per_cpu}G
             #SBATCH --time={time_limit}
             #SBATCH --chdir={self.worker_cache_dir}
             #SBATCH --output={self.worker_cache_dir}/slurm_logs/%x_%j.out
@@ -484,7 +484,7 @@ class SlurmWorkers:
         self,
         num_gpus: Optional[int] = None,
         num_cpus: Optional[int] = None,
-        mem_per_cpu: Optional[int] = None,
+        mem_in_gb_per_cpu: Optional[int] = None,
         time_limit: Optional[str] = None,
         further_slurm_args: Optional[List[str]] = None,
     ) -> str:
@@ -498,7 +498,7 @@ class SlurmWorkers:
         Args:
             num_gpus: Number of GPUs to allocate per worker. Uses default if None
             num_cpus: Number of CPUs to allocate per worker. Uses default if None
-            mem_per_cpu: Memory (GB) to allocate per CPU. Uses default if None
+            mem_in_gb_per_cpu: Memory (GB) to allocate per CPU. Uses default if None
             time_limit: SLURM job time limit (HH:MM:SS format). Uses default if None
             further_slurm_args: Additional SLURM arguments. Uses default if None
 
@@ -515,8 +515,10 @@ class SlurmWorkers:
             # Set default values if not provided
             num_gpus = num_gpus if num_gpus is not None else self.default_num_gpus
             num_cpus = num_cpus if num_cpus is not None else self.default_num_cpus
-            mem_per_cpu = (
-                mem_per_cpu if mem_per_cpu is not None else self.default_mem_per_cpu
+            mem_in_gb_per_cpu = (
+                mem_in_gb_per_cpu
+                if mem_in_gb_per_cpu is not None
+                else self.default_mem_in_gb_per_cpu
             )
             time_limit = (
                 time_limit if time_limit is not None else self.default_time_limit
@@ -532,7 +534,7 @@ class SlurmWorkers:
                 self._create_sbatch_script,
                 num_gpus=num_gpus,
                 num_cpus=num_cpus,
-                mem_per_cpu=mem_per_cpu,
+                mem_in_gb_per_cpu=mem_in_gb_per_cpu,
                 time_limit=time_limit,
                 further_slurm_args=further_slurm_args,
             )
@@ -541,7 +543,7 @@ class SlurmWorkers:
             submitted_job_id = await self._submit_job(sbatch_script, delete_script=True)
             self.logger.info(
                 f"Worker job submitted successfully. Worker & Job ID: {submitted_job_id}, Resources: {num_gpus} GPU(s), "
-                f"{num_cpus} CPU(s), {mem_per_cpu}G mem/CPU, {time_limit} time limit"
+                f"{num_cpus} CPU(s), {mem_in_gb_per_cpu}G mem/CPU, {time_limit} time limit"
             )
 
             # Wait for the worker to be added to the Ray cluster
@@ -697,14 +699,16 @@ class SlurmWorkers:
         num_cpus = required_resources.get("CPU", 1)
         num_gpus = required_resources.get("GPU", 0)
         memory = required_resources.get("memory", 0) / 1024**3  # Convert bytes to GB
-        mem_per_cpu = math.ceil(memory / num_cpus)  # Calculate memory in GB per CPU
+        mem_in_gb_per_cpu = math.ceil(
+            memory / num_cpus
+        )  # Calculate memory in GB per CPU
 
         if num_cpus < self.default_num_cpus:
             num_cpus = self.default_num_cpus
         if num_gpus < self.default_num_gpus:
             num_gpus = self.default_num_gpus
-        if mem_per_cpu < self.default_mem_per_cpu:
-            mem_per_cpu = self.default_mem_per_cpu
+        if mem_in_gb_per_cpu < self.default_mem_in_gb_per_cpu:
+            mem_in_gb_per_cpu = self.default_mem_in_gb_per_cpu
 
         # TODO: Check how to pass time limit and further SLURM args
         time_limit = self.default_time_limit
@@ -720,7 +724,7 @@ class SlurmWorkers:
             self._add_worker(
                 num_gpus=num_gpus,
                 num_cpus=num_cpus,
-                mem_per_cpu=mem_per_cpu,
+                mem_in_gb_per_cpu=mem_in_gb_per_cpu,
                 time_limit=time_limit,
                 further_slurm_args=further_slurm_args,
             ),

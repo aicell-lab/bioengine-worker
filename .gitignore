@@ -158,6 +158,9 @@ cython_debug/
 # VS Code
 .vscode/
 
+# Copilot
+.github/instructions/
+
 # BioEngine
 .bioengine
 data/

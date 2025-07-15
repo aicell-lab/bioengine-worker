@@ -53,68 +53,6 @@ class AppBuilder:
         self.server = server
         self.artifact_manager = artifact_manager
 
-    def _add_init_wrapper(self, deployment_class: serve.Deployment) -> serve.Deployment:
-        orig_init = getattr(deployment_class, "__init__")
-
-        @wraps(orig_init)
-        def wrapped_init(self, *args, **kwargs):
-            import os
-            from pathlib import Path
-
-            workdir = Path(os.environ["BIOENGINE_WORKDIR"])
-            workdir.mkdir(parents=True, exist_ok=True)
-            os.chdir(workdir)
-            return orig_init(self, *args, **kwargs)
-
-        deployment_class.__init__ = wrapped_init
-        return deployment_class
-
-    def _get_init_param_info(self, deployment_class: serve.Deployment) -> dict:
-        sig = inspect.signature(deployment_class.func_or_class.__init__)
-        params = {}
-        for name, param in sig.parameters.items():
-            if name == "self":
-                continue
-            param_type = (
-                param.annotation
-                if param.annotation is not inspect.Parameter.empty
-                else None
-            )
-            default = (
-                param.default if param.default is not inspect.Parameter.empty else None
-            )
-            params[name] = {
-                "type": param_type,
-                "default": default,
-            }
-        return params
-
-    async def _update_env_vars(
-        self, deployment_class: serve.Deployment, token: str
-    ) -> serve.Deployment:
-        """
-        Add BioEngine and Hypha specific environment variables to the deployment
-        """
-        ray_actor_options = deployment_class.ray_actor_options
-        runtime_env = ray_actor_options.setdefault("runtime_env", {})
-        env_vars = runtime_env.setdefault("env_vars", {})
-
-        # Set standard directories to ensure it only uses the specified workdir
-        env_vars["BIOENGINE_WORKDIR"] = str(self.apps_cache_dir)
-        env_vars["HOME"] = str(self.apps_cache_dir)
-        env_vars["TMPDIR"] = str(self.apps_cache_dir / "tmp")
-
-        # Pass the data directory to the deployment
-        env_vars["BIOENGINE_DATA_DIR"] = str(self.apps_data_dir)
-
-        env_vars["HYPHA_SERVER_URL"] = self.server.config.public_base_url
-        env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
-        # env_vars["HYPHA_CLIENT_ID"] = self.server.config.client_id
-        # env_vars["HYPHA_SERVICE_ID"] = self.service_id
-        env_vars["HYPHA_TOKEN"] = token
-
-        return deployment_class.options(ray_actor_options=ray_actor_options)
-
     async def _load_manifest(self, artifact_id: str, version: str = None) -> dict:
         """
         Load the artifact manifest from the artifact manager.
@@ -180,6 +118,178 @@ class AppBuilder:
 
         return manifest
 
+    def _update_init(self, deployment_class: serve.Deployment) -> serve.Deployment:
+        orig_init = getattr(deployment_class, "__init__")
+
+        @wraps(orig_init)
+        def wrapped_init(self, *args, **kwargs):
+            import os
+            from pathlib import Path
+
+            # Ensure the workdir is set to the BIOENGINE_WORKDIR environment variable
+            workdir = Path(os.environ["BIOENGINE_WORKDIR"])
+            workdir.mkdir(parents=True, exist_ok=True)
+            os.chdir(workdir)
+
+            # Initialize deployment states
+            self._deployment_initialized = False
+            self._deployment_tested = False
+
+            # Call the original __init__ method
+            return orig_init(self, *args, **kwargs)
+
+        setattr(deployment_class, "__init__", wrapped_init)
+        return deployment_class
+
+    def _update_async_init(
+        self, deployment_class: serve.Deployment
+    ) -> serve.Deployment:
+        orig_async_init = getattr(deployment_class, "async_init", lambda self: None)
+
+        @wraps(orig_async_init)
+        async def wrapped_async_init(self):
+            # Check if the original health check method is async
+            if inspect.iscoroutinefunction(orig_async_init):
+                await orig_async_init(self)
+            else:
+                # If it's a regular function, call it directly
+                orig_async_init(self)
+
+            self._deployment_initialized = True
+
+        setattr(deployment_class, "async_init", wrapped_async_init)
+        return deployment_class
+
+    def _update_test_deployment(
+        self, deployment_class: serve.Deployment
+    ) -> serve.Deployment:
+        orig_test_deployment = getattr(
+            deployment_class, "test_deployment", lambda self: True
+        )
+
+        @wraps(orig_test_deployment)
+        async def wrapped_test_deployment(self):
+            # Check if the original health check method is async
+            if inspect.iscoroutinefunction(orig_test_deployment):
+                test_result = await orig_test_deployment(self)
+            else:
+                # If it's a regular function, call it directly
+                test_result = orig_test_deployment(self)
+
+            if test_result is not True:
+                raise RuntimeError(
+                    f"Deployment test failed for {deployment_class.func_or_class.__name__}"
+                )
+
+            self._deployment_tested = True
+
+        setattr(deployment_class, "test_deployment", wrapped_test_deployment)
+        return deployment_class
+
+    def _update_health_check(
+        self, deployment_class: serve.Deployment
+    ) -> serve.Deployment:
+        """
+        Add a health check method to the deployment class.
+        This method is called by Ray Serve during the actor initialization and keeps the
+        deployment in stage "DEPLOYING" until the health check passes.
+        """
+        orig_health_check = getattr(deployment_class, "health_check", lambda self: None)
+
+        @wraps(orig_health_check)
+        async def health_check(self):
+            if not self._deployment_initialized:
+                await self.async_init()
+            if not self._deployment_tested:
+                await self.test_deployment()
+
+            # Check if the original health check method is async
+            if inspect.iscoroutinefunction(orig_health_check):
+                return await orig_health_check(self)
+            else:
+                # If it's a regular function, call it directly
+                return orig_health_check(self)
+
+        # Add the updated health check method to the deployment class
+        setattr(deployment_class, "health_check", health_check)
+        return deployment_class
+
+    def _get_init_param_info(self, deployment_class: serve.Deployment) -> dict:
+        sig = inspect.signature(deployment_class.func_or_class.__init__)
+        params = {}
+        for name, param in sig.parameters.items():
+            if name == "self":
+                continue
+            param_type = (
+                param.annotation
+                if param.annotation is not inspect.Parameter.empty
+                else None
+            )
+            default = (
+                param.default if param.default is not inspect.Parameter.empty else None
+            )
+            params[name] = {
+                "type": param_type,
+                "default": default,
+            }
+        return params
+
+    def _check_params(self, init_params: dict, kwargs: dict) -> None:
+        """
+        Check if the provided kwargs match the expected init parameters.
+        Raises ValueError if there are unexpected parameters, missing required parameters,
+        or type mismatches.
+        """
+        # Check if all provided parameters are expected
+        for key in kwargs:
+            if key not in init_params:
+                raise ValueError(
+                    f"Unexpected parameter '{key}' provided. "
+                    f"Expected one of {list(init_params.keys())}."
+                )
+            expected_type = init_params[key]["type"]
+            if expected_type and not isinstance(kwargs[key], expected_type):
+                raise ValueError(
+                    f"Parameter '{key}' must be of type {expected_type.__name__}, "
+                    f"but got {type(kwargs[key]).__name__}."
+                )
+
+        # Check if all required parameters are provided
+        for key, param_info in init_params.items():
+            if param_info["type"] == DeploymentHandle:
+                # DeploymentHandle parameters are handled separately
+                continue
+            if param_info["default"] is None and key not in kwargs:
+                raise ValueError(
+                    f"Missing required parameter '{key}' of type {param_info['type'].__name__}."
+                )
+
+    async def _update_env_vars(
+        self, deployment_class: serve.Deployment, token: str
+    ) -> serve.Deployment:
+        """
+        Add BioEngine and Hypha specific environment variables to the deployment
+        """
+        ray_actor_options = deployment_class.ray_actor_options
+        runtime_env = ray_actor_options.setdefault("runtime_env", {})
+        env_vars = runtime_env.setdefault("env_vars", {})
+
+        # Set standard directories to ensure it only uses the specified workdir
+        env_vars["BIOENGINE_WORKDIR"] = str(self.apps_cache_dir)
+        env_vars["HOME"] = str(self.apps_cache_dir)
+        env_vars["TMPDIR"] = str(self.apps_cache_dir / "tmp")
+
+        # Pass the data directory to the deployment
+        env_vars["BIOENGINE_DATA_DIR"] = str(self.apps_data_dir)
+
+        env_vars["HYPHA_SERVER_URL"] = self.server.config.public_base_url
+        env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
+        # env_vars["HYPHA_CLIENT_ID"] = self.server.config.client_id
+        # env_vars["HYPHA_SERVICE_ID"] = self.service_id
+        env_vars["HYPHA_TOKEN"] = token
+
+        return deployment_class.options(ray_actor_options=ray_actor_options)
+
     async def _load_deployment(
         self,
         artifact_id: str,
@@ -219,6 +329,9 @@ class AppBuilder:
 
         if os.environ.get("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"):
             # Load the file content from local path
+            self.logger.debug(
+                f"Loading deployment code from local path: {python_file} in artifact {artifact_id}"
+            )
             artifact_folder = artifact_id.split("/")[1].replace("-", "_")
             local_deployments_dir = Path(
                 os.environ["BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"]
@@ -275,8 +388,11 @@ class AppBuilder:
             if not deployment_class:
                 raise RuntimeError(f"Error loading {class_name} from {artifact_id}")
 
-            # Wrap the class `__init__` method to ensure it uses the workdir
-            deployment_class = self._add_init_wrapper(deployment_class)
+            # Update the deployment class methods
+            deployment_class = self._update_init(deployment_class)
+            deployment_class = self._update_async_init(deployment_class)
+            deployment_class = self._update_test_deployment(deployment_class)
+            deployment_class = self._update_health_check(deployment_class)
 
             self.logger.debug(
                 f"Loaded class '{class_name}' from artifact '{artifact_id}'."
@@ -291,7 +407,9 @@ class AppBuilder:
             )
             raise e
 
-    def _calculate_required_resources(self, deployments: List[serve.Deployment]) -> Dict[str, int]:
+    def _calculate_required_resources(
+        self, deployments: List[serve.Deployment]
+    ) -> Dict[str, int]:
         required_resources = {
             "num_cpus": 0,
             "num_gpus": 0,
@@ -309,7 +427,7 @@ class AppBuilder:
         self,
         application_id: str,
         artifact_id: str,
-        version: str = None,
+        version: Optional[str] = None,
         deployment_options: Optional[Dict[str, int]] = None,
         deployment_kwargs: Optional[Dict[str, Any]] = None,
     ) -> serve.Application:
@@ -318,6 +436,16 @@ class AppBuilder:
 
         :return: The built application instance.
         """
+        # Validate application_id and artifact_id
+        if not application_id:
+            raise ValueError("Application ID cannot be empty.")
+
+        if not artifact_id or "/" not in artifact_id:
+            raise ValueError(
+                f"Invalid artifact ID format: {artifact_id}. "
+                "Expected format is 'workspace/artifact_alias'."
+            )
+
         # Load the artifact manifest
         manifest = await self._load_manifest(artifact_id, version)
 
@@ -332,16 +460,14 @@ class AppBuilder:
             )
             for import_path in manifest["deployments"]
         ]
+        deployment_kwargs = deployment_kwargs or {}
 
         # Get kwargs for the entry deployment
         entry_deployment = deployments[0]
+        class_name = entry_deployment.func_or_class.__name__
+        entry_deployment_kwargs = deployment_kwargs.get(class_name, {})
         entry_init_params = self._get_init_param_info(entry_deployment)
-        deployment_kwargs = deployment_kwargs or {}
-        entry_deployment_kwargs = {
-            p_name: value
-            for p_name, value in deployment_kwargs.items()
-            if p_name in entry_init_params
-        }
+        self._check_params(entry_init_params, entry_deployment_kwargs)
 
         # If multiple deployment classes are found, create a composition deployment
         if len(deployments) > 1:
@@ -349,30 +475,26 @@ class AppBuilder:
                 "Creating a composition deployment with multiple classes."
             )
 
+            # Add the composition deployment class(es) to the entry deployment kwargs
             deployment_handle_params = [
                 param_name
                 for param_name, param_info in entry_init_params.items()
                 if param_info["type"] == DeploymentHandle
             ]
-
             if len(deployment_handle_params) != len(deployments) - 1:
                 raise ValueError(
                     f"Mismatch between number of deployment handle parameters "
                     f"({len(deployment_handle_params)}) and number of deployment "
                     f"classes defined in artifact manifest ({len(deployments) - 1})."
                 )
-
             for handle_name, deployment in zip(
                 deployment_handle_params, deployments[1:]
             ):
+                class_name = deployment.func_or_class.__name__
                 init_params = self._get_init_param_info(deployment)
-                entry_deployment_kwargs[handle_name] = deployment.bind(
-                    **{
-                        param_name: value
-                        for param_name, value in deployment_kwargs.items()
-                        if param_name in init_params
-                    }
-                )
+                kwargs = deployment_kwargs.get(class_name, {})
+                self._check_params(init_params, kwargs)
+                entry_deployment_kwargs[handle_name] = deployment.bind(**kwargs)
 
         # Create the entry deployment handle
         entry_deployment_handle = entry_deployment.bind(**entry_deployment_kwargs)
@@ -384,13 +506,19 @@ class AppBuilder:
             if callable(method) and hasattr(method, "__schema__"):
                 method_schemas.append(method.__schema__)
 
+        if not method_schemas:
+            raise ValueError(
+                f"No schema methods found in the entry deployment class: "
+                f"{entry_deployment.func_or_class.__name__}."
+            )
+
         # Create the application
         rtc_proxy_deployment = RtcProxyDeployment
         app = rtc_proxy_deployment.bind(
             application_id=application_id,
             application_name=manifest["name"],
             application_description=manifest["description"],
-            entry_deployment=entry_deployment_handle,
+            entry_deployment_handle=entry_deployment_handle,
             method_schemas=method_schemas,
             server_url=self.server.config.public_base_url,
             workspace=self.server.config.workspace,
@@ -399,7 +527,9 @@ class AppBuilder:
         )
 
         # Calculate the total number of required resources
-        required_resources = self._calculate_required_resources(deployments + [rtc_proxy_deployment])
+        required_resources = self._calculate_required_resources(
+            deployments + [rtc_proxy_deployment]
+        )
 
         # Create application metadata
         app.metadata = {
@@ -413,3 +543,46 @@ class AppBuilder:
         }
 
         return app
+
+
+if __name__ == "__main__":
+    import asyncio
+    from hypha_rpc import connect_to_server
+
+    server_url = "https://hypha.aicell.io"
+    token = os.environ["HYPHA_TOKEN"]
+
+    base_dir = Path(__file__).parent.parent
+    apps_cache_dir = base_dir / ".bioengine" / "apps"
+    apps_data_dir = base_dir / "data"
+    os.environ["BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"] = str(base_dir / "tests")
+
+    async def test_app_builder():
+        server = await connect_to_server({"server_url": server_url, "token": token})
+        artifact_manager = await server.get_service("public/artifact-manager")
+
+        app_builder = AppBuilder(
+            token=token,
+            apps_cache_dir=apps_cache_dir,
+            apps_data_dir=apps_data_dir,
+            log_file=None,
+            debug=True,
+        )
+        app_builder.initialize(server, artifact_manager)
+
+        app = await app_builder.build(
+            application_id="test-application-1234",
+            artifact_id="test-workspace/composition-app",
+            version=None,
+            deployment_options={
+                "num_cpus": 1,
+                "num_gpus": 0,
+                "memory": 1024 * 1024 * 1024,  # 1 GB
+            },
+            deployment_kwargs={
+                "CompositionDeployment": {"demo_input": "Hello World!"},
+                "Deployment2": {"start_number": 10},
+            },
+        )
+
+    asyncio.run(test_app_builder())

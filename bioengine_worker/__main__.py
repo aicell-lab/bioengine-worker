@@ -1,6 +1,6 @@
 import argparse
 import asyncio
-import os
+import json
 import signal
 import sys
 import time
@@ -10,96 +10,6 @@ from typing import Literal
 from bioengine_worker import __version__
 from bioengine_worker.utils import create_logger
 from bioengine_worker.worker import BioEngineWorker
-
-
-async def main(group_configs):
-    """Main function to initialize and register BioEngine worker"""
-
-    # Set up logging
-    log_dir = Path(group_configs["options"]["cache_dir"]) / "logs"
-    log_file = log_dir / f"bioengine_worker_{time.strftime('%Y%m%d_%H%M%S')}.log"
-    logger = create_logger("__main__", log_file=log_file)
-
-    # Pass log file to group configs
-    group_configs["options"]["log_file"] = log_file
-
-    # Setup signal-aware shutdown
-    is_shutting_down = False
-    bioengine_worker = None
-
-    def _handle_shutdown_signal(sig_name: Literal["SIGINT", "SIGTERM"]):
-        """
-        Handle shutdown signals for graceful termination.
-
-        Args:
-            sig_name: The name of the signal received, either "SIGINT" for user interrupt (Ctrl+C) or "SIGTERM" for termination request.
-        """
-        nonlocal is_shutting_down, bioengine_worker
-        if is_shutting_down and sig_name == "SIGINT":
-            logger.info("Received second SIGINT, stopping immediately...")
-            sys.exit(1)
-
-        logger.info(
-            f"Received {sig_name}, starting graceful shutdown. Press Ctrl+C again to force exit."
-        )
-        is_shutting_down = True
-
-        if bioengine_worker:
-            # TODO: when running in Apptainer, the container’s overlay filesystem is torn down before the graceful shutdown completes -> results in OSError [Errno 107] because executables like Ray or scancel are not found
-            asyncio.create_task(
-                bioengine_worker.cleanup(context=bioengine_worker._admin_context),
-                name="BioEngineWorker.cleanup",
-            )
-
-    # Register signal handlers
-    loop = asyncio.get_running_loop()
-    loop.add_signal_handler(signal.SIGINT, _handle_shutdown_signal, "SIGINT")
-    loop.add_signal_handler(signal.SIGTERM, _handle_shutdown_signal, "SIGTERM")
-
-    try:
-        # Get Bioengine worker configuration
-        worker_config = group_configs["options"]
-
-        startup_deployments = []
-        for element in worker_config["startup_deployments"]:
-            if ":" in element:
-                # If the element is a tuple of (artifact_id, application_id)
-                artifact_id, application_id = element.split(":", 1)
-                startup_deployments.append((artifact_id, application_id))
-            else:
-                # If the element is just an artifact ID
-                startup_deployments.append(element)
-        worker_config["startup_deployments"] = startup_deployments
-
-        # Get Hypha configuration
-        hypha_config = group_configs["Hypha Options"]
-
-        # Get Ray Cluster Manager configuration
-        ray_cluster_config = group_configs["Ray Cluster Manager Options"]
-
-        # Get SLURM Job configuration
-        slurm_job_config = group_configs["SLURM Job Options"]
-
-        # Get Ray Autoscaler configuration
-        ray_autoscaling_config = group_configs["Ray Autoscaler Options"]
-
-        # Create BioEngine worker instance
-        bioengine_worker = BioEngineWorker(
-            **worker_config,
-            **hypha_config,
-            ray_cluster_config={
-                **ray_cluster_config,
-                **slurm_job_config,
-                **ray_autoscaling_config,
-            },
-        )
-
-        # Initialize worker and wait until shutdown is triggered
-        await bioengine_worker.start()
-
-    except Exception as e:
-        logger.error(f"Exception in main: {str(e)}")
-        raise
 
 
 def create_parser():
@@ -135,10 +45,28 @@ def create_parser():
         help="Data directory served by the dataset manager. This should be a mounted directory if running in container.",
     )
     parser.add_argument(
-        "--startup_deployments",
+        "--startup_applications",
         type=str,
         nargs="+",
         help="List of applications to deploy on worker startup. Each element can be an artifact ID or a tuple of (artifact_id, application_id).",
+    )
+    parser.add_argument(
+        "--dashboard_url",
+        type=str,
+        default="https://dev.bioimage.io/#/bioengine",
+        help="URL of the BioEngine dashboard",
+    )
+    parser.add_argument(
+        "--no_logging",
+        action="store_true",
+        default=False,
+        help="Disable logging to file. Useful for debugging in interactive environments.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Set logger to debug level",
     )
 
     # Hypha related options
@@ -236,6 +164,12 @@ def create_parser():
         help="Number of GPUs for head node if starting locally",
     )
     ray_cluster_group.add_argument(
+        "--head_memory_in_gb",
+        type=int,
+        default=0,
+        help="Amount of memory in GB for head node if starting locally",
+    )
+    ray_cluster_group.add_argument(
         "--runtime_env_pip_cache_size_gb",
         type=int,
         default=30,
@@ -291,7 +225,7 @@ def create_parser():
         help="Default number of CPUs per worker",
     )
     slurm_job_group.add_argument(
-        "--default_mem_per_cpu",
+        "--default_mem_in_gb_per_cpu",
         default=16,
         type=int,
         help="Default memory per CPU in GB",
@@ -342,20 +276,6 @@ def create_parser():
         help="Time threshold before scaling down idle nodes",
     )
 
-    parser.add_argument(
-        "--dashboard_url",
-        type=str,
-        default="https://dev.bioimage.io/#/bioengine",
-        help="URL of the BioEngine dashboard",
-    )
-
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        default=False,
-        help="Set logger to debug level",
-    )
-
     return parser
 
 
@@ -373,9 +293,94 @@ def get_args_by_group(parser):
     return group_configs
 
 
+def read_startup_applications(group_configs):
+    startup_applications = []
+    for json_str in group_configs["options"]["startup_applications"]:
+        try:
+            application_config = json.loads(json_str.strip())
+        except json.JSONDecodeError:
+            raise ValueError(
+                "Invalid JSON format for startup application. A valid format would be "
+                '\'{"artifact_id": "my_artifact",  "num_gpus": 1}.\' '
+                f"Received: '{json_str}'"
+            )
+        startup_applications.append(application_config)
+
+    group_configs["options"]["startup_applications"] = startup_applications
+
+    return group_configs
+
+
+async def main(group_configs):
+    """Main function to initialize and register BioEngine worker"""
+
+    # Set up logging and pass log file to BioEngine worker
+    create_log_file = not group_configs["options"].pop("no_logging")
+    if create_log_file:
+        log_dir = Path(group_configs["options"]["cache_dir"]) / "logs"
+        log_file = log_dir / f"bioengine_worker_{time.strftime('%Y%m%d_%H%M%S')}.log"
+        group_configs["options"]["log_file"] = log_file
+    else:
+        log_file = None
+    logger = create_logger("__main__", log_file=log_file)
+
+    # Setup signal-aware shutdown
+    is_shutting_down = False
+    bioengine_worker = None
+
+    def _handle_shutdown_signal(sig_name: Literal["SIGINT", "SIGTERM"]):
+        """
+        Handle shutdown signals for graceful termination.
+
+        Args:
+            sig_name: The name of the signal received, either "SIGINT" for user interrupt (Ctrl+C) or "SIGTERM" for termination request.
+        """
+        nonlocal is_shutting_down, bioengine_worker
+        if is_shutting_down and sig_name == "SIGINT":
+            logger.info("Received second SIGINT, stopping immediately...")
+            sys.exit(1)
+
+        logger.info(
+            f"Received {sig_name}, starting graceful shutdown. Press Ctrl+C again to force exit."
+        )
+        is_shutting_down = True
+
+        if bioengine_worker:
+            # TODO: when running in Apptainer, the container’s overlay filesystem is torn down before the graceful shutdown completes -> results in OSError [Errno 107] because executables like Ray or scancel are not found
+            asyncio.create_task(
+                bioengine_worker.cleanup(context=bioengine_worker._admin_context),
+                name="BioEngineWorker.cleanup",
+            )
+
+    # Register signal handlers
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGINT, _handle_shutdown_signal, "SIGINT")
+    loop.add_signal_handler(signal.SIGTERM, _handle_shutdown_signal, "SIGTERM")
+
+    try:
+        # Create BioEngine worker instance
+        bioengine_worker = BioEngineWorker(
+            **group_configs["options"],
+            **group_configs["Hypha Options"],
+            ray_cluster_config={
+                **group_configs["Ray Cluster Manager Options"],
+                **group_configs["SLURM Job Options"],
+                **group_configs["Ray Autoscaler Options"],
+            },
+        )
+
+        # Initialize worker and wait until shutdown is triggered
+        await bioengine_worker.start()
+
+    except Exception as e:
+        logger.error(f"Exception in main: {str(e)}")
+        raise
+
+
 if __name__ == "__main__":
     description = "Register BioEngine worker to Hypha server"
 
     parser = create_parser()
     group_configs = get_args_by_group(parser)
+    group_configs = read_startup_applications(group_configs)
     asyncio.run(main(group_configs))

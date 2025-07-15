@@ -18,11 +18,13 @@ from ray import serve
                 "EXAMPLE_ENV_VAR": "example_value",  # Example environment variable
             },
         },
-    }
+    },
+    # Maximum number of ongoing requests to the deployment
+    max_ongoing_requests=5,
 )
 class Deployment2:
-    def __init__(self, start: int = 42) -> None:
-        self.start = start
+    def __init__(self, start_number: int) -> None:
+        self.start_number = start_number
 
     async def add(self, number: int) -> int:
-        return self.start + number
+        return self.start_number + number

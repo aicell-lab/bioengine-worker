@@ -10,7 +10,6 @@ from haikunator import Haikunator
 from hypha_rpc.rpc import RemoteService
 from hypha_rpc.utils.schema import schema_method
 from ray import serve
-from ray.exceptions import RayTaskError
 
 from bioengine_worker import __version__
 from bioengine_worker.app_builder import AppBuilder
@@ -59,7 +58,7 @@ class AppsManager:
         ray_cluster (RayCluster): Ray cluster manager instance
         server: Hypha server connection
         service_info: Registered Hypha service information
-        startup_deployments (List[str]): Deployments to start automatically
+        startup_applications (List[dict]): Deployments to start automatically
         logger: Logger instance for deployment operations
         _deployed_artifacts (Dict): Internal tracking of active deployments with task references
     """
@@ -70,7 +69,7 @@ class AppsManager:
         token: str,
         apps_cache_dir: str = "/tmp/bioengine/apps",
         apps_data_dir: str = "/data",
-        startup_deployments: Optional[List[Union[str, Tuple[str, str]]]] = None,
+        startup_applications: Optional[List[dict]] = None,
         # Logger
         log_file: Optional[str] = None,
         debug: bool = False,
@@ -86,7 +85,7 @@ class AppsManager:
             admin_users: List of user IDs or emails with admin permissions
             apps_cache_dir: Caching directory used in Ray Serve deployments
             apps_data_dir: Data directory accessible to deployments
-            startup_deployments: List of artifact IDs to start on initialization
+            startup_applications: List of application configurations to deploy on startup
             log_file: Optional log file path for output
             debug: Enable debug logging
 
@@ -103,7 +102,6 @@ class AppsManager:
         # Store parameters
         self.ray_cluster = ray_cluster
         self.admin_users = None
-        self._token = token
 
         if self.ray_cluster.mode == "slurm":
             # SLURM workers always mount to /tmp/bioengine and /data
@@ -126,7 +124,7 @@ class AppsManager:
         # Initialize the application ID generator and builder
         self.haikunator = Haikunator()
         self.app_builder = AppBuilder(
-            token=self._token,
+            token=token,
             apps_cache_dir=apps_cache_dir,
             apps_data_dir=apps_data_dir,
             log_file=log_file,
@@ -135,9 +133,7 @@ class AppsManager:
 
         # Initialize state variables
         self.server = None
-
-        self.service_info = None
-        self.startup_deployments = startup_deployments or []
+        self.startup_applications = startup_applications
         self._deployment_semaphore = asyncio.Semaphore(value=1)
         self._deployed_applications = {}
 
@@ -179,12 +175,13 @@ class AppsManager:
 
     async def _check_resources(
         self, application_id: str, required_resources: Dict[str, int]
-    ) -> Dict[str, int]:
+    ) -> None:
         # Check if the required resources are available
         insufficient_resources = True
-        while not self.ray_cluster.status["nodes"]:
-            # Wait for Ray cluster to be ready
-            await asyncio.sleep(1)
+
+        # Wait for Ray cluster to be ready
+        await self.ray_cluster.is_ready.wait()
+
         for node_resource in self.ray_cluster.status["nodes"].values():
             if (
                 node_resource["available_cpu"] >= required_resources["num_cpus"]
@@ -200,7 +197,8 @@ class AppsManager:
             default_num_cpus = self.ray_cluster.slurm_workers.default_num_cpus
             default_num_gpus = self.ray_cluster.slurm_workers.default_num_gpus
             default_memory = (
-                self.ray_cluster.slurm_workers.default_mem_per_cpu * default_num_cpus
+                self.ray_cluster.slurm_workers.default_mem_in_gb_per_cpu
+                * default_num_cpus
             )
             if (
                 num_worker_jobs < self.ray_cluster.slurm_workers.max_workers
@@ -222,39 +220,6 @@ class AppsManager:
                     "Assuming Ray autoscaling is available. "
                     f"Requested resources: {required_resources}"
                 )
-
-        return required_resources
-
-    async def _validate_application(self, application_id: str):
-        serve_status = await asyncio.to_thread(serve.status)
-        application = serve_status.applications.get(
-            self._deployed_applications[application_id]
-        )
-        if not application:
-            raise RuntimeError(
-                f"Application '{application_id}' is not accessible in Ray Serve."
-            )
-        elif application.status.value != "HEALTHY":
-            raise RuntimeError(
-                f"Application '{application_id}' is not healthy. Status: {application.status.value}"
-            )
-        
-        app_handle = self._deployed_applications[application_id]["application_handle"]
-        try:
-            await app_handle.async_init.remote()
-            self.logger.debug(
-                f"Application '{application_id}' completed async initialization."
-            )
-        except RayTaskError as e:
-            raise RuntimeError(
-                f"Application '{application_id}' failed async initialization."
-            )
-
-        try:
-            await app_handle.test_application.remote()
-            self.logger.debug(f"Application '{application_id}' passed its test check.")
-        except RayTaskError as e:
-            raise RuntimeError(f"Application '{application_id}' failed its test check.")
 
     async def _deploy_application(
         self,
@@ -288,6 +253,9 @@ class AppsManager:
             only exit when cancelled or on error. Cleanup is guaranteed via finally block.
         """
         try:
+            # Reset deployment status (if already deployed)
+            self._deployed_applications[application_id]["is_deployed"].clear()
+
             artifact_id = self._deployed_applications[application_id]["artifact_id"]
             version = self._deployed_applications[application_id]["version"]
 
@@ -303,12 +271,11 @@ class AppsManager:
                     "deployment_kwargs"
                 ],
             )
-            application_meta_data = app.metadata
 
             # Check if the required resources are available
             await self._check_resources(
                 application_id=application_id,
-                required_resources=application_meta_data["resources"],
+                required_resources=app.metadata["resources"],
             )
 
             # Run the deployment in Ray Serve with unique route prefix
@@ -326,31 +293,25 @@ class AppsManager:
 
             # Await the coroutine to start the deployment
             app_handle = await deployment_coroutine
-            self._deployed_applications[application_id]["application_handle"] = (
-                app_handle
-            )
 
-            # Validate the application is healthy and available
-            await self._validate_application(application_id=application_id)
-
-            # Get the application metadata
-            application_service_ids = await app_handle.get_service_ids.remote(timeout=60)
+            # Get the application service IDs
+            application_service_ids = await app_handle.get_service_ids.remote()
 
             # Update application metadata in the internal state
-            self._deployed_applications[application_id]["display_name"] = (
-                application_meta_data["name"]
-            )
-            self._deployed_applications[application_id]["description"] = (
-                application_meta_data["description"]
-            )
+            self._deployed_applications[application_id]["display_name"] = app.metadata[
+                "name"
+            ]
+            self._deployed_applications[application_id]["description"] = app.metadata[
+                "description"
+            ]
             self._deployed_applications[application_id]["application_resources"] = (
-                application_meta_data["resources"]
+                app.metadata["resources"]
             )
             self._deployed_applications[application_id]["authorized_users"] = (
-                application_meta_data["authorized_users"]
+                app.metadata["authorized_users"]
             )
             self._deployed_applications[application_id]["available_methods"] = (
-                application_meta_data["available_methods"]
+                app.metadata["available_methods"]
             )
             self._deployed_applications[application_id]["service_ids"] = {
                 "websocket_service_id": application_service_ids["websocket_service_id"],
@@ -358,7 +319,7 @@ class AppsManager:
             }
 
             # Mark the application as deployed
-            self._deployed_applications[application_id]["is_deployed"] = True
+            self._deployed_applications[application_id]["is_deployed"].set()
 
             # Track the application in the internal state
             self.logger.info(
@@ -367,8 +328,7 @@ class AppsManager:
             )
 
             # Keep the deployment task running until cancelled
-            while True:
-                await asyncio.sleep(1)
+            await asyncio.Event().wait()
 
         except asyncio.CancelledError:
             self.logger.info(
@@ -379,8 +339,11 @@ class AppsManager:
                 f"Failed to deploy application '{application_id}' with error: {e}"
             )
         finally:
+            # Signal other processes to stop waiting for this deployment
+            self._deployed_applications[application_id]["is_deployed"].set()
+
+            # Cleanup: Remove from Ray Serve and update tracking
             if self._deployed_applications[application_id]["remove_on_exit"]:
-                # Cleanup: Remove from Ray Serve and update tracking
                 try:
                     await asyncio.to_thread(serve.delete, application_id)
                     self.logger.debug(
@@ -392,7 +355,7 @@ class AppsManager:
                     )
 
                 # Remove from deployment tracking
-                del self._deployed_applications[application_id]
+                self._deployed_applications.pop(application_id, None)
                 self.logger.debug(
                     f"Removed application '{application_id}' from deployment tracking."
                 )
@@ -428,17 +391,27 @@ class AppsManager:
             self.logger.error(f"Error initializing Ray Deployment Manager: {e}")
             self.server = None
             self.artifact_manager = None
-            raise e
+            raise
 
         # Initialize artifact manager
         self.app_builder.initialize(self.server, self.artifact_manager)
 
-        # Deploy any startup artifacts
-        admin_context = create_context(admin_users[0])
-        await self.deploy_applications(
-            ids=self.startup_deployments,
-            context=admin_context,
-        )
+        # Deploy any startup applications if provided
+        if self.startup_applications:
+            self.logger.info(
+                f"Deploying {len(self.startup_applications)} startup applications..."
+            )
+            admin_context = create_context(admin_users[0])
+            application_ids = await self.deploy_applications(
+                app_configs=self.startup_applications,
+                context=admin_context,
+            )
+
+            # Wait for all startup applications to be deployed
+            for application_id in application_ids:
+                app_info = self._deployed_applications.get(application_id)
+                if app_info:
+                    await app_info["is_deployed"].wait()
 
     async def monitor_applications(self) -> None:
         if not self._deployed_applications:
@@ -448,16 +421,21 @@ class AppsManager:
         await self.ray_cluster.check_connection()
         serve_status = await asyncio.to_thread(serve.status)
 
-        deployed_applications = self._deployed_applications.copy()
-        for application_id, application_info in deployed_applications.items():
-            if not application_info["is_deployed"]:
+        application_ids = list(self._deployed_applications.keys())
+        for application_id in application_ids:
+            application_info = self._deployed_applications.get(application_id)
+            if not application_info:
+                # Application no longer tracked, skip monitoring
+                continue
+            if not application_info["is_deployed"].is_set():
+                # Application not yet deployed, skip monitoring
                 continue
 
             # Get the application status from Ray Serve
             application = serve_status.applications.get(application_id)
             if not application:
+                # Application not found in Ray Serve, increment failure count and clear is_deployed
                 application_info["consecutive_failures"] += 1
-                application_info["is_deployed"] = False
             elif application.status.value == "DEPLOY_FAILED":
                 # If the application deployment failed, increment failure count
                 # Allow application to recover from transient issues (UNHEALTHY -> HEALTHY)
@@ -467,19 +445,29 @@ class AppsManager:
                 application_info["consecutive_failures"] = 0
 
             if application_info["consecutive_failures"] > 3:
+                # Application has failed multiple times, undeploy and remove from tracking
                 self.logger.warning(
                     f"Application '{application_id}' for artifact '{application_info['artifact_id']}', "
                     f"version '{application_info['version']}' has failed multiple times. It will be "
                     "undeployed and removed from tracking."
                 )
-                self._deployed_applications[application_id]["deployment_task"].cancel()
+                application_info["deployment_task"].cancel()
                 self._deployed_applications.pop(application_id, None)
+
             elif application_info["consecutive_failures"] > 0:
+                # Application is experiencing issues, trigger redeployment
                 self.logger.info(
                     f"Application '{application_id}' for artifact '{application_info['artifact_id']}' "
                     f"is experiencing issues. Consecutive failures: {application_info['consecutive_failures']}"
                 )
-                self._deploy_application(application_id)
+
+                # Re-deploy the application
+                deployment_task = asyncio.create_task(
+                    self._deploy_application(application_id=application_id),
+                    name=f"Deploy_{application_id}",
+                )
+                # Overwrite the existing deployment task
+                application_info["deployment_task"] = deployment_task
 
     @schema_method
     async def create_artifact(
@@ -708,8 +696,8 @@ class AppsManager:
         num_cpus: int = None,
         num_gpus: int = None,
         memory: int = None,
+        deployment_kwargs: Optional[Dict[str, Dict[str, Any]]] = None,
         context: Optional[Dict[str, Any]] = None,
-        deployment_kwargs: Optional[Dict[str, Any]] = None,  # TODO: provide per deployment kwargs
     ) -> str:
         """
         Deploy a single artifact to Ray Serve with comprehensive state management.
@@ -740,6 +728,7 @@ class AppsManager:
             deployment progress and success.
         """
         # Only allow one deployment task creation at a time
+        # This ensures unique application_id and prevents race conditions
         async with self._deployment_semaphore:
             self._check_initialized()
 
@@ -761,22 +750,43 @@ class AppsManager:
             if not application_id:
                 application_id = self._generate_application_id()
 
-            deployment_kwargs = deployment_kwargs or {}
-            kwargs_str = ", ".join(
-                f"{key}: {value!r}" for key, value in deployment_kwargs.items()
-            )
+            # Validate deployment_kwargs
+            if deployment_kwargs is not None:
+                if not isinstance(deployment_kwargs, dict):
+                    raise ValueError(
+                        "deployment_kwargs must be a dictionary of keyword arguments."
+                    )
+                # Ensure all values are dictionaries
+                for key, value in deployment_kwargs.items():
+                    if not isinstance(value, dict):
+                        raise ValueError(
+                            f"Value for '{key}' in deployment_kwargs must be a dictionary."
+                        )
+
+                kwargs_str = ", ".join(
+                    f"{deployment_class}("
+                    + ", ".join(
+                        [f"{key}={value!r}" for key, value in init_kwargs.items()]
+                    )
+                    + ")"
+                    for deployment_class, init_kwargs in deployment_kwargs.items()
+                )
+            else:
+                deployment_kwargs = {}
+                kwargs_str = "None"
+
             if application_id not in self._deployed_applications:
                 # Create a new application if application_id is not provided
                 self.logger.info(
-                    f"User '{user_id}' is deploying a new application '{application_id}' from artifact '{artifact_id}', version '{str(version)}' with kwargs: {{{kwargs_str}}}"
+                    f"User '{user_id}' is deploying a new application '{application_id}' from artifact '{artifact_id}', version '{str(version)}' with kwargs: {kwargs_str}"
                 )
             else:
                 # Update existing application
                 application_info = self._deployed_applications[application_id]
-                if application_info["is_deployed"]:
+                if application_info["is_deployed"].is_set():
                     # If already deployed, cancel the existing deployment task to update deployment in a new task
                     self.logger.info(
-                        f"User '{user_id}' is updating existing application from artifact '{artifact_id}', version '{str(version)}' with kwargs: {{{kwargs_str}}}"
+                        f"User '{user_id}' is updating existing application from artifact '{artifact_id}', version '{str(version)}' with kwargs: {kwargs_str}"
                     )
                     application_info["remove_on_exit"] = False
                     application_info["deployment_task"].cancel()
@@ -816,7 +826,7 @@ class AppsManager:
                 },
                 "last_updated_by": user_id,
                 "deployment_task": None,  # Track the deployment task
-                "is_deployed": False,  # Track if the deployment has been started
+                "is_deployed": asyncio.Event(),  # Track if the deployment has been started
                 "remove_on_exit": True,  # Default to remove on exit
                 "consecutive_failures": 0,  # Track consecutive failures for monitoring
             }
@@ -833,93 +843,41 @@ class AppsManager:
             return application_id
 
     @schema_method
-    async def deploy_applications(
-        self, ids: List[Union[str, Tuple[str, str]]], context: dict
-    ) -> None:
+    async def deploy_applications(self, app_configs: List[dict], context: dict) -> None:
         """
         Deploy all startup deployments defined in the manager.
 
-        Automatically deploys all artifacts specified in the startup_deployments
+        Automatically deploys all artifacts specified in the startup_applications
         list during initialization. Uses admin user context for authentication.
 
         Raises:
             RuntimeError: If server or artifact manager is not initialized
             Exception: If deployment of any startup artifact fails
         """
-        if not isinstance(ids, list) or not ids:
-            raise ValueError("Provided ids must be a non-empty list.")
+        if not isinstance(app_configs, list) or not app_configs:
+            raise ValueError("Provided app_configs must be a non-empty list.")
 
         application_ids = []
-        for element in ids:
-            if isinstance(element, str):
-                # If it's a string, treat it as an artifact ID
-                artifact_id = element
-                application_id = None
-            elif isinstance(element, tuple) and len(element) == 2:
-                artifact_id = element[0]
-                application_id = element[1]
-            else:
-                raise ValueError(
-                    "Each element in the list of IDs must be a string or a tuple of (artifact_id, application_id)."
-                )
+        for app_config in app_configs:
+            if not isinstance(app_config, dict):
+                raise ValueError("Each app_config must be a dictionary.")
+
+            if "artifact_id" not in app_config:
+                raise ValueError("Each app_config must contain an 'artifact_id'.")
 
             application_id = await self.deploy_application(
-                artifact_id=artifact_id,
-                version=None,  # Use latest version
-                application_id=application_id,
-                # Use default resources
-                num_cpus=None,
-                num_gpus=None,
-                memory=None,
+                artifact_id=app_config["artifact_id"],
+                version=app_config.get("version"),
+                application_id=app_config.get("application_id"),
+                num_cpus=app_config.get("num_cpus"),
+                num_gpus=app_config.get("num_gpus"),
+                memory=app_config.get("memory"),
+                deployment_kwargs=app_config.get("deployment_kwargs"),
                 context=context,
             )
             application_ids.append(application_id)
 
         return application_ids
-
-    @schema_method
-    async def deploy_collection(
-        self,
-        deployment_collection_id: str = "bioengine-apps",
-        context: Optional[Dict[str, Any]] = None,
-    ) -> List[str]:
-        """
-        Deploy all artifacts in the deployment collection to Ray Serve with batch processing.
-
-        Iterates through all artifacts in the specified collection and deploys
-        each one to Ray Serve using individual deployment tasks. Updates Hypha
-        services once after all deployments are initiated to improve efficiency.
-
-        Each artifact is deployed independently with proper state tracking, allowing
-        for partial success scenarios where some deployments succeed while others fail.
-
-        Args:
-            deployment_collection_id: Artifact collection ID for deployments
-            context: Optional context information from Hypha request containing user info
-
-        Returns:
-            List of artifact IDs that were successfully initiated for deployment
-
-        Raises:
-            ValueError: If artifact manager is not initialized
-            Exception: If deployment of any artifact fails to initiate
-
-        Note:
-            The method returns after initiating all deployments. Use get_status()
-            to monitor individual deployment progress and success.
-        """
-        self.logger.info(
-            f"Deploying all artifacts in collection '{deployment_collection_id}'..."
-        )
-        self._check_initialized()
-
-        # Get all artifacts in the collection
-        artifact_ids = await self.artifact_manager.list(
-            parent_id=deployment_collection_id
-        )
-
-        # Deploy each artifact
-        await self.deploy_applications(ids=artifact_ids, context=context)
 
     @schema_method
     async def undeploy_application(
@@ -1094,7 +1052,7 @@ class AppsManager:
 
             else:
                 start_time = None
-                if application_info["is_deployed"]:
+                if application_info["is_deployed"].is_set():
                     status = "UNHEALTHY"
                     # If the deployment is marked as deployed but not found in Ray Serve,
                     # it may have failed or been removed unexpectedly.

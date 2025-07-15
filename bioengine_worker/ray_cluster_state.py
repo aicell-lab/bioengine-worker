@@ -2,6 +2,7 @@ import re
 from dataclasses import asdict
 from typing import Dict, Optional, Union
 
+import psutil
 import ray
 from ray._private.state import GlobalState
 from ray._raylet import GcsClientOptions
@@ -161,6 +162,37 @@ class ClusterState:
 
             available_resources = available_resources_per_node.get(node_id, {})
 
+            total_memory = total_resources.get("memory", 0)
+            available_memory = available_resources.get("memory", 0)
+
+            if total_memory == 0:
+                # If total memory is not specified, use psutil to get system memory
+                if "node:__internal_head__" in total_resources.keys():
+                    # This Actor is running on the head node
+                    memory = psutil.virtual_memory()
+                    total_memory = memory.total
+                    available_memory = memory.available
+                else:
+                    # Send a task to get memory info from the node
+                    import re
+
+                    pattern = r"^node:(\d{1,3}(?:\.\d{1,3}){3})$"
+                    for key in total_resources.keys():
+                        match = re.match(pattern, key)
+                        if match:
+                            break
+
+                    @ray.remote(num_cpus=0, resources={match.group(): 0.001})
+                    def memory_task():
+                        import psutil
+
+                        memory = psutil.virtual_memory()
+                        total_memory = memory.total
+                        available_memory = memory.available
+                        return total_memory, available_memory
+
+                    total_memory, available_memory = ray.get(memory_task.remote())
+
             # Add per-node resources to the cluster state
             cluster_state["nodes"][node_id] = {
                 "node_ip": self._get_node_ip(total_resources),
@@ -168,13 +200,13 @@ class ClusterState:
                 "available_cpu": available_resources.get("CPU", 0),
                 "total_gpu": total_resources.get("GPU", 0),
                 "available_gpu": available_resources.get("GPU", 0),
-                "total_memory": total_resources.get("memory", 0),
-                "available_memory": available_resources.get("memory", 0),
+                "total_memory": total_memory,  # in bytes
+                "available_memory": available_memory,  # in bytes
                 "total_object_store_memory": total_resources.get(
-                    "object_store_memory", 0
+                    "object_store_memory", 0  # in bytes
                 ),
                 "available_object_store_memory": available_resources.get(
-                    "object_store_memory", 0
+                    "object_store_memory", 0  # in bytes
                 ),
                 "accelerator_type": self._get_accelerator_type(total_resources),
                 "slurm_job_id": self._get_slurm_job_id(total_resources),

@@ -49,7 +49,7 @@ class BioEngineWorker:
         admin_users (List[str]): List of user emails with admin permissions
         cache_dir (Path): Directory for temporary files and Ray data
         data_dir (Path): Directory for dataset storage
-        startup_deployments (List[str]): List of deployments to start automatically
+        startup_applications (List[str]): List of deployments to start automatically
         server_url (str): URL of the Hypha server
         workspace (str): Hypha workspace name
         client_id (str): Client ID for Hypha connection
@@ -67,7 +67,7 @@ class BioEngineWorker:
         admin_users: Optional[List[str]] = None,
         cache_dir: str = "/tmp/bioengine",
         data_dir: str = "/data",
-        startup_deployments: Optional[List[Union[str, Tuple[str, str]]]] = None,
+        startup_applications: Optional[List[Union[str, Tuple[str, str]]]] = None,
         monitoring_interval_seconds: int = 10,
         # Hypha server connection configuration
         server_url: str = "https://hypha.aicell.io",
@@ -94,7 +94,7 @@ class BioEngineWorker:
             admin_users: List of user emails with admin permissions
             cache_dir: Directory for temporary files and Ray data
             data_dir: Directory for dataset storage
-            startup_deployments: List of deployments to start automatically
+            startup_applications: List of deployments to start automatically
             server_url: URL of the Hypha server to register with
             workspace: Hypha workspace to connect to (defaults to user's workspace)
             token: Authentication token for Hypha server (uses HYPHA_TOKEN env var if None)
@@ -121,15 +121,10 @@ class BioEngineWorker:
         self.start_time = None
         self._last_monitoring = 0
         self._server = None
-        self._serve_event = None
+        self.is_ready = asyncio.Event()
+        self._serve_event = asyncio.Event()
         self._monitoring_task = None
         self.full_service_id = None
-
-        if not log_file:
-            log_dir = self.cache_dir / "logs"
-            log_file = (
-                log_dir / f"bioengine_worker_{time.strftime('%Y%m%d_%H%M%S')}.log"
-            )
 
         self.logger = create_logger(
             name="BioEngineWorker",
@@ -174,7 +169,7 @@ class BioEngineWorker:
                 token=self._token,
                 apps_cache_dir=self.cache_dir / "apps",
                 apps_data_dir=self.data_dir,
-                startup_deployments=startup_deployments,
+                startup_applications=startup_applications,
                 log_file=log_file,
                 debug=debug,
             )
@@ -228,6 +223,12 @@ class BioEngineWorker:
         Raises:
             ValueError: If connection to Hypha server fails
         """
+        if self._server:
+            self.logger.debug("Closing existing Hypha server connection...")
+            try:
+                await self._server.disconnect()
+            except Exception as e:
+                self.logger.error(f"Error closing Hypha server connection: {e}")
         self.logger.debug(f"Connecting to Hypha server at {self.server_url}...")
         self._server = await connect_to_server(
             {
@@ -237,7 +238,6 @@ class BioEngineWorker:
                 "client_id": self.client_id,
             }
         )
-        await self._check_hypha_connection(reconnect=False)
 
         user_id = self._server.config.user["id"]
         user_email = self._server.config.user["email"]
@@ -266,8 +266,9 @@ class BioEngineWorker:
         except Exception as e:
             if reconnect:
                 self.logger.warning(
-                    f"Hypha server connection error: {e}. Attempting to reconnect..."
+                    f"Hypha server connection error. Attempting to reconnect..."
                 )
+                await self._connect_to_server()
                 await self._register_bioengine_worker_service()
             else:
                 raise RuntimeError(f"Hypha server connection error: {e}")
@@ -293,6 +294,7 @@ class BioEngineWorker:
                     "visibility": "public",
                     "require_context": True,
                 },
+                "is_ready": lambda context: self.is_ready.is_set(),
                 "get_status": self.get_status,
                 "load_dataset": self.dataset_manager.load_dataset,
                 "close_dataset": self.dataset_manager.close_dataset,
@@ -302,7 +304,6 @@ class BioEngineWorker:
                 "delete_artifact": self.apps_manager.delete_artifact,
                 "deploy_application": self.apps_manager.deploy_application,
                 "deploy_applications": self.apps_manager.deploy_applications,
-                "deploy_collection": self.apps_manager.deploy_collection,
                 "undeploy_application": self.apps_manager.undeploy_application,
                 "cleanup_deployments": self.apps_manager.cleanup,
                 "stop_worker": self.stop,
@@ -403,6 +404,7 @@ class BioEngineWorker:
 
         # Signal the serve loop to exit
         self._serve_event.set()
+        self.is_ready.clear()
 
         # Clear the monitoring task reference
         self._monitoring_task = None
@@ -430,6 +432,7 @@ class BioEngineWorker:
 
         # Register the BioEngine worker service with the Hypha server
         await self._connect_to_server()
+        await self._check_hypha_connection(reconnect=False)
 
         # Initialize component managers with the server connection
         await self.apps_manager.initialize(
@@ -448,7 +451,11 @@ class BioEngineWorker:
         # Register the BioEngine worker service interface
         await self._register_bioengine_worker_service()
 
-        self._serve_event = asyncio.Event()
+        # Signal that the worker is ready
+        self.is_ready.set()
+
+        # Start the serve loop
+        self._serve_event.clear()
         await self._serve_event.wait()
 
     async def notify(self, delay_s: int = 3) -> None:

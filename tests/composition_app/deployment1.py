@@ -20,7 +20,9 @@ from ray import serve
                 "EXAMPLE_ENV_VAR": "example_value",  # Example environment variable
             },
         },
-    }
+    },
+    # Maximum number of ongoing requests to the deployment
+    max_ongoing_requests=5,
 )
 class Deployment1:
     def __init__(self) -> None:

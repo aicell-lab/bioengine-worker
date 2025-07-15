@@ -37,11 +37,14 @@ from ray.serve.handle import DeploymentHandle
                 "EXAMPLE_ENV_VAR": "example_value",  # Example environment variable
             },
         },
-    }
+    },
+    # Maximum number of ongoing requests to the deployment
+    max_ongoing_requests=5,
 )
 class CompositionDeployment:
     def __init__(
         self,
+        demo_input: str,
         deployment1: DeploymentHandle,
         deployment2: DeploymentHandle,
     ) -> None:
@@ -49,12 +52,13 @@ class CompositionDeployment:
         Initialize the composition deployment with the given arguments. Make sure that each model
         com
         """
+        self.demo_input = demo_input
         self.deployment1 = deployment1
         self.deployment2 = deployment2
 
     # === Internal BioEngine App Methods - will be called by the BioEngine when the deployment is started ===
 
-    async def _async_init(self) -> None:
+    async def async_init(self) -> None:
         """
         An optional async initialization method for the deployment. If defined, it will be called
         when the deployment is started.
@@ -68,7 +72,7 @@ class CompositionDeployment:
         print("Initializing CompositionDeployment...")
         await asyncio.sleep(0.01)
 
-    async def _test_deployment(self) -> bool:
+    async def test_deployment(self) -> bool:
         """
         An optional method to test the deployment. If defined, it will be called when the deployment
         is started to check if the deployment is working correctly.
@@ -113,4 +117,4 @@ class CompositionDeployment:
         """
         uptime = await self.deployment1_handle.elapsed_time.remote()
         result = await self.deployment2_handle.add.remote(number)
-        return f"Uptime: {uptime}, Result: {result}"
+        return f"Uptime: {uptime}, Result: {result}, Demo string: {self.demo_input}"

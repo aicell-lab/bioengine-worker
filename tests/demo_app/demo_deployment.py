@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Union
 
+from hypha_rpc.utils.schema import schema_method
 from ray import serve
 
 # All libraries that are not part of the standard python library or the BioEngine
@@ -46,7 +47,7 @@ class DemoDeployment:
 
     # === Internal BioEngine App Methods - will be called by the BioEngine when the deployment is started ===
 
-    async def _async_init(self) -> None:
+    async def async_init(self) -> None:
         """
         An optional async initialization method for the deployment. If defined, it will be called
         when the deployment is started.
@@ -60,7 +61,7 @@ class DemoDeployment:
         print("Initializing DemoDeployment...")
         await asyncio.sleep(0.01)
 
-    async def _test_deployment(self) -> bool:
+    async def test_deployment(self) -> bool:
         """
         An optional method to test the deployment. If defined, it will be called when the deployment
         is started to check if the deployment is working correctly.
@@ -116,6 +117,7 @@ class DemoDeployment:
 
     # === Exposed BioEngine App Methods - docstrings will be used to generate the API documentation ===
 
+    @schema_method
     async def ping(self) -> Dict[str, Union[str, float]]:
         """
         Ping the model to test connectivity.
@@ -133,6 +135,7 @@ class DemoDeployment:
             "uptime": time.time() - self.start_time,
         }
 
+    @schema_method
     async def ascii_art(self) -> List[str]:
         """
         Get an ASCII art representation of the word 'Bioengine'.

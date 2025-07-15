@@ -3,8 +3,9 @@ import logging
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
+from aiortc import RTCPeerConnection
 from hypha_rpc import connect_to_server, register_rtc_service
-from hypha_rpc.utils.schema import schema_function
+from hypha_rpc.utils.schema import schema_function, schema_method
 from ray import serve
 from ray.exceptions import RayTaskError
 from ray.serve.handle import DeploymentHandle
@@ -15,28 +16,104 @@ logger = logging.getLogger("RtcProxyDeployment")
 
 @serve.deployment(
     ray_actor_options={"num_cpus": 1},
+    max_ongoing_requests=10,  # Limit concurrent requests to avoid overload
+    autoscaling_config={"min_replicas": 1},  # Restart proxy if it fails
     health_check_period_s=10,  # Check health every 10 seconds
     health_check_timeout_s=5,  # Timeout after 5 seconds
 )
 class RtcProxyDeployment:
+    """
+    Ray Serve deployment for BioEngine applications, acting as a proxy that registers both WebSocket and WebRTC services with Hypha to bridge Ray Serve applications and external clients.
+    Enables efficient data handling via direct peer-to-peer WebRTC connections and standard RPC over WebSocket.
+
+    Key features:
+    - Registers services with Hypha for discovery and access
+    - Supports authentication and user authorization
+    - Monitors health and service registration status for Ray Serve
+    - Handles load management and request throttling
+    - WebRTC registration is optional; WebSocket is required for health
+
+    Connection Types Supported:
+    1. WebSocket Connections: Standard RPC over WebSocket for compatibility
+       - Registered as main service with application_id
+       - Always available if deployment is healthy
+       - Handles all method calls through proxy functions
+    2. WebRTC Connections: Direct peer-to-peer connections for high-performance data transfer
+       - Registered as "{application_id}-rtc" service
+       - Optional - deployment remains healthy if WebRTC registration fails
+       - Uses custom ICE servers when available, falls back to defaults
+       - Enables direct data channel communication bypassing server
+
+    Architecture Overview:
+
+    External Clients
+            ↓
+    (With WebSocket: Hypha Server )
+            ↓
+    RtcProxyDeployment - Ray Cluster
+            ↓
+    BioEngine Application - Ray Cluster
+
+    """
+
     def __init__(
         self,
         application_id: str,
         application_name: str,
         application_description: str,
-        entry_deployment: DeploymentHandle,
+        entry_deployment_handle: DeploymentHandle,
         method_schemas: List[Dict[str, Any]],
         server_url: str,
         workspace: str,
         token: str,
         authorized_users: List[str],
     ):
+        """
+        Initialize the RtcProxyDeployment with BioEngine application configuration.
+
+        This constructor sets up the deployment state and initiates the background
+        service registration process with the Hypha server. The deployment will
+        automatically register both WebSocket and WebRTC services upon initialization.
+
+        Args:
+            application_id: Unique identifier for the BioEngine application.
+                          Used as the primary service ID in Hypha registration.
+                          Must be unique within the workspace.
+
+            application_name: Human-readable name for the application.
+                            Displayed in service discovery interfaces.
+
+            application_description: Detailed description of the application's functionality.
+                                   Used for documentation and service catalogs.
+
+            entry_deployment_handle: Ray Serve deployment handle for the actual
+                                   BioEngine application. All method calls will
+                                   be forwarded to this deployment.
+
+            method_schemas: List of JSON schema definitions for application methods.
+                          Each schema must contain 'name', 'description', and 'parameters'.
+                          Used for automatic proxy function generation and validation.
+
+            server_url: Hypha server endpoint URL. Typically 'https://hypha.aicell.io'
+                       for production or custom server for development.
+
+            workspace: Hypha workspace identifier for service organization.
+                      Can be None for default workspace. Used for multi-tenancy.
+
+            token: Authentication token for Hypha server access.
+                  Required for service registration and must have appropriate permissions.
+
+            authorized_users: List of user identifiers (IDs or emails) allowed to access
+                            this application. Use ["*"] for public access.
+                            Empty list denies all access.
+        """
         # BioEngine application metadata
         self.application_id = application_id
         self.application_name = application_name
         self.application_description = application_description
-        self.entry_deployment = entry_deployment
+        self.entry_deployment_handle = entry_deployment_handle
         self.method_schemas = method_schemas
+        self.max_ongoing_requests = 10
 
         # Hypha server connection parameters
         self.server_url = server_url
@@ -45,25 +122,16 @@ class RtcProxyDeployment:
         self.authorized_users = authorized_users
 
         # Service state
-        self.service_id: Optional[str] = None
         self.server = None
-        self.rtc_service_id: Optional[str] = None  # Track WebRTC service separately
-        self._shutdown_event = asyncio.Event()
-        self._service_ready = asyncio.Event()
-        self._last_error: Optional[str] = None
-        self._connection_handlers: List[Callable] = (
-            []
-        )  # Store connection event handlers
+        self.rtc_service_id: Optional[str] = None
+        self.service_id: Optional[str] = None
+        self.service_semaphore = asyncio.Semaphore(self.max_ongoing_requests)
 
-        # Start the service registration task
-        self.service_task = asyncio.create_task(
-            self._register_web_rtc_service(),
-            name=f"rtc_proxy_service_{application_id}",
-        )
+        # Store connection event handlers
+        self._connection_handlers: List[Callable] = []
 
     # ===== Hypha Service Registration =====
-    # Methods responsible for registering and managing Hypha RPC services
-    # These methods handle both WebSocket and WebRTC service registration with the Hypha server
+    # Handles registration of WebSocket and WebRTC services with Hypha.
 
     async def _fetch_ice_servers(self) -> Optional[List[Dict[str, Any]]]:
         """
@@ -82,22 +150,9 @@ class RtcProxyDeployment:
         but gracefully falls back to None if unavailable, allowing hypha-rpc
         to use its built-in default servers.
 
-        Error Handling:
-            - HTTP errors (4xx, 5xx responses)
-            - Network connectivity issues
-            - Request timeouts (30 second timeout)
-            - JSON parsing errors
-
-        Returns:
-            Optional[List[Dict[str, Any]]]: List of ICE server configurations
-                                          or None if fetching fails
-
         ICE Server Format:
             [{"urls": "stun:stun.server.com:19302"},
              {"urls": "turn:turn.server.com:3478", "username": "...", "credential": "..."}]
-
-        Used By:
-            - _register_web_rtc_service() during WebRTC service registration
         """
         try:
             async with httpx.AsyncClient(timeout=30) as client:
@@ -125,6 +180,57 @@ class RtcProxyDeployment:
 
         return None
 
+    async def _on_webrtc_init(self, peer_connection: RTCPeerConnection) -> None:
+        """
+        **WEBRTC CONNECTION LIFECYCLE MANAGEMENT**
+
+        Callback handler invoked by hypha-rpc when a new WebRTC peer connection
+        is established. Sets up connection state monitoring and integrates WebRTC
+        connection events with the deployment's operational state.
+
+        This method is registered as the "on_init" callback during WebRTC service
+        registration and follows the hypha-rpc WebRTC connection initialization pattern.
+
+        ## Connection State Monitoring
+        Registers event handlers for WebRTC connection state changes:
+        - "connected": Successful peer-to-peer connection established
+        - "failed": Connection failed due to network, NAT, or other issues
+        - "closed": Connection terminated by either peer
+        - "disconnected": Connection interrupted, may be temporary
+
+        ## Integration with Ray Serve Health System
+        While WebRTC connection failures don't directly affect Ray Serve health checks,
+        the connection state is monitored for:
+        - Operational visibility and debugging
+        - Future integration with advanced health criteria
+        - Client connection quality metrics
+
+        ## Connection Cleanup Management
+        Stores connection event handlers in self._connection_handlers for proper
+        cleanup during deployment shutdown, preventing memory leaks and ensuring
+        graceful WebRTC resource management.
+        """
+        try:
+            logger.info(
+                f"WebRTC peer connection initialized for '{self.application_id}'"
+            )
+
+            # Set up connection state monitoring
+            @peer_connection.on("connectionstatechange")
+            def on_connection_state_change():
+                state = peer_connection.connectionState
+                logger.info(
+                    f"WebRTC connection state changed to '{state}' for '{self.application_id}'"
+                )
+
+            # Store handler reference for cleanup
+            self._connection_handlers.append(on_connection_state_change)
+
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to initialize WebRTC connection for '{self.application_id}': {e}"
+            )
+
     async def _check_permissions(self, context: Optional[Dict[str, Any]]) -> None:
         """
         **HYPHA SERVICE REGISTRATION - PERMISSION VALIDATION**
@@ -144,18 +250,8 @@ class RtcProxyDeployment:
         - User ID match against authorized_users list
         - Email address match against authorized_users list
 
-        Args:
-            context: Request context containing user information from Hypha
-
         Raises:
             PermissionError: If user is not authorized or context is invalid
-
-        Context Format Expected:
-            {"user": {"id": "user123", "email": "user@example.com"}}
-
-        Used By:
-            - Proxy functions created by _create_deployment_function()
-            - All registered service methods for access control
         """
         if context is None or "user" not in context:
             raise PermissionError("Context is missing user information")
@@ -213,110 +309,72 @@ class RtcProxyDeployment:
                 - name: Method name
                 - description: Method description
                 - parameters: Parameter schema for validation
-
-        Returns:
-            Callable: Async proxy function ready for Hypha service registration
-
-        Proxy Function Signature:
-            async def deployment_function(*args, context, **kwargs) -> Any
-
-        Used By:
-            - _register_web_rtc_service() during service function creation
         """
         method_name = method_schema["name"]
 
-        @schema_function(
+        async def deployment_function(*args, context, **kwargs) -> Any:
+            async with self.service_semaphore:
+                # TODO: simulate Ray Serve deployment request for each method call to trigger automatic scaling
+                try:
+                    # Check user permissions
+                    await self._check_permissions(context)
+
+                    # Log the method call
+                    user_info = context.get("user", {}) if context else {}
+                    user_id = user_info.get("id", "unknown")
+                    logger.info(
+                        f"User {user_id} calling method '{method_name}' on app '{self.application_id}'"
+                    )
+
+                    # Get the method from the entry deployment handle
+                    method = getattr(self.entry_deployment_handle, method_name, None)
+                    if method is None:
+                        raise AttributeError(
+                            f"Method '{method_name}' not found on entry deployment"
+                        )
+
+                    # Forward the request to the actual deployment
+                    try:
+                        result = await method.remote(*args, **kwargs)
+                        logger.debug(
+                            f"Successfully executed method '{method_name}' for user {user_id}"
+                        )
+                        return result
+                    except RayTaskError as e:
+                        logger.error(f"Ray task error in method '{method_name}': {e}")
+                        raise
+                    except Exception as e:
+                        logger.error(f"Unexpected error in method '{method_name}': {e}")
+                        raise
+
+                except PermissionError as e:
+                    logger.warning(f"Permission denied for method '{method_name}': {e}")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error in proxy function '{method_name}': {e}")
+                    raise
+
+        return schema_function(
+            func=deployment_function,
             name=method_schema["name"],
             description=method_schema["description"],
             parameters=method_schema["parameters"],
         )
-        async def deployment_function(*args, context, **kwargs) -> Any:
-            try:
-                # Check user permissions
-                await self._check_permissions(context)
 
-                # Log the method call
-                user_info = context.get("user", {}) if context else {}
-                user_id = user_info.get("id", "unknown")
-                logger.info(
-                    f"User {user_id} calling method '{method_name}' on app '{self.application_id}'"
-                )
-
-                # Get the method from the entry deployment handle
-                if not hasattr(self.entry_deployment, method_name):
-                    raise AttributeError(
-                        f"Method '{method_name}' not found on entry deployment"
-                    )
-
-                method = getattr(self.entry_deployment, method_name)
-
-                # Forward the request to the actual deployment
-                try:
-                    result = await method.remote(*args, **kwargs)
-                    logger.debug(
-                        f"Successfully executed method '{method_name}' for user {user_id}"
-                    )
-                    return result
-                except RayTaskError as e:
-                    logger.error(f"Ray task error in method '{method_name}': {e}")
-                    raise
-                except Exception as e:
-                    logger.error(f"Unexpected error in method '{method_name}': {e}")
-                    raise
-
-            except PermissionError as e:
-                logger.warning(f"Permission denied for method '{method_name}': {e}")
-                raise
-            except Exception as e:
-                logger.error(f"Error in proxy function '{method_name}': {e}")
-                raise
-
-        return deployment_function
+    @schema_method
+    async def _get_load(self) -> float:
+        """Returns the current load of the service as a float value between 0 and 1."""
+        load = self.service_semaphore._value / self.max_ongoing_requests
+        return load
 
     async def _register_web_rtc_service(self) -> None:
         """
-        **HYPHA SERVICE REGISTRATION - MAIN REGISTRATION PROCESS**
+        Register WebSocket and WebRTC services with Hypha.
 
-        Register both WebSocket and WebRTC services with the Hypha server,
-        establishing the complete RPC service infrastructure for this BioEngine
-        application deployment.
-
-        Registration Process:
-        1. Connect to Hypha server using provided credentials
-        2. Fetch custom ICE servers for WebRTC (with fallback to defaults)
-        3. Register WebRTC service for peer-to-peer connections
-        4. Create proxy functions for all application methods
-        5. Register main WebSocket service with all proxy functions
-        6. Signal service readiness for health checks
-        7. Start connection monitoring loop
-
-        Service Types Registered:
-        - WebRTC Service: For direct peer-to-peer connections (optional)
-        - WebSocket Service: For standard RPC connections (required)
-
-        The method handles failures gracefully:
-        - WebRTC registration failure doesn't prevent WebSocket service
-        - Connection monitoring continues even if some services fail
-        - Error states are recorded for health check system
-
-        Service Configuration:
-        - Visibility: "public" (accessible to all authorized users)
-        - Context: Required (for user authentication)
-        - Type: "bioengine-apps" (for service discovery)
-
-        Raises:
-            Exception: If critical service registration fails
-
-        Side Effects:
-        - Sets self.server (Hypha connection)
-        - Sets self.service_id (main WebSocket service ID)
-        - Sets self.rtc_service_id (WebRTC service ID, may be None)
-        - Sets self._service_ready event
-        - May set self._last_error on failure
-
-        Used By:
-        - Constructor via asyncio.create_task() during deployment initialization
+        Connects to Hypha, fetches ICE servers, registers services, and sets up proxy functions.
+        WebRTC registration is optional; main service registration is required for health.
         """
+        # Connect to Hypha server
         try:
             logger.info(
                 f"Connecting to Hypha server for application '{self.application_id}'"
@@ -326,70 +384,71 @@ class RtcProxyDeployment:
             self.server = await connect_to_server(
                 {
                     "server_url": self.server_url,
-                    "workspace": self.workspace,
                     "token": self.token,
+                    "workspace": self.workspace,
                 }
             )
             logger.info(
                 f"Successfully connected to Hypha server for '{self.application_id}'"
             )
+        except Exception as e:
+            self.server = None
+            logger.error(
+                f"Error connecting to Hypha server for '{self.application_id}': {e}"
+            )
+            raise
 
-            # Register WebRTC service with custom ICE servers or fallback to defaults
-            try:
-                # Fetch custom ICE servers
-                ice_servers = await self._fetch_ice_servers()
+        # Register WebRTC service with custom ICE servers or fallback to defaults
+        try:
+            # Fetch custom ICE servers
+            ice_servers = await self._fetch_ice_servers()
 
-                # Prepare WebRTC config
-                rtc_config = {
-                    "visibility": "public",
-                    "on_init": self._on_webrtc_init,  # Add WebRTC connection handler
-                }
+            # Prepare WebRTC config
+            rtc_config = {
+                "visibility": "public",
+                "on_init": self._on_webrtc_init,  # Add WebRTC connection handler
+            }
 
-                # Add custom ICE servers if available, otherwise hypha-rpc will use defaults
-                if ice_servers:
-                    rtc_config["ice_servers"] = ice_servers
-                    logger.info(
-                        f"Using custom ICE servers for WebRTC service '{self.application_id}'"
-                    )
-                else:
-                    logger.info(
-                        f"Using default ICE servers for WebRTC service '{self.application_id}'"
-                    )
-
-                # Register WebRTC service
-                rtc_service_info = await register_rtc_service(
-                    self.server,
-                    service_id=f"{self.application_id}-rtc",
-                    config=rtc_config,
-                )
-                self.rtc_service_id = rtc_service_info["id"]
+            # Add custom ICE servers if available, otherwise hypha-rpc will use defaults
+            if ice_servers:
+                rtc_config["ice_servers"] = ice_servers
                 logger.info(
-                    f"Registered WebRTC service for '{self.application_id}' with ID: {self.rtc_service_id}"
+                    f"Using custom ICE servers for WebRTC service '{self.application_id}'"
+                )
+            else:
+                logger.info(
+                    f"Using default ICE servers for WebRTC service '{self.application_id}'"
                 )
 
-            except Exception as e:
-                logger.error(
-                    f"Failed to register WebRTC service for '{self.application_id}': {e}"
-                )
-                # Don't fail the entire deployment if WebRTC registration fails
+            # Register WebRTC service
+            rtc_service_info = await register_rtc_service(
+                self.server,
+                service_id=f"{self.application_id}-rtc",
+                config=rtc_config,
+            )
+            self.rtc_service_id = rtc_service_info["id"]
+            logger.info(
+                f"Registered WebRTC service for '{self.application_id}' with ID: {self.rtc_service_id}"
+            )
 
+        except Exception as e:
+            logger.error(
+                f"Failed to register WebRTC service for '{self.application_id}': {e}"
+            )
+            # Don't fail the entire deployment if WebRTC registration fails
+
+        try:
             # Create service functions from method schemas
             service_functions = {}
             for method_schema in self.method_schemas:
-                try:
-                    method_name = method_schema["name"]
-                    service_functions[method_name] = self._create_deployment_function(
-                        method_schema
-                    )
-                    logger.debug(f"Created proxy function for method '{method_name}'")
-                except Exception as e:
-                    logger.error(
-                        f"Failed to create proxy function for method '{method_schema.get('name', 'unknown')}': {e}"
-                    )
-                    continue
+                method_name = method_schema["name"]
+                service_functions[method_name] = self._create_deployment_function(
+                    method_schema
+                )
+                logger.debug(f"Created proxy function for method '{method_name}'")
 
-            if not service_functions:
-                raise RuntimeError("No valid service functions could be created")
+            # Add load check function - for service load balancing (https://docs.amun.ai/#/service-load-balancing)
+            service_functions["get_load"] = self._get_load
 
             logger.info(
                 f"Registering service functions for '{self.application_id}': {list(service_functions.keys())}"
@@ -413,465 +472,107 @@ class RtcProxyDeployment:
                 f"Successfully registered service for '{self.application_id}' with ID: {self.service_id}"
             )
 
-            # Signal that the service is ready
-            self._service_ready.set()
-            logger.info(f"Service '{self.application_id}' is now healthy and ready")
-
-            # Keep the service running and monitor connection health
-            await self._run_with_connection_monitoring()
-
         except Exception as e:
+            self.service_id = None
             logger.error(
                 f"Error registering WebRTC service for '{self.application_id}': {e}"
             )
-            # Set error state and signal ready (to unblock waiters)
-            self._last_error = f"Service registration failed: {str(e)}"
-            self._service_ready.set()  # Unblock waiters even on failure
             raise
-
-    async def _on_webrtc_init(self, peer_connection) -> None:
-        """
-        **HYPHA SERVICE REGISTRATION - WEBRTC CONNECTION HANDLER**
-
-        Handler called when a new WebRTC peer connection is established through
-        the registered WebRTC service. Sets up connection monitoring and event
-        handlers to integrate WebRTC connection state with the health check system.
-
-        This method is registered as the "on_init" callback during WebRTC service
-        registration and is automatically called by hypha-rpc when a client
-        establishes a WebRTC peer connection to this service.
-
-        Connection State Monitoring:
-        - "connected": Clears any WebRTC-related error states
-        - "failed": Sets error state that will be caught by health checks
-        - "closed": Logs closure but doesn't set error state
-
-        Integration with Health System:
-        - Failed connections set self._last_error for health check detection
-        - Successful connections clear WebRTC-related errors via _clear_error_state()
-        - Connection handlers are stored for proper cleanup during shutdown
-
-        Args:
-            peer_connection: RTCPeerConnection object from aiortc library
-
-        Side Effects:
-        - Registers connection state change handler on peer_connection
-        - May set self._last_error on connection failures
-        - May call self._clear_error_state() on successful connections
-        - Stores handler reference in self._connection_handlers for cleanup
-
-        Called By:
-        - hypha-rpc WebRTC service infrastructure during peer connection setup
-        - Registered as "on_init" callback in WebRTC service configuration
-
-        Used For:
-        - Real-time monitoring of WebRTC connection health
-        - Integration with Ray Serve health check system
-        - Automatic error recovery when connections are restored
-        """
-        try:
-            logger.info(
-                f"WebRTC peer connection initialized for '{self.application_id}'"
-            )
-
-            # Set up connection state monitoring
-            def on_connection_state_change():
-                state = peer_connection.connectionState
-                logger.info(
-                    f"WebRTC connection state changed to '{state}' for '{self.application_id}'"
-                )
-
-                if state == "failed":
-                    logger.error(
-                        f"WebRTC connection failed for '{self.application_id}'"
-                    )
-                    self._last_error = "WebRTC connection failed"
-                elif state == "closed":
-                    logger.info(f"WebRTC connection closed for '{self.application_id}'")
-                elif state == "connected":
-                    logger.info(
-                        f"WebRTC connection established for '{self.application_id}'"
-                    )
-                    # Clear any connection-related errors
-                    if self._last_error and "webrtc" in self._last_error.lower():
-                        self._clear_error_state()
-
-            # Register the connection state change handler
-            peer_connection.on_connectionstatechange = on_connection_state_change
-
-            # Store handler reference for cleanup
-            self._connection_handlers.append(on_connection_state_change)
-
-        except Exception as e:
-            logger.error(
-                f"Error setting up WebRTC connection monitoring for '{self.application_id}': {e}"
-            )
-            self._last_error = f"WebRTC initialization failed: {str(e)}"
-
-    async def _run_with_connection_monitoring(self) -> None:
-        """
-        Keep the service running while periodically monitoring the connection.
-        """
-        last_connection_check = 0
-        connection_check_interval = 120  # Check connection every 2 minutes (less frequent due to WebRTC monitoring)
-
-        while not self._shutdown_event.is_set():
-            try:
-                # Wait for shutdown with timeout for periodic checks
-                try:
-                    await asyncio.wait_for(
-                        self._shutdown_event.wait(), timeout=connection_check_interval
-                    )
-                    break  # Shutdown was signaled
-                except asyncio.TimeoutError:
-                    pass  # Timeout reached, do periodic check
-
-                # Periodic connection health check
-                current_time = asyncio.get_event_loop().time()
-                if current_time - last_connection_check >= connection_check_interval:
-                    last_connection_check = current_time
-
-                    # Test connection health internally
-                    connection_ok = await self._test_hypha_connection()
-                    if not connection_ok:
-                        logger.error(
-                            f"Connection health check failed for '{self.application_id}'"
-                        )
-                    else:
-                        # Clear any connection-related errors if connection is working
-                        if self._last_error and (
-                            "connection" in self._last_error.lower()
-                            or "webrtc" in self._last_error.lower()
-                        ):
-                            logger.info(
-                                f"Connection restored for '{self.application_id}'"
-                            )
-                            self._clear_error_state()
-
-            except Exception as e:
-                logger.error(
-                    f"Error in connection monitoring for '{self.application_id}': {e}"
-                )
-                self._last_error = f"Connection monitoring error: {str(e)}"
 
     # ===== BioEngine Worker Interface =====
-    # Methods exposed to the BioEngine worker for deployment management
-    # These methods provide the external API for interacting with this deployment
+    # Methods for external management and service discovery.
 
-    async def async_init(self) -> None:
+    @schema_method
+    async def get_service_ids(self) -> Dict[str, str]:
         """
-        **BIOENGINE WORKER INTERFACE - DEPLOYMENT INITIALIZATION**
+        Returns dictionary of registered service IDs:
+        - "websocket_service_id": ID of the main WebSocket service
+        - "webrtc_service_id": ID of the WebRTC service (if registered)
 
-        Initialize the entry deployment if it supports async initialization.
-        This method is called by the BioEngine worker during application deployment
-        to perform any required async initialization on the underlying Ray deployment.
-
-        The method attempts to call the `_async_init` method on the entry deployment,
-        but gracefully handles cases where the method doesn't exist, as async
-        initialization is optional for BioEngine applications.
-
-        Called By:
-            - AppsManager during application deployment
-            - BioEngine worker during service startup
-
-        Behavior:
-            - Calls entry_deployment._async_init.remote() if available
-            - Logs success or gracefully handles missing method
-            - Propagates actual errors (not "method not found" errors)
-
-        Raises:
-            Exception: If async initialization fails (not if method is missing)
-
-        Returns:
-            None: Completion indicates successful initialization or graceful skip
+        Raises RuntimeError if registration failed.
         """
-        try:
-            await self.entry_deployment._async_init.remote()
-            logger.info(
-                f"Successfully initialized entry deployment for '{self.application_id}'"
+        if self.service_id is None:
+            raise RuntimeError(
+                f"Service registration failed for '{self.application_id}'"
             )
-        except RayTaskError as e:
-            if "Tried to call a method '_async_init' that does not exist." not in str(
-                e
-            ):
-                logger.error(
-                    f"Error during async init for '{self.application_id}': {e}"
-                )
-                raise e
-            # Method doesn't exist, which is fine
-            logger.debug(
-                f"Entry deployment for '{self.application_id}' does not support async_init"
-            )
-        except Exception as e:
-            logger.error(
-                f"Unexpected error during async init for '{self.application_id}': {e}"
-            )
-            raise
 
-    async def test_application(self) -> Any:
-        """
-        **BIOENGINE WORKER INTERFACE - APPLICATION TESTING**
-
-        Test the entry deployment if it supports testing functionality.
-        This method is called by the BioEngine worker to verify that the
-        deployed application is working correctly and can handle requests.
-
-        The method attempts to call the `_test_application` method on the entry
-        deployment, but gracefully handles cases where testing is not implemented,
-        as application testing is optional for BioEngine applications.
-
-        Called By:
-            - AppsManager during application health verification
-            - BioEngine worker during deployment validation
-            - Manual testing workflows
-
-        Behavior:
-            - Calls entry_deployment._test_application.remote() if available
-            - Returns test results or None if testing not supported
-            - Propagates actual test failures (not "method not found" errors)
-
-        Returns:
-            Any: Test results from the application, or None if testing not supported
-
-        Raises:
-            Exception: If application testing fails (not if method is missing)
-        """
-        try:
-            result = await self.entry_deployment._test_application.remote()
-            logger.info(f"Successfully tested application '{self.application_id}'")
-            return result
-        except RayTaskError as e:
-            if (
-                "Tried to call a method '_test_application' that does not exist."
-                not in str(e)
-            ):
-                logger.error(
-                    f"Error during application test for '{self.application_id}': {e}"
-                )
-                raise e
-            # Method doesn't exist, which is fine
-            logger.debug(
-                f"Entry deployment for '{self.application_id}' does not support test_application"
-            )
-            return None
-        except Exception as e:
-            logger.error(
-                f"Unexpected error during application test for '{self.application_id}': {e}"
-            )
-            raise
-
-    async def get_service_ids(self, timeout: int = 60) -> Dict[str, str]:
-        """
-        **BIOENGINE WORKER INTERFACE - SERVICE ID RETRIEVAL**
-
-        Get both WebSocket and WebRTC service IDs, waiting for registration
-        to complete if necessary. This method provides the BioEngine worker
-        with the registered service identifiers needed for client connections.
-
-        The method waits for service registration to complete (via _service_ready
-        event) and returns both the main WebSocket service ID and the optional
-        WebRTC service ID for peer-to-peer connections.
-
-        Called By:
-            - AppsManager to register services with BioEngine catalog
-            - BioEngine worker to provide connection info to clients
-            - Service discovery and monitoring systems
-
-        Service Types Returned:
-            - websocket_service_id: Main Hypha service for WebSocket connections
-            - webrtc_service_id: Optional WebRTC service for P2P connections (may be None)
-
-        Args:
-            timeout: Maximum time in seconds to wait for service registration
-
-        Returns:
-            Dict[str, str]: Dictionary containing:
-                - "websocket_service_id": Main service ID (always present)
-                - "webrtc_service_id": WebRTC service ID (may be None)
-
-        Raises:
-            TimeoutError: If service registration doesn't complete within timeout
-            RuntimeError: If service registration failed completely
-        """
-        try:
-            # Wait for service to be ready
-            await asyncio.wait_for(self._service_ready.wait(), timeout=timeout)
-
-            if self.service_id is None:
-                raise RuntimeError(
-                    f"Service registration failed for '{self.application_id}'"
-                )
-
-            return {
-                "websocket_service_id": self.service_id,
-                "webrtc_service_id": self.rtc_service_id,
-            }
-        except asyncio.TimeoutError:
-            raise TimeoutError(
-                f"Timed out waiting for service registration for '{self.application_id}'"
-            )
+        return {
+            "websocket_service_id": self.service_id,
+            "webrtc_service_id": self.rtc_service_id,
+        }
 
     # ===== Ray Serve Health Check =====
-    # Methods required for Ray Serve health monitoring and status checking
-    #
-    # Health Check State Variables (defined in __init__):
-    # - self._last_error: Optional[str] = None
-    #   Records any error state that should cause health check to fail.
-    #   Set by connection monitoring, cleared by _clear_error_state().
-    #
-    # - self._service_ready: asyncio.Event()
-    #   Event that signals when service registration is complete.
-    #   Set by _register_web_rtc_service() when both Hypha connection and
-    #   service registration succeed.
-    #
-    # - self.server: Optional[hypha_rpc.Server] = None
-    #   Hypha server connection object. Must be non-None for health.
-    #   Set during _register_web_rtc_service() connection phase.
-    #
-    # - self.service_id: Optional[str] = None
-    #   Main WebSocket service ID from Hypha registration.
-    #   Required for health (WebRTC service_id is optional).
-    #
-    # Ray Serve Configuration (in @serve.deployment decorator):
-    # - health_check_period_s=10: Calls check_health() every 10 seconds
-    # - health_check_timeout_s=5: Health check must complete within 5 seconds
+    # Implements periodic health checks for Ray Serve.
 
-    def check_health(self):
+    async def check_health(self):
         """
-        **REQUIRED FOR RAY SERVE HEALTH MONITORING**
-
-        Primary health check method called periodically by Ray Serve to determine
-        if this deployment replica is healthy and should continue serving requests.
-
-        This method is automatically invoked by Ray Serve based on the deployment
-        configuration parameters:
-        - health_check_period_s=10: Health check runs every 10 seconds
-        - health_check_timeout_s=5: Health check must complete within 5 seconds
-
-        Health Check Criteria:
-        1. No recorded internal errors (_last_error must be None)
-        2. Hypha server connection must be established (self.server is not None)
-        3. Service registration must be complete (_service_ready must be set)
-        4. Main service ID must be available (WebSocket service)
-
-        Note: WebRTC service registration is optional and does not affect health status.
-        The deployment can serve requests via WebSocket even if WebRTC fails.
-
-        Raises:
-            RuntimeError: If any health check criterion fails, causing Ray Serve
-                         to mark this replica as unhealthy and potentially restart it
-
-        Returns:
-            None: Implicit success if no exception is raised
+        Ray Serve health check. Ensures Hypha connection and main service registration.
+        Triggers registration if needed. Raises RuntimeError if unhealthy.
+        Called during deployment initialization and periodically.
         """
-        # Check if we have a last recorded error
-        if self._last_error:
-            raise RuntimeError(f"Deployment unhealthy: {self._last_error}")
+
+        if not self.service_id:
+            await self._register_web_rtc_service()
 
         # Check if Hypha server connection is established
         if self.server is None:
             raise RuntimeError("Hypha server connection not established")
 
-        # Check if service is registered and ready
-        if not self._service_ready.is_set():
-            raise RuntimeError("Service not registered or ready")
-
-        if self.service_id is None:
-            raise RuntimeError("Service ID not available")
-
-        # All checks passed - deployment is healthy
         # Note: WebRTC service registration is optional and doesn't affect health
 
-    def _clear_error_state(self) -> None:
-        """
-        **USED BY RAY SERVE HEALTH RECOVERY**
+        # Check if service registration is complete
+        if self.service_id is None:
+            raise RuntimeError("Application service not registered")
 
-        Clears any recorded error state, allowing the deployment to become healthy
-        again after connection restoration or error resolution.
+        # All checks passed - deployment is healthy
 
-        This method is called internally when:
-        - Hypha connection is restored after a temporary failure
-        - WebRTC connection issues are resolved
-        - Other transient errors are cleared during connection monitoring
+    async def reconfigure(self, version) -> None:
+        # user_config: Config to pass to the reconfigure method of the deployment. This
+        # can be updated dynamically without restarting the replicas of the
+        # deployment. The user_config must be fully JSON-serializable.
+        pass
 
-        The method enables automatic recovery without requiring a full deployment
-        restart, improving service availability and reducing downtime.
 
-        Usage Pattern:
-            # Connection monitoring detects restoration
-            if connection_restored and self._last_error:
-                self._clear_error_state()  # Allow health check to pass again
+if __name__ == "__main__":
+    import os
 
-        Side Effects:
-            - Sets self._last_error to None
-            - Logs the error state that was cleared for debugging
-        """
-        if self._last_error:
-            logger.info(
-                f"Cleared error state for '{self.application_id}': {self._last_error}"
-            )
-            self._last_error = None
+    class MockMethod:
+        async def remote(self, *args, **kwargs):
+            return f"Mocked method called with args={args}, kwargs={kwargs}"
 
-    async def _test_hypha_connection(self) -> bool:
-        """
-        **USED BY RAY SERVE HEALTH MONITORING**
+    class MockHandle:
+        def __getattr__(self, name):
+            return MockMethod()
 
-        Performs active testing of the Hypha server connection to detect network
-        issues, server downtime, or service registration problems before they
-        affect the main health check.
+    # Example usage of RtcProxyDeployment
+    async def main():
+        rtc_deployment_class = RtcProxyDeployment.func_or_class
+        entry_deployment_handle = MockHandle()
+        method_schema = {
+            "name": "test_method",
+            "description": "A test method for demonstration",
+            "parameters": {
+                "properties": {"test": {"description": "test", "type": "string"}},
+                "required": ["test"],
+                "type": "object",
+            },
+        }
 
-        This method is called periodically by the connection monitoring loop
-        (_run_with_connection_monitoring) to proactively detect issues and set
-        error states that will be caught by the main check_health() method.
+        deployment = rtc_deployment_class(
+            application_id="test-app",
+            application_name="Test Application",
+            application_description="A test application for demonstration",
+            entry_deployment_handle=entry_deployment_handle,
+            workspace=None,
+            server_url="https://hypha.aicell.io",
+            token=os.environ["HYPHA_TOKEN"],
+            method_schemas=[method_schema],
+            authorized_users=["*"],
+        )
 
-        Connection Test Process:
-        1. Verifies Hypha server connection exists
-        2. Tests connection with lightweight server.list_services() call
-        3. Optionally verifies service registration is still valid
-        4. Sets _last_error if any issues are detected
+        await deployment.check_health()
 
-        This proactive approach allows Ray Serve health checks to detect connection
-        issues immediately rather than waiting for actual request failures.
+        service_ids = await deployment.get_service_ids()
+        print(f"Service IDs: {service_ids}")
 
-        Returns:
-            bool: True if connection is healthy, False if issues detected
-                 When False is returned, _last_error is set with details
-
-        Side Effects:
-            - May set self._last_error on connection failure
-            - Logs warnings for connection issues
-            - Does not raise exceptions (returns status instead)
-
-        Used By:
-            - _run_with_connection_monitoring() for periodic health testing
-            - Connection restoration logic for validating recovery
-        """
-        if self.server is None:
-            return False
-
-        try:
-            # Test the connection by trying to list services
-            # This is a lightweight operation that validates the connection
-            await self.server.list_services()
-
-            # If we have a registered service, verify it's still accessible
-            if self.service_id:
-                try:
-                    service_info = await self.server.get_service_info(self.service_id)
-                    if not service_info:
-                        logger.warning(
-                            f"Service '{self.service_id}' not found on server"
-                        )
-                        self._last_error = "Service not found on server"
-                        return False
-                except Exception as e:
-                    logger.warning(f"Failed to verify service '{self.service_id}': {e}")
-                    # Don't mark as failed just for service info check
-
-            return True
-        except Exception as e:
-            logger.warning(
-                f"Hypha connection test failed for '{self.application_id}': {e}"
-            )
-            self._last_error = f"Connection test failed: {str(e)}"
-            return False
+    asyncio.run(main())

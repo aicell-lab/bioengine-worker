@@ -4,6 +4,7 @@ from typing import Dict, Optional, Union
 
 import psutil
 import ray
+from ray import serve
 from ray._private.state import GlobalState
 from ray._raylet import GcsClientOptions
 from ray.util.state import StateApiClient
@@ -15,7 +16,10 @@ from ray.util.state.common import (
 )
 
 
-@ray.remote(num_cpus=0, resources={"node:__internal_head__": 0.001})
+@serve.deployment(
+    ray_actor_options={"num_cpus": 0, "resources": {"node:__internal_head__": 0.001}},
+    autoscaling_config={"min_replicas": 1},
+)
 class ClusterState:
     def __init__(
         self, exclude_head_node: bool = False, check_pending_resources: bool = False

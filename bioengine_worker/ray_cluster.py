@@ -8,10 +8,12 @@ import subprocess
 import sys
 import time
 from collections import OrderedDict
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union
 
 import ray
+from ray import serve
 
 from bioengine_worker import __version__
 from bioengine_worker.ray_cluster_state import ClusterState
@@ -164,6 +166,9 @@ class RayCluster:
                 "When running on a single machine, 'head_num_cpus' must be greater than 0"
             )
 
+        # Check if Ray temp dir does not exceed length of 107 bytes
+        self._check_ray_temp_dir_length(ray_temp_dir)
+
         self.ray_cluster_config = {
             "head_node_address": str(head_node_address or self._find_internal_ip()),
             "head_node_port": int(head_node_port),  # GCS server port
@@ -258,24 +263,6 @@ class RayCluster:
 
         return status
 
-    def _check_slurm_available(self) -> None:
-        """
-        Check if SLURM is available on the system.
-
-        Verifies that the SLURM workload manager is installed and accessible
-        by attempting to run the 'sinfo' command.
-
-        Raises:
-            RuntimeError: If SLURM is not available or 'sinfo' command fails
-        """
-        try:
-            subprocess.run(["sinfo"], capture_output=True, text=True, check=True)
-        except subprocess.CalledProcessError as e:
-            self.logger.error(
-                "SLURM is not available. Please ensure you are running this on a SLURM-managed HPC system."
-            )
-            raise RuntimeError("SLURM is not available") from e
-
     def _find_ray_executable(self) -> str:
         """
         Find the Ray executable path in the current Python environment.
@@ -294,6 +281,42 @@ class RayCluster:
             raise FileNotFoundError("Ray executable not found")
         self.logger.debug(f"Ray executable found at: {ray_path}")
         return str(ray_path)
+
+    def _check_slurm_available(self) -> None:
+        """
+        Check if SLURM is available on the system.
+
+        Verifies that the SLURM workload manager is installed and accessible
+        by attempting to run the 'sinfo' command.
+
+        Raises:
+            RuntimeError: If SLURM is not available or 'sinfo' command fails
+        """
+        try:
+            subprocess.run(["sinfo"], capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            self.logger.error(
+                "SLURM is not available. Please ensure you are running this on a SLURM-managed HPC system."
+            )
+            raise RuntimeError("SLURM is not available") from e
+
+    def _check_ray_temp_dir_length(self, ray_temp_dir: str) -> None:
+        # Simulate the longest possible session directory name
+        session_name = datetime.now().strftime(
+            "session_%Y-%m-%d_%H-%M-%S_999999_9999999"
+        )
+        full_path = str(Path(ray_temp_dir) / session_name / "sockets" / "plasma_store")
+        path_length = len(full_path.encode("utf-8"))
+
+        self.logger.debug(f"Simulated path: {full_path}")
+        self.logger.debug(f"Path length in bytes: {path_length}")
+
+        if path_length > 107:
+            raise ValueError(
+                "Plasma store path length would exceed 107 bytes (current length: "
+                f"{path_length}) with the specified Ray temp directory configuration "
+                f"'{ray_temp_dir}'. Please choose a shorter path for the Ray temp directory."
+            )
 
     def _find_internal_ip(self) -> str:
         """
@@ -436,7 +459,10 @@ class RayCluster:
         """
         if self.ray_cluster_config["force_clean_up"]:
             self.logger.info("Forcing Ray cleanup...")
-            await self.stop()
+            try:
+                await self._shutdown_head_node()
+            except Exception as e:
+                self.logger.error(f"Error during Ray cleanup: {e}")
         try:
             self.logger.info("Starting Ray cluster...")
 
@@ -601,15 +627,122 @@ class RayCluster:
             exclude_head_node = self.mode == "slurm"
             check_pending_resources = self.mode == "slurm"
 
-            self.cluster_state_handle = ClusterState.remote(
+            cluster_state_app = ClusterState.bind(
                 exclude_head_node=exclude_head_node,
                 check_pending_resources=check_pending_resources,
+            )
+            start_time_str = datetime.fromtimestamp(self.start_time).strftime(
+                "%Y-%m-%d_%H-%M-%S_%f"
+            )
+            self.cluster_state_handle = await asyncio.to_thread(
+                serve.run,
+                target=cluster_state_app,
+                name=f"cluster_state_proxy_{start_time_str}",
+                route_prefix=None,
+                blocking=False,
             )
 
             return context
         except Exception as e:
             self.logger.error(f"Failed to connect to existing Ray cluster: {e}")
             raise e
+
+    async def _shutdown_ray_serve(self) -> None:
+        """Shutdown Ray Serve gracefully and wait for completion."""
+        self.logger.info("Starting shutdown of Ray Serve...")
+        dashboard_port = self.ray_cluster_config["dashboard_port"]
+
+        # Send shutdown request to Ray Serve -> applications will be deleted asynchronously
+        args = [
+            self.serve_exec_path,
+            "shutdown",
+            f"--address=http://127.0.0.1:{dashboard_port}",
+            "-y",
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            error_msg = stderr.decode() if stderr else "Unknown error"
+            self.logger.error(
+                f"Ray Serve shutdown failed with error code {proc.returncode}:\n{error_msg}"
+            )
+            raise subprocess.CalledProcessError(
+                proc.returncode, " ".join(args), stderr=error_msg
+            )
+
+        # Wait for the shutdown to complete
+        shutdown_completed = False
+        args = [
+            self.serve_exec_path,
+            "status",
+            f"--address=http://127.0.0.1:{dashboard_port}",
+        ]
+        while not shutdown_completed:
+            await asyncio.sleep(1)  # Wait before checking status
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                error_msg = stderr.decode() if stderr else "Unknown error"
+                self.logger.error(
+                    f"Ray Serve status check failed with error code {proc.returncode}:\n{error_msg}"
+                )
+                raise subprocess.CalledProcessError(
+                    proc.returncode, " ".join(args), stderr=error_msg
+                )
+            output = stdout.decode()
+            if "proxies: {}" in output and "applications: {}" in output:
+                shutdown_completed = True
+                self.logger.info("Ray Serve shutdown completed successfully.")
+
+    async def _shutdown_head_node(self, grace_period: int = 120) -> None:
+        """Shutdown the Ray cluster head node."""
+        self.logger.info("Starting shutdown of Ray head node...")
+        args = [
+            self.ray_exec_path,
+            "stop",
+            "--grace-period",
+            f"{grace_period}",
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            error_msg = stderr.decode() if stderr else "Unknown error"
+            raise subprocess.CalledProcessError(
+                proc.returncode, " ".join(args), stderr=error_msg
+            )
+
+        output = stdout.decode()
+        if re.search(r"Stopped all \d+ Ray processes\.", output):
+            self.logger.info("All Ray processes stopped successfully")
+        elif "Did not find any active Ray processes." in output:
+            self.logger.info("No active Ray processes found")
+        else:
+            message = re.search(
+                r"Stopped only (\d+) out of (\d+) Ray processes within the grace period (\d+) seconds\.",
+                output,
+            )
+            if message:
+                self.logger.warning(
+                    f"Some Ray processes could not be stopped: {message.group(0)}"
+                )
+            else:
+                self.logger.warning(
+                    f"Unknown message during Ray shutdown:\n----------\n{output}"
+                )
 
     async def check_connection(self) -> None:
         """Check if Ray cluster is initialized and connected.
@@ -668,12 +801,13 @@ class RayCluster:
             if self.mode != "external-cluster":
                 await self._start_cluster()
 
+            self.start_time = time.time()
+
             # Connect a client to the Ray cluster
             self._set_head_node_address()
             await self._connect_to_cluster()
 
             # Do a first cluster status check
-            self.start_time = time.time()
             await self.monitor_cluster()
 
             self.is_ready.set()
@@ -685,15 +819,12 @@ class RayCluster:
             self.stop()
             raise e
 
-    async def stop(self, grace_period: int = 60) -> None:
+    async def stop(self) -> None:
         """Stop Ray cluster and all worker nodes.
 
         Performs a graceful shutdown of the Ray cluster including stopping
         all workers (if running in SLURM mode), disconnecting from the
         cluster, stopping Ray Serve, and canceling any remaining SLURM jobs.
-
-        Args:
-            grace_period: Seconds to wait for graceful shutdown
 
         Raises:
             OSError: If Ray executable is not reachable.
@@ -704,66 +835,40 @@ class RayCluster:
             self.is_ready.clear()
             self.start_time = None
 
+            # Shutdown all SLURM workers if running in SLURM mode
+            if self.slurm_workers:
+                await self.slurm_workers.close_all()
+
             # Disconnect from Ray cluster if it was initialized
             if ray.is_initialized():
                 # Disconnect current client from Ray cluster
                 self.logger.info("Disconnecting from Ray cluster...")
                 await asyncio.to_thread(ray.shutdown)
 
-            # Shutdown all SLURM workers if running in SLURM mode
-            if self.slurm_workers:
-                await self.slurm_workers.close_all()
-
             # Shutdown the Ray cluster head node if it is not in external-cluster mode
             if self.mode != "external-cluster":
-                self.logger.info("Starting shutdown of Ray head node...")
-                proc = await asyncio.create_subprocess_exec(
-                    self.ray_exec_path,
-                    "stop",
-                    f"--grace-period={grace_period}",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, stderr = await proc.communicate()
+                try:
+                    await self._shutdown_ray_serve()
+                except:
+                    pass
 
-                if proc.returncode != 0:
-                    error_msg = stderr.decode() if stderr else "Unknown error"
-                    raise subprocess.CalledProcessError(
-                        proc.returncode, "ray stop", stderr=error_msg
-                    )
-
-                output = stdout.decode()
-                if re.search(r"Stopped all \d+ Ray processes\.", output):
-                    self.logger.info("All Ray processes stopped successfully")
-                elif "Did not find any active Ray processes." in output:
-                    self.logger.info("No active Ray processes found")
-                else:
-                    message = re.search(
-                        r"Stopped only (\d+) out of (\d+) Ray processes within the grace period (\d+) seconds\.",
-                        output,
-                    )
-                    if message:
+                try:
+                    await self._shutdown_head_node()
+                except OSError as e:
+                    if (
+                        e.errno == 107
+                        and os.environ.get("APPTAINER_BIND", None) is not None
+                    ):
                         self.logger.warning(
-                            f"Some Ray processes could not be stopped: {message.group(0)}"
+                            "Ray executable is not reachable. This may be due to the container's overlay filesystem being torn down."
                         )
+                        return
                     else:
-                        self.logger.warning(
-                            f"Unknown message during Ray shutdown:\n----------\n{output}"
-                        )
-
-        except OSError as e:
-            if e.errno == 107 and os.environ.get("APPTAINER_BIND", None) is not None:
-                self.logger.warning(
-                    "Ray executable is not reachable. This may be due to the container's overlay filesystem being torn down."
-                )
-                return
-            else:
-                self.logger.error(f"Error shutting down Ray cluster: {e}")
-                raise e
+                        self.logger.error(f"Error shutting down Ray cluster: {e}")
+                        raise e
 
         except Exception as e:
             self.logger.error(f"Error shutting down Ray cluster: {e}")
             raise e
-
         finally:
             self.cluster_status_history.clear()

@@ -235,10 +235,12 @@ class BioEngineWorker:
             # Ensure cache and data directories exist with proper permissions
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             self.data_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # Attempt interactive login if no token provided
             if not self._token:
-                self.logger.info("No authentication token provided, attempting interactive login...")
+                self.logger.info(
+                    "No authentication token provided, attempting interactive login..."
+                )
                 print("\n" + "=" * 60)
                 print("NO HYPHA TOKEN FOUND - USER LOGIN REQUIRED")
                 print("-" * 60, end="\n\n")
@@ -252,10 +254,12 @@ class BioEngineWorker:
 
             # Configure Ray cluster with environment-specific parameters
             ray_cluster_config = ray_cluster_config or {}
-            
+
             # Set core parameters with precedence for explicit values
             self._set_parameter(ray_cluster_config, "mode", mode)
-            self._set_parameter(ray_cluster_config, "ray_temp_dir", self.cache_dir / "ray")
+            self._set_parameter(
+                ray_cluster_config, "ray_temp_dir", self.cache_dir / "ray"
+            )
             force_clean_up = not ray_cluster_config.pop("skip_cleanup", False)
             self._set_parameter(ray_cluster_config, "force_clean_up", force_clean_up)
             self._set_parameter(ray_cluster_config, "log_file", log_file)
@@ -263,7 +267,7 @@ class BioEngineWorker:
 
             # Initialize Ray cluster manager
             self.ray_cluster = RayCluster(**ray_cluster_config)
-            
+
             # Initialize component managers with enhanced configuration
             self.apps_manager = AppsManager(
                 ray_cluster=self.ray_cluster,
@@ -282,7 +286,7 @@ class BioEngineWorker:
             )
 
             self.logger.info("BioEngineWorker initialization completed successfully")
-            
+
         except Exception as e:
             self.logger.error(f"Failed to initialize BioEngineWorker: {e}")
             raise
@@ -343,7 +347,7 @@ class BioEngineWorker:
                 await self._server.disconnect()
             except Exception as e:
                 self.logger.error(f"Error closing Hypha server connection: {e}")
-                
+
         self.logger.info(f"Connecting to Hypha server at {self.server_url}")
         self._server = await connect_to_server(
             {
@@ -361,7 +365,7 @@ class BioEngineWorker:
         # Update connection configuration from server response
         self.workspace = self._server.config.workspace
         self.client_id = self._server.config.client_id
-        
+
         self.logger.info(
             f"User '{user_id}' connected to workspace '{self.workspace}' "
             f"with client ID '{self.client_id}'"
@@ -374,10 +378,10 @@ class BioEngineWorker:
             self.admin_users.remove(user_email)
         self.admin_users.insert(0, user_id)
         self.admin_users.insert(1, user_email)
-        
+
         # Create admin context for internal operations
         self._admin_context = create_context(user_id, user_email)
-        
+
         self.logger.debug(
             f"Admin users for this BioEngine worker: {', '.join(self.admin_users)}"
         )
@@ -479,7 +483,7 @@ class BioEngineWorker:
                         < self.monitoring_interval_seconds
                     ):
                         continue  # Skip if within check interval
-                    
+
                     self._last_monitoring = current_time
 
                     # Check connection to Hypha server
@@ -535,9 +539,23 @@ class BioEngineWorker:
                 )
 
             # Clean up all components
-            await self.dataset_manager.cleanup(self._admin_context)
-            await self.apps_manager.cleanup(self._admin_context)
-            await self.ray_cluster.stop()
+            try:
+                await self.dataset_manager.cleanup(self._admin_context)
+            except Exception:
+                # Do not raise an exception here to allow other cleanup tasks to run
+                pass
+
+            try:
+                await self.apps_manager.cleanup(self._admin_context)
+            except Exception:
+                # Do not raise an exception here to allow other cleanup tasks to run
+                pass
+
+            try:
+                await self.ray_cluster.stop()
+            except Exception:
+                # Do not raise an exception here to allow other cleanup tasks to run
+                pass
 
             # Disconnect from the Hypha server
             try:
@@ -609,7 +627,7 @@ class BioEngineWorker:
             self._last_monitoring = time.time() - self._last_monitoring + delay_s
 
     @schema_method
-    async def stop(self, timeout: int = 30, context: Dict[str, Any] = None) -> None:
+    async def stop(self, context: Dict[str, Any] = None) -> None:
         """
         Gracefully shutdown the BioEngine worker and cleanup all resources.
 
@@ -641,8 +659,6 @@ class BioEngineWorker:
             resource_name="shutdown the BioEngine worker",
         )
 
-        self.logger.info("Starting graceful shutdown of BioEngine worker")
-
         # Check if the worker is ready
         if not self.is_ready.is_set() or not self._monitoring_task:
             self.logger.info("BioEngine worker is not running. Nothing to stop.")
@@ -650,13 +666,7 @@ class BioEngineWorker:
 
         # Cancel and wait for monitoring task to finish
         self._monitoring_task.cancel()
-        try:
-            await asyncio.wait_for(self._monitoring_task, timeout=timeout)
-        except (TimeoutError, asyncio.CancelledError):
-            self.logger.warning(f"Monitoring task did not finish cleanly within {timeout} seconds")
-
-        # Clear monitoring task reference
-        self._monitoring_task = None
+        self.logger.info("Sent shutdown signal to BioEngine worker.")
 
     @schema_method
     async def get_status(self, context: Optional[Dict[str, Any]] = None) -> dict:
@@ -759,7 +769,7 @@ class BioEngineWorker:
                  - 'pickle': Execute pre-serialized function from func_bytes
             remote_options: Ray remote decorator options for resource allocation:
                           - num_cpus: Number of CPU cores to allocate
-                          - num_gpus: Number of GPU devices to allocate  
+                          - num_gpus: Number of GPU devices to allocate
                           - memory: Memory allocation in bytes
                           - runtime_env: Python environment configuration
             args: Positional arguments to pass to the target function

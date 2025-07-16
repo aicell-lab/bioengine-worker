@@ -795,8 +795,8 @@ class RayCluster:
             # Shutdown the Ray cluster head node if it is not in external-cluster mode
             if self.mode != "external-cluster":
                 # Shutdown Ray Serve first while Ray client is still connected
+                self.logger.info("Shutting down Ray Serve...")
                 try:
-                    self.logger.info("Shutting down Ray Serve...")
                     await asyncio.to_thread(serve.shutdown)
                 except Exception as e:
                     # Log the error but do not raise, as we still want to attempt Ray shutdown
@@ -804,8 +804,8 @@ class RayCluster:
 
                 # Disconnect from Ray cluster
                 if ray.is_initialized():
+                    self.logger.info("Disconnecting from Ray cluster...")
                     try:
-                        self.logger.info("Disconnecting from Ray cluster...")
                         await asyncio.to_thread(ray.shutdown)
                     except Exception as e:
                         self.logger.error(f"Error disconnecting from Ray cluster: {e}")
@@ -822,6 +822,17 @@ class RayCluster:
                             "Ray executable is not reachable. This may be due to the container's overlay filesystem being torn down."
                         )
             else:
+                # Manually shutdown the ClusterState deployed by Ray Serve
+                if self.cluster_state_handle:
+                    app_name = self.cluster_state_handle.app_name
+                    self.logger.info(f"Shutting down ClusterState app '{app_name}'...")
+                    try:
+                        await asyncio.to_thread(serve.delete, name=app_name)
+                    except Exception as e:
+                        self.logger.error(
+                            f"Error shutting down ClusterState app '{app_name}': {e}"
+                        )
+
                 # Just disconnect from Ray cluster for external clusters
                 if ray.is_initialized():
                     self.logger.info("Disconnecting from Ray cluster...")

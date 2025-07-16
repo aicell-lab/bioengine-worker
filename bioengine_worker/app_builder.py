@@ -289,8 +289,6 @@ class AppBuilder:
 
         env_vars["HYPHA_SERVER_URL"] = self.server.config.public_base_url
         env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
-        # env_vars["HYPHA_CLIENT_ID"] = self.server.config.client_id
-        # env_vars["HYPHA_SERVICE_ID"] = self.service_id
         env_vars["HYPHA_TOKEN"] = token
 
         return deployment_class.options(ray_actor_options=ray_actor_options)

@@ -590,12 +590,8 @@ async def main(group_configs):
             },
         )
 
-        # Initialize worker and wait until shutdown is triggered
-        await bioengine_worker.start()
-
-        # Keep the worker running until a shutdown signal is received
-        running_event = asyncio.Event()
-        await running_event.wait()
+        # Start the worker and wait until shutdown is triggered
+        await bioengine_worker.start(block=True)
 
     except Exception as e:
         logger.error(f"Exception in main: {str(e)}")

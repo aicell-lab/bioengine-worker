@@ -308,10 +308,9 @@ class RayCluster:
         full_path = str(Path(ray_temp_dir) / session_name / "sockets" / "plasma_store")
         path_length = len(full_path.encode("utf-8"))
 
-        self.logger.debug(f"Simulated path: {full_path}")
-        self.logger.debug(f"Path length in bytes: {path_length}")
-
         if path_length > 107:
+            self.logger.debug(f"Simulated path: {full_path}")
+            self.logger.debug(f"Path length in bytes: {path_length}")
             raise ValueError(
                 "Plasma store path length would exceed 107 bytes (current length: "
                 f"{path_length}) with the specified Ray temp directory configuration "
@@ -647,18 +646,18 @@ class RayCluster:
             self.logger.error(f"Failed to connect to existing Ray cluster: {e}")
             raise e
 
-    async def _shutdown_ray_serve(self) -> None:
-        """Shutdown Ray Serve gracefully and wait for completion."""
-        self.logger.info("Starting shutdown of Ray Serve...")
-        dashboard_port = self.ray_cluster_config["dashboard_port"]
+    async def _shutdown_head_node(self, grace_period: int = 30) -> None:
+        """Shutdown the Ray cluster head node.
 
-        # Send shutdown request to Ray Serve -> applications will be deleted asynchronously
-        args = [
-            self.serve_exec_path,
-            "shutdown",
-            f"--address=http://127.0.0.1:{dashboard_port}",
-            "-y",
-        ]
+        Args:
+            grace_period: Grace period in seconds for graceful shutdown.
+                         If negative, performs force shutdown instead.
+        """
+        self.logger.info(
+            f"Starting graceful shutdown of Ray head node (grace period: {grace_period}s)..."
+        )
+        args = [self.ray_exec_path, "stop", "--grace-period", str(grace_period)]
+
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
@@ -669,58 +668,8 @@ class RayCluster:
         if proc.returncode != 0:
             error_msg = stderr.decode() if stderr else "Unknown error"
             self.logger.error(
-                f"Ray Serve shutdown failed with error code {proc.returncode}:\n{error_msg}"
+                f"Ray stop command failed with error code {proc.returncode}:\n{error_msg}"
             )
-            raise subprocess.CalledProcessError(
-                proc.returncode, " ".join(args), stderr=error_msg
-            )
-
-        # Wait for the shutdown to complete
-        shutdown_completed = False
-        args = [
-            self.serve_exec_path,
-            "status",
-            f"--address=http://127.0.0.1:{dashboard_port}",
-        ]
-        while not shutdown_completed:
-            await asyncio.sleep(1)  # Wait before checking status
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                error_msg = stderr.decode() if stderr else "Unknown error"
-                self.logger.error(
-                    f"Ray Serve status check failed with error code {proc.returncode}:\n{error_msg}"
-                )
-                raise subprocess.CalledProcessError(
-                    proc.returncode, " ".join(args), stderr=error_msg
-                )
-            output = stdout.decode()
-            if "proxies: {}" in output and "applications: {}" in output:
-                shutdown_completed = True
-                self.logger.info("Ray Serve shutdown completed successfully.")
-
-    async def _shutdown_head_node(self, grace_period: int = 120) -> None:
-        """Shutdown the Ray cluster head node."""
-        self.logger.info("Starting shutdown of Ray head node...")
-        args = [
-            self.ray_exec_path,
-            "stop",
-            "--grace-period",
-            f"{grace_period}",
-        ]
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            error_msg = stderr.decode() if stderr else "Unknown error"
             raise subprocess.CalledProcessError(
                 proc.returncode, " ".join(args), stderr=error_msg
             )
@@ -837,23 +786,33 @@ class RayCluster:
 
             # Shutdown all SLURM workers if running in SLURM mode
             if self.slurm_workers:
-                await self.slurm_workers.close_all()
-
-            # Disconnect from Ray cluster if it was initialized
-            if ray.is_initialized():
-                # Disconnect current client from Ray cluster
-                self.logger.info("Disconnecting from Ray cluster...")
-                await asyncio.to_thread(ray.shutdown)
+                try:
+                    await self.slurm_workers.close_all()
+                except Exception as e:
+                    # Log the error but do not raise, as we still want to attempt Ray shutdown
+                    self.logger.error(f"Error shutting down SLURM workers: {e}")
 
             # Shutdown the Ray cluster head node if it is not in external-cluster mode
             if self.mode != "external-cluster":
+                # Shutdown Ray Serve first while Ray client is still connected
                 try:
-                    await self._shutdown_ray_serve()
-                except:
-                    pass
+                    self.logger.info("Shutting down Ray Serve...")
+                    await asyncio.to_thread(serve.shutdown)
+                except Exception as e:
+                    # Log the error but do not raise, as we still want to attempt Ray shutdown
+                    self.logger.error(f"Error shutting down Ray Serve: {e}")
 
+                # Disconnect from Ray cluster
+                if ray.is_initialized():
+                    try:
+                        self.logger.info("Disconnecting from Ray cluster...")
+                        await asyncio.to_thread(ray.shutdown)
+                    except Exception as e:
+                        self.logger.error(f"Error disconnecting from Ray cluster: {e}")
+
+                # Shutdown the Ray cluster head node
                 try:
-                    await self._shutdown_head_node()
+                    await self._shutdown_head_node(grace_period=30)
                 except OSError as e:
                     if (
                         e.errno == 107
@@ -862,10 +821,12 @@ class RayCluster:
                         self.logger.warning(
                             "Ray executable is not reachable. This may be due to the container's overlay filesystem being torn down."
                         )
-                        return
-                    else:
-                        self.logger.error(f"Error shutting down Ray cluster: {e}")
-                        raise e
+            else:
+                # Just disconnect from Ray cluster for external clusters
+                if ray.is_initialized():
+                    self.logger.info("Disconnecting from Ray cluster...")
+                    await asyncio.to_thread(ray.shutdown)
+                    self.logger.info("Ray cluster disconnected successfully.")
 
         except Exception as e:
             self.logger.error(f"Error shutting down Ray cluster: {e}")

@@ -217,6 +217,7 @@ class BioEngineWorker:
         self._last_monitoring = 0
         self._server = None
         self.is_ready = asyncio.Event()
+        self._shutdown_event = asyncio.Event()
         self._monitoring_task = None
         self.full_service_id = None
         self._admin_context = None
@@ -559,14 +560,19 @@ class BioEngineWorker:
 
             # Disconnect from the Hypha server
             try:
+                self.logger.info("Disconnecting from Hypha server...")
                 await self._server.disconnect()
             except Exception as e:
                 self.logger.error(f"Error closing Hypha server connection: {e}")
 
             # Clear the monitoring task reference
             self._monitoring_task = None
+            self.logger.info("BioEngine worker shutdown complete.")
 
-    async def start(self) -> str:
+            # Signal waiting tasks that shutdown is complete
+            self._shutdown_event.set()
+
+    async def start(self, block: bool = True) -> str:
         """
         Start the BioEngine worker and all component services.
 
@@ -607,6 +613,13 @@ class BioEngineWorker:
             self._create_monitoring_task(),
             name="BioEngineWorker Monitoring Task",
         )
+
+        if block is True:
+            # Keep the worker running until a shutdown signal is received
+            self._shutdown_event.clear()
+            await self._shutdown_event.wait()
+
+            await asyncio.sleep(1)  # Allow time for cleanup tasks to complete
 
     async def notify(self, delay_s: int = 0) -> None:
         """

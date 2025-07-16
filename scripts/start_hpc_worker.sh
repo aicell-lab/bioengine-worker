@@ -99,7 +99,7 @@ add_env() {
 # Check if the mode is set to something else than "slurm"
 MODE=$(get_arg_value "--mode" "slurm")
 if [[ "$MODE" != "slurm" ]]; then
-    echo "Error: Invalid mode '$MODE'. For modes other than 'slurm', please run the 'bioengine-worker' container directly. Check out the configuration wizard at https://dev.bioimage.io/#/bioengine."
+    echo "Error: Invalid mode '$MODE'. For modes other than 'slurm', please run the 'bioengine-worker' container directly. Check out the configuration wizard at https://bioimage.io/#/bioengine."
     exit 1
 fi
 

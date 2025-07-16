@@ -76,9 +76,9 @@ class SlurmWorkers:
             further_slurm_args: Additional SLURM arguments to include in job submissions
             min_workers: Minimum number of workers to maintain
             max_workers: Maximum number of workers allowed
-            check_interval_seconds: Interval in seconds between scaling checks
-            scale_down_threshold_seconds: Idle time in seconds before scaling down
             scale_up_cooldown_seconds: Cooldown period in seconds between scale-ups
+            scale_down_check_interval_seconds: Interval in seconds between scaling checks
+            scale_down_threshold_seconds: Idle time in seconds before scaling down
             grace_period: Grace period in seconds for job cancellation
             log_file: Optional log file to write logs to
             debug: Enable debug logging

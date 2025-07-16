@@ -30,9 +30,14 @@ class AppBuilder:
         debug: bool = False,
     ):
         """
-        Initialize the AppBuilder with the given app instance.
+        Initialize the AppBuilder with configuration parameters.
 
-        :param app: The application instance to be managed.
+        Args:
+            token: Authentication token for service access
+            apps_cache_dir: Cache directory for deployment artifacts
+            apps_data_dir: Data directory accessible to deployments
+            log_file: Optional log file path for output
+            debug: Enable debug logging
         """
         # Set up logging
         self.logger = create_logger(
@@ -465,7 +470,7 @@ class AppBuilder:
         # Get kwargs for the entry deployment
         entry_deployment = deployments[0]
         class_name = entry_deployment.func_or_class.__name__
-        entry_deployment_kwargs = deployment_kwargs.get(class_name, {})
+        entry_deployment_kwargs = deployment_kwargs.get(class_name, {}).copy()
         entry_init_params = self._get_init_param_info(entry_deployment)
         self._check_params(entry_init_params, entry_deployment_kwargs)
 

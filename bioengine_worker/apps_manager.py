@@ -46,21 +46,22 @@ class AppsManager:
     - Robust deployment task tracking and cleanup
 
     Deployment State Management:
-    The class maintains deployment state in `_deployed_artifacts` dictionary where each
+    The class maintains deployment state in `_deployed_applications` dictionary where each
     entry contains deployment metadata, resource allocation, and an active asyncio task
     reference. Proper cleanup ensures no resource leaks or orphaned deployments.
 
     Attributes:
-        service_id (str): Service ID for Hypha registration
+        ray_cluster (RayCluster): Ray cluster manager instance
         admin_users (List[str]): List of user emails with admin permissions
         apps_cache_dir (Path): Cache directory for deployment artifacts
         apps_data_dir (Path): Data directory for deployment access
-        ray_cluster (RayCluster): Ray cluster manager instance
         server: Hypha server connection
-        service_info: Registered Hypha service information
+        artifact_manager: Hypha artifact manager service proxy
+        app_builder (AppBuilder): Application builder instance
         startup_applications (List[dict]): Deployments to start automatically
         logger: Logger instance for deployment operations
-        _deployed_artifacts (Dict): Internal tracking of active deployments with task references
+        _deployed_applications (Dict): Internal tracking of active deployments with task references
+        _deployment_semaphore (asyncio.Semaphore): Ensures single deployment operation at a time
     """
 
     def __init__(
@@ -82,7 +83,7 @@ class AppsManager:
 
         Args:
             ray_cluster: RayCluster instance for managing compute resources
-            admin_users: List of user IDs or emails with admin permissions
+            token: Authentication token for service access
             apps_cache_dir: Caching directory used in Ray Serve deployments
             apps_data_dir: Data directory accessible to deployments
             startup_applications: List of application configurations to deploy on startup
@@ -91,6 +92,10 @@ class AppsManager:
 
         Raises:
             Exception: If initialization of any component fails
+
+        Note:
+            The admin_users parameter is passed during initialize() call,
+            not during construction.
         """
         # Set up logging
         self.logger = create_logger(
@@ -99,9 +104,8 @@ class AppsManager:
             log_file=log_file,
         )
 
-        # Store parameters
+        # Initialize components
         self.ray_cluster = ray_cluster
-        self.admin_users = None
 
         if self.ray_cluster.mode == "slurm":
             # SLURM workers always mount to /tmp/bioengine and /data
@@ -121,8 +125,6 @@ class AppsManager:
                 "Supported modes are 'slurm', 'single-machine', and 'external-cluster'."
             )
 
-        # Initialize the application ID generator and builder
-        self.haikunator = Haikunator()
         self.app_builder = AppBuilder(
             token=token,
             apps_cache_dir=apps_cache_dir,
@@ -131,8 +133,12 @@ class AppsManager:
             debug=debug,
         )
 
+        self.haikunator = Haikunator()
+
         # Initialize state variables
         self.server = None
+        self.artifact_manager = None
+        self.admin_users = None
         self.startup_applications = startup_applications
         self._deployment_semaphore = asyncio.Semaphore(value=1)
         self._deployed_applications = {}
@@ -287,10 +293,6 @@ class AppsManager:
                 blocking=False,
             )
 
-            if self.ray_cluster.mode == "slurm":
-                # Notify the autoscaling system of the new deployment
-                await self.ray_cluster.notify()
-
             # Await the coroutine to start the deployment
             app_handle = await deployment_coroutine
 
@@ -328,7 +330,8 @@ class AppsManager:
             )
 
             # Keep the deployment task running until cancelled
-            await asyncio.Event().wait()
+            event = asyncio.Event()
+            await event.wait()
 
         except asyncio.CancelledError:
             self.logger.info(
@@ -373,6 +376,7 @@ class AppsManager:
 
         Args:
             server: Hypha server connection instance
+            admin_users: List of user IDs or emails with admin permissions
 
         Raises:
             Exception: If server connection or artifact manager initialization fails
@@ -925,7 +929,7 @@ class AppsManager:
         # Check if application is currently deployed
         if application_id not in self._deployed_applications:
             raise RuntimeError(
-                f"Application '{application_id}' is not currently deployed."
+                f"Application '{application_id}' is currently not deployed."
             )
 
         self.logger.info(

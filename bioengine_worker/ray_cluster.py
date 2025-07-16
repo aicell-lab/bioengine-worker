@@ -47,19 +47,17 @@ class RayCluster:
         mode (str): Deployment mode ('slurm', 'single-machine', 'external-cluster')
         ray_cluster_config (dict): Configuration for Ray head node
         slurm_worker_config (dict): Configuration for SLURM workers (if applicable)
-        is_running (bool): Whether the cluster is currently active
-        ray_start_time (float): Timestamp when cluster was started
-        status_interval_seconds (int): Interval for status monitoring
+        is_ready (asyncio.Event): Whether the cluster is currently active
+        start_time (float): Timestamp when cluster was started
         max_status_history_length (int): Maximum entries in status history
         cluster_status_history (OrderedDict): Historical status of cluster
-        monitoring_task (asyncio.Task): Background monitoring task
         slurm_workers (SlurmWorkers): SLURM worker manager instance
         logger: Logger instance for cluster operations
     """
 
     def __init__(
         self,
-        mode: Literal["slurm", "single-machine"] = "slurm",
+        mode: Literal["slurm", "single-machine", "external-cluster"] = "slurm",
         # Ray Head Node Configuration parameters
         head_node_address: Optional[str] = None,
         head_node_port: int = 6379,
@@ -76,9 +74,6 @@ class RayCluster:
         head_memory_in_gb: int = 0,  # Only memory limit
         runtime_env_pip_cache_size_gb: int = 30,  # Ray default is 10 GB
         force_clean_up: bool = True,
-        # Cluster Monitoring parameters
-        status_interval_seconds: int = 10,
-        max_status_history_length: int = 100,
         # SLURM Worker Configuration parameters
         image: str = f"ghcr.io/aicell-lab/bioengine-worker:{__version__}",
         worker_cache_dir: Optional[str] = None,
@@ -110,8 +105,8 @@ class RayCluster:
             node_manager_port: Base port for Ray node manager services. Default 6700.
             object_manager_port: Port for object manager service. Default 6701.
             redis_shard_port: Port for Redis sharding. Default 6702.
-            serve_port: Port for Ray Serve HTTP server. Default 8100.
-            dashboard_port: Port for Ray dashboard. Default 8269.
+            serve_port: Port for Ray Serve HTTP server. Default 8000.
+            dashboard_port: Port for Ray dashboard. Default 8265.
             client_server_port: Base port for Ray client services. Default 10001.
             redis_password: Password for Redis server. Generated randomly if None.
             ray_temp_dir: Temporary directory for Ray. Default '/tmp/bioengine/ray'.
@@ -129,12 +124,9 @@ class RayCluster:
             further_slurm_args: Additional SLURM arguments for job submission.
             min_workers: Minimum number of workers for autoscaling. Default 0.
             max_workers: Maximum number of workers for autoscaling. Default 4.
-            metrics_interval_seconds: Interval for resource monitoring. Default 60.
-            gpu_idle_threshold: GPU idle threshold for scaling decisions. Default 0.05.
-            cpu_idle_threshold: CPU idle threshold for scaling decisions. Default 0.1.
+            scale_up_cooldown_seconds: Cooldown between scale-up operations. Default 60.
+            scale_down_check_interval_seconds: Interval between scale-down checks. Default 60.
             scale_down_threshold_seconds: Idle time before scaling down. Default 300.
-            scale_up_cooldown_seconds: Cooldown between scale-up operations. Default 120.
-            node_grace_period_seconds: Grace period for new nodes. Default 600.
             log_file: File path for logging output. Uses console if None.
             debug: Enable debug-level logging. Default False.
 
@@ -200,14 +192,18 @@ class RayCluster:
         )
 
         if self.mode == "slurm":
+            if worker_cache_dir is None:
+                raise ValueError(
+                    "worker_cache_dir must be provided when mode is 'slurm'"
+                )
             self.slurm_worker_config = {
                 "image": image,
                 "worker_cache_dir": str(worker_cache_dir),
-                "worker_data_dir": str(worker_data_dir),
+                "worker_data_dir": str(worker_data_dir) if worker_data_dir else None,
                 "default_num_gpus": int(default_num_gpus),
                 "default_num_cpus": int(default_num_cpus),
                 "default_mem_in_gb_per_cpu": int(default_mem_in_gb_per_cpu),
-                "default_time_limit": int(default_time_limit),
+                "default_time_limit": str(default_time_limit),
                 "further_slurm_args": further_slurm_args or [],
                 "min_workers": int(min_workers),
                 "max_workers": int(max_workers),
@@ -216,21 +212,20 @@ class RayCluster:
                     scale_down_check_interval_seconds
                 ),
                 "scale_down_threshold_seconds": int(scale_down_threshold_seconds),
-                "log_file": str(log_file),
+                "log_file": log_file,
                 "debug": bool(debug),
             }
 
         # Initialize cluster state and monitoring attributes
+        self.is_ready = asyncio.Event()
+        self.start_time = None
+        self.head_node_address = None
+
         self.cluster_state_handle = None
         self.cluster_status_history = OrderedDict()
-        self.head_node_address = None
-        self.is_ready = asyncio.Event()
-        self.last_cluster_status = 0
-        self.max_status_history_length = max_status_history_length
-        self.monitoring_task = None
+        self.max_status_history_length = 100
+
         self.slurm_workers = None
-        self.start_time = None
-        self.status_interval_seconds = status_interval_seconds
 
     @property
     def status(self) -> Dict[str, Union[str, dict]]:

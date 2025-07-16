@@ -1,3 +1,43 @@
+#!/usr/bin/env python3
+"""
+BioEngine Worker Command-Line Interface
+
+Enterprise-grade command-line interface for deploying and managing BioEngine workers
+across diverse computational environments. Supports HPC clusters with SLURM scheduling,
+single-machine deployments, and external Ray cluster connections.
+
+This module provides comprehensive configuration management, signal handling for graceful
+shutdown, and structured logging for production deployments. It serves as the primary
+entry point for BioEngine worker services in both development and production environments.
+
+Key Features:
+- Multi-environment deployment support (SLURM, single-machine, external clusters)
+- Comprehensive command-line argument parsing with validation
+- Graceful shutdown handling with signal management
+- Structured logging with file output and debug modes
+- Production-ready error handling and cleanup procedures
+- Hypha server integration with authentication management
+
+Usage:
+    python -m bioengine_worker --mode slurm --admin_users admin@institution.edu
+    python -m bioengine_worker --mode single-machine --debug
+    python -m bioengine_worker --mode external-cluster --server_url https://custom.hypha.io
+
+Example Deployment:
+    # SLURM HPC environment with custom configuration
+    python -m bioengine_worker \\
+        --mode slurm \\
+        --admin_users admin@institution.edu researcher@institution.edu \\
+        --cache_dir /shared/bioengine/cache \\
+        --data_dir /shared/datasets \\
+        --max_workers 20 \\
+        --default_num_gpus 2 \\
+        --server_url https://hypha.aicell.io
+
+Author: BioEngine Development Team
+License: MIT
+"""
+
 import argparse
 import asyncio
 import json
@@ -5,286 +45,426 @@ import signal
 import sys
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Dict, Literal
 
 from bioengine_worker import __version__
 from bioengine_worker.utils import create_logger
 from bioengine_worker.worker import BioEngineWorker
 
 
-def create_parser():
-    """Create the argument parser"""
+def create_parser() -> argparse.ArgumentParser:
+    """
+    Create and configure the comprehensive argument parser for BioEngine worker.
+
+    Sets up command-line argument parsing with detailed help text, validation,
+    and organized argument groups for different configuration categories.
+    Provides extensive customization options for all deployment environments.
+
+    Returns:
+        Configured ArgumentParser instance with all BioEngine worker options
+
+    Argument Groups:
+        - Core Options: Basic worker configuration (mode, users, directories)
+        - Hypha Options: Server connection and authentication settings
+        - Ray Cluster Options: Cluster management and networking configuration
+        - SLURM Job Options: HPC-specific deployment parameters
+        - Ray Autoscaler Options: Autoscaling behavior and resource limits
+    """
     parser = argparse.ArgumentParser(
-        description="BioEngine Worker Registration",
+        description="BioEngine Worker - Enterprise AI Model Deployment Platform",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # SLURM HPC deployment with autoscaling
+  %(prog)s --mode slurm --max_workers 10 --admin_users admin@institution.edu
+
+  # Single-machine development deployment  
+  %(prog)s --mode single-machine --debug --cache_dir ./cache
+
+  # Connect to existing Ray cluster
+  %(prog)s --mode external-cluster --head_node_address 10.0.0.100
+
+For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worker
+""",
     )
 
-    parser.add_argument(
+    # Core configuration options
+    core_group = parser.add_argument_group("Core Options", "Basic worker configuration")
+    core_group.add_argument(
         "--mode",
         default="slurm",
         type=str,
         choices=["slurm", "single-machine", "external-cluster"],
-        help="Mode of operation: 'slurm' for managing a Ray cluster with SLURM jobs, 'single-machine' for local Ray cluster, 'external-cluster' for connecting to an existing Ray cluster.",
+        help="Deployment mode: 'slurm' for HPC clusters with SLURM job scheduling, "
+        "'single-machine' for local Ray cluster, 'external-cluster' for connecting "
+        "to an existing Ray cluster",
     )
-    parser.add_argument(
+    core_group.add_argument(
         "--admin_users",
         type=str,
         nargs="+",
-        help="List of admin users for BioEngine apps and datasets. If not set, defaults to the logged-in user.",
+        metavar="EMAIL",
+        help="List of user emails/IDs with administrative privileges for worker management. "
+        "If not specified, defaults to the authenticated user from Hypha login.",
     )
-    parser.add_argument(
+    core_group.add_argument(
         "--cache_dir",
         type=str,
         default="/tmp/bioengine",
-        help="BioEngine cache directory. This should be a mounted directory if running in container.",
+        metavar="PATH",
+        help="Directory for worker cache, temporary files, and Ray data storage. "
+        "Should be accessible across worker nodes in distributed deployments. "
+        "Default: /tmp/bioengine",
     )
-    parser.add_argument(
+    core_group.add_argument(
         "--data_dir",
         default="/data",
         type=str,
-        help="Data directory served by the dataset manager. This should be a mounted directory if running in container.",
+        metavar="PATH",
+        help="Root directory for dataset storage and access by the dataset manager. "
+        "Should be mounted shared storage in distributed environments. Default: /data",
     )
-    parser.add_argument(
+    core_group.add_argument(
         "--startup_applications",
         type=str,
         nargs="+",
-        help="List of applications to deploy on worker startup. Each element can be an artifact ID or a tuple of (artifact_id, application_id).",
+        metavar="JSON",
+        help="List of applications to deploy automatically during worker startup. "
+        "Each element should be a JSON string with deployment configuration. "
+        'Example: \'{"artifact_id": "my_model", "num_gpus": 1}\'',
     )
-    parser.add_argument(
+    core_group.add_argument(
+        "--monitoring_interval_seconds",
+        default=10,
+        type=int,
+        metavar="SECONDS",
+        help="Interval in seconds for worker status monitoring and health checks. "
+        "Lower values provide faster response but increase overhead. Default: 10",
+    )
+    core_group.add_argument(
         "--dashboard_url",
         type=str,
-        default="https://dev.bioimage.io/#/bioengine",
-        help="URL of the BioEngine dashboard",
+        default="https://bioimage.io/#/bioengine",
+        metavar="URL",
+        help="Base URL of the BioEngine dashboard for worker management interfaces. "
+        "Default: https://bioimage.io/#/bioengine",
     )
-    parser.add_argument(
+    core_group.add_argument(
         "--no_logging",
         action="store_true",
         default=False,
-        help="Disable logging to file. Useful for debugging in interactive environments.",
+        help="Disable logging to file. Output will only go to console. "
+        "Useful for development and debugging in interactive environments.",
     )
-    parser.add_argument(
+    core_group.add_argument(
         "--debug",
         action="store_true",
         default=False,
-        help="Set logger to debug level",
+        help="Enable debug-level logging for detailed troubleshooting and development. "
+        "Increases log verbosity significantly.",
     )
 
-    # Hypha related options
-    hypha_group = parser.add_argument_group("Hypha Options")
+    # Hypha server connection options
+    hypha_group = parser.add_argument_group(
+        "Hypha Options", "Server connection and authentication"
+    )
     hypha_group.add_argument(
         "--server_url",
         default="https://hypha.aicell.io",
         type=str,
-        help="URL of the Hypha server",
+        metavar="URL",
+        help="URL of the Hypha server for service registration and remote access. "
+        "Must be accessible from the deployment environment. Default: https://hypha.aicell.io",
     )
     hypha_group.add_argument(
         "--workspace",
         type=str,
-        help="Hypha workspace to connect to. If not set, the workspace associated with the token will be used.",
+        metavar="NAME",
+        help="Hypha workspace name for service isolation and organization. "
+        "If not specified, uses the workspace associated with the authentication token.",
     )
     hypha_group.add_argument(
         "--token",
         type=str,
-        help=(
-            "Authentication token for Hypha server. If not set, the environment variable 'HYPHA_TOKEN' will be "
-            "used, otherwise the user will be prompted to log in. Make sure to choose a long enough expiration time "
-            "for the token, since each application will use the same token for service registration."
-        ),
+        metavar="TOKEN",
+        help="Authentication token for Hypha server access. If not provided, will use "
+        "the HYPHA_TOKEN environment variable or prompt for interactive login. "
+        "Recommend using a long-lived token for production deployments.",
     )
     hypha_group.add_argument(
         "--client_id",
         type=str,
-        help="Client ID for the worker. If not set, a client ID will be generated automatically.",
+        metavar="ID",
+        help="Unique client identifier for Hypha connection. If not specified, "
+        "an identifier will be generated automatically to ensure unique registration.",
     )
 
-    # Ray Cluster Configuration parameters
-    ray_cluster_group = parser.add_argument_group("Ray Cluster Manager Options")
+    # Ray cluster management options
+    ray_cluster_group = parser.add_argument_group(
+        "Ray Cluster Options", "Cluster networking and resource configuration"
+    )
     ray_cluster_group.add_argument(
         "--head_node_address",
         type=str,
-        help="Address of head node. If not set, the first system IP will be used.",
+        metavar="ADDRESS",
+        help="IP address of the Ray head node. For external-cluster mode, this specifies "
+        "the cluster to connect to. If not set in other modes, uses the first available "
+        "system IP address.",
     )
     ray_cluster_group.add_argument(
         "--head_node_port",
         type=int,
         default=6379,
-        help="Port for Ray head node and GCS server",
+        metavar="PORT",
+        help="Port for Ray head node and GCS (Global Control Service) server. "
+        "Must be accessible from all worker nodes. Default: 6379",
     )
     ray_cluster_group.add_argument(
         "--node_manager_port",
         type=int,
         default=6700,
-        help="Port for Ray node manager services",
+        metavar="PORT",
+        help="Port for Ray node manager services. Used for inter-node communication "
+        "and coordination. Default: 6700",
     )
     ray_cluster_group.add_argument(
         "--object_manager_port",
         type=int,
         default=6701,
-        help="Port for object manager service",
+        metavar="PORT",
+        help="Port for Ray object manager service. Handles distributed object storage "
+        "and transfer between nodes. Default: 6701",
     )
     ray_cluster_group.add_argument(
         "--redis_shard_port",
         type=int,
         default=6702,
-        help="Port for Redis sharding",
+        metavar="PORT",
+        help="Port for Redis sharding in Ray's internal metadata storage. "
+        "Used for cluster state management. Default: 6702",
     )
     ray_cluster_group.add_argument(
         "--serve_port",
         type=int,
         default=8000,
-        help="Port for Ray Serve",
+        metavar="PORT",
+        help="Port for Ray Serve HTTP endpoint serving deployed models and applications. "
+        "This is where model inference requests are handled. Default: 8000",
     )
     ray_cluster_group.add_argument(
         "--dashboard_port",
         type=int,
         default=8265,
-        help="Port for Ray dashboard",
+        metavar="PORT",
+        help="Port for Ray dashboard web interface. Provides cluster monitoring "
+        "and debugging capabilities. Default: 8265",
     )
     ray_cluster_group.add_argument(
         "--client_server_port",
         type=int,
         default=10001,
-        help="Port for Ray client server",
+        metavar="PORT",
+        help="Port for Ray client server connections. Used by external Ray clients "
+        "to connect to the cluster. Default: 10001",
     )
     ray_cluster_group.add_argument(
         "--redis_password",
         type=str,
-        help="Redis password for Ray cluster. If not set, a random password will be generated.",
+        metavar="PASSWORD",
+        help="Password for Ray cluster Redis authentication. If not specified, "
+        "a secure random password will be generated automatically.",
     )
     ray_cluster_group.add_argument(
         "--head_num_cpus",
         type=int,
         default=0,
-        help="Number of CPUs for head node if starting locally",
+        metavar="COUNT",
+        help="Number of CPU cores allocated to the head node for task execution. "
+        "Set to 0 to reserve head node for coordination only. Default: 0",
     )
     ray_cluster_group.add_argument(
         "--head_num_gpus",
         type=int,
         default=0,
-        help="Number of GPUs for head node if starting locally",
+        metavar="COUNT",
+        help="Number of GPU devices allocated to the head node for task execution. "
+        "Typically 0 to reserve GPUs for worker nodes. Default: 0",
     )
     ray_cluster_group.add_argument(
         "--head_memory_in_gb",
         type=int,
         default=0,
-        help="Amount of memory in GB for head node if starting locally",
+        metavar="GB",
+        help="Memory allocation in GB for head node task execution. "
+        "Set to 0 for automatic detection. Default: 0",
     )
     ray_cluster_group.add_argument(
         "--runtime_env_pip_cache_size_gb",
         type=int,
         default=30,
-        help="Size of the pip cache in GB for Ray runtime environment",
+        metavar="GB",
+        help="Size limit in GB for Ray runtime environment pip package cache. "
+        "Larger cache improves environment setup time. Default: 30",
     )
     ray_cluster_group.add_argument(
         "--skip_cleanup",
         action="store_true",
         default=False,
-        help="Skip cleanup of previous Ray cluster",
-    )
-    ray_cluster_group.add_argument(
-        "--status_interval_seconds",
-        default=10,
-        type=int,
-        help="Interval in seconds to check the status of the Ray cluster",
-    )
-    ray_cluster_group.add_argument(
-        "--max_status_history_length",
-        default=100,
-        type=int,
-        help="Maximum length of the status history for the Ray cluster",
+        help="Skip cleanup of previous Ray cluster processes and data. "
+        "Use with caution as it may cause port conflicts or resource issues.",
     )
 
-    # SLURM Job Configuration parameters
-    slurm_job_group = parser.add_argument_group("SLURM Job Options")
+    # SLURM job configuration options (for HPC environments)
+    slurm_job_group = parser.add_argument_group(
+        "SLURM Job Options", "HPC job scheduling and worker deployment"
+    )
     slurm_job_group.add_argument(
         "--image",
         default=f"ghcr.io/aicell-lab/bioengine-worker:{__version__}",
         type=str,
-        help="Worker image for SLURM job",
+        metavar="IMAGE",
+        help=f"Container image for SLURM worker jobs. Should include all required "
+        f"dependencies and be accessible on compute nodes. Default: ghcr.io/aicell-lab/bioengine-worker:{__version__}",
     )
     slurm_job_group.add_argument(
         "--worker_cache_dir",
         type=str,
-        help="Cache directory mounted to the container when starting a worker. Required in SLURM mode.",
+        metavar="PATH",
+        help="Cache directory path mounted to worker containers in SLURM jobs. "
+        "Must be accessible from compute nodes. Required for SLURM mode.",
     )
     slurm_job_group.add_argument(
         "--worker_data_dir",
         type=str,
-        help="Data directory mounted to the container when starting a worker. Required in SLURM mode.",
+        metavar="PATH",
+        help="Data directory path mounted to worker containers in SLURM jobs. "
+        "Must be shared storage accessible from all compute nodes. Required for SLURM mode.",
     )
     slurm_job_group.add_argument(
         "--default_num_gpus",
         default=1,
         type=int,
-        help="Default number of GPUs per worker",
+        metavar="COUNT",
+        help="Default number of GPU devices to request per SLURM worker job. "
+        "Can be overridden per deployment. Default: 1",
     )
     slurm_job_group.add_argument(
         "--default_num_cpus",
         default=8,
         type=int,
-        help="Default number of CPUs per worker",
+        metavar="COUNT",
+        help="Default number of CPU cores to request per SLURM worker job. "
+        "Should match typical model inference requirements. Default: 8",
     )
     slurm_job_group.add_argument(
         "--default_mem_in_gb_per_cpu",
         default=16,
         type=int,
-        help="Default memory per CPU in GB",
+        metavar="GB",
+        help="Default memory allocation in GB per CPU core for SLURM workers. "
+        "Total memory = num_cpus * mem_per_cpu. Default: 16",
     )
     slurm_job_group.add_argument(
         "--default_time_limit",
         default="4:00:00",
         type=str,
-        help="Default time limit for workers",
+        metavar="TIME",
+        help="Default time limit for SLURM worker jobs in HH:MM:SS format. "
+        "Jobs will be terminated after this duration. Default: 4:00:00",
     )
     slurm_job_group.add_argument(
         "--further_slurm_args",
         type=str,
         nargs="+",
-        help="Additional arguments for SLURM job script",
+        metavar="ARG",
+        help="Additional SLURM sbatch arguments for specialized cluster configurations. "
+        'Example: "--partition=gpu" "--qos=high-priority"',
     )
 
-    # Autoscaling configuration parameters
-    ray_autoscaling_group = parser.add_argument_group("Ray Autoscaler Options")
+    # Ray autoscaling configuration options
+    ray_autoscaling_group = parser.add_argument_group(
+        "Ray Autoscaler Options", "Automatic worker scaling behavior"
+    )
     ray_autoscaling_group.add_argument(
         "--min_workers",
         default=0,
         type=int,
-        help="Minimum number of worker nodes",
+        metavar="COUNT",
+        help="Minimum number of worker nodes to maintain in the cluster. "
+        "Workers below this threshold will be started immediately. Default: 0",
     )
     ray_autoscaling_group.add_argument(
         "--max_workers",
         default=4,
         type=int,
-        help="Maximum number of worker nodes",
+        metavar="COUNT",
+        help="Maximum number of worker nodes allowed in the cluster. "
+        "Prevents unlimited scaling and controls costs. Default: 4",
     )
     ray_autoscaling_group.add_argument(
         "--scale_up_cooldown_seconds",
         default=60,
         type=int,
-        help="Cooldown period between scaling up operations",
+        metavar="SECONDS",
+        help="Cooldown period in seconds between scaling up operations. "
+        "Prevents rapid scaling oscillations. Default: 60",
     )
     ray_autoscaling_group.add_argument(
         "--scale_down_check_interval_seconds",
         default=60,
         type=int,
-        help="Interval in seconds to check for scale down",
+        metavar="SECONDS",
+        help="Interval in seconds between checks for scaling down idle workers. "
+        "More frequent checks enable faster response to load changes. Default: 60",
     )
     ray_autoscaling_group.add_argument(
         "--scale_down_threshold_seconds",
         default=300,
         type=int,
-        help="Time threshold before scaling down idle nodes",
+        metavar="SECONDS",
+        help="Time threshold in seconds before scaling down idle worker nodes. "
+        "Longer thresholds reduce churn but may waste resources. Default: 300",
     )
 
     return parser
 
 
-def get_args_by_group(parser):
+def get_args_by_group(parser: argparse.ArgumentParser) -> Dict[str, Dict[str, any]]:
+    """
+    Parse command-line arguments and organize them by argument group.
+
+    Parses all command-line arguments and organizes them into dictionaries
+    based on their argument group membership. This organization facilitates
+    passing configuration to different components of the BioEngine worker.
+
+    Args:
+        parser: Configured ArgumentParser instance
+
+    Returns:
+        Dictionary mapping argument group names to their respective arguments:
+            - "Core Options": Basic worker configuration
+            - "Hypha Options": Server connection settings
+            - "Ray Cluster Options": Cluster networking configuration
+            - "SLURM Job Options": HPC job parameters
+            - "Ray Autoscaler Options": Autoscaling configuration
+
+    Example:
+        ```python
+        parser = create_parser()
+        groups = get_args_by_group(parser)
+        worker_config = groups["Core Options"]
+        hypha_config = groups["Hypha Options"]
+        ```
+    """
     args = parser.parse_args()
     args_dict = vars(args)
 
     group_configs = {}
     for group in parser._action_groups:
+        # Skip built-in argument groups (positional arguments, options)
+        if group.title in ["positional arguments", "options"]:
+            continue
+
         group_keys = [a.dest for a in group._group_actions]
         group_configs[group.title] = {
             k: args_dict[k] for k in group_keys if k in args_dict
@@ -293,21 +473,62 @@ def get_args_by_group(parser):
     return group_configs
 
 
-def read_startup_applications(group_configs):
+def read_startup_applications(
+    group_configs: Dict[str, Dict[str, any]],
+) -> Dict[str, Dict[str, any]]:
+    """
+    Parse and validate startup application configurations from JSON strings.
+
+    Processes startup application specifications from command-line arguments,
+    parsing JSON configuration strings and validating their format. Each
+    application configuration should specify deployment parameters.
+
+    Args:
+        group_configs: Dictionary of grouped command-line arguments
+
+    Returns:
+        Updated group_configs with parsed startup_applications list
+
+    Raises:
+        ValueError: If JSON configuration is malformed or invalid
+
+    Example:
+        Valid startup application JSON:
+        ```json
+        {"artifact_id": "my_artifact", "num_gpus": 1}
+        ```
+    """
+    # Use startup_applications from Core Options group
+    core_options = group_configs.get("Core Options", {})
+    startup_apps_raw = core_options.get("startup_applications")
+
+    if not startup_apps_raw:
+        return group_configs
+
     startup_applications = []
-    for json_str in group_configs["options"]["startup_applications"]:
+    for json_str in startup_apps_raw:
         try:
             application_config = json.loads(json_str.strip())
-        except json.JSONDecodeError:
+            if not isinstance(application_config, dict):
+                raise ValueError("Application configuration must be a JSON object")
+
+            # Validate required fields
+            if "artifact_id" not in application_config:
+                raise ValueError(
+                    "Application configuration must include 'artifact_id' field"
+                )
+
+            startup_applications.append(application_config)
+
+        except json.JSONDecodeError as e:
             raise ValueError(
-                "Invalid JSON format for startup application. A valid format would be "
-                '\'{"artifact_id": "my_artifact",  "num_gpus": 1}.\' '
+                f"Invalid JSON format for startup application: {e}. "
+                "A valid format would be: "
+                '\'{"artifact_id": "my_artifact", "num_gpus": 1}\'. '
                 f"Received: '{json_str}'"
             )
-        startup_applications.append(application_config)
 
-    group_configs["options"]["startup_applications"] = startup_applications
-
+    group_configs["Core Options"]["startup_applications"] = startup_applications
     return group_configs
 
 
@@ -315,11 +536,11 @@ async def main(group_configs):
     """Main function to initialize and register BioEngine worker"""
 
     # Set up logging and pass log file to BioEngine worker
-    create_log_file = not group_configs["options"].pop("no_logging")
+    create_log_file = not group_configs["Core Options"].pop("no_logging")
     if create_log_file:
-        log_dir = Path(group_configs["options"]["cache_dir"]) / "logs"
+        log_dir = Path(group_configs["Core Options"]["cache_dir"]) / "logs"
         log_file = log_dir / f"bioengine_worker_{time.strftime('%Y%m%d_%H%M%S')}.log"
-        group_configs["options"]["log_file"] = log_file
+        group_configs["Core Options"]["log_file"] = log_file
     else:
         log_file = None
     logger = create_logger("__main__", log_file=log_file)
@@ -360,10 +581,10 @@ async def main(group_configs):
     try:
         # Create BioEngine worker instance
         bioengine_worker = BioEngineWorker(
-            **group_configs["options"],
+            **group_configs["Core Options"],
             **group_configs["Hypha Options"],
             ray_cluster_config={
-                **group_configs["Ray Cluster Manager Options"],
+                **group_configs["Ray Cluster Options"],
                 **group_configs["SLURM Job Options"],
                 **group_configs["Ray Autoscaler Options"],
             },
@@ -372,15 +593,34 @@ async def main(group_configs):
         # Initialize worker and wait until shutdown is triggered
         await bioengine_worker.start()
 
+        # Keep the worker running until a shutdown signal is received
+        running_event = asyncio.Event()
+        await running_event.wait()
+
     except Exception as e:
         logger.error(f"Exception in main: {str(e)}")
         raise
 
 
 if __name__ == "__main__":
-    description = "Register BioEngine worker to Hypha server"
+    """
+    Entry point for BioEngine worker command-line interface.
 
-    parser = create_parser()
-    group_configs = get_args_by_group(parser)
-    group_configs = read_startup_applications(group_configs)
-    asyncio.run(main(group_configs))
+    Parses command-line arguments, validates configuration, and starts the worker.
+    """
+    try:
+        parser = create_parser()
+        group_configs = get_args_by_group(parser)
+
+        # Process startup applications if provided
+        group_configs = read_startup_applications(group_configs)
+
+        # Start the main worker process
+        asyncio.run(main(group_configs))
+
+    except KeyboardInterrupt:
+        print("\nShutdown interrupted by user")
+        sys.exit(0)
+    except Exception as e:
+        print(f"Failed to start BioEngine worker: {e}")
+        sys.exit(1)

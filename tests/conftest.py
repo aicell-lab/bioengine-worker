@@ -8,7 +8,7 @@ import pytest
 import asyncio
 
 
-@pytest.fixture(scope="session") 
+@pytest.fixture(scope="session")
 def event_loop():
     """Create an instance of the default event loop for the test session."""
     loop = asyncio.new_event_loop()
@@ -17,4 +17,4 @@ def event_loop():
 
 
 # Configure asyncio for pytest
-pytest_plugins = ('pytest_asyncio',)
+pytest_plugins = ("pytest_asyncio",)

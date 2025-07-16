@@ -253,32 +253,24 @@ class RtcProxyDeployment:
         Raises:
             PermissionError: If user is not authorized or context is invalid
         """
-        if context is None or "user" not in context:
-            raise PermissionError("Context is missing user information")
+        if not isinstance(context, dict) or "user" not in context:
+            raise PermissionError("Invalid context without user information")
 
         user = context["user"]
-        if not isinstance(user, dict):
+        if not isinstance(user, dict) or ("id" not in user and "email" not in user):
             raise PermissionError("Invalid user information in context")
 
-        user_id = user.get("id")
-        user_email = user.get("email")
-
-        if not user_id and not user_email:
-            raise PermissionError("User context missing both ID and email")
-
         # Check authorization
-        if "*" in self.authorized_users:
-            return  # Wildcard access
-
-        if user_id and user_id in self.authorized_users:
-            return
-
-        if user_email and user_email in self.authorized_users:
-            return
-
-        raise PermissionError(
-            f"User {user_id or user_email} is not authorized to access application '{self.application_id}'"
-        )
+        user_id = user["id"]
+        user_email = user["email"]
+        if (
+            "*" not in self.authorized_users  # Wildcard access
+            and user_id not in self.authorized_users
+            and user_email not in self.authorized_users
+        ):
+            raise PermissionError(
+                f"User '{user_id}' ({user_email}) is not authorized to access application '{self.application_id}'"
+            )
 
     def _create_deployment_function(
         self, method_schema: Dict[str, Any]

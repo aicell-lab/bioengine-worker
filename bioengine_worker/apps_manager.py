@@ -142,6 +142,7 @@ class AppsManager:
         self.startup_applications = startup_applications
         self._deployment_semaphore = asyncio.Semaphore(value=1)
         self._deployed_applications = {}
+        self.debug = debug
 
     def _check_initialized(self) -> None:
         """
@@ -831,7 +832,7 @@ class AppsManager:
                 "last_updated_by": user_id,
                 "deployment_task": None,  # Track the deployment task
                 "is_deployed": asyncio.Event(),  # Track if the deployment has been started
-                "remove_on_exit": True,  # Default to remove on exit
+                "remove_on_exit": not self.debug,  # Remove on exit unless in debug mode
                 "consecutive_failures": 0,  # Track consecutive failures for monitoring
             }
 

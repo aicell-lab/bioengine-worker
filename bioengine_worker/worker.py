@@ -619,7 +619,7 @@ class BioEngineWorker:
             self._shutdown_event.clear()
             await self._shutdown_event.wait()
 
-            await asyncio.sleep(1)  # Allow time for cleanup tasks to complete
+            await asyncio.sleep(0.1)  # Allow time for cleanup tasks to complete
 
     async def notify(self, delay_s: int = 0) -> None:
         """

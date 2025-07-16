@@ -26,6 +26,7 @@ def event_loop():
     yield loop
     loop.close()
 
+
 @pytest.fixture(scope="session")
 def workspace_folder() -> Path:
     """
@@ -41,7 +42,7 @@ def workspace_folder() -> Path:
 def server_url() -> str:
     """
     Return the Hypha server URL for testing.
-    
+
     Returns:
         URL of the Hypha server for test connections
     """
@@ -52,16 +53,16 @@ def server_url() -> str:
 def hypha_token() -> str:
     """
     Retrieve Hypha authentication token from environment.
-    
+
     The token should be available in the HYPHA_TOKEN environment variable,
     typically loaded from a .env file.
-    
+
     Returns:
         Authentication token for Hypha server access
-        
+
     Raises:
         pytest.skip: If HYPHA_TOKEN environment variable is not set
-        
+
     Note:
         Activate the bioengine-worker conda environment before running tests:
         ```bash
@@ -78,15 +79,14 @@ def hypha_token() -> str:
     return token
 
 
-# TODO: Clean up cache_dir after all tests have finished
 @pytest.fixture(scope="session")
 def cache_dir() -> Path:
     """
     Create and return a test-specific cache directory.
-    
+
     Creates a unique cache directory for each test session to avoid
     conflicts between concurrent test runs and ensure clean state.
-    
+
     Returns:
         Path to test cache directory with timestamp for uniqueness
     """
@@ -99,10 +99,10 @@ def cache_dir() -> Path:
 def data_dir(workspace_folder: Path) -> Path:
     """
     Return the BioEngine Worker data directory.
-    
+
     Args:
         workspace_folder: Path to the workspace folder
-    
+
     Returns:
         Path to the BioEngine Worker data directory
     """
@@ -115,28 +115,30 @@ def data_dir(workspace_folder: Path) -> Path:
 async def hypha_client(hypha_token: str):
     """
     Create a Hypha client for service interaction testing.
-    
+
     Provides a fresh Hypha client connection for each test function,
     ensuring test isolation and proper connection management.
-    
+
     Args:
         hypha_token: Authentication token for Hypha server
-        
+
     Yields:
         Connected Hypha client instance
-        
+
     Raises:
         Exception: If client connection fails
-        
+
     Note:
         Each test gets its own client instance to avoid connection
         conflicts and ensure proper cleanup between tests.
     """
-    client = await connect_to_server({
-        "server_url": "https://hypha.aicell.io",
-        "token": hypha_token,
-    })
-    
+    client = await connect_to_server(
+        {
+            "server_url": "https://hypha.aicell.io",
+            "token": hypha_token,
+        }
+    )
+
     try:
         yield client
     finally:

@@ -1,7 +1,9 @@
 from typing import Dict, Union, List, Optional
 
 
-def create_context(user_id: str = None, user_email: str = None) -> Dict[str, Dict[str, str]]:
+def create_context(
+    user_id: str = None, user_email: str = None
+) -> Dict[str, Dict[str, str]]:
     """
     Create a context dictionary for user authentication and authorization.
 

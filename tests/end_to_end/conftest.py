@@ -7,17 +7,34 @@ initialization and test application configurations.
 
 import asyncio
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import Dict, List
 
 import pytest
 
-# Test configuration constants
-WORKER_READY_TIMEOUT = 120  # 2 minutes for worker to become ready
-CLEANUP_TIMEOUT = 60  # 1 minute for cleanup operations
+
+# Utility fixtures for test configuration
+@pytest.fixture
+def worker_ready_timeout():
+    """Timeout for worker readiness checks."""
+    return 60  # 1 minute for individual test operations
 
 
+@pytest.fixture
+def worker_cleanup_timeout():
+    """Timeout for worker cleanup operations."""
+    return 60  # 1 minute for individual test operations
+
+
+@pytest.fixture
+def application_check_timeout():
+    """Timeout for application connectivity checks."""
+    return 30  # 30 seconds for application ping operations
+
+
+# Test application configurations for startup deployments
 @pytest.fixture(scope="session")
 def startup_applications() -> List[Dict]:
     """
@@ -47,7 +64,8 @@ def startup_applications() -> List[Dict]:
     ]
 
 
-@pytest.fixture(scope="function")  # Changed from session to function scope
+# Test fixture for BioEngine Worker instance
+@pytest.fixture(scope="function")
 async def bioengine_worker(
     workspace_folder: Path,
     cache_dir: Path,
@@ -55,6 +73,7 @@ async def bioengine_worker(
     startup_applications: List[Dict],
     server_url: str,
     hypha_token: str,
+    worker_cleanup_timeout: int,
 ):
     """
     Create and manage a BioEngine worker instance for testing.
@@ -76,7 +95,7 @@ async def bioengine_worker(
         start the worker as needed and handle cleanup.
     """
     os.environ["BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"] = str(workspace_folder / "tests")
-    
+
     # Import BioEngineWorker here to avoid Ray initialization during test collection
     from bioengine_worker.worker import BioEngineWorker
 
@@ -109,34 +128,22 @@ async def bioengine_worker(
     finally:
         try:
             # Send stop signal to the worker
-            await bioengine_worker.stop()
+            await bioengine_worker.stop(context=bioengine_worker._admin_context)
 
             if not bioengine_worker._shutdown_event.is_set():
                 # Wait for shutdown event to complete if it exists
                 # This ensures all cleanup operations are finished
-                await asyncio.wait_for(bioengine_worker._shutdown_event.wait(), timeout=CLEANUP_TIMEOUT)
+                await asyncio.wait_for(
+                    bioengine_worker._shutdown_event.wait(),
+                    timeout=worker_cleanup_timeout,
+                )
                 await asyncio.sleep(0.1)  # Allow time for cleanup tasks to finish
         except Exception as e:
             # Log cleanup errors but don't fail tests
-            print(f"Warning: BioEngine worker cleanup failed: {e}")
+            print(f"\n⚠️  Warning: BioEngine worker cleanup failed: {e}")
 
         # Ensure cache directory is removed
-        os.rmdir(cache_dir, ignore_errors=True)
-
-# Utility fixtures for test configuration
-@pytest.fixture
-def worker_ready_timeout():
-    """Timeout for worker readiness checks."""
-    return 60  # 1 minute for individual test operations
-
-
-@pytest.fixture
-def application_check_timeout():
-    """Timeout for application connectivity checks."""
-    return 30  # 30 seconds for application ping operations
-
-
-@pytest.fixture
-def test_timeout():
-    """Overall test timeout for complex operations."""
-    return 180  # 3 minutes for complete test workflows
+        try:
+            shutil.rmtree(str(cache_dir))
+        except Exception as e:
+            print(f"\n⚠️  Warning: Could not remove cache directory: {e}")

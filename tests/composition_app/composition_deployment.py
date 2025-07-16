@@ -118,7 +118,7 @@ class CompositionDeployment:
         uptime = await self.deployment1_handle.elapsed_time.remote()
         result = await self.deployment2_handle.add.remote(number)
         return f"Uptime: {uptime}, Result: {result}, Demo string: {self.demo_input}"
-    
+
     @schema_method
     async def ping(self) -> str:
         """

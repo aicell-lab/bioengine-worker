@@ -28,24 +28,12 @@ pytest tests/ -v
 
 ### Specific Test Categories
 ```bash
-# Unit tests only
-pytest tests/ -m "unit" -v
-
-# Integration tests only  
-pytest tests/ -m "integration" -v
-
 # End-to-end tests only
 pytest tests/end_to_end/ -v
-
-# Exclude slow tests
-pytest tests/ -m "not slow" -v
 ```
 
 ### Test Options
 ```bash
-# Parallel execution
-pytest tests/ -n auto
-
 # Stop on first failure
 pytest tests/ --maxfail=1
 
@@ -55,7 +43,7 @@ pytest tests/ --cov=bioengine_worker --cov-report=html
 
 ## Test Structure
 
-- `tests/end_to_end/` - Full system tests with external services
+- `tests/end_to_end/` - Full system tests with Hypha server and Ray cluster
 - `tests/conftest.py` - Shared fixtures and configuration
 
 ## Environment Requirements

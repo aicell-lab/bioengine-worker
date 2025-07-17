@@ -48,7 +48,7 @@ coverage.xml
 *.cover
 *.py,cover
 .hypothesis/
-.pytest_cache/
+.pytest_cache
 cover/
 
 # Translations
@@ -158,7 +158,11 @@ cython_debug/
 # VS Code
 .vscode/
 
+# Copilot
+.github/instructions/
+*summary.md
+
 # BioEngine
-.bioengine
+.bioengine*
 data/
 bioimageio_test_reports/

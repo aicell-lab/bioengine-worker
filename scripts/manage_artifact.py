@@ -11,7 +11,7 @@ from bioengine_worker.utils import create_logger
 
 
 async def manage_artifact(
-    deployment_dir: str,
+    directory: str,
     server_url: str,
     workspace: str = None,
     token: str = None,
@@ -48,7 +48,7 @@ async def manage_artifact(
     logger.info("Connected to artifact manager")
 
     # Get the deployment manifest and content
-    with open(deployment_dir / "manifest.yaml", "r") as f:
+    with open(directory / "manifest.yaml", "r") as f:
         deployment_manifest = yaml.safe_load(f)
     logger.info("Deployment manifest loaded")
 
@@ -117,9 +117,9 @@ async def manage_artifact(
         logger.info(f"Artifact created with ID: {artifact.id}")
 
     # Upload all files in the deployment directory
-    for file_path in deployment_dir.rglob("*"):
+    for file_path in directory.rglob("*"):
         if file_path.is_file():
-            relative_path = file_path.relative_to(deployment_dir)
+            relative_path = file_path.relative_to(directory)
             
             # Get upload URL
             upload_url = await artifact_manager.put_file(artifact.id, file_path=str(relative_path))
@@ -161,7 +161,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--deployment_dir",
+        "-d", "--directory",
         type=Path,
         required=True,
         help="Path to the deployment directory",
@@ -192,7 +192,7 @@ if __name__ == "__main__":
 
     asyncio.run(
         manage_artifact(
-            deployment_dir=args.deployment_dir,
+            directory=args.directory,
             server_url=args.server_url,
             workspace=args.workspace,
             token=args.token,

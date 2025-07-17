@@ -597,28 +597,11 @@ class RayCluster:
             Exception: If connection to the Ray cluster fails.
         """
         try:
-            # Add BioEngine dependencies to the runtime environment
-            if self.mode == "external-cluster":
-                requirements_path = Path(__file__).parent.parent / "requirements.txt"
-                requirements = requirements_path.read_text().splitlines()
-                runtime_env = {
-                    "pip": [
-                        requirement
-                        for requirement in requirements
-                        if requirement and not requirement.startswith("ray")
-                    ],
-                }
-            else:
-                # Slurm and single-machine modes use bioengine-worker container runtime
-                # with pre-installed dependencies
-                runtime_env = None
-
             # Connect to the Ray cluster
             context = await asyncio.to_thread(
                 ray.init,
                 address=self.head_node_address,
                 logging_format=stream_logging_format,
-                runtime_env=runtime_env,
             )
 
             # Create ClusterState actor to manage cluster state
@@ -630,13 +613,10 @@ class RayCluster:
                 exclude_head_node=exclude_head_node,
                 check_pending_resources=check_pending_resources,
             )
-            start_time_str = datetime.fromtimestamp(self.start_time).strftime(
-                "%Y-%m-%d_%H-%M-%S_%f"
-            )
             self.cluster_state_handle = await asyncio.to_thread(
                 serve.run,
                 target=cluster_state_app,
-                name=f"cluster_state_proxy_{start_time_str}",
+                name=f"BioEngineProxy",
                 route_prefix=None,
                 blocking=False,
             )

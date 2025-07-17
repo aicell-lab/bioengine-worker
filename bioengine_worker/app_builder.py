@@ -13,7 +13,7 @@ from ray import serve
 from ray.serve.handle import DeploymentHandle
 
 from bioengine_worker.rtc_proxy_deployment import RtcProxyDeployment
-from bioengine_worker.utils import create_logger
+from bioengine_worker.utils import create_logger, update_requirements
 
 
 class AppBuilder:
@@ -269,15 +269,20 @@ class AppBuilder:
                     f"Missing required parameter '{key}' of type {param_info['type'].__name__}."
                 )
 
-    async def _update_env_vars(
+    async def _update_actor_options(
         self, deployment_class: serve.Deployment, token: str
     ) -> serve.Deployment:
         """
+        Add any missing BioEngine requirements to the deployment class.
         Add BioEngine and Hypha specific environment variables to the deployment
         """
         ray_actor_options = deployment_class.ray_actor_options
         runtime_env = ray_actor_options.setdefault("runtime_env", {})
+        pip_requirements = runtime_env.setdefault("pip", [])
         env_vars = runtime_env.setdefault("env_vars", {})
+
+        # Update pip requirements with BioEngine requirements
+        pip_requirements = update_requirements(pip_requirements)
 
         # Set standard directories to ensure it only uses the specified workdir
         env_vars["BIOENGINE_WORKDIR"] = str(self.apps_cache_dir)
@@ -397,11 +402,12 @@ class AppBuilder:
             deployment_class = self._update_test_deployment(deployment_class)
             deployment_class = self._update_health_check(deployment_class)
 
+            # Update environment variables and requirements
+            deployment_class = await self._update_actor_options(deployment_class, token)
+
             self.logger.debug(
                 f"Loaded class '{class_name}' from artifact '{artifact_id}'."
             )
-
-            deployment_class = await self._update_env_vars(deployment_class, token)
 
             return deployment_class
         except Exception as e:
@@ -465,8 +471,27 @@ class AppBuilder:
         ]
         deployment_kwargs = deployment_kwargs or {}
 
-        # Get kwargs for the entry deployment
+        # Calculate the total number of required resources
+        rtc_proxy_deployment = RtcProxyDeployment
+        required_resources = self._calculate_required_resources(
+            deployments + [rtc_proxy_deployment]
+        )
+
+        # Get all schema_methods from the entry deployment class
         entry_deployment = deployments[0]
+        method_schemas = []
+        for method_name in dir(entry_deployment.func_or_class):
+            method = getattr(entry_deployment.func_or_class, method_name)
+            if callable(method) and hasattr(method, "__schema__"):
+                method_schemas.append(method.__schema__)
+
+        if not method_schemas:
+            raise ValueError(
+                f"No schema methods found in the entry deployment class: "
+                f"{entry_deployment.func_or_class.__name__}."
+            )
+
+        # Get kwargs for the entry deployment
         class_name = entry_deployment.func_or_class.__name__
         entry_deployment_kwargs = deployment_kwargs.get(class_name, {}).copy()
         entry_init_params = self._get_init_param_info(entry_deployment)
@@ -502,21 +527,7 @@ class AppBuilder:
         # Create the entry deployment handle
         entry_deployment_handle = entry_deployment.bind(**entry_deployment_kwargs)
 
-        # Get all schema_methods from the entry deployment class
-        method_schemas = []
-        for method_name in dir(entry_deployment.func_or_class):
-            method = getattr(entry_deployment.func_or_class, method_name)
-            if callable(method) and hasattr(method, "__schema__"):
-                method_schemas.append(method.__schema__)
-
-        if not method_schemas:
-            raise ValueError(
-                f"No schema methods found in the entry deployment class: "
-                f"{entry_deployment.func_or_class.__name__}."
-            )
-
         # Create the application
-        rtc_proxy_deployment = RtcProxyDeployment
         app = rtc_proxy_deployment.bind(
             application_id=application_id,
             application_name=manifest["name"],
@@ -527,11 +538,6 @@ class AppBuilder:
             workspace=self.server.config.workspace,
             token=self._token,
             authorized_users=manifest["authorized_users"],
-        )
-
-        # Calculate the total number of required resources
-        required_resources = self._calculate_required_resources(
-            deployments + [rtc_proxy_deployment]
         )
 
         # Create application metadata
@@ -550,6 +556,7 @@ class AppBuilder:
 
 if __name__ == "__main__":
     import asyncio
+
     from hypha_rpc import connect_to_server
 
     server_url = "https://hypha.aicell.io"

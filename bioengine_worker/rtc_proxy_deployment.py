@@ -2,20 +2,27 @@ import asyncio
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
-import httpx
 from aiortc import RTCPeerConnection
+from httpx import AsyncClient, HTTPStatusError, RequestError
 from hypha_rpc import connect_to_server, register_rtc_service
 from hypha_rpc.utils.schema import schema_function, schema_method
-from ray import serve
 from ray.exceptions import RayTaskError
+from ray.serve import deployment
 from ray.serve.handle import DeploymentHandle
+
+from bioengine_worker.utils import get_pip_requirements
 
 # Configure logging
 logger = logging.getLogger("RtcProxyDeployment")
 
 
-@serve.deployment(
-    ray_actor_options={"num_cpus": 1},
+@deployment(
+    ray_actor_options={
+        "num_cpus": 1,
+        "runtime_env": {
+            "pip": get_pip_requirements(select=["aiortc", "httpx", "hypha-rpc"]),
+        },
+    },
     max_ongoing_requests=10,  # Limit concurrent requests to avoid overload
     autoscaling_config={"min_replicas": 1},  # Restart proxy if it fails
     health_check_period_s=10,  # Check health every 10 seconds
@@ -155,7 +162,7 @@ class RtcProxyDeployment:
              {"urls": "turn:turn.server.com:3478", "username": "...", "credential": "..."}]
         """
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with AsyncClient(timeout=30) as client:
                 response = await client.get(
                     "https://ai.imjoy.io/public/services/coturn/get_rtc_ice_servers"
                 )
@@ -165,11 +172,11 @@ class RtcProxyDeployment:
                     f"Successfully fetched ICE servers for {self.application_id}"
                 )
                 return ice_servers
-        except httpx.HTTPStatusError as e:
+        except HTTPStatusError as e:
             logger.error(
                 f"HTTP error fetching ICE servers for {self.application_id}: {e}"
             )
-        except httpx.RequestError as e:
+        except RequestError as e:
             logger.error(
                 f"Request error fetching ICE servers for {self.application_id}: {e}"
             )

@@ -173,12 +173,23 @@ class AppsManager:
             return f"{self.server.config.workspace}/{artifact_id}"
         return artifact_id
 
-    def _generate_application_id(self) -> str:
-        return self.haikunator.haikunate(
-            delimiter="-",  # Use hyphen as delimiter
-            token_length=4,  # 4-character random suffix
-            token_hex=True,  # Use hexadecimal characters for the suffix
-        )
+    async def _generate_application_id(self) -> str:
+        while True:
+            application_id = self.haikunator.haikunate(
+                delimiter="-",  # Use hyphen as delimiter
+                token_length=4,  # 4-character random suffix
+                token_hex=True,  # Use hexadecimal characters for the suffix
+            )
+            if application_id in self._deployed_applications:
+                # Application ID already exists, generate a new one
+                continue
+            
+            serve_status = await asyncio.to_thread(serve.status)
+            if application_id not in serve_status.applications:
+                # Application ID is unique and not already deployed
+                break
+
+        return application_id
 
     async def _check_resources(
         self, application_id: str, required_resources: Dict[str, int]
@@ -753,7 +764,7 @@ class AppsManager:
 
             # Generate a new application ID if not provided
             if not application_id:
-                application_id = self._generate_application_id()
+                application_id = await self._generate_application_id()
 
             # Validate deployment_kwargs
             if deployment_kwargs is not None:
@@ -936,6 +947,8 @@ class AppsManager:
         self.logger.info(
             f"User '{user_id}' is starting undeployment of application '{application_id}'..."
         )
+        # Ensure the application will be removed on exit
+        self._deployed_applications[application_id]["remove_on_exit"] = True
         self._deployed_applications[application_id]["deployment_task"].cancel()
 
     @schema_method

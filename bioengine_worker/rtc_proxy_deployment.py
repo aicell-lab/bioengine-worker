@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
@@ -21,7 +22,7 @@ logger = logging.getLogger("RtcProxyDeployment")
 # Maximum number of ongoing requests to limit concurrency and prevent overload
 MAX_ONGOING_REQUESTS = int(os.getenv("BIOENGINE_APPLICATION_MAX_ONGOING_REQUESTS", 10))
 
-
+# TODO: Remove duplicated logging in Ray Serve logs
 @deployment(
     ray_actor_options={
         "num_cpus": 1,

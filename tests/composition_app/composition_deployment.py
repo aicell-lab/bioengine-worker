@@ -49,8 +49,7 @@ class CompositionDeployment:
         deployment2: DeploymentHandle,
     ) -> None:
         """
-        Initialize the composition deployment with the given arguments. Make sure that each model
-        com
+        Initialize the composition deployment with the given arguments.
         """
         self.demo_input = demo_input
         self.deployment1 = deployment1
@@ -90,9 +89,9 @@ class CompositionDeployment:
             os.environ["EXAMPLE_ENV_VAR"]
 
             # Test the application methods
-            result_1 = await self.deployment1_handle.elapsed_time.remote()
+            result_1 = await self.deployment1.elapsed_time.remote()
 
-            result_2 = await self.deployment2_handle.add.remote(number=10)
+            result_2 = await self.deployment2.add.remote(number=10)
 
             print("Deployment test passed")
 
@@ -115,8 +114,9 @@ class CompositionDeployment:
             str: A string containing the uptime of Deployment1 and the result of the addition
                  from Deployment2.
         """
-        uptime = await self.deployment1_handle.elapsed_time.remote()
-        result = await self.deployment2_handle.add.remote(number)
+        uptime = await self.deployment1.elapsed_time.remote()
+        await asyncio.sleep(1)  # Simulate some processing delay
+        result = await self.deployment2.add.remote(number)
         return f"Uptime: {uptime}, Result: {result}, Demo string: {self.demo_input}"
 
     @schema_method

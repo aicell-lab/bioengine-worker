@@ -129,7 +129,6 @@ class AppsManager:
             token=token,
             apps_cache_dir=apps_cache_dir,
             apps_data_dir=apps_data_dir,
-            serve_http_url=self.ray_cluster.serve_http_url,
             log_file=log_file,
             debug=debug,
         )
@@ -184,7 +183,7 @@ class AppsManager:
             if application_id in self._deployed_applications:
                 # Application ID already exists, generate a new one
                 continue
-            
+
             serve_status = await asyncio.to_thread(serve.status)
             if application_id not in serve_status.applications:
                 # Application ID is unique and not already deployed
@@ -302,7 +301,7 @@ class AppsManager:
                 serve.run,
                 target=app,
                 name=application_id,
-                route_prefix=f"{self.ray_cluster.serve_http_url}/{application_id}/",
+                route_prefix=f"/{application_id}",
                 blocking=False,
             )
 
@@ -411,7 +410,11 @@ class AppsManager:
             raise
 
         # Initialize artifact manager
-        self.app_builder.initialize(self.server, self.artifact_manager)
+        self.app_builder.initialize(
+            server=self.server,
+            artifact_manager=self.artifact_manager,
+            serve_http_url=self.ray_cluster.serve_http_url,
+        )
 
         # Deploy any startup applications if provided
         if self.startup_applications:

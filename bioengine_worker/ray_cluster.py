@@ -709,7 +709,9 @@ class RayCluster:
                 self.proxy_handle.get_cluster_state.remote(), timeout=5
             )
         except TimeoutError:
-            self.logger.warning(f"Timeout while getting cluster state. Trying to get new handle...")
+            self.logger.warning(
+                f"Timeout while getting cluster state. Trying to get new handle..."
+            )
             self.proxy_handle = await asyncio.to_thread(
                 serve.get_app_handle, "BioEngineProxy"
             )
@@ -721,7 +723,6 @@ class RayCluster:
                 raise RuntimeError(
                     "Failed to get cluster state within 5 seconds after retrying with a new handle"
                 )
-
 
         self.cluster_status_history[time.time()] = cluster_status
 
@@ -809,9 +810,7 @@ class RayCluster:
                     self.proxy_handle = None
                     self.logger.info("BioEngineProxy removed successfully.")
                 except Exception as e:
-                    self.logger.error(
-                        f"Error removing BioEngineProxy: {e}"
-                    )
+                    self.logger.error(f"Error removing BioEngineProxy: {e}")
 
             # Shutdown the Ray cluster head node if it is not in external-cluster mode
             if self.mode != "external-cluster":

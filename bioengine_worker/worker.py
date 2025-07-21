@@ -349,7 +349,7 @@ class BioEngineWorker:
             except Exception as e:
                 self.logger.error(f"Error closing Hypha server connection: {e}")
 
-        self.logger.info(f"Connecting to Hypha server at {self.server_url}")
+        self.logger.debug(f"Connecting to Hypha server at '{self.server_url}'...")
         self._server = await connect_to_server(
             {
                 "server_url": self.server_url,

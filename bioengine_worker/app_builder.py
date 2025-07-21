@@ -26,7 +26,6 @@ class AppBuilder:
         token: str,
         apps_cache_dir: Path,
         apps_data_dir: Path,
-        serve_http_url: str,
         log_file: str = None,
         debug: bool = False,
     ):
@@ -37,7 +36,6 @@ class AppBuilder:
             token: Authentication token for service access
             apps_cache_dir: Cache directory for deployment artifacts
             apps_data_dir: Data directory accessible to deployments
-            serve_http_url: HTTP URL for the Ray Serve API
             log_file: Optional log file path for output
             debug: Enable debug logging
         """
@@ -52,14 +50,27 @@ class AppBuilder:
         self._token = token
         self.apps_cache_dir = apps_cache_dir
         self.apps_data_dir = apps_data_dir
-        self.serve_http_url = serve_http_url
         self.server = None
         self.artifact_manager = None
+        self.serve_http_url = None
 
-    def initialize(self, server: RemoteService, artifact_manager: ObjectProxy) -> None:
+    def initialize(
+        self, server: RemoteService, artifact_manager: ObjectProxy, serve_http_url: str
+    ) -> None:
         # Store server connection and artifact manager
+        if not server or not isinstance(server, RemoteService):
+            raise ValueError("Invalid server connection provided.")
+        if not artifact_manager or not isinstance(artifact_manager, ObjectProxy):
+            raise ValueError("Invalid artifact manager provided.")
+        if (
+            not serve_http_url
+            or not isinstance(serve_http_url, str)
+            or not serve_http_url.startswith("http")
+        ):
+            raise ValueError("Invalid serve HTTP URL provided.")
         self.server = server
         self.artifact_manager = artifact_manager
+        self.serve_http_url = serve_http_url
 
     async def _load_manifest(self, artifact_id: str, version: str = None) -> dict:
         """

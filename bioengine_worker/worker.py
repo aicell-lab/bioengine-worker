@@ -368,8 +368,8 @@ class BioEngineWorker:
         self.client_id = self._server.config.client_id
 
         self.logger.info(
-            f"User '{user_id}' connected to workspace '{self.workspace}' "
-            f"with client ID '{self.client_id}'"
+            f"Authenticated user '{user_id}' ({user_email}) connected as client "
+            f"'{self.client_id}' to workspace '{self.workspace}' on server '{self.server_url}'."
         )
 
         # Update admin users list with authenticated user (ensure at top of list)

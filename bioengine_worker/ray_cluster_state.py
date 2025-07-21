@@ -88,16 +88,8 @@ class ClusterState:
                 timeout=DEFAULT_RPC_TIMEOUT,
                 filters=[
                     ("state", "=", "PENDING_NODE_ASSIGNMENT"),
-                    (
-                        "name",
-                        "!=",
-                        "ClusterState.get_state",
-                    ),  # Exclude this method itself
-                    (
-                        "type",
-                        "!=",
-                        "ACTOR_CREATION_TASK",
-                    ),  # Avoid duplicates with actors
+                    # Avoid duplicates with `_get_pending_actors`
+                    ("type", "!=", "ACTOR_CREATION_TASK"),
                 ],
                 detail=True,
                 explain=False,
@@ -129,7 +121,7 @@ class ClusterState:
             if resource_name.startswith("slurm_job_id:"):
                 return resource_name.split(":")[-1]
 
-    def get_state(self) -> Dict[str, Union[float, int, str]]:
+    def get_cluster_state(self) -> Dict[str, Union[float, int, str]]:
         """
         Get comprehensive cluster state including total and available resources per node with state 'ALIVE'.
 

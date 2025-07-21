@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import uuid
 from typing import Any, Callable, Dict, List, Optional
 
+import httpx
 from aiortc import RTCPeerConnection
 from httpx import AsyncClient, HTTPStatusError, RequestError
 from hypha_rpc import connect_to_server, register_rtc_service
@@ -9,11 +11,15 @@ from hypha_rpc.utils.schema import schema_function, schema_method
 from ray.exceptions import RayTaskError
 from ray.serve import deployment
 from ray.serve.handle import DeploymentHandle
+from starlette.requests import Request
 
 from bioengine_worker.utils import get_pip_requirements
 
 # Configure logging
 logger = logging.getLogger("RtcProxyDeployment")
+
+# Maximum number of ongoing requests to limit concurrency and prevent overload
+MAX_ONGOING_REQUESTS = int(os.getenv("BIOENGINE_APPLICATION_MAX_ONGOING_REQUESTS", 10))
 
 
 @deployment(
@@ -23,8 +29,17 @@ logger = logging.getLogger("RtcProxyDeployment")
             "pip": get_pip_requirements(select=["aiortc", "httpx", "hypha-rpc"]),
         },
     },
-    max_ongoing_requests=10,  # Limit concurrent requests to avoid overload
-    autoscaling_config={"min_replicas": 1},  # Restart proxy if it fails
+    max_ongoing_requests=MAX_ONGOING_REQUESTS,  # Limit concurrent requests to avoid overload
+    max_queued_requests=MAX_ONGOING_REQUESTS * 2,  # Allow some queuing to handle spikes
+    autoscaling_config={
+        "min_replicas": 1,  # Always keep at least 1 replica running
+        "max_replicas": 10,  # Scale up to 10 replicas maximum
+        "target_ongoing_requests": 5,  # Target 5 ongoing requests per replica
+        "upscale_delay_s": 30.0,  # Wait 30s before scaling up
+        "downscale_delay_s": 300.0,  # Wait 5 minutes before scaling down
+        "upscale_smoothing_factor": 1.0,  # Aggressive upscaling
+        "downscale_smoothing_factor": 0.5,  # Conservative downscaling
+    },
     health_check_period_s=10,  # Check health every 10 seconds
     health_check_timeout_s=5,  # Timeout after 5 seconds
 )
@@ -74,6 +89,7 @@ class RtcProxyDeployment:
         workspace: str,
         token: str,
         authorized_users: List[str],
+        serve_http_url: str,
     ):
         """
         Initialize the RtcProxyDeployment with BioEngine application configuration.
@@ -120,7 +136,7 @@ class RtcProxyDeployment:
         self.application_description = application_description
         self.entry_deployment_handle = entry_deployment_handle
         self.method_schemas = method_schemas
-        self.max_ongoing_requests = 10
+        self.max_ongoing_requests = MAX_ONGOING_REQUESTS
 
         # Hypha server connection parameters
         self.server_url = server_url
@@ -136,6 +152,49 @@ class RtcProxyDeployment:
 
         # Store connection event handlers
         self._connection_handlers: List[Callable] = []
+
+        # Store request events
+        self.serve_http_url = serve_http_url
+        self._request_events: Dict[str, asyncio.Event] = {}
+
+    async def __call__(self, request: Request) -> Dict[str, Any]:
+        """
+        **RAY SERVE HTTP ENDPOINT - AUTOSCALING COORDINATION**
+
+        Handle HTTP requests from Ray Serve's HTTP proxy to coordinate autoscaling.
+        This endpoint waits for the corresponding WebRTC request to complete, ensuring
+        Ray Serve can track request load for autoscaling decisions.
+
+        Only accepts POST requests with X-Request-ID header from _mimic_request().
+
+        Args:
+            request: Starlette Request object from Ray Serve HTTP proxy
+
+        Returns:
+            JSON response with completion status
+        """
+        # Only accept POST requests for mimic coordination
+        if request.method != "POST":
+            return {
+                "status": "error",
+                "message": f"Method {request.method} not supported - only POST allowed",
+            }
+
+        request_id = request.headers.get("X-Request-ID")
+        if not request_id:
+            return {
+                "status": "error",
+                "message": "Missing X-Request-ID header",
+            }
+
+        # Wait for the corresponding request event
+        event = self._request_events.get(request_id)
+        if event:
+            await event.wait()
+            return {"status": "completed", "request_id": request_id}
+        else:
+            # Request may have already completed
+            return {"status": "not_found", "request_id": request_id}
 
     # ===== Hypha Service Registration =====
     # Handles registration of WebSocket and WebRTC services with Hypha.
@@ -189,7 +248,7 @@ class RtcProxyDeployment:
 
     async def _on_webrtc_init(self, peer_connection: RTCPeerConnection) -> None:
         """
-        **WEBRTC CONNECTION LIFECYCLE MANAGEMENT**
+        ** Hypha Service Registration - WEBRTC CONNECTION LIFECYCLE MANAGEMENT**
 
         Callback handler invoked by hypha-rpc when a new WebRTC peer connection
         is established. Sets up connection state monitoring and integrates WebRTC
@@ -279,6 +338,34 @@ class RtcProxyDeployment:
                 f"User '{user_id}' ({user_email}) is not authorized to access application '{self.application_id}'"
             )
 
+    async def _mimic_request(self, request_id: str) -> None:
+        """
+        **HYPHA SERVICE REGISTRATION - AUTOSCALING TRIGGER HTTP REQUEST TO RAY SERVE**
+
+        Send an HTTP request to Ray Serve to trigger autoscaling when users access
+        the application through WebRTC connections. The request uses the same ID
+        as the actual RPC call for coordination with __call__.
+
+        Args:
+            request_id: Unique identifier for correlating with the RPC call
+        """
+        try:
+            timeout = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0)
+
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                await client.post(
+                    f"{self.serve_http_url}/{self.application_id}/",
+                    headers={"X-Request-ID": request_id},
+                    json={"mimic_request": True},
+                )
+
+        except Exception as e:
+            # Log but don't fail the user request
+            logger.warning(
+                f"Failed to send autoscaling trigger for '{self.application_id}' "
+                f"request {request_id}: {e}"
+            )
+
     def _create_deployment_function(
         self, method_schema: Dict[str, Any]
     ) -> Callable[..., Any]:
@@ -313,7 +400,7 @@ class RtcProxyDeployment:
 
         async def deployment_function(*args, context, **kwargs) -> Any:
             async with self.service_semaphore:
-                # TODO: simulate Ray Serve deployment request for each method call to trigger automatic scaling
+                request_id = str(uuid.uuid4())
                 try:
                     # Check user permissions
                     await self._check_permissions(context)
@@ -324,6 +411,22 @@ class RtcProxyDeployment:
                     logger.info(
                         f"User {user_id} calling method '{method_name}' on app '{self.application_id}'"
                     )
+
+                    # Mimic a request to trigger autoscaling (do not block)
+                    self._request_events[request_id] = asyncio.Event()
+
+                    # Create the mimic request task but don't await it to avoid blocking
+                    mimic_task = asyncio.create_task(self._mimic_request(request_id))
+
+                    # Add error handling for the mimic task (optional - runs in background)
+                    def handle_mimic_error(task):
+                        if task.exception():
+                            logger.warning(
+                                f"Mimic request task failed for '{self.application_id}' "
+                                f"request ID {request_id}: {task.exception()}"
+                            )
+
+                    mimic_task.add_done_callback(handle_mimic_error)
 
                     # Get the method from the entry deployment handle
                     method = getattr(self.entry_deployment_handle, method_name, None)
@@ -352,6 +455,13 @@ class RtcProxyDeployment:
                 except Exception as e:
                     logger.error(f"Error in proxy function '{method_name}': {e}")
                     raise
+                finally:
+                    # Remove the event to prevent memory leaks
+                    event = self._request_events.pop(request_id, None)
+
+                    # Signal that the request is complete
+                    if event:
+                        event.set()
 
         return schema_function(
             func=deployment_function,
@@ -362,12 +472,38 @@ class RtcProxyDeployment:
 
     @schema_method
     async def _get_load(self) -> float:
-        """Returns the current load of the service as a float value between 0 and 1."""
-        load = self.service_semaphore._value / self.max_ongoing_requests
-        return load
+        """
+        **HYPHA SERVICE REGISTRATION - SERVICE LOAD MONITORING**
+
+        Returns the current load of the service as a float value between 0 and 1.
+        This method is used by Hypha's load balancing system to distribute requests
+        across multiple service instances.
+
+        Load Calculation:
+        - 0.0: No active requests, service is idle
+        - 1.0: Maximum capacity reached, all semaphore slots occupied
+        - Values between indicate partial load
+
+        The load is calculated based on the number of active requests being processed
+        through the service semaphore, which limits concurrent request processing.
+        """
+        # Calculate load based on available vs. total semaphore capacity
+        available_slots = self.service_semaphore._value
+        total_slots = self.max_ongoing_requests
+        active_requests = total_slots - available_slots
+        load = active_requests / total_slots
+
+        logger.debug(
+            f"Service load for '{self.application_id}': {load:.2f} "
+            f"({active_requests}/{total_slots} active requests)"
+        )
+
+        return min(1.0, max(0.0, load))  # Ensure load is between 0 and 1
 
     async def _register_web_rtc_service(self) -> None:
         """
+        **HYPHA SERVICE REGISTRATION - MAIN REGISTRATION**
+
         Register WebSocket and WebRTC services with Hypha.
 
         Connects to Hypha, fetches ICE servers, registers services, and sets up proxy functions.
@@ -484,6 +620,8 @@ class RtcProxyDeployment:
     @schema_method
     async def get_service_ids(self) -> Dict[str, str]:
         """
+        **BIOENGINE WORKER INTERFACE - SERVICE DISCOVERY**
+
         Returns dictionary of registered service IDs:
         - "websocket_service_id": ID of the main WebSocket service
         - "webrtc_service_id": ID of the WebRTC service (if registered)
@@ -505,6 +643,8 @@ class RtcProxyDeployment:
 
     async def check_health(self):
         """
+        **RAY SERVE HEALTH CHECK**
+
         Ray Serve health check. Ensures Hypha connection and main service registration.
         Triggers registration if needed. Raises RuntimeError if unhealthy.
         Called during deployment initialization and periodically.
@@ -526,6 +666,15 @@ class RtcProxyDeployment:
         # All checks passed - deployment is healthy
 
     async def reconfigure(self, version) -> None:
+        """
+        **RAY SERVE RECONFIGURATION**
+
+        Reconfigure the deployment with new settings. This method is called by Ray Serve
+        when the deployment configuration is updated dynamically.
+
+        Args:
+            version: Configuration version for the reconfigure operation
+        """
         # user_config: Config to pass to the reconfigure method of the deployment. This
         # can be updated dynamically without restarting the replicas of the
         # deployment. The user_config must be fully JSON-serializable.

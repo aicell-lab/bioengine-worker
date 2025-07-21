@@ -226,6 +226,7 @@ class RayCluster:
         self.is_ready = asyncio.Event()
         self.start_time = None
         self.head_node_address = None
+        self.serve_http_url = None
 
         self.proxy_handle = None
         self.cluster_status_history = OrderedDict()
@@ -583,6 +584,14 @@ class RayCluster:
         self.head_node_address = f"{head_node_address}:{port}"
         self.logger.debug(f"Head node address set to: {self.head_node_address}")
 
+    def _set_serve_http_url(self) -> None:
+        """Set the Ray Serve HTTP API base URL based on the head node address and port."""
+        address = self.ray_cluster_config["head_node_address"].split("://")[-1]
+        self.serve_http_url = (
+            f"http://{address}:{self.ray_cluster_config['serve_port']}"
+        )
+        self.logger.debug(f"Ray Serve HTTP URL set to: {self.serve_http_url}")
+
     async def _connect_to_cluster(self) -> ray.client_builder.ClientContext:
         """Connect to the Ray cluster using the configured head node address.
 
@@ -753,6 +762,7 @@ class RayCluster:
 
             # Connect a client to the Ray cluster
             self._set_head_node_address()
+            self._set_serve_http_url()
             await self._connect_to_cluster()
 
             # Do a first cluster status check

@@ -129,6 +129,7 @@ class AppsManager:
             token=token,
             apps_cache_dir=apps_cache_dir,
             apps_data_dir=apps_data_dir,
+            serve_http_url=self.ray_cluster.serve_http_url,
             log_file=log_file,
             debug=debug,
         )
@@ -301,7 +302,7 @@ class AppsManager:
                 serve.run,
                 target=app,
                 name=application_id,
-                route_prefix=None,
+                route_prefix=f"{self.ray_cluster.serve_http_url}/{application_id}/",
                 blocking=False,
             )
 

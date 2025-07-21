@@ -7,8 +7,45 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 import numpy as np
+from hypha_rpc.utils.schema import schema_method
+from ray import serve
+from ray.serve.handle import DeploymentHandle
 
 
+@serve.deployment(
+    ray_actor_options={
+        "num_cpus": 1,
+        "num_gpus": 1,
+        "memory": 16 * 1024 * 1024 * 1024,  # 16GB RAM limit
+        "runtime_env": {
+            "pip": [
+                "numpy<=1.26.4",
+                "torch==2.5.1",
+                "torchvision==0.20.1",
+                "tensorflow==2.16.1",
+                "onnxruntime==1.20.1",
+                "bioimageio.core==0.9.0",
+                "xarray==2025.1.2",  # this is needed for bioimageio.core
+            ],
+        },
+    },
+    max_ongoing_requests=1,
+    max_queued_requests=10,
+    autoscaling_config={
+        "min_replicas": 1,
+        "initial_replicas": 1,
+        "max_replicas": 3,
+        "target_num_ongoing_requests_per_replica": 0.8,
+        "metrics_interval_s": 2.0,
+        "look_back_period_s": 10.0,
+        "downscale_delay_s": 300,
+        "upscale_delay_s": 0.0,
+    },
+    health_check_period_s=30.0,
+    health_check_timeout_s=30.0,
+    graceful_shutdown_timeout_s=300.0,
+    graceful_shutdown_wait_loop_s=2.0,
+)
 class ModelRunner:
     """
     Local version of ModelRunner for testing bioimage.io models.
@@ -17,6 +54,8 @@ class ModelRunner:
 
     def __init__(
         self,
+        # model_runner: DeploymentHandle,
+        # model_tester: DeploymentHandle,
         cache_n_models: int = 30,
         pipeline_idle_timeout: float = 300.0,
         max_pipeline_cache_size: int = 10,
@@ -362,6 +401,7 @@ class ModelRunner:
                 self._pipeline_cache[cache_key]["ref_count"] -= 1
                 # Note: We DON'T unload immediately - let background cleanup handle it
 
+    @schema_method
     async def get_model_rdf(self, model_id: str) -> dict:
         """
         Get the model RDF description including inputs, preprocessing, postprocessing, and outputs.
@@ -373,6 +413,7 @@ class ModelRunner:
         model = await self._get_model(model_id)
         return json.loads(model.model_dump_json())
 
+    @schema_method(arbitrary_types_allowed=True)
     async def infer(
         self,
         model_id: str,
@@ -417,6 +458,7 @@ class ModelRunner:
                 model_id, weight_format=weight_format, devices=devices
             )
 
+    @schema_method
     async def get_pipeline_cache_stats(self) -> Dict[str, Any]:
         """Get current pipeline cache statistics."""
         return {
@@ -432,7 +474,8 @@ class ModelRunner:
             },
         }
 
-    async def validate(self, rdf_dict: dict, known_files: dict = None) -> dict:
+    @schema_method
+    async def validate(self, rdf_dict: dict, known_files: dict = None) -> Dict[str, Union[bool, str]]:
         """
         Validate a model RDF description.
         Args:
@@ -450,6 +493,7 @@ class ModelRunner:
             "details": summary.format(),
         }
 
+    @schema_method
     async def test(self, model_id: str, skip_cache: bool = False) -> dict:
         """
         Test a model using bioimageio.core test functionality.
@@ -516,7 +560,8 @@ class ModelRunner:
 
         return result
 
-    def cleanup(self):
+    @schema_method
+    def cleanup(self) -> None:
         """Cleanup all cached pipelines and stop background tasks."""
         print(f"🧹 Cleaning up {len(self._pipeline_cache)} cached pipelines...")
 
@@ -537,6 +582,7 @@ class ModelRunner:
         self._pipeline_cache.clear()
         print("✅ Cleanup completed")
 
+    @schema_method
     async def get_cache_status(self) -> Dict[str, Any]:
         """Get detailed status of the pipeline cache."""
         current_time = time.time()

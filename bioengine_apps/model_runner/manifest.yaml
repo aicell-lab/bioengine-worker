@@ -15,71 +15,10 @@ name: Model Runner
 tags: []
 type: application
 version: 0.0.1
-deployment_class:
-  python_file: main.py
-  class_name: ModelRunner
-  max_num_models_per_replica: 10
-  exposed_methods:
-    get_model_rdf:
-      authorized_users: "*"
-      description: "Get the RDF of the model."
-    infer:
-      authorized_users: "*"
-      description: "Run inference on the model with the given data."
-    validate:
-      authorized_users: "*"
-      description: "Validate a model RDF against the BioImage.IO schema."
-    test:
-      authorized_users: "*"
-      description: "Run a test on the model to check if it is working correctly."
-deployment_config:
-  modes:
-    # First key is default. If no mode is specified, GPU will be used.
-    gpu:
-      ray_actor_options:
-        num_gpus: 1
-        num_cpus: 1
-        # Only specify memory limit
-        memory: 17179869184  # 16GB RAM
-        runtime_env:
-          pip: [
-              "numpy<=1.26.4",
-              "torch==2.5.1",
-              "torchvision==0.20.1",
-              "tensorflow==2.16.1",
-              "onnxruntime==1.20.1",
-              "bioimageio.core==0.9.0",
-              "xarray==2025.1.2", # this is needed for bioimageio.core
-              "hypha-rpc"
-          ]
-    cpu:
-      ray_actor_options:
-        num_gpus: 0
-        num_cpus: 1
-        # Only specify memory limit
-        memory: 17179869184  # 16GB RAM
-        runtime_env:
-          pip: [
-              "torch==2.5.1",
-              "torchvision==0.20.1",
-              "tensorflow==2.16.1",
-              "onnxruntime==1.20.1",
-              "bioimageio.core==0.9.0",
-              "xarray==2025.1.2", # this is needed for bioimageio.core
-              "hypha-rpc"
-          ]
-  max_ongoing_requests: 1  # Needs to be 1 for GPU
-  max_queued_requests: 10
-  autoscaling_config:
-    min_replicas: 1
-    initial_replicas: 1
-    max_replicas: 3
-    target_num_ongoing_requests_per_replica: 0.8
-    metrics_interval_s: 2.0
-    look_back_period_s: 10.0
-    downscale_delay_s: 300
-    upscale_delay_s: 0.0
-  health_check_period_s: 30.0
-  health_check_timeout_s: 30.0
-  graceful_shutdown_timeout_s: 300.0
-  graceful_shutdown_wait_loop_s: 2.0
+deployments:
+  - bioimage_model_zoo:ModelRunner
+  # - model_runner:ModelRunner
+  # - model_tester:ModelTester
+authorized_users:
+  - "*" # Allow all users to access the application
+

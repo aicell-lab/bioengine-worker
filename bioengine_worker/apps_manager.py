@@ -476,7 +476,7 @@ class AppsManager:
 
             elif application_info["consecutive_failures"] > 0:
                 # Application is experiencing issues, trigger redeployment
-                self.logger.info(
+                self.logger.warning(
                     f"Application '{application_id}' for artifact '{application_info['artifact_id']}' "
                     f"is experiencing issues. Consecutive failures: {application_info['consecutive_failures']}"
                 )

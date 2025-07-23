@@ -92,7 +92,6 @@ class CompositionDeployment:
 
         result_2 = await self.deployment2.add.remote(number=10)
 
-
     # === Exposed BioEngine App Methods - all methods decorated with @schema_method will be exposed as API endpoints ===
     # Note: Parameter type hints and docstrings will be used to generate the API documentation.
 

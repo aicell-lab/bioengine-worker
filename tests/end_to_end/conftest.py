@@ -16,19 +16,19 @@ import pytest
 
 
 # Utility fixtures for test configuration
-@pytest.fixture
+@pytest.fixture(scope="session")
 def worker_ready_timeout():
     """Timeout for worker readiness checks."""
     return 60  # 1 minute for individual test operations
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def worker_cleanup_timeout():
     """Timeout for worker cleanup operations."""
     return 60  # 1 minute for individual test operations
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def application_check_timeout():
     """Timeout for application connectivity checks."""
     return 30  # 30 seconds for application ping operations
@@ -65,6 +65,7 @@ def startup_applications() -> List[Dict]:
 
 
 # Test fixture for BioEngine Worker instance
+# TODO: Change to session scope
 @pytest.fixture(scope="function")
 async def bioengine_worker(
     workspace_folder: Path,
@@ -78,21 +79,26 @@ async def bioengine_worker(
     """
     Create and manage a BioEngine worker instance for testing.
 
-    This function-scoped fixture provides a BioEngine worker instance
-    for each test function. While this is less efficient than session scope,
-    it avoids async event loop conflicts and ensures test isolation.
+    This session-scoped fixture provides a single BioEngine worker instance
+    shared across all tests in the session, significantly improving test
+    performance by avoiding repeated worker initialization.
 
     Args:
-        hypha_token: Authentication token for Hypha server
+        workspace_folder: Path to the workspace folder
         cache_dir: Test-specific cache directory
+        data_dir: BioEngine Worker data directory
         startup_applications: Applications to deploy at startup
+        server_url: Hypha server URL
+        hypha_token: Authentication token for Hypha server
+        worker_cleanup_timeout: Timeout for worker cleanup operations
 
     Returns:
-        BioEngineWorker instance configuration (not started)
+        BioEngineWorker instance (started and ready)
 
     Note:
-        The worker is configured but not started. Individual tests should
-        start the worker as needed and handle cleanup.
+        The worker is started and shared across all tests. Individual tests
+        should not attempt to start/stop the worker. Cleanup happens only
+        at the end of the test session.
     """
     os.environ["BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"] = str(workspace_folder / "tests")
 
@@ -126,6 +132,7 @@ async def bioengine_worker(
     try:
         yield bioengine_worker
     finally:
+        # Session cleanup - only happens once at the end of all tests
         try:
             # Send stop signal to the worker
             await bioengine_worker.stop(context=bioengine_worker._admin_context)

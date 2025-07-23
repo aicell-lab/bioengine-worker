@@ -14,6 +14,7 @@ import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
 from hypha_rpc import connect_to_server
+from hypha_rpc.rpc import RemoteService
 
 # Load environment variables from .env file
 load_dotenv()
@@ -82,10 +83,11 @@ def hypha_token() -> str:
 @pytest.fixture(scope="session")
 def cache_dir() -> Path:
     """
-    Create and return a test-specific cache directory.
+    Create and return a session-wide test cache directory.
 
-    Creates a unique cache directory for each test session to avoid
-    conflicts between concurrent test runs and ensure clean state.
+    Creates a unique cache directory for the entire test session to be
+    shared across all tests, improving performance while maintaining
+    isolation from other test sessions.
 
     Returns:
         Path to test cache directory with timestamp for uniqueness
@@ -111,7 +113,8 @@ def data_dir(workspace_folder: Path) -> Path:
     return data_dir
 
 
-@pytest_asyncio.fixture
+# TODO: Change to session scope
+@pytest_asyncio.fixture(scope="function")
 async def hypha_client(hypha_token: str):
     """
     Create a Hypha client for service interaction testing.
@@ -132,6 +135,7 @@ async def hypha_client(hypha_token: str):
         Each test gets its own client instance to avoid connection
         conflicts and ensure proper cleanup between tests.
     """
+    client: RemoteService
     client = await connect_to_server(
         {
             "server_url": "https://hypha.aicell.io",
@@ -149,8 +153,8 @@ async def hypha_client(hypha_token: str):
             print(f"Warning: Hypha client disconnect failed: {e}")
 
 
-@pytest.fixture
-def hypha_workspace(hypha_client) -> str:
+@pytest.fixture(scope="function")
+def hypha_workspace(hypha_client: RemoteService) -> str:
     """
     Hypha Workspace
     """

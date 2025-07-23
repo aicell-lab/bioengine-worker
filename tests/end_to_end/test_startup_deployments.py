@@ -15,6 +15,7 @@ from typing import Dict, List
 
 import pytest
 from hypha_rpc import get_rtc_service
+from hypha_rpc.rpc import RemoteService
 
 from bioengine_worker.worker import BioEngineWorker
 
@@ -58,7 +59,9 @@ async def test_worker_initialization_and_readiness(
 
 @pytest.mark.asyncio
 async def test_worker_service_registration(
-    bioengine_worker: BioEngineWorker, hypha_client, worker_ready_timeout: int
+    bioengine_worker: BioEngineWorker,
+    hypha_client: RemoteService,
+    worker_ready_timeout: int,
 ):
     """Test that the worker registers itself as a service in Hypha."""
 
@@ -85,7 +88,7 @@ async def test_worker_service_registration(
 @pytest.mark.asyncio
 async def test_startup_applications_deployment(
     bioengine_worker: BioEngineWorker,
-    hypha_client,
+    hypha_client: RemoteService,
     startup_applications: List[Dict],
     worker_ready_timeout: int,
 ):
@@ -140,7 +143,7 @@ async def test_startup_applications_deployment(
 @pytest.mark.asyncio
 async def test_application_websocket_connectivity(
     bioengine_worker: BioEngineWorker,
-    hypha_client,
+    hypha_client: RemoteService,
     startup_applications: List[Dict],
     worker_ready_timeout: int,
     application_check_timeout: int,
@@ -195,7 +198,7 @@ async def test_application_websocket_connectivity(
 @pytest.mark.asyncio
 async def test_application_webrtc_connectivity(
     bioengine_worker: BioEngineWorker,
-    hypha_client,
+    hypha_client: RemoteService,
     startup_applications: List[Dict],
     worker_ready_timeout: int,
     application_check_timeout: int,

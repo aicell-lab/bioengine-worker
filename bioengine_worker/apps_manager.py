@@ -353,6 +353,19 @@ class AppsManager:
             self.logger.error(
                 f"Failed to deploy application '{application_id}' with error: {e}"
             )
+            # TODO: Get the error message from the Ray Serve application
+            try:
+                serve_status = await asyncio.to_thread(serve.status)
+                application = serve_status.applications.get(application_id)
+                if application:
+                    error_message = application.status.error_message
+                    self.logger.error(
+                        f"Ray Serve application '{application_id}' reported error: {error_message}"
+                    )
+            except Exception as status_error:
+                self.logger.error(
+                    f"Failed to get Ray Serve status for application '{application_id}': {status_error}"
+                )
         finally:
             # Signal other processes to stop waiting for this deployment
             self._deployed_applications[application_id]["is_deployed"].set()
@@ -1064,9 +1077,11 @@ class AppsManager:
             if application:
                 start_time = application.last_deployed_time_s
                 status = application.status.value
+                message = application.message
                 deployments = {
                     class_name: {
                         "status": deployment_info.status.value,
+                        "message": deployment_info.message,
                         "replica_states": deployment_info.replica_states,
                     }
                     for class_name, deployment_info in application.deployments.items()
@@ -1076,8 +1091,9 @@ class AppsManager:
                 start_time = None
                 if application_info["is_deployed"].is_set():
                     status = "UNHEALTHY"
-                    # If the deployment is marked as deployed but not found in Ray Serve,
-                    # it may have failed or been removed unexpectedly.
+                    message = (
+                        f"Application '{application_id}' is marked as deployed but not found in Ray Serve status."
+                    )
                     self.logger.warning(
                         f"Application '{application_id}' for artifact '{application_info['artifact_id']}' "
                         "is marked as deployed but not found in Ray Serve status."
@@ -1116,6 +1132,7 @@ class AppsManager:
                 "version": application_info["version"],
                 "start_time": start_time,
                 "status": status,
+                "message": message,
                 "deployments": deployments,
                 "consecutive_failures": application_info["consecutive_failures"],
                 "deployment_options": application_info["deployment_options"],

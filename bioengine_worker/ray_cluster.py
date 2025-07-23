@@ -1,5 +1,4 @@
 import asyncio
-import fcntl
 import logging
 import os
 import re
@@ -7,6 +6,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
@@ -223,6 +223,7 @@ class RayCluster:
 
         # Initialize cluster state and monitoring attributes
         self.is_ready = asyncio.Event()
+        self.lock_file = None
         self.start_time = None
         self.head_node_address = None
         self.serve_http_url = None
@@ -232,6 +233,15 @@ class RayCluster:
         self.max_status_history_length = 100
 
         self.slurm_workers = None
+
+    def __del__(self):
+        """Cleanup lock file when the RayCluster instance is destroyed."""
+        if self.lock_file and self.lock_file.exists():
+            try:
+                self.lock_file.unlink()
+            except (OSError, IOError):
+                pass  # Ignore errors during cleanup
+        self.lock_file = None
 
     @property
     def status(self) -> Dict[str, Union[str, dict]]:
@@ -400,29 +410,82 @@ class RayCluster:
             self.ray_cluster_config["client_server_port"] + 9998
         )
 
-    def _check_ray_session_is_active(self, ray_temp_dir: Path) -> None:
+    def _acquire_lock(self, ray_temp_dir: Path) -> None:
         """
-        Check if a Ray session is already active in the specified temporary directory.
+        Acquire an exclusive lock for the Ray temp directory using filesystem-based
+        atomic operations.
 
-        Raises an error if a Ray session is found to be active, preventing
-        multiple Ray clusters from being started in the same directory.
+        Uses atomic file creation to prevent multiple BioEngine workers from using
+        the same Ray temp directory.
+
+        Args:
+            ray_temp_dir: Path to the Ray temporary directory
+
+        Raises:
+            RuntimeError: If another BioEngine worker is already using this directory
         """
-        session_latest = ray_temp_dir / "session_latest"
-        lock_file = session_latest / "node_ip_address.json.lock"
+        self.lock_file = ray_temp_dir / "bioengine.lock"
+        process_info = (
+            f"pid:{os.getpid()},uid:{uuid.uuid4().hex[:8]},started:{time.time()}"
+        )
 
-        if session_latest.exists() and lock_file.exists():
+        if self.lock_file.exists():
+            # Lock file exists, check if it's from a stale process
+            self.logger.warning(f"Lock file already exists: {self.lock_file}")
+
+            # Attempt to read and validate the existing lock file
             try:
-                fd = os.open(lock_file, os.O_RDWR)
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                os.close(fd)
-                # Lock acquired, no Ray process is holding it
-                return
-            except BlockingIOError:
-                # Lock not acquired, Ray likely running
-                raise RuntimeError(
-                    f"Ray session is already active in '{ray_temp_dir}'. "
-                    "Please stop the existing Ray cluster before starting a new one."
-                )
+                with self.lock_file.open("r") as f:
+                    existing_info = f.read().strip()
+
+                # Try to extract PID from lock file content
+                if existing_info.startswith("pid:"):
+                    try:
+                        pid_str = existing_info.split(",")[0].split(":")[1]
+                        existing_pid = int(pid_str)
+
+                        # Check if the process is still running
+                        try:
+                            os.kill(
+                                existing_pid, 0
+                            )  # Signal 0 checks if process exists
+                            # Process is still running - cannot acquire lock
+                            raise RuntimeError(
+                                f"Ray session is already active in '{ray_temp_dir}' "
+                                f"(PID: {existing_pid}). Please stop the existing Ray cluster "
+                                "before starting a new one."
+                            )
+                        except ProcessLookupError:
+                            # Process no longer exists, remove stale lock and retry
+                            self.logger.warning(
+                                f"Removing stale lock file from non-existent process {existing_pid}"
+                            )
+
+                    except (ValueError, IndexError):
+                        # Cannot parse PID, treat as stale lock
+                        self.logger.warning(
+                            f"Removing malformed lock file: {existing_info}"
+                        )
+                else:
+                    # Not standard format, treat as potentially stale
+                    self.logger.warning(
+                        f"Removing potentially stale lock file: {existing_info}"
+                    )
+
+            except (OSError, IOError) as e:
+                # Error reading lock file, assume it's corrupted
+                self.logger.warning(f"Removing corrupted lock file due to error: {e}")
+
+            # Remove stale lock file before creating new one
+            self.lock_file.unlink(missing_ok=True)
+
+        # Try to create lock file atomically (exclusive creation)
+        with self.lock_file.open("x") as f:
+            f.write(process_info)
+            f.flush()
+            os.fsync(f.fileno())
+
+        self.logger.debug(f"Successfully acquired lock: {self.lock_file}")
 
     def _update_symlink(self, ray_temp_dir: Path) -> None:
         """
@@ -474,7 +537,7 @@ class RayCluster:
             await asyncio.to_thread(ray_temp_dir.mkdir, parents=True, exist_ok=True)
 
             # Check if a Ray cluster is already running using this temporary directory
-            self._check_ray_session_is_active(ray_temp_dir)
+            self._acquire_lock(ray_temp_dir)
 
             # Start ray as the head node with the specified parameters
             args = [
@@ -818,4 +881,12 @@ class RayCluster:
             self.logger.error(f"Error shutting down Ray cluster: {e}")
             raise e
         finally:
+            # Release the lock file
+            if self.lock_file and self.lock_file.exists():
+                try:
+                    self.lock_file.unlink()
+                    self.logger.debug(f"Released lock file: {self.lock_file}")
+                except (OSError, IOError) as e:
+                    self.logger.warning(f"Failed to remove lock file: {e}")
+            self.lock_file = None
             self.cluster_status_history.clear()

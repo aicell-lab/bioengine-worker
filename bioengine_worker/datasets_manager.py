@@ -197,7 +197,7 @@ class DatasetsManager:
                 manifest_file = dataset_path / "manifest.yml"
                 if not manifest_file.exists():
                     self.logger.warning(
-                        f"Manifest file not found in {dataset_path}. Skipping dataset."
+                        f"No manifest file found in {dataset_path}. Skipping dataset."
                     )
                     continue
 
@@ -215,8 +215,8 @@ class DatasetsManager:
                 # Add default authorized_users if not specified
                 if "authorized_users" not in manifest:
                     manifest["authorized_users"] = ["*"]  # Default to public access
-                    self.logger.debug(
-                        f"Dataset {dataset_path.name} missing 'authorized_users', defaulting to public access."
+                    self.logger.warning(
+                        f"Dataset '{dataset_path.name}' missing 'authorized_users', defaulting to public access."
                     )
 
                 dataset_id = dataset_path.name

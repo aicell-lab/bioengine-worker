@@ -58,7 +58,6 @@ class DemoDeployment:
         - Must not return any value.
         """
         # Mock initialization logic
-        print("Initializing DemoDeployment...")
         await asyncio.sleep(0.01)
 
     async def test_deployment(self) -> bool:
@@ -71,26 +70,18 @@ class DemoDeployment:
         - Must not accept any arguments.
         - Must return a boolean value indicating whether the deployment is working correctly.
         """
-        try:
-            # Test importing a library set in the runtime environment
-            import pandas
+        # Test importing a library set in the runtime environment
+        import pandas
 
-            # Test accessing an environment variable set in the runtime environment
-            os.environ["EXAMPLE_ENV_VAR"]
+        # Test accessing an environment variable set in the runtime environment
+        os.environ["EXAMPLE_ENV_VAR"]
 
-            # Test the application methods
-            model = await self._get_model("test_model")
+        # Test the application methods
+        model = await self._get_model("test_model")
 
-            ping_response = await self.ping()
+        ping_response = await self.ping()
 
-            ascii_art_response = await self.ascii_art()
-
-            print("Deployment test passed")
-
-            return True
-        except Exception as e:
-            print(f"Deployment test failed: {e}")
-            return False
+        ascii_art_response = await self.ascii_art()
 
     # === Internal Methods ===
 

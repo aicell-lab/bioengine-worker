@@ -338,7 +338,7 @@ class AppsManager:
             # Track the application in the internal state
             self.logger.info(
                 f"Successfully completed deployment of application '{application_id}' from "
-                f"artifact '{artifact_id}', version '{version}'."
+                f"artifact '{artifact_id}', version '{version or 'latest'}'."
             )
 
             # Keep the deployment task running until cancelled
@@ -415,7 +415,7 @@ class AppsManager:
             self.artifact_manager = await self.server.get_service(
                 "public/artifact-manager"
             )
-            self.logger.debug("Successfully connected to artifact manager.")
+            self.logger.info("Successfully connected to artifact manager.")
         except Exception as e:
             self.logger.error(f"Error initializing Ray Deployment Manager: {e}")
             self.server = None
@@ -432,7 +432,7 @@ class AppsManager:
         # Deploy any startup applications if provided
         if self.startup_applications:
             self.logger.info(
-                f"Deploying {len(self.startup_applications)} startup applications..."
+                f"Deploying {len(self.startup_applications)} startup application(s)..."
             )
             admin_context = create_context(admin_users[0])
             application_ids = await self.deploy_applications(
@@ -811,7 +811,7 @@ class AppsManager:
             if application_id not in self._deployed_applications:
                 # Create a new application if application_id is not provided
                 self.logger.info(
-                    f"User '{user_id}' is deploying a new application '{application_id}' from artifact '{artifact_id}', version '{str(version)}' with kwargs: {kwargs_str}"
+                    f"User '{user_id}' is deploying new application '{application_id}' from artifact '{artifact_id}', version '{version or 'latest'}' with kwargs: {kwargs_str}"
                 )
             else:
                 # Update existing application
@@ -819,7 +819,7 @@ class AppsManager:
                 if application_info["is_deployed"].is_set():
                     # If already deployed, cancel the existing deployment task to update deployment in a new task
                     self.logger.info(
-                        f"User '{user_id}' is updating existing application from artifact '{artifact_id}', version '{str(version)}' with kwargs: {kwargs_str}"
+                        f"User '{user_id}' is updating existing application from artifact '{artifact_id}', version '{version or 'latest'}' with kwargs: {kwargs_str}"
                     )
                     application_info["remove_on_exit"] = False
                     application_info["deployment_task"].cancel()

@@ -3,7 +3,7 @@ import logging
 import os
 from functools import wraps
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union, TypedDict
 
 import httpx
 import yaml
@@ -16,9 +16,36 @@ from bioengine_worker.proxy_deployment import RtcProxyDeployment
 from bioengine_worker.utils import create_logger, update_requirements
 
 
+class AppManifest(TypedDict):
+    """Type definition for application manifest structure."""
+
+    name: str
+    id: str
+    id_emoji: str
+    description: str
+    type: str
+    deployments: List[str]
+    authorized_users: List[str]
+
+
 class AppBuilder:
     """
-    A class to build and manage the application.
+    A builder class for creating and managing BioEngine applications from deployment artifacts.
+
+    The AppBuilder handles the complete lifecycle of application deployment including:
+    - Loading deployment artifacts and manifests
+    - Setting up Ray Serve deployments with proper environment configuration
+    - Managing resource allocation and dependencies
+    - Creating proxy deployments for RTC communication
+    - Validating and testing deployments during initialization
+
+    Attributes:
+        logger: Logger instance for the AppBuilder
+        apps_cache_dir: Directory for caching deployment artifacts
+        apps_data_dir: Directory accessible to deployments for data storage
+        server: Remote service connection to Hypha server
+        artifact_manager: Service for managing deployment artifacts
+        serve_http_url: HTTP URL for Ray Serve endpoints
     """
 
     def __init__(
@@ -26,18 +53,21 @@ class AppBuilder:
         token: str,
         apps_cache_dir: Path,
         apps_data_dir: Path,
-        log_file: str = None,
+        log_file: Optional[str] = None,
         debug: bool = False,
-    ):
+    ) -> None:
         """
         Initialize the AppBuilder with configuration parameters.
 
         Args:
-            token: Authentication token for service access
-            apps_cache_dir: Cache directory for deployment artifacts
-            apps_data_dir: Data directory accessible to deployments
-            log_file: Optional log file path for output
-            debug: Enable debug logging
+            token: Authentication token for Hypha server access
+            apps_cache_dir: Cache directory for deployment artifacts and workspaces
+            apps_data_dir: Data directory accessible to all deployments
+            log_file: Optional path to log file for output (defaults to console logging)
+            debug: Enable debug-level logging for detailed output
+
+        Raises:
+            ValueError: If required directories cannot be created or accessed
         """
         # Set up logging
         self.logger = create_logger(
@@ -50,13 +80,27 @@ class AppBuilder:
         self._token = token
         self.apps_cache_dir = apps_cache_dir
         self.apps_data_dir = apps_data_dir
-        self.server = None
-        self.artifact_manager = None
-        self.serve_http_url = None
+        self.server: Optional[RemoteService] = None
+        self.artifact_manager: Optional[ObjectProxy] = None
+        self.serve_http_url: Optional[str] = None
 
     def initialize(
         self, server: RemoteService, artifact_manager: ObjectProxy, serve_http_url: str
     ) -> None:
+        """
+        Initialize the AppBuilder with required external services.
+
+        This method must be called after construction to set up the connection
+        to the Hypha server and artifact manager service.
+
+        Args:
+            server: Connected RemoteService instance to Hypha server
+            artifact_manager: ObjectProxy to the artifact management service
+            serve_http_url: Base HTTP URL for Ray Serve deployment endpoints
+
+        Raises:
+            ValueError: If any of the provided services are invalid or not properly connected
+        """
         # Store server connection and artifact manager
         if not server or not isinstance(server, RemoteService):
             raise ValueError("Invalid server connection provided.")
@@ -72,20 +116,23 @@ class AppBuilder:
         self.artifact_manager = artifact_manager
         self.serve_http_url = serve_http_url
 
-    async def _load_manifest(self, artifact_id: str, version: str = None) -> dict:
+    async def _load_manifest(
+        self, artifact_id: str, version: Optional[str] = None
+    ) -> AppManifest:
         """
-        Load the artifact manifest from the artifact manager.
+        Load and validate the artifact manifest from the artifact manager or local filesystem.
 
         Args:
-            artifact_id (str): The ID of the artifact to load.
-            version (str, optional): The version of the artifact to load. Defaults to None.
+            artifact_id: The ID of the artifact to load (format: 'workspace/artifact_alias')
+            version: The version of the artifact to load (defaults to latest)
 
         Returns:
-            dict: The loaded manifest dictionary.
+            The loaded and validated manifest dictionary containing deployment configuration
 
         Raises:
-            ValueError: If the manifest is invalid or missing required fields.
-            Exception: If there is an error loading the manifest.
+            FileNotFoundError: If local manifest file is not found when using local artifact path
+            ValueError: If the manifest is invalid, missing required fields, or has incorrect format
+            Exception: If there is an error loading the manifest from the artifact manager
         """
         if os.environ.get("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"):
             # Load the file content from local path
@@ -137,8 +184,67 @@ class AppBuilder:
 
         return manifest
 
+    async def _update_actor_options(
+        self, deployment: serve.Deployment, application_id: str, token: str
+    ) -> serve.Deployment:
+        """
+        Update Ray actor options for a deployment with BioEngine-specific configuration.
+
+        Adds required dependencies, environment variables, and directory structure
+        needed for BioEngine deployments to function properly.
+
+        Args:
+            deployment: The Ray Serve deployment to update
+            application_id: Unique identifier for the application instance
+            token: Authentication token for Hypha server access
+
+        Returns:
+            Updated deployment with configured actor options
+
+        Note:
+            This method modifies the deployment's runtime environment to include:
+            - BioEngine pip requirements
+            - Working directory setup
+            - Hypha server connection parameters
+            - Data directory access paths
+        """
+        ray_actor_options = deployment.ray_actor_options
+        runtime_env = ray_actor_options.setdefault("runtime_env", {})
+        pip_requirements = runtime_env.setdefault("pip", [])
+        env_vars = runtime_env.setdefault("env_vars", {})
+
+        # Update pip requirements with BioEngine requirements
+        pip_requirements = update_requirements(pip_requirements)
+
+        # Set standard directories to ensure it only uses the specified workdir
+        app_work_dir = self.apps_cache_dir / application_id
+        env_vars["BIOENGINE_WORKDIR"] = str(app_work_dir)
+        env_vars["HOME"] = str(app_work_dir)
+        env_vars["TMPDIR"] = str(app_work_dir / "tmp")
+
+        # Pass the data directory to the deployment
+        env_vars["BIOENGINE_DATA_DIR"] = str(self.apps_data_dir)
+
+        env_vars["HYPHA_SERVER_URL"] = self.server.config.public_base_url
+        env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
+        env_vars["HYPHA_TOKEN"] = token
+
+        updated_deployment = deployment.options(ray_actor_options=ray_actor_options)
+        return updated_deployment
+
     def _update_init(self, deployment: serve.Deployment) -> serve.Deployment:
-        """Update the __init__ method of the deployment class to set up BioEngine environment."""
+        """
+        Update the __init__ method of the deployment class to set up BioEngine environment.
+
+        Wraps the original __init__ method to ensure proper working directory setup
+        and deployment state initialization.
+
+        Args:
+            deployment: The Ray Serve deployment to update
+
+        Returns:
+            Updated deployment with wrapped __init__ method
+        """
 
         orig_init = getattr(deployment.func_or_class, "__init__")
 
@@ -147,56 +253,63 @@ class AppBuilder:
             import os
             from pathlib import Path
 
-            print(f"🔧 Initializing deployment {self.__class__.__name__}...")
-
             # Ensure the workdir is set to the BIOENGINE_WORKDIR environment variable
             workdir = Path(os.environ["BIOENGINE_WORKDIR"])
             workdir.mkdir(parents=True, exist_ok=True)
             os.chdir(workdir)
-            print(f"📁 Set working directory to: {workdir}")
+            print(f"📁 Working directory: {workdir}")
+
+            # Log data directory
+            data_dir = os.environ["BIOENGINE_DATA_DIR"]
+            print(f"📂 Data directory: {data_dir}")
 
             # Initialize deployment states
             self._deployment_initialized = False
             self._deployment_tested = False
-            print(f"🏗️ Initialized deployment state flags")
 
             # Call the original __init__ method
-            print(f"🔄 Calling original __init__ method")
             orig_init(self, *args, **kwargs)
-
-            print(f"✅ Deployment {self.__class__.__name__} initialized successfully")
 
         setattr(deployment.func_or_class, "__init__", wrapped_init)
         return deployment
 
     def _update_async_init(self, deployment: serve.Deployment) -> serve.Deployment:
-        """Update the async_init method of the deployment class for post-initialization setup."""
+        """
+        Update the async_init method of the deployment class for post-initialization setup.
+
+        Wraps the original async_init method to handle both sync and async implementations
+        and track initialization state.
+
+        Args:
+            deployment: The Ray Serve deployment to update
+
+        Returns:
+            Updated deployment with wrapped async_init method
+        """
         orig_async_init = getattr(
             deployment.func_or_class, "async_init", lambda self: None
         )
 
         @wraps(orig_async_init)
         async def wrapped_async_init(self):
-            print(f"⚡ Running async initialization for {self.__class__.__name__}...")
+            print(f"⚡ Running async initialization for '{self.__class__.__name__}'...")
 
             try:
                 # Check if the original async_init method is async
                 if inspect.iscoroutinefunction(orig_async_init):
-                    print(f"🔄 Calling async version of async_init")
                     await orig_async_init(self)
                 else:
                     # If it's a regular function, call it directly
-                    print(f"🔄 Calling sync version of async_init")
                     orig_async_init(self)
 
                 self._deployment_initialized = True
                 print(
-                    f"✅ Deployment {self.__class__.__name__} async initialized successfully"
+                    f"✅ Deployment '{self.__class__.__name__}' async initialized successfully"
                 )
 
             except Exception as e:
                 print(
-                    f"❌ Async initialization failed for {self.__class__.__name__}: {e}"
+                    f"❌ Async initialization failed for '{self.__class__.__name__}': {e}"
                 )
                 raise
 
@@ -204,32 +317,41 @@ class AppBuilder:
         return deployment
 
     def _update_test_deployment(self, deployment: serve.Deployment) -> serve.Deployment:
-        """Update the test_deployment method of the deployment class for testing functionality."""
+        """
+        Update the test_deployment method of the deployment class for testing functionality.
+
+        Wraps the original test_deployment method to handle both sync and async implementations
+        and track testing state.
+
+        Args:
+            deployment: The Ray Serve deployment to update
+
+        Returns:
+            Updated deployment with wrapped test_deployment method
+        """
         orig_test_deployment = getattr(
             deployment.func_or_class, "test_deployment", lambda self: None
         )
 
         @wraps(orig_test_deployment)
         async def wrapped_test_deployment(self):
-            print(f"🧪 Running deployment test for {self.__class__.__name__}...")
+            print(f"🧪 Running deployment test for '{self.__class__.__name__}'...")
 
             try:
                 # Check if the original test_deployment method is async
                 if inspect.iscoroutinefunction(orig_test_deployment):
-                    print(f"🔄 Calling async version of test_deployment")
                     await orig_test_deployment(self)
                 else:
                     # If it's a regular function, call it directly
-                    print(f"🔄 Calling sync version of test_deployment")
                     orig_test_deployment(self)
 
                 self._deployment_tested = True
-                print(f"✅ Deployment {self.__class__.__name__} tested successfully")
+                print(f"✅ Deployment '{self.__class__.__name__}' tested successfully")
 
             except Exception as e:
-                print(f"❌ Deployment test failed for {self.__class__.__name__}: {e}")
+                print(f"❌ Deployment test failed for '{self.__class__.__name__}': {e}")
                 raise RuntimeError(
-                    f"Deployment test failed for {self.__class__.__name__}: {e}"
+                    f"Deployment test failed for '{self.__class__.__name__}': {e}"
                 )
 
         setattr(deployment.func_or_class, "test_deployment", wrapped_test_deployment)
@@ -237,9 +359,20 @@ class AppBuilder:
 
     def _update_health_check(self, deployment: serve.Deployment) -> serve.Deployment:
         """
-        Add a health check method to the deployment class.
-        This method is called by Ray Serve during the actor initialization and keeps the
-        deployment in stage "DEPLOYING" until the health check passes.
+        Add a comprehensive health check method to the deployment class.
+
+        This method is called by Ray Serve during actor initialization and keeps the
+        deployment in "DEPLOYING" state until all initialization and testing passes.
+
+        Args:
+            deployment: The Ray Serve deployment to update
+
+        Returns:
+            Updated deployment with health check method
+
+        Note:
+            The health check ensures both async_init and test_deployment complete
+            successfully before marking the deployment as healthy.
         """
         orig_health_check = getattr(
             deployment.func_or_class, "check_health", lambda self: None
@@ -247,40 +380,47 @@ class AppBuilder:
 
         @wraps(orig_health_check)
         async def check_health(self):
-            print(f"🩺 Running health check for {self.__class__.__name__}...")
-
             # Ensure async initialization has completed
             if not getattr(self, "_deployment_initialized", False):
-                print(f"⚡ Running async_init during health check")
                 await self.async_init()
 
             # Ensure deployment testing has completed
             if not getattr(self, "_deployment_tested", False):
-                print(f"🧪 Running test_deployment during health check")
                 await self.test_deployment()
 
             try:
                 # Check if the original health check method is async
                 if inspect.iscoroutinefunction(orig_health_check):
-                    print(f"🔄 Calling async version of check_health")
                     result = await orig_health_check(self)
                 else:
                     # If it's a regular function, call it directly
-                    print(f"🔄 Calling sync version of check_health")
                     result = orig_health_check(self)
 
-                print(f"✅ Health check passed for {self.__class__.__name__}")
                 return result
 
             except Exception as e:
-                print(f"❌ Health check failed for {self.__class__.__name__}: {e}")
+                print(f"❌ Health check failed for '{self.__class__.__name__}': {e}")
                 raise
 
         # Add the updated health check method to the deployment class
         setattr(deployment.func_or_class, "check_health", check_health)
         return deployment
 
-    def _get_init_param_info(self, deployment: serve.Deployment) -> dict:
+    def _get_init_param_info(
+        self, deployment: serve.Deployment
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Extract parameter information from a deployment class's __init__ method.
+
+        Args:
+            deployment: The Ray Serve deployment to inspect
+
+        Returns:
+            Dictionary mapping parameter names to their type and default value information
+
+        Note:
+            Excludes 'self' parameter from the returned dictionary
+        """
         sig = inspect.signature(deployment.func_or_class.__init__)
         params = {}
         for name, param in sig.parameters.items():
@@ -300,11 +440,19 @@ class AppBuilder:
             }
         return params
 
-    def _check_params(self, init_params: dict, kwargs: dict) -> None:
+    def _check_params(
+        self, init_params: Dict[str, Dict[str, Any]], kwargs: Dict[str, Any]
+    ) -> None:
         """
-        Check if the provided kwargs match the expected init parameters.
-        Raises ValueError if there are unexpected parameters, missing required parameters,
-        or type mismatches.
+        Validate that provided kwargs match the expected init parameters.
+
+        Args:
+            init_params: Parameter information from _get_init_param_info
+            kwargs: Keyword arguments to validate
+
+        Raises:
+            ValueError: If there are unexpected parameters, missing required parameters,
+                       or type mismatches
         """
         # Check if all provided parameters are expected
         for key in kwargs:
@@ -330,44 +478,13 @@ class AppBuilder:
                     f"Missing required parameter '{key}' of type {param_info['type'].__name__}."
                 )
 
-    async def _update_actor_options(
-        self, deployment: serve.Deployment, token: str
-    ) -> serve.Deployment:
-        """
-        Add any missing BioEngine requirements to the deployment class.
-        Add BioEngine and Hypha specific environment variables to the deployment
-        """
-        ray_actor_options = deployment.ray_actor_options
-        runtime_env = ray_actor_options.setdefault("runtime_env", {})
-        pip_requirements = runtime_env.setdefault("pip", [])
-        env_vars = runtime_env.setdefault("env_vars", {})
-
-        # Update pip requirements with BioEngine requirements
-        pip_requirements = update_requirements(pip_requirements)
-
-        # Set standard directories to ensure it only uses the specified workdir
-        env_vars["BIOENGINE_WORKDIR"] = str(self.apps_cache_dir)
-        env_vars["HOME"] = str(self.apps_cache_dir)
-        env_vars["TMPDIR"] = str(self.apps_cache_dir / "tmp")
-        self.logger.debug(f"Set workdir: {self.apps_cache_dir}")
-
-        # Pass the data directory to the deployment
-        env_vars["BIOENGINE_DATA_DIR"] = str(self.apps_data_dir)
-        self.logger.debug(f"Set data directory: {self.apps_data_dir}")
-
-        env_vars["HYPHA_SERVER_URL"] = self.server.config.public_base_url
-        env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
-        env_vars["HYPHA_TOKEN"] = token
-
-        updated_deployment = deployment.options(ray_actor_options=ray_actor_options)
-        return updated_deployment
-
     async def _load_deployment(
         self,
+        application_id: str,
         artifact_id: str,
-        version: str,
+        version: Optional[str],
         import_path: str,
-        deployment_options: Dict[str, int],
+        deployment_options: Dict[str, Union[int, None]],
         token: str,
     ) -> serve.Deployment:
         """
@@ -377,17 +494,20 @@ class AppBuilder:
         Supports both remote artifact loading and local file loading for development.
 
         Args:
-            class_config: Configuration for the class to load including class name and file path
+            application_id: Unique identifier for the application instance
             artifact_id: ID of the artifact containing the deployment code
-            version: Optional version of the artifact to load
+            version: Version of the artifact to load (defaults to latest)
+            import_path: Import path in format 'python_file:class_name'
+            deployment_options: Resource allocation options (CPUs, GPUs, memory)
+            token: Authentication token for Hypha server access
 
         Returns:
-            Any: The loaded class ready for Ray Serve deployment
+            Configured Ray Serve deployment ready for use
 
         Raises:
             FileNotFoundError: If local deployment file is not found
-            ValueError: If class name is not found in the code
-            RuntimeError: If class loading fails
+            ValueError: If import path format is invalid or class name is not found
+            RuntimeError: If class loading or configuration fails
             Exception: If code execution or download fails
         """
         try:
@@ -401,10 +521,10 @@ class AppBuilder:
 
         if os.environ.get("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"):
             # Load the file content from local path
-            self.logger.debug(
-                f"Loading deployment code from local path: {python_file} in artifact {artifact_id}"
-            )
             artifact_folder = artifact_id.split("/")[1].replace("-", "_")
+            self.logger.debug(
+                f"Loading deployment code from local path: {python_file} in folder {artifact_folder}/"
+            )
             local_deployments_dir = Path(
                 os.environ["BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"]
             )
@@ -460,14 +580,16 @@ class AppBuilder:
             if not deployment:
                 raise RuntimeError(f"Error loading {class_name} from {artifact_id}")
 
+            # Update environment variables and requirements
+            deployment = await self._update_actor_options(
+                deployment, application_id, token
+            )
+
             # Update the deployment class methods
             deployment = self._update_init(deployment)
             deployment = self._update_async_init(deployment)
             deployment = self._update_test_deployment(deployment)
             deployment = self._update_health_check(deployment)
-
-            # Update environment variables and requirements
-            deployment = await self._update_actor_options(deployment, token)
 
             self.logger.info(
                 f"Successfully loaded and configured deployment class '{class_name}' from artifact '{artifact_id}'"
@@ -481,7 +603,16 @@ class AppBuilder:
 
     def _calculate_required_resources(
         self, deployments: List[serve.Deployment]
-    ) -> Dict[str, int]:
+    ) -> Dict[str, Union[int, float]]:
+        """
+        Calculate the total resource requirements for all deployments.
+
+        Args:
+            deployments: List of Ray Serve deployments to analyze
+
+        Returns:
+            Dictionary containing total CPU, GPU, and memory requirements
+        """
         required_resources = {
             "num_cpus": 0,
             "num_gpus": 0,
@@ -500,13 +631,33 @@ class AppBuilder:
         application_id: str,
         artifact_id: str,
         version: Optional[str] = None,
-        deployment_options: Optional[Dict[str, int]] = None,
+        deployment_options: Optional[Dict[str, Union[int, None]]] = None,
         deployment_kwargs: Optional[Dict[str, Any]] = None,
     ) -> serve.Application:
         """
-        Build the application.
+        Build a complete BioEngine application from a deployment artifact.
 
-        :return: The built application instance.
+        This method orchestrates the entire application building process including:
+        - Loading and validating the artifact manifest
+        - Creating and configuring all deployments
+        - Setting up the RTC proxy for communication
+        - Validating deployment parameters and dependencies
+
+        Args:
+            application_id: Unique identifier for the application instance
+            artifact_id: ID of the artifact containing deployment code (format: 'workspace/artifact_alias')
+            version: Version of the artifact to load (defaults to latest)
+            deployment_options: Resource allocation options for deployments
+            deployment_kwargs: Initialization parameters for each deployment class
+
+        Returns:
+            Fully configured Ray Serve application ready for deployment
+
+        Raises:
+            ValueError: If application_id is empty, artifact_id format is invalid,
+                       or deployment configuration is incorrect
+            FileNotFoundError: If local artifact files are not found
+            Exception: If manifest loading, deployment creation, or configuration fails
         """
         # Validate application_id and artifact_id
         if not application_id:
@@ -519,7 +670,7 @@ class AppBuilder:
             )
 
         self.logger.info(
-            f"Building application {application_id} from artifact {artifact_id} (version: {version or 'latest'})"
+            f"Building application '{application_id}' from artifact {artifact_id} (version: {version or 'latest'})"
         )
 
         # Load the artifact manifest
@@ -528,6 +679,7 @@ class AppBuilder:
         # Load all deployments defined in the manifest
         deployments = [
             await self._load_deployment(
+                application_id=application_id,
                 artifact_id=artifact_id,
                 version=version,
                 import_path=import_path,
@@ -619,8 +771,10 @@ class AppBuilder:
             ],
         }
 
-        self.logger.info(f"Successfully built application: {application_id}")
-        self.logger.info(f"Available methods: {app.metadata['available_methods']}")
+        self.logger.info(
+            f"Successfully built application '{application_id}' with "
+            f"available methods: {app.metadata['available_methods']}"
+        )
         return app
 
 

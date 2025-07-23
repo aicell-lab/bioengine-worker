@@ -128,10 +128,9 @@ class RtcProxyDeployment:
                             this application. Use ["*"] for public access.
                             Empty list denies all access.
         """
-        print(f"🚀 Initializing RtcProxyDeployment for application: {application_id}")
-        print(f"📝 Application name: {application_name}")
+        print(f"🚀 Initializing RtcProxyDeployment for application: '{application_id}'")
         print(f"🔗 Server URL: {server_url}")
-        print(f"🏢 Workspace: {workspace}")
+        print(f"🏢 Workspace: '{workspace}'")
         print(f"👥 Authorized users: {authorized_users}")
         print(f"⚙️ Max ongoing requests: {MAX_ONGOING_REQUESTS}")
 
@@ -161,8 +160,6 @@ class RtcProxyDeployment:
         # Store request events
         self.serve_http_url = serve_http_url
         self._request_events: Dict[str, asyncio.Event] = {}
-
-        print(f"✅ RtcProxyDeployment initialization completed for: {application_id}")
 
     async def __call__(self, request: Request) -> Dict[str, Any]:
         """
@@ -234,8 +231,6 @@ class RtcProxyDeployment:
             [{"urls": "stun:stun.server.com:19302"},
              {"urls": "turn:turn.server.com:3478", "username": "...", "credential": "..."}]
         """
-        print(f"🧊 Fetching ICE servers for application: {self.application_id}")
-
         try:
             async with AsyncClient(timeout=30) as client:
                 response = await client.get(
@@ -538,10 +533,6 @@ class RtcProxyDeployment:
         """
         # Connect to Hypha server
         try:
-            print(
-                f"🔌 Connecting to Hypha server for application '{self.application_id}'"
-            )
-
             # Connect to the Hypha server
             self.server = await connect_to_server(
                 {
@@ -574,13 +565,6 @@ class RtcProxyDeployment:
             # Add custom ICE servers if available, otherwise hypha-rpc will use defaults
             if ice_servers:
                 rtc_config["ice_servers"] = ice_servers
-                print(
-                    f"🧊 Using custom ICE servers for WebRTC service '{self.application_id}'"
-                )
-            else:
-                print(
-                    f"🧊 Using default ICE servers for WebRTC service '{self.application_id}'"
-                )
 
             # Register WebRTC service
             rtc_service_info = await register_rtc_service(
@@ -595,7 +579,7 @@ class RtcProxyDeployment:
 
         except Exception as e:
             print(
-                f"❌ Failed to register WebRTC service for '{self.application_id}': {e}"
+                f"⚠️  Warning: Failed to register WebRTC service for '{self.application_id}': {e}"
             )
             # Don't fail the entire deployment if WebRTC registration fails
 
@@ -607,14 +591,9 @@ class RtcProxyDeployment:
                 service_functions[method_name] = self._create_deployment_function(
                     method_schema
                 )
-                print(f"🔧 Created proxy function for method '{method_name}'")
 
             # Add load check function - for service load balancing (https://docs.amun.ai/#/service-load-balancing)
             service_functions["get_load"] = self._get_load
-
-            print(
-                f"🚀 Registering service functions for '{self.application_id}': {list(service_functions.keys())}"
-            )
 
             # Register the main service
             service_info = await self.server.register_service(
@@ -631,13 +610,15 @@ class RtcProxyDeployment:
 
             self.service_id = service_info["id"]
             print(
-                f"✅ Successfully registered service for '{self.application_id}' with ID: {self.service_id}"
+                f"✅ Successfully registered WebSocket service for '{self.application_id}' "
+                f"with ID {self.service_id}."
             )
+            print(f"📋 Service functions registered: {list(service_functions.keys())}")
 
         except Exception as e:
             self.service_id = None
             print(
-                f"❌ Error registering WebRTC service for '{self.application_id}': {e}"
+                f"❌ Error registering WebSocket service for '{self.application_id}': {e}"
             )
             raise
 
@@ -655,8 +636,6 @@ class RtcProxyDeployment:
 
         Raises RuntimeError if registration failed.
         """
-        print(f"📋 Getting service IDs for application: {self.application_id}")
-
         if self.service_id is None:
             print(f"❌ Service registration failed for '{self.application_id}'")
             raise RuntimeError(
@@ -682,29 +661,17 @@ class RtcProxyDeployment:
         Triggers registration if needed. Raises RuntimeError if unhealthy.
         Called during deployment initialization and periodically.
         """
-        print(f"🩺 Running health check for application: {self.application_id}")
-
-        if not self.service_id:
-            print(
-                f"⚠️ Service not registered, attempting registration for: {self.application_id}"
-            )
+        # Register WebRTC service if not already done
+        if not self.server or not self.service_id:
             await self._register_web_rtc_service()
 
-        # Check if Hypha server connection is established
-        if self.server is None:
-            print(
-                f"❌ Hypha server connection not established for: {self.application_id}"
-            )
-            raise RuntimeError("Hypha server connection not established")
+        # Check if Hypha server can be reached
+        try:
+            await self.server.echo("ping")
+        except Exception as e:
+            print(f"❌ Hypha server connection failed for '{self.application_id}': {e}")
+            raise RuntimeError("Hypha server connection failed")
 
-        # Note: WebRTC service registration is optional and doesn't affect health
-
-        # Check if service registration is complete
-        if self.service_id is None:
-            print(f"❌ Application service not registered for: {self.application_id}")
-            raise RuntimeError("Application service not registered")
-
-        print(f"✅ Health check passed for application: {self.application_id}")
         # All checks passed - deployment is healthy
 
     async def reconfigure(self, version) -> None:

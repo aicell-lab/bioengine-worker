@@ -286,8 +286,6 @@ class BioEngineWorker:
                 debug=debug,
             )
 
-            self.logger.info("BioEngineWorker initialization completed successfully")
-
         except Exception as e:
             self.logger.error(f"Failed to initialize BioEngineWorker: {e}")
             raise
@@ -349,7 +347,7 @@ class BioEngineWorker:
             except Exception as e:
                 self.logger.error(f"Error closing Hypha server connection: {e}")
 
-        self.logger.debug(f"Connecting to Hypha server at '{self.server_url}'...")
+        self.logger.info(f"Connecting to Hypha server at '{self.server_url}'...")
         self._server = await connect_to_server(
             {
                 "server_url": self.server_url,
@@ -368,7 +366,7 @@ class BioEngineWorker:
         self.client_id = self._server.config.client_id
 
         self.logger.info(
-            f"Authenticated user '{user_id}' ({user_email}) connected as client "
+            f"User '{user_id}' ({user_email}) connected as client "
             f"'{self.client_id}' to workspace '{self.workspace}' on server '{self.server_url}'."
         )
 
@@ -383,7 +381,7 @@ class BioEngineWorker:
         # Create admin context for internal operations
         self._admin_context = create_context(user_id, user_email)
 
-        self.logger.debug(
+        self.logger.info(
             f"Admin users for this BioEngine worker: {', '.join(self.admin_users)}"
         )
 

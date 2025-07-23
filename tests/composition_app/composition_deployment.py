@@ -81,24 +81,17 @@ class CompositionDeployment:
         - Must not accept any arguments.
         - Must return a boolean value indicating whether the deployment is working correctly.
         """
-        try:
-            # Test importing a library set in the runtime environment
-            import pandas
+        # Test importing a library set in the runtime environment
+        import pandas
 
-            # Test accessing an environment variable set in the runtime environment
-            os.environ["EXAMPLE_ENV_VAR"]
+        # Test accessing an environment variable set in the runtime environment
+        os.environ["EXAMPLE_ENV_VAR"]
 
-            # Test the application methods
-            result_1 = await self.deployment1.elapsed_time.remote()
+        # Test the application methods
+        result_1 = await self.deployment1.elapsed_time.remote()
 
-            result_2 = await self.deployment2.add.remote(number=10)
+        result_2 = await self.deployment2.add.remote(number=10)
 
-            print("Deployment test passed")
-
-            return True
-        except Exception as e:
-            print(f"Deployment test failed: {e}")
-            return False
 
     # === Exposed BioEngine App Methods - all methods decorated with @schema_method will be exposed as API endpoints ===
     # Note: Parameter type hints and docstrings will be used to generate the API documentation.

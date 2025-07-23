@@ -644,7 +644,7 @@ class RayCluster:
             # Choose GCS server port for local head node
             port = self.ray_cluster_config["head_node_port"]
         self.head_node_address = f"{head_node_address}:{port}"
-        self.logger.debug(f"Head node address set to: {self.head_node_address}")
+        self.logger.info(f"Ray head node address: {self.head_node_address}")
 
     def _set_serve_http_url(self) -> None:
         """Set the Ray Serve HTTP API base URL based on the head node address and port."""
@@ -652,7 +652,7 @@ class RayCluster:
         self.serve_http_url = (
             f"http://{address}:{self.ray_cluster_config['serve_port']}"
         )
-        self.logger.debug(f"Ray Serve HTTP URL set to: {self.serve_http_url}")
+        self.logger.info(f"Ray Serve HTTP URL: {self.serve_http_url}")
 
     async def _connect_to_cluster(self) -> ray.client_builder.ClientContext:
         """Connect to the Ray cluster using the configured head node address.

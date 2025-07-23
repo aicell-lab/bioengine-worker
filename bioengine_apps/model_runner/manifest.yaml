@@ -16,9 +16,9 @@ tags: []
 type: application
 version: 0.0.1
 deployments:
-  - bioimage_model_zoo:ModelRunner
-  # - model_runner:ModelRunner
-  # - model_tester:ModelTester
+  - model_runner:ModelRunner
+  - model_evaluation:ModelEvaluation
+  - model_inference:ModelInference
 authorized_users:
   - "*" # Allow all users to access the application
 

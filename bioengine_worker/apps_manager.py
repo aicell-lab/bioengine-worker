@@ -61,7 +61,7 @@ class AppsManager:
         startup_applications (List[dict]): Deployments to start automatically
         logger: Logger instance for deployment operations
         _deployed_applications (Dict): Internal tracking of active deployments with task references
-        _deployment_semaphore (asyncio.Semaphore): Ensures single deployment operation at a time
+        _deployment_lock (asyncio.Lock): Ensures single deployment operation at a time
     """
 
     def __init__(
@@ -140,7 +140,7 @@ class AppsManager:
         self.artifact_manager = None
         self.admin_users = None
         self.startup_applications = startup_applications
-        self._deployment_semaphore = asyncio.Semaphore(value=1)
+        self._deployment_lock = asyncio.Lock()
         self._deployed_applications = {}
         self.debug = debug
 
@@ -749,7 +749,7 @@ class AppsManager:
         """
         # Only allow one deployment task creation at a time
         # This ensures unique application_id and prevents race conditions
-        async with self._deployment_semaphore:
+        async with self._deployment_lock:
             self._check_initialized()
 
             # Get the full artifact ID

@@ -139,7 +139,7 @@ class AppBuilder:
 
     def _update_init(self, deployment: serve.Deployment) -> serve.Deployment:
         """Update the __init__ method of the deployment class to set up BioEngine environment."""
-        
+
         orig_init = getattr(deployment.func_or_class, "__init__")
 
         @wraps(orig_init)
@@ -171,7 +171,9 @@ class AppBuilder:
 
     def _update_async_init(self, deployment: serve.Deployment) -> serve.Deployment:
         """Update the async_init method of the deployment class for post-initialization setup."""
-        orig_async_init = getattr(deployment.func_or_class, "async_init", lambda self: None)
+        orig_async_init = getattr(
+            deployment.func_or_class, "async_init", lambda self: None
+        )
 
         @wraps(orig_async_init)
         async def wrapped_async_init(self):
@@ -188,10 +190,14 @@ class AppBuilder:
                     orig_async_init(self)
 
                 self._deployment_initialized = True
-                print(f"✅ Deployment {self.__class__.__name__} async initialized successfully")
-                
+                print(
+                    f"✅ Deployment {self.__class__.__name__} async initialized successfully"
+                )
+
             except Exception as e:
-                print(f"❌ Async initialization failed for {self.__class__.__name__}: {e}")
+                print(
+                    f"❌ Async initialization failed for {self.__class__.__name__}: {e}"
+                )
                 raise
 
         setattr(deployment.func_or_class, "async_init", wrapped_async_init)
@@ -219,7 +225,7 @@ class AppBuilder:
 
                 self._deployment_tested = True
                 print(f"✅ Deployment {self.__class__.__name__} tested successfully")
-                
+
             except Exception as e:
                 print(f"❌ Deployment test failed for {self.__class__.__name__}: {e}")
                 raise RuntimeError(
@@ -235,19 +241,21 @@ class AppBuilder:
         This method is called by Ray Serve during the actor initialization and keeps the
         deployment in stage "DEPLOYING" until the health check passes.
         """
-        orig_health_check = getattr(deployment.func_or_class, "check_health", lambda self: None)
+        orig_health_check = getattr(
+            deployment.func_or_class, "check_health", lambda self: None
+        )
 
         @wraps(orig_health_check)
         async def check_health(self):
             print(f"🩺 Running health check for {self.__class__.__name__}...")
 
             # Ensure async initialization has completed
-            if not getattr(self, '_deployment_initialized', False):
+            if not getattr(self, "_deployment_initialized", False):
                 print(f"⚡ Running async_init during health check")
                 await self.async_init()
 
             # Ensure deployment testing has completed
-            if not getattr(self, '_deployment_tested', False):
+            if not getattr(self, "_deployment_tested", False):
                 print(f"🧪 Running test_deployment during health check")
                 await self.test_deployment()
 
@@ -263,7 +271,7 @@ class AppBuilder:
 
                 print(f"✅ Health check passed for {self.__class__.__name__}")
                 return result
-                
+
             except Exception as e:
                 print(f"❌ Health check failed for {self.__class__.__name__}: {e}")
                 raise
@@ -322,7 +330,9 @@ class AppBuilder:
                     f"Missing required parameter '{key}' of type {param_info['type'].__name__}."
                 )
 
-    async def _update_actor_options(self, deployment: serve.Deployment, token: str) -> serve.Deployment:
+    async def _update_actor_options(
+        self, deployment: serve.Deployment, token: str
+    ) -> serve.Deployment:
         """
         Add any missing BioEngine requirements to the deployment class.
         Add BioEngine and Hypha specific environment variables to the deployment
@@ -459,7 +469,9 @@ class AppBuilder:
             # Update environment variables and requirements
             deployment = await self._update_actor_options(deployment, token)
 
-            self.logger.info(f"Successfully loaded and configured deployment class '{class_name}' from artifact '{artifact_id}'")
+            self.logger.info(
+                f"Successfully loaded and configured deployment class '{class_name}' from artifact '{artifact_id}'"
+            )
             return deployment
         except Exception as e:
             self.logger.error(
@@ -506,7 +518,9 @@ class AppBuilder:
                 "Expected format is 'workspace/artifact_alias'."
             )
 
-        self.logger.info(f"Building application {application_id} from artifact {artifact_id} (version: {version or 'latest'})")
+        self.logger.info(
+            f"Building application {application_id} from artifact {artifact_id} (version: {version or 'latest'})"
+        )
 
         # Load the artifact manifest
         manifest = await self._load_manifest(artifact_id, version)

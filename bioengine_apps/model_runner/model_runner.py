@@ -56,7 +56,7 @@ def remove_package(package_dir: Path) -> None:
 
 class LocalBioimageioPackage:
     """Wrapper for cached bioimage.io model package with automatic cleanup."""
-    
+
     def __init__(self, package_path: Path) -> None:
         self.package_path = package_path
         self.model_source = package_path / "rdf.yaml"
@@ -104,7 +104,7 @@ TEST_IMAGE_URL = "https://hypha.aicell.io/bioimage-io/artifacts/charismatic-whal
 class ModelRunner:
     """
     Ray Serve deployment for bioimage.io model operations.
-    
+
     Handles model downloading, caching, validation, testing, and inference
     with cross-replica coordination and atomic filesystem operations.
     """
@@ -178,7 +178,7 @@ class ModelRunner:
     async def test_deployment(self) -> Dict[str, Union[bool, str, float, Dict]]:
         """
         Comprehensive test of all public endpoints using a known working model.
-        
+
         Returns detailed test results with timing and success metrics for monitoring.
         """
         print(
@@ -593,25 +593,27 @@ class ModelRunner:
     # Note: Parameter type hints and docstrings will be used to generate the API documentation.
 
     @schema_method
-    async def get_model_rdf(self, model_id: str, skip_cache: bool = False) -> Dict[str, Union[str, int, float, List, Dict]]:
+    async def get_model_rdf(
+        self, model_id: str, skip_cache: bool = False
+    ) -> Dict[str, Union[str, int, float, List, Dict]]:
         """
         Retrieve the Resource Description Framework (RDF) metadata for a bioimage.io model.
-        
+
         The RDF contains comprehensive model metadata including:
         - Model identification (id, name, description, authors)
         - Input/output tensor specifications (shape, data type, preprocessing)
         - Model architecture details and framework requirements
         - Training information and performance metrics
         - Compatible software versions and dependencies
-        
+
         Args:
             model_id: Unique identifier of the bioimage.io model (e.g., "charismatic-whale")
             skip_cache: Force re-download from source even if model is cached locally
-            
+
         Returns:
             Dictionary containing the complete RDF metadata structure with nested
             configuration for inputs, outputs, preprocessing, postprocessing, and model weights
-            
+
         Raises:
             ValueError: If model_id is invalid or model not found
             RuntimeError: If download or validation fails
@@ -634,28 +636,30 @@ class ModelRunner:
 
     @schema_method
     async def validate(
-        self, rdf_dict: Dict[str, Union[str, int, float, List, Dict]], known_files: Optional[Dict[str, str]] = None
+        self,
+        rdf_dict: Dict[str, Union[str, int, float, List, Dict]],
+        known_files: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Union[bool, str]]:
         """
         Validate a model Resource Description Framework (RDF) against bioimage.io specifications.
-        
+
         Performs comprehensive validation including:
         - Schema compliance checking against bioimage.io RDF specification
         - Data type and format validation for all fields
         - Logical consistency verification between related fields
         - Tensor shape and dimension compatibility analysis
         - File reference and path validation (if known_files provided)
-        
+
         Args:
             rdf_dict: Complete RDF dictionary structure to validate
             known_files: Optional mapping of relative file paths to their content hashes
                         for validating file references within the RDF
-                        
+
         Returns:
             Validation result containing:
             - success: Boolean indicating overall validation status
             - details: Detailed validation report with specific issues or confirmation
-            
+
         Note:
             This method performs format validation only (perform_io_checks=False).
             File existence is not verified unless known_files mapping is provided.
@@ -689,7 +693,7 @@ class ModelRunner:
     ) -> Dict[str, Union[str, bool, List, Dict]]:
         """
         Execute comprehensive bioimage.io model testing using the official test suite.
-        
+
         Performs automated testing including:
         - Model loading and initialization verification
         - Input/output tensor compatibility testing
@@ -697,14 +701,14 @@ class ModelRunner:
         - Sample inference execution with synthetic or provided test data
         - Performance benchmarking and memory usage analysis
         - Framework-specific compatibility verification (PyTorch, TensorFlow, ONNX)
-        
+
         Args:
             model_id: Unique identifier of the bioimage.io model to test
             published: Whether to test the published version (True) or unpublished/review version (False)
             skip_cache: Force re-download of model package before testing
             additional_requirements: Extra Python packages to install in the test environment
                                    (e.g., ["scipy>=1.7.0", "scikit-image"])
-                                   
+
         Returns:
             Comprehensive test results including:
             - Test execution status and outcomes for each test component
@@ -712,7 +716,7 @@ class ModelRunner:
             - Compatibility results across different frameworks
             - Detailed error information if any tests fail
             - Model metadata and configuration verification results
-            
+
         Note:
             This method delegates to the model_evaluation deployment for isolated testing
             in a controlled environment with the specified requirements.
@@ -747,20 +751,20 @@ class ModelRunner:
     ) -> Dict[str, np.ndarray]:
         """
         Execute inference on a bioimage.io model with provided input data.
-        
+
         Performs end-to-end inference including:
         - Automatic input preprocessing according to model specification
         - Model execution with optimized framework backend
         - Output postprocessing and format standardization
         - Memory-efficient processing for large inputs using tiling if supported
-        
+
         Args:
             model_id: Unique identifier of the published bioimage.io model
             inputs: Input data as numpy array or dictionary of named arrays.
                    Must match the model's input specification for shape and data type.
                    For single input models, provide np.ndarray.
                    For multi-input models, provide dict with input names as keys.
-            weights_format: Preferred model weights format ("pytorch_state_dict", "torchscript", 
+            weights_format: Preferred model weights format ("pytorch_state_dict", "torchscript",
                           "onnx", "tensorflow_saved_model"). If None, automatically selects best available.
             device: Target computation device. "cuda" for GPU acceleration, "cpu" for CPU-only.
                    If None, automatically selects based on availability and model compatibility.
@@ -769,16 +773,16 @@ class ModelRunner:
                                         Only applicable for models supporting tiled inference.
             sample_id: Identifier for this inference request, used for logging and debugging
             skip_cache: Force re-download of model package before inference
-            
+
         Returns:
             Dictionary mapping output names to numpy arrays containing the inference results.
             Output shapes and data types match the model's output specification.
             For single-output models, typically returns {"output": result_array}.
-            
+
         Raises:
             ValueError: If model_id is a URL (only model IDs allowed) or inputs don't match specification
             RuntimeError: If model loading, preprocessing, inference, or postprocessing fails
-            
+
         Note:
             Only published models from the bioimage.io model zoo are supported for inference.
             This method delegates to the model_inference deployment for optimized execution.

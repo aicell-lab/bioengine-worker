@@ -42,7 +42,7 @@ requirements = [
 )
 class ModelEvaluation:
     """Internal deployment for running model testing using bioimageio.core."""
-    
+
     def __init__(self):
         print("🚀 Initializing ModelEvaluation deployment")
 
@@ -51,11 +51,11 @@ class ModelEvaluation:
         from bioimageio.core import test_model
 
         print(f"🧪 Testing model at: {model_source}")
-        
+
         try:
             validation_summary = test_model(model_source)
             test_result = validation_summary.model_dump(mode="json")
-            
+
             print(f"✅ Model test completed successfully")
             return test_result
         except Exception as e:
@@ -68,7 +68,7 @@ class ModelEvaluation:
         """Test model inference using bioimageio.core with optional additional requirements."""
         print(f"🔍 Starting model test for: {model_source}")
         print(f"📦 Additional requirements: {additional_requirements}")
-        
+
         additional_packages = []
         if additional_requirements:
             if not isinstance(additional_requirements, list):

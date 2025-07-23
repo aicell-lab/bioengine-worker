@@ -11,7 +11,7 @@ CACHE_N_PREDICTION_PIPELINES = int(os.environ.get("CACHE_N_PREDICTION_PIPELINES"
 
 class CacheEntry:
     """Container for cached prediction pipelines."""
-    
+
     def __init__(self, pipeline, cache_key: str, kwargs_cache: dict):
         self.pipeline = pipeline
         self.cache_key = cache_key
@@ -59,7 +59,7 @@ class CacheEntry:
 )
 class ModelInference:
     """Internal deployment for running model inference using bioimageio.core."""
-    
+
     def __init__(self):
         print("🚀 Initializing ModelInference deployment")
         self._kwargs_cache = {}
@@ -73,7 +73,7 @@ class ModelInference:
     ) -> str:
         """Generate cache key for prediction pipeline configuration."""
         print(f"🔧 Setting prediction kwargs for model: {model_source}")
-        
+
         pipeline_kwargs = {
             "model_source": model_source,
             "create_kwargs": {
@@ -110,12 +110,14 @@ class ModelInference:
         try:
             model_description = load_model_description(model_source)
             pipeline = create_prediction_pipeline(model_description, **create_kwargs)
-            
+
             # Load the pipeline (this loads the model weights into memory/GPU)
             pipeline.load()
-            
-            print(f"✅ Created and loaded prediction pipeline for model at {model_source}")
-            
+
+            print(
+                f"✅ Created and loaded prediction pipeline for model at {model_source}"
+            )
+
             return CacheEntry(
                 pipeline=pipeline, cache_key=cache_key, kwargs_cache=self._kwargs_cache
             )
@@ -136,7 +138,9 @@ class ModelInference:
         from bioimageio.core.digest_spec import create_sample_for_model
 
         print(f"🔮 Starting prediction for model: {model_source}")
-        print(f"📊 Input type: {type(inputs)}, device: {device}, sample_id: {sample_id}")
+        print(
+            f"📊 Input type: {type(inputs)}, device: {device}, sample_id: {sample_id}"
+        )
 
         try:
             cache_key = self._set_prediction_kwargs(
@@ -151,10 +155,14 @@ class ModelInference:
             # Create sample from inputs
             # Handle single array input by creating a proper dictionary
             sample = create_sample_for_model(
-                cache_entry.pipeline.model_description, inputs=inputs, sample_id=sample_id
+                cache_entry.pipeline.model_description,
+                inputs=inputs,
+                sample_id=sample_id,
             )
 
-            print(f"⚙️ Running prediction (blocking: {bool(default_blocksize_parameter)})")
+            print(
+                f"⚙️ Running prediction (blocking: {bool(default_blocksize_parameter)})"
+            )
             # Run prediction using the pipeline
             if default_blocksize_parameter:
                 result = cache_entry.pipeline.predict_sample_with_blocking(sample)
@@ -163,10 +171,10 @@ class ModelInference:
 
             # Convert outputs back to numpy arrays
             outputs = {str(k): v.data.data for k, v in result.members.items()}
-            
+
             print(f"✅ Prediction completed, output keys: {list(outputs.keys())}")
             return outputs
-            
+
         except Exception as e:
             print(f"❌ Prediction failed: {str(e)}")
             raise

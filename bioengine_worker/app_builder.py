@@ -137,104 +137,143 @@ class AppBuilder:
 
         return manifest
 
-    def _update_init(self, deployment_class: serve.Deployment) -> serve.Deployment:
-        orig_init = getattr(deployment_class, "__init__")
+    def _update_init(self, deployment: serve.Deployment) -> serve.Deployment:
+        """Update the __init__ method of the deployment class to set up BioEngine environment."""
+        
+        orig_init = getattr(deployment.func_or_class, "__init__")
 
         @wraps(orig_init)
         def wrapped_init(self, *args, **kwargs):
             import os
             from pathlib import Path
 
+            print(f"🔧 Initializing deployment {self.__class__.__name__}...")
+
             # Ensure the workdir is set to the BIOENGINE_WORKDIR environment variable
             workdir = Path(os.environ["BIOENGINE_WORKDIR"])
             workdir.mkdir(parents=True, exist_ok=True)
             os.chdir(workdir)
+            print(f"📁 Set working directory to: {workdir}")
 
             # Initialize deployment states
             self._deployment_initialized = False
             self._deployment_tested = False
+            print(f"🏗️ Initialized deployment state flags")
 
             # Call the original __init__ method
-            return orig_init(self, *args, **kwargs)
+            print(f"🔄 Calling original __init__ method")
+            orig_init(self, *args, **kwargs)
 
-        setattr(deployment_class, "__init__", wrapped_init)
-        return deployment_class
+            print(f"✅ Deployment {self.__class__.__name__} initialized successfully")
 
-    def _update_async_init(
-        self, deployment_class: serve.Deployment
-    ) -> serve.Deployment:
-        orig_async_init = getattr(deployment_class, "async_init", lambda self: None)
+        setattr(deployment.func_or_class, "__init__", wrapped_init)
+        return deployment
+
+    def _update_async_init(self, deployment: serve.Deployment) -> serve.Deployment:
+        """Update the async_init method of the deployment class for post-initialization setup."""
+        orig_async_init = getattr(deployment.func_or_class, "async_init", lambda self: None)
 
         @wraps(orig_async_init)
         async def wrapped_async_init(self):
-            # Check if the original health check method is async
-            if inspect.iscoroutinefunction(orig_async_init):
-                await orig_async_init(self)
-            else:
-                # If it's a regular function, call it directly
-                orig_async_init(self)
+            print(f"⚡ Running async initialization for {self.__class__.__name__}...")
 
-            self._deployment_initialized = True
+            try:
+                # Check if the original async_init method is async
+                if inspect.iscoroutinefunction(orig_async_init):
+                    print(f"🔄 Calling async version of async_init")
+                    await orig_async_init(self)
+                else:
+                    # If it's a regular function, call it directly
+                    print(f"🔄 Calling sync version of async_init")
+                    orig_async_init(self)
 
-        setattr(deployment_class, "async_init", wrapped_async_init)
-        return deployment_class
+                self._deployment_initialized = True
+                print(f"✅ Deployment {self.__class__.__name__} async initialized successfully")
+                
+            except Exception as e:
+                print(f"❌ Async initialization failed for {self.__class__.__name__}: {e}")
+                raise
 
-    def _update_test_deployment(
-        self, deployment_class: serve.Deployment
-    ) -> serve.Deployment:
+        setattr(deployment.func_or_class, "async_init", wrapped_async_init)
+        return deployment
+
+    def _update_test_deployment(self, deployment: serve.Deployment) -> serve.Deployment:
+        """Update the test_deployment method of the deployment class for testing functionality."""
         orig_test_deployment = getattr(
-            deployment_class, "test_deployment", lambda self: True
+            deployment.func_or_class, "test_deployment", lambda self: None
         )
 
         @wraps(orig_test_deployment)
         async def wrapped_test_deployment(self):
-            # Check if the original health check method is async
-            if inspect.iscoroutinefunction(orig_test_deployment):
-                test_result = await orig_test_deployment(self)
-            else:
-                # If it's a regular function, call it directly
-                test_result = orig_test_deployment(self)
+            print(f"🧪 Running deployment test for {self.__class__.__name__}...")
 
-            if test_result is not True:
+            try:
+                # Check if the original test_deployment method is async
+                if inspect.iscoroutinefunction(orig_test_deployment):
+                    print(f"🔄 Calling async version of test_deployment")
+                    await orig_test_deployment(self)
+                else:
+                    # If it's a regular function, call it directly
+                    print(f"🔄 Calling sync version of test_deployment")
+                    orig_test_deployment(self)
+
+                self._deployment_tested = True
+                print(f"✅ Deployment {self.__class__.__name__} tested successfully")
+                
+            except Exception as e:
+                print(f"❌ Deployment test failed for {self.__class__.__name__}: {e}")
                 raise RuntimeError(
-                    f"Deployment test failed for {deployment_class.func_or_class.__name__}"
+                    f"Deployment test failed for {self.__class__.__name__}: {e}"
                 )
 
-            self._deployment_tested = True
+        setattr(deployment.func_or_class, "test_deployment", wrapped_test_deployment)
+        return deployment
 
-        setattr(deployment_class, "test_deployment", wrapped_test_deployment)
-        return deployment_class
-
-    def _update_health_check(
-        self, deployment_class: serve.Deployment
-    ) -> serve.Deployment:
+    def _update_health_check(self, deployment: serve.Deployment) -> serve.Deployment:
         """
         Add a health check method to the deployment class.
         This method is called by Ray Serve during the actor initialization and keeps the
         deployment in stage "DEPLOYING" until the health check passes.
         """
-        orig_health_check = getattr(deployment_class, "health_check", lambda self: None)
+        orig_health_check = getattr(deployment.func_or_class, "check_health", lambda self: None)
 
         @wraps(orig_health_check)
-        async def health_check(self):
-            if not self._deployment_initialized:
+        async def check_health(self):
+            print(f"🩺 Running health check for {self.__class__.__name__}...")
+
+            # Ensure async initialization has completed
+            if not getattr(self, '_deployment_initialized', False):
+                print(f"⚡ Running async_init during health check")
                 await self.async_init()
-            if not self._deployment_tested:
+
+            # Ensure deployment testing has completed
+            if not getattr(self, '_deployment_tested', False):
+                print(f"🧪 Running test_deployment during health check")
                 await self.test_deployment()
 
-            # Check if the original health check method is async
-            if inspect.iscoroutinefunction(orig_health_check):
-                return await orig_health_check(self)
-            else:
-                # If it's a regular function, call it directly
-                return orig_health_check(self)
+            try:
+                # Check if the original health check method is async
+                if inspect.iscoroutinefunction(orig_health_check):
+                    print(f"🔄 Calling async version of check_health")
+                    result = await orig_health_check(self)
+                else:
+                    # If it's a regular function, call it directly
+                    print(f"🔄 Calling sync version of check_health")
+                    result = orig_health_check(self)
+
+                print(f"✅ Health check passed for {self.__class__.__name__}")
+                return result
+                
+            except Exception as e:
+                print(f"❌ Health check failed for {self.__class__.__name__}: {e}")
+                raise
 
         # Add the updated health check method to the deployment class
-        setattr(deployment_class, "health_check", health_check)
-        return deployment_class
+        setattr(deployment.func_or_class, "check_health", check_health)
+        return deployment
 
-    def _get_init_param_info(self, deployment_class: serve.Deployment) -> dict:
-        sig = inspect.signature(deployment_class.func_or_class.__init__)
+    def _get_init_param_info(self, deployment: serve.Deployment) -> dict:
+        sig = inspect.signature(deployment.func_or_class.__init__)
         params = {}
         for name, param in sig.parameters.items():
             if name == "self":
@@ -283,14 +322,12 @@ class AppBuilder:
                     f"Missing required parameter '{key}' of type {param_info['type'].__name__}."
                 )
 
-    async def _update_actor_options(
-        self, deployment_class: serve.Deployment, token: str
-    ) -> serve.Deployment:
+    async def _update_actor_options(self, deployment: serve.Deployment, token: str) -> serve.Deployment:
         """
         Add any missing BioEngine requirements to the deployment class.
         Add BioEngine and Hypha specific environment variables to the deployment
         """
-        ray_actor_options = deployment_class.ray_actor_options
+        ray_actor_options = deployment.ray_actor_options
         runtime_env = ray_actor_options.setdefault("runtime_env", {})
         pip_requirements = runtime_env.setdefault("pip", [])
         env_vars = runtime_env.setdefault("env_vars", {})
@@ -302,15 +339,18 @@ class AppBuilder:
         env_vars["BIOENGINE_WORKDIR"] = str(self.apps_cache_dir)
         env_vars["HOME"] = str(self.apps_cache_dir)
         env_vars["TMPDIR"] = str(self.apps_cache_dir / "tmp")
+        self.logger.debug(f"Set workdir: {self.apps_cache_dir}")
 
         # Pass the data directory to the deployment
         env_vars["BIOENGINE_DATA_DIR"] = str(self.apps_data_dir)
+        self.logger.debug(f"Set data directory: {self.apps_data_dir}")
 
         env_vars["HYPHA_SERVER_URL"] = self.server.config.public_base_url
         env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
         env_vars["HYPHA_TOKEN"] = token
 
-        return deployment_class.options(ray_actor_options=ray_actor_options)
+        updated_deployment = deployment.options(ray_actor_options=ray_actor_options)
+        return updated_deployment
 
     async def _load_deployment(
         self,
@@ -406,24 +446,21 @@ class AppBuilder:
             exec(code_content, safe_globals)
             if class_name not in safe_globals:
                 raise ValueError(f"{class_name} not found in {artifact_id}")
-            deployment_class = safe_globals[class_name]
-            if not deployment_class:
+            deployment = safe_globals[class_name]
+            if not deployment:
                 raise RuntimeError(f"Error loading {class_name} from {artifact_id}")
 
             # Update the deployment class methods
-            deployment_class = self._update_init(deployment_class)
-            deployment_class = self._update_async_init(deployment_class)
-            deployment_class = self._update_test_deployment(deployment_class)
-            deployment_class = self._update_health_check(deployment_class)
+            deployment = self._update_init(deployment)
+            deployment = self._update_async_init(deployment)
+            deployment = self._update_test_deployment(deployment)
+            deployment = self._update_health_check(deployment)
 
             # Update environment variables and requirements
-            deployment_class = await self._update_actor_options(deployment_class, token)
+            deployment = await self._update_actor_options(deployment, token)
 
-            self.logger.debug(
-                f"Loaded class '{class_name}' from artifact '{artifact_id}'."
-            )
-
-            return deployment_class
+            self.logger.info(f"Successfully loaded and configured deployment class '{class_name}' from artifact '{artifact_id}'")
+            return deployment
         except Exception as e:
             self.logger.error(
                 f"Error creating deployment class from {artifact_id}: {e}"
@@ -468,6 +505,8 @@ class AppBuilder:
                 f"Invalid artifact ID format: {artifact_id}. "
                 "Expected format is 'workspace/artifact_alias'."
             )
+
+        self.logger.info(f"Building application {application_id} from artifact {artifact_id} (version: {version or 'latest'})")
 
         # Load the artifact manifest
         manifest = await self._load_manifest(artifact_id, version)
@@ -514,7 +553,7 @@ class AppBuilder:
         # If multiple deployment classes are found, create a composition deployment
         if len(deployments) > 1:
             self.logger.debug(
-                "Creating a composition deployment with multiple classes."
+                f"Creating a composition deployment with {len(deployments)} classes."
             )
 
             # Add the composition deployment class(es) to the entry deployment kwargs
@@ -566,6 +605,8 @@ class AppBuilder:
             ],
         }
 
+        self.logger.info(f"Successfully built application: {application_id}")
+        self.logger.info(f"Available methods: {app.metadata['available_methods']}")
         return app
 
 

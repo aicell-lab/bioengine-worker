@@ -45,7 +45,7 @@ class DemoDeployment:
         """Initialize the application."""
         self.start_time = time.time()
 
-    # === Internal BioEngine App Methods - will be called by the BioEngine when the deployment is started ===
+    # === BioEngine App Methods - will be called when the deployment is started ===
 
     async def async_init(self) -> None:
         """
@@ -92,7 +92,7 @@ class DemoDeployment:
             print(f"Deployment test failed: {e}")
             return False
 
-    # == Internal BioEngine App Methods - all methods starting with an underscore will not be exposed as API endpoints ==
+    # === Internal Methods ===
 
     @serve.multiplexed(max_num_models_per_replica=3)
     async def _get_model(self, model_id: str) -> Any:
@@ -115,7 +115,8 @@ class DemoDeployment:
 
         return model
 
-    # === Exposed BioEngine App Methods - docstrings will be used to generate the API documentation ===
+    # === Exposed BioEngine App Methods - all methods decorated with @schema_method will be exposed as API endpoints ===
+    # Note: Parameter type hints and docstrings will be used to generate the API documentation.
 
     @schema_method
     async def ping(self) -> Dict[str, Union[str, float]]:

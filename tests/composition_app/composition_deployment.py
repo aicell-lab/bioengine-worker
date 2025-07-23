@@ -55,7 +55,7 @@ class CompositionDeployment:
         self.deployment1 = deployment1
         self.deployment2 = deployment2
 
-    # === Internal BioEngine App Methods - will be called by the BioEngine when the deployment is started ===
+    # === BioEngine App Methods - will be called when the deployment is started ===
 
     async def async_init(self) -> None:
         """
@@ -100,7 +100,8 @@ class CompositionDeployment:
             print(f"Deployment test failed: {e}")
             return False
 
-    # === Exposed BioEngine App Methods - docstrings will be used to generate the API documentation ===
+    # === Exposed BioEngine App Methods - all methods decorated with @schema_method will be exposed as API endpoints ===
+    # Note: Parameter type hints and docstrings will be used to generate the API documentation.
 
     @schema_method
     async def calculate_result(self, number: int) -> str:

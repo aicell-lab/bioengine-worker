@@ -181,14 +181,10 @@ class ModelInference:
 
 
 if __name__ == "__main__":
-    import asyncio
     from pathlib import Path
-
-    import httpx
 
     # Test the deployment with a model that should pass all checks
     TEST_BMZ_MODEL_ID = "charismatic-whale"
-    TEST_IMAGE_URL = "https://hypha.aicell.io/bioimage-io/artifacts/charismatic-whale/files/new_test_input.npy"
 
     # Set up the environment variables like in the real deployment
     deployment_workdir = (
@@ -207,26 +203,15 @@ if __name__ == "__main__":
     model_source = str(
         deployment_workdir / "models" / f"bmz_model_{TEST_BMZ_MODEL_ID}" / "rdf.yaml"
     )
+    test_image_path = str(
+        deployment_workdir / "models" / f"unpublished_model_{TEST_BMZ_MODEL_ID}" / "new_test_input.npy"
+    )
 
-    async def download_image(url: str) -> np.ndarray:
-        # Download the test image
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
-            response = await client.get(url)
-            if response.status_code != 200:
-                raise RuntimeError(
-                    f"Failed to download test image from {TEST_IMAGE_URL}: "
-                    f"HTTP {response.status_code} - {response.text}"
-                )
-            image = np.load(response.content)
+    # Load the test image from the package
+    image = np.load(test_image_path).astype("float32")
 
-        image = image.astype("float32")
+    # Reshape to match expected format: (batch=1, y, x, channels=1)
+    input_image = image[np.newaxis, :, :, np.newaxis]
 
-        # Reshape to match expected format: (batch=1, y, x, channels=1)
-        input_image = image[np.newaxis, :, :, np.newaxis]
-
-        return input_image
-
-    test_image = asyncio.run(download_image(TEST_IMAGE_URL))
-
-    result = model_inference.predict(model_source, inputs=test_image)
+    result = model_inference.predict(model_source, inputs=input_image)
     print(f"Model inference result: {result}")

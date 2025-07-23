@@ -68,7 +68,6 @@ class LocalBioimageioPackage:
 
 # Test the deployment with a model that should pass all checks
 TEST_BMZ_MODEL_ID = "charismatic-whale"
-TEST_IMAGE_URL = "https://hypha.aicell.io/bioimage-io/artifacts/charismatic-whale/files/new_test_input.npy"
 
 
 @serve.deployment(
@@ -260,17 +259,11 @@ class ModelRunner:
             print(f"🤖 [{self.replica_id}] Test 6/6: Testing inference...")
             inf_start = time.time()
 
-            # Download the test image
-            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
-                response = await client.get(TEST_IMAGE_URL)
-                if response.status_code != 200:
-                    raise RuntimeError(
-                        f"Failed to download test image from {TEST_IMAGE_URL}: "
-                        f"HTTP {response.status_code} - {response.text}"
-                    )
-                image = np.load(response.content)
+            # Load the test image from the package
+            cache_key = self._get_cache_key(model_id=TEST_BMZ_MODEL_ID, published=False)
+            test_image_path = self.models_dir / cache_key / "new_test_input.npy"
+            image = np.load(test_image_path).astype("float32")
 
-            image = image.astype("float32")
             # Reshape to match expected format: (batch=1, y, x, channels=1)
             input_image = image[np.newaxis, :, :, np.newaxis]
 
@@ -538,13 +531,12 @@ class ModelRunner:
 
             # Validate model source
             model_description = load_model_description(model_source)
-            model_id = model_description.get("id", str(actual_package_path))
-
             if isinstance(model_description, InvalidDescr):
-                error_msg = f"Model '{model_id}' is invalid: {model_description}"
+                error_msg = f"Downloaded model at {actual_package_path}/ is invalid: {model_description}"
                 print(f"❌ [{self.replica_id}] {error_msg}")
                 raise ValueError(error_msg)
 
+            model_id = model_description.id
             print(f"✅ [{self.replica_id}] Model '{model_id}' validation successful")
             return actual_package_path
 
@@ -840,7 +832,7 @@ if __name__ == "__main__":
         / "bioimage_io_model_runner"
     )
     deployment_workdir.mkdir(parents=True, exist_ok=True)
-    os.environ["TMPDIR"] = str(deployment_workdir)
+    os.environ["TMPDIR"] = str(deployment_workdir / "tmp")
     os.environ["HOME"] = str(deployment_workdir)
     os.chdir(deployment_workdir)
 
@@ -857,6 +849,7 @@ if __name__ == "__main__":
             model_inference=MockHandle(),
             model_evaluation=MockHandle(),
         )
+        asyncio.run(model_runner.async_init())
 
         asyncio.run(model_runner.test_deployment())
     finally:

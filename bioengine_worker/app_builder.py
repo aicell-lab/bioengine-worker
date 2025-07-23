@@ -12,7 +12,7 @@ from hypha_rpc.utils import ObjectProxy
 from ray import serve
 from ray.serve.handle import DeploymentHandle
 
-from bioengine_worker.rtc_proxy_deployment import RtcProxyDeployment
+from bioengine_worker.proxy_deployment import RtcProxyDeployment
 from bioengine_worker.utils import create_logger, update_requirements
 
 

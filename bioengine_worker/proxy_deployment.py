@@ -22,16 +22,17 @@ logger = logging.getLogger("RtcProxyDeployment")
 # Maximum number of ongoing requests to limit concurrency and prevent overload
 MAX_ONGOING_REQUESTS = int(os.getenv("BIOENGINE_APPLICATION_MAX_ONGOING_REQUESTS", 10))
 
+
 # TODO: Remove duplicated logging in Ray Serve logs
+# TODO: Handle number of peer connections and their states
 @deployment(
     ray_actor_options={
-        "num_cpus": 1,
+        "num_cpus": 0,
         "runtime_env": {
             "pip": get_pip_requirements(select=["aiortc", "httpx", "hypha-rpc"]),
         },
     },
     max_ongoing_requests=MAX_ONGOING_REQUESTS,  # Limit concurrent requests to avoid overload
-    max_queued_requests=MAX_ONGOING_REQUESTS * 2,  # Allow some queuing to handle spikes
     autoscaling_config={
         "min_replicas": 1,  # Always keep at least 1 replica running
         "max_replicas": 10,  # Scale up to 10 replicas maximum
@@ -686,12 +687,18 @@ if __name__ == "__main__":
     import os
 
     class MockMethod:
+        def __init__(self, name: str):
+            self.name = name
+
         async def remote(self, *args, **kwargs):
-            return f"Mocked method called with args={args}, kwargs={kwargs}"
+            print(
+                f"Mocked method '{self.name}' called with args={args}, kwargs={kwargs}"
+            )
+            return {"status": "success", "data": "mocked data"}
 
     class MockHandle:
         def __getattr__(self, name):
-            return MockMethod()
+            return MockMethod(name)
 
     # Example usage of RtcProxyDeployment
     async def main():

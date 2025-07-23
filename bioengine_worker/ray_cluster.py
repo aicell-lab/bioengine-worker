@@ -14,10 +14,9 @@ from typing import Dict, List, Literal, Optional, Union
 
 import ray
 from ray import serve
-from ray.serve.exceptions import RayServeException
 
 from bioengine_worker import __version__
-from bioengine_worker.ray_cluster_state import ClusterState
+from bioengine_worker.proxy_actor import BioEngineProxyActor
 from bioengine_worker.slurm_workers import SlurmWorkers
 from bioengine_worker.utils import create_logger, stream_logging_format
 
@@ -228,7 +227,7 @@ class RayCluster:
         self.head_node_address = None
         self.serve_http_url = None
 
-        self.proxy_handle = None
+        self.proxy_actor_handle = None
         self.cluster_status_history = OrderedDict()
         self.max_status_history_length = 100
 
@@ -619,16 +618,9 @@ class RayCluster:
             exclude_head_node = self.mode == "slurm"
             check_pending_resources = self.mode == "slurm"
 
-            cluster_state_app = ClusterState.bind(
+            self.proxy_actor_handle = BioEngineProxyActor.remote(
                 exclude_head_node=exclude_head_node,
                 check_pending_resources=check_pending_resources,
-            )
-            self.proxy_handle = await asyncio.to_thread(
-                serve.run,
-                target=cluster_state_app,
-                name="BioEngineProxy",
-                route_prefix=None,
-                blocking=False,
             )
 
             return context
@@ -698,31 +690,13 @@ class RayCluster:
 
             # TODO: Re-import ray to reset the connection
             # importlib.reload(ray)
-            # importlib.reload(ClusterState)
+            # importlib.reload(BioEngineProxyActor)
             await self._connect_to_cluster()
 
     async def monitor_cluster(self) -> None:
         """Monitor cluster status and update worker nodes history."""
         # Get the current status of the cluster from the BioEngineProxy
-        try:
-            cluster_status = await asyncio.wait_for(
-                self.proxy_handle.get_cluster_state.remote(), timeout=5
-            )
-        except TimeoutError:
-            self.logger.warning(
-                f"Timeout while getting cluster state. Trying to get new handle..."
-            )
-            self.proxy_handle = await asyncio.to_thread(
-                serve.get_app_handle, "BioEngineProxy"
-            )
-            try:
-                cluster_status = await asyncio.wait_for(
-                    self.proxy_handle.get_cluster_state.remote(), timeout=5
-                )
-            except TimeoutError:
-                raise RuntimeError(
-                    "Failed to get cluster state within 5 seconds after retrying with a new handle"
-                )
+        cluster_status = await self.proxy_actor_handle.get_cluster_state.remote()
 
         self.cluster_status_history[time.time()] = cluster_status
 
@@ -801,16 +775,6 @@ class RayCluster:
                 except Exception as e:
                     # Log the error but do not raise, as we still want to attempt Ray shutdown
                     self.logger.error(f"Error shutting down SLURM workers: {e}")
-
-            # Shutdown the BioEngineProxy deployed by Ray Serve
-            if self.proxy_handle:
-                self.logger.info("Removing down BioEngineProxy...")
-                try:
-                    await asyncio.to_thread(serve.delete, name="BioEngineProxy")
-                    self.proxy_handle = None
-                    self.logger.info("BioEngineProxy removed successfully.")
-                except Exception as e:
-                    self.logger.error(f"Error removing BioEngineProxy: {e}")
 
             # Shutdown the Ray cluster head node if it is not in external-cluster mode
             if self.mode != "external-cluster":

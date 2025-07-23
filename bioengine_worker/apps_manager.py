@@ -1091,9 +1091,7 @@ class AppsManager:
                 start_time = None
                 if application_info["is_deployed"].is_set():
                     status = "UNHEALTHY"
-                    message = (
-                        f"Application '{application_id}' is marked as deployed but not found in Ray Serve status."
-                    )
+                    message = f"Application '{application_id}' is marked as deployed but not found in Ray Serve status."
                     self.logger.warning(
                         f"Application '{application_id}' for artifact '{application_info['artifact_id']}' "
                         "is marked as deployed but not found in Ray Serve status."

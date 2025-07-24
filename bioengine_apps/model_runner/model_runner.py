@@ -56,19 +56,75 @@ def remove_package(package_dir: Path) -> None:
 
 
 class LocalBioimageioPackage:
-    """Wrapper for cached bioimage.io model package with automatic cleanup."""
+    """Wrapper for cached bioimage.io model package with access tracking."""
 
-    def __init__(self, package_path: Path) -> None:
+    def __init__(self, package_path: Path, replica_id: str) -> None:
         self.package_path = package_path
         self.model_source = package_path / "rdf.yaml"
+        self.replica_id = replica_id
+        self._access_file = None
 
-    # def __del__(self) -> None:
-    #     """Clean up package when evicted from cache."""
-    #     remove_package(self.package_path)
+    async def __aenter__(self):
+        """Create access lock when model is being used."""
+        self._access_file = self.package_path / ".last_access"
+        current_time = time.time()
+        try:
+            await asyncio.to_thread(self._access_file.write_text, str(current_time))
+        except (OSError, IOError) as e:
+            print(f"⚠️ [{self.replica_id}] Failed to update access time on enter: {e}")
+        return self
 
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Update access time when model usage is complete."""
+        if self._access_file and self._access_file.exists():
+            current_time = time.time()
+            try:
+                await asyncio.to_thread(self._access_file.write_text, str(current_time))
+            except (OSError, IOError) as e:
+                print(
+                    f"⚠️ [{self.replica_id}] Failed to update access time on exit: {e}"
+                )
 
-# Test the deployment with a model that should pass all checks
-TEST_BMZ_MODEL_ID = "charismatic-whale"
+    async def remove(self) -> None:
+        """Remove this package from the cache."""
+        await asyncio.to_thread(remove_package, self.package_path)
+
+    async def validate(self) -> Path:
+        """Validate model RDF and return actual package path."""
+        from bioimageio.core import load_model_description
+        from bioimageio.spec import InvalidDescr
+
+        try:
+            # Find the RDF file in the package
+            rdf_files = list(self.package_path.rglob("rdf.yaml"))
+            if not rdf_files:
+                error_msg = f"No rdf.yaml found in {self.package_path}"
+                print(f"❌ [{self.replica_id}] {error_msg}")
+                raise FileNotFoundError(error_msg)
+
+            model_source = rdf_files[0]
+            actual_package_path = model_source.parent
+            print(f"🔍 [{self.replica_id}] Found model RDF at: {model_source}")
+
+            # Validate model source
+            model_description = load_model_description(model_source)
+            if isinstance(model_description, InvalidDescr):
+                error_msg = f"Downloaded model at {actual_package_path}/ is invalid: {model_description}"
+                print(f"❌ [{self.replica_id}] {error_msg}")
+                raise ValueError(error_msg)
+
+            model_id = model_description.id
+            print(f"✅ [{self.replica_id}] Model '{model_id}' validation successful")
+
+            # Update the model_source path to the validated one
+            self.model_source = model_source
+            return actual_package_path
+
+        except Exception as e:
+            print(f"❌ [{self.replica_id}] Model validation failed: {e}")
+            # Clean up invalid package using convenience method
+            await self.remove()
+            raise
 
 
 @serve.deployment(
@@ -85,6 +141,7 @@ TEST_BMZ_MODEL_ID = "charismatic-whale"
                 "torchvision==0.20.1",
                 "tensorflow==2.16.1",
                 "onnxruntime==1.20.1",
+                "tqdm>=4.64.0",  # for download progress bars
             ],
         },
     },
@@ -107,12 +164,21 @@ class ModelRunner:
 
     Handles model downloading, caching, validation, testing, and inference
     with cross-replica coordination and atomic filesystem operations.
+
+    Concurrency Design:
+    - Uses atomic filesystem operations (mkdir, rename) for replica coordination
+    - Download markers prevent duplicate downloads across replicas
+    - Access tracking (.last_access files) prevents eviction of active models
+    - LRU eviction with retry logic handles cache space management
+    - Context managers ensure proper access time tracking during model usage
+    - Graceful error handling for filesystem race conditions and I/O errors
     """
 
     def __init__(
         self,
         model_evaluation: DeploymentHandle,
         model_inference: DeploymentHandle,
+        max_models: int = 30,
     ) -> None:
         self.model_evaluation = model_evaluation
         self.model_inference = model_inference
@@ -126,6 +192,9 @@ class ModelRunner:
         models_dir.mkdir(parents=True, exist_ok=True)
         self.models_dir = models_dir
 
+        # Cache configuration
+        self.max_models = max_models
+
         # Get replica identifier for logging
         try:
             self.replica_id = serve.get_replica_context().replica_tag
@@ -133,65 +202,86 @@ class ModelRunner:
             self.replica_id = "unknown"
 
         print(
-            f"🚀 [{self.replica_id}] ModelRunner initialized with models directory: {self.models_dir}"
+            f"🚀 [{self.replica_id}] ModelRunner initialized with models directory: {self.models_dir} (max_models={self.max_models})"
         )
 
     # === BioEngine App Methods - will be called when the deployment is started ===
 
     async def async_init(self) -> None:
-        """Load existing cached models into Ray Serve multiplexed cache."""
+        """Initialize the deployment and validate existing cached models."""
         print(
             f"🔄 [{self.replica_id}] Initializing ModelRunner deployment, scanning {self.models_dir}"
         )
 
         existing_models = 0
-        for package_dir in self.models_dir.iterdir():
-            if not package_dir.is_dir() or package_dir.name.startswith("."):
-                continue
+        try:
+            items = list(self.models_dir.iterdir())
+        except (OSError, IOError) as e:
+            print(
+                f"⚠️ [{self.replica_id}] Error reading models directory during init: {e}"
+            )
+            return
 
-            # Extract cache key from directory name
-            cache_key = package_dir.name
-            if not (
-                cache_key.startswith("bmz_model_")
-                or cache_key.startswith("unpublished_model_")
-            ):
-                print(
-                    f"⚠️ [{self.replica_id}] Skipping invalid cache directory: {cache_key}"
-                )
-                continue
-
+        for package_dir in items:
             try:
-                await self._get_local_package_from_cache(cache_key)
-                existing_models += 1
-                print(
-                    f"📦 [{self.replica_id}] Loaded existing model into cache: {cache_key}"
+                if not package_dir.is_dir() or package_dir.name.startswith("."):
+                    continue
+
+                # Extract cache key from directory name
+                cache_key = package_dir.name
+                if not (
+                    cache_key.startswith("bmz_model_")
+                    or cache_key.startswith("unpublished_model_")
+                ):
+                    print(
+                        f"⚠️ [{self.replica_id}] Skipping invalid cache directory: {cache_key}"
+                    )
+                    continue
+
+                # Create LocalBioimageioPackage and validate existing model
+                local_package = LocalBioimageioPackage(
+                    package_path=package_dir, replica_id=self.replica_id
                 )
+                await local_package.validate()
+                existing_models += 1
+
+                # Create last access file if it doesn't exist
+                access_file = package_dir / ".last_access"
+                if not access_file.exists():
+                    try:
+                        await asyncio.to_thread(
+                            access_file.write_text, str(time.time())
+                        )
+                    except (OSError, IOError) as e:
+                        print(
+                            f"⚠️ [{self.replica_id}] Failed to create access file for {cache_key}: {e}"
+                        )
+
+                print(f"📦 [{self.replica_id}] Validated existing model: {cache_key}")
             except Exception as e:
                 print(
-                    f"⚠️ [{self.replica_id}] Failed to load existing model {cache_key}: {e}"
+                    f"⚠️ [{self.replica_id}] Failed to validate existing model {package_dir.name}: {e}"
                 )
+                # Model was already removed by the validate method if it failed
+                continue
 
         print(
-            f"✅ [{self.replica_id}] Initialization complete. Loaded {existing_models} existing models into cache"
+            f"✅ [{self.replica_id}] Initialization complete. Validated {existing_models} existing models"
         )
 
-    async def test_deployment(self) -> Dict[str, Union[bool, str, float, Dict]]:
-        """
-        Comprehensive test of all public endpoints using a known working model.
-
-        Returns detailed test results with timing and success metrics for monitoring.
-        """
+    async def test_deployment(
+        self, model_id: str = "charismatic-whale"
+    ) -> Dict[str, Union[bool, str, float, Dict]]:
+        """Comprehensive test of all public endpoints using a known working model (that should pass all checks)."""
         print(
-            f"🧪 [{self.replica_id}] Starting comprehensive deployment test with model: '{TEST_BMZ_MODEL_ID}'"
+            f"🧪 [{self.replica_id}] Starting comprehensive deployment test with model: '{model_id}'"
         )
         # Test 1: Get model RDF for validation
         print(f"🔍 [{self.replica_id}] Test 1/6: Getting model RDF...")
         rdf_start = time.time()
-        model_rdf = await self.get_model_rdf(model_id=TEST_BMZ_MODEL_ID)
+        model_rdf = await self.get_model_rdf(model_id=model_id)
         rdf_duration = time.time() - rdf_start
-        print(
-            f"✅ [{self.replica_id}] RDF retrieval successful ({rdf_duration:.2f}s)"
-        )
+        print(f"✅ [{self.replica_id}] RDF retrieval successful ({rdf_duration:.2f}s)")
 
         # Test 2: Validate the RDF
         print(f"🔬 [{self.replica_id}] Test 2/6: Validating RDF...")
@@ -205,7 +295,7 @@ class ModelRunner:
         # Test 3: Test the model (published)
         print(f"🧩 [{self.replica_id}] Test 3/6: Testing published model...")
         test1_start = time.time()
-        test_result1 = await self.test(model_id=TEST_BMZ_MODEL_ID, published=True)
+        test_result1 = await self.test(model_id=model_id, published=True)
         test1_duration = time.time() - test1_start
         print(
             f"✅ [{self.replica_id}] Published model test completed ({test1_duration:.2f}s)"
@@ -214,7 +304,7 @@ class ModelRunner:
         # Test 4: Test the model (unpublished)
         print(f"🧩 [{self.replica_id}] Test 4/6: Testing unpublished model...")
         test2_start = time.time()
-        test_result2 = await self.test(model_id=TEST_BMZ_MODEL_ID, published=False)
+        test_result2 = await self.test(model_id=model_id, published=False)
         test2_duration = time.time() - test2_start
         print(
             f"✅ [{self.replica_id}] Unpublished model test completed ({test2_duration:.2f}s)"
@@ -224,7 +314,7 @@ class ModelRunner:
         print(f"🔄 [{self.replica_id}] Test 5/6: Testing with cache skip...")
         test3_start = time.time()
         test_result3 = await self.test(
-            model_id=TEST_BMZ_MODEL_ID, published=False, skip_cache=True
+            model_id=model_id, published=False, skip_cache=True
         )
         test3_duration = time.time() - test3_start
         print(
@@ -235,19 +325,22 @@ class ModelRunner:
         print(f"🤖 [{self.replica_id}] Test 6/6: Testing inference...")
         inf_start = time.time()
 
-        # Load the test image from the package
-        cache_key = self._get_cache_key(model_id=TEST_BMZ_MODEL_ID, published=False)
-        test_image_path = self.models_dir / cache_key / "new_test_input.npy"
-        image = np.load(test_image_path).astype("float32")
-
-        # Reshape to match expected format: (batch=1, y, x, channels=1)
-        input_image = image[np.newaxis, :, :, np.newaxis]
-
-        outputs = await self.infer(model_id=TEST_BMZ_MODEL_ID, inputs=input_image)
-        inf_duration = time.time() - inf_start
-        print(
-            f"✅ [{self.replica_id}] Inference test completed ({inf_duration:.2f}s)"
+        # Get the model package to load test image
+        local_package = await self._get_local_package_from_cache(
+            model_id=model_id, published=False, skip_cache=False
         )
+
+        async with local_package:
+            test_image_path = local_package.package_path / "new_test_input.npy"
+            image = np.load(test_image_path).astype("float32")
+
+            # Reshape to match expected format: (batch=1, y, x, channels=1)
+            input_image = image[np.newaxis, :, :, np.newaxis]
+
+            outputs = await self.infer(model_id=model_id, inputs=input_image)
+
+        inf_duration = time.time() - inf_start
+        print(f"✅ [{self.replica_id}] Inference test completed ({inf_duration:.2f}s)")
 
     # === Internal Methods ===
 
@@ -257,6 +350,188 @@ class ModelRunner:
             return f"bmz_model_{model_id}"
         else:
             return f"unpublished_model_{model_id}"
+
+    async def _wait_for_download_completion(
+        self, package_dir: Path, max_wait_time: int = 300
+    ) -> bool:
+        """Wait for another replica to finish downloading. Returns True if successful."""
+        start_time = time.time()
+        downloading_marker = package_dir.parent / f".downloading_{package_dir.name}"
+
+        print(
+            f"⏳ [{self.replica_id}] Waiting for download completion: {package_dir.name}"
+        )
+
+        check_interval = 2.0
+        while time.time() - start_time < max_wait_time:
+            try:
+                # Check if download is complete (package exists and no downloading marker)
+                if package_dir.exists() and not downloading_marker.exists():
+                    print(
+                        f"✅ [{self.replica_id}] Download completed by another replica: {package_dir.name}"
+                    )
+                    return True
+
+                # Check if download failed (no package and no downloading marker)
+                if not package_dir.exists() and not downloading_marker.exists():
+                    print(
+                        f"⚠️ [{self.replica_id}] Download appears to have failed on another replica: {package_dir.name}"
+                    )
+                    return False
+            except (OSError, IOError) as e:
+                # Handle filesystem errors gracefully
+                print(f"⚠️ [{self.replica_id}] Filesystem error while waiting: {e}")
+
+            await asyncio.sleep(check_interval)
+
+        # Timeout reached
+        print(
+            f"⏰ [{self.replica_id}] Timeout waiting for download completion: {package_dir.name}"
+        )
+        return False
+
+    async def _get_cached_models_info(self) -> List[Dict[str, Union[str, float, bool]]]:
+        """Get information about all cached models including access times and locks."""
+        models_info = []
+
+        try:
+            items = list(self.models_dir.iterdir())
+        except (OSError, IOError) as e:
+            print(f"⚠️ [{self.replica_id}] Error reading models directory: {e}")
+            return models_info
+
+        for item in items:
+            try:
+                if not item.is_dir() or item.name.startswith("."):
+                    continue
+
+                # Check if it's a valid cache directory
+                if not (
+                    item.name.startswith("bmz_model_")
+                    or item.name.startswith("unpublished_model_")
+                ):
+                    continue
+
+                access_file = item / ".last_access"
+                downloading_marker = self.models_dir / f".downloading_{item.name}"
+
+                # Check if currently downloading
+                is_downloading = downloading_marker.exists()
+
+                # Get last access time
+                last_access = 0
+                is_locked = False
+                if access_file.exists():
+                    try:
+                        access_content = await asyncio.to_thread(access_file.read_text)
+                        last_access = float(access_content.strip())
+                        # Consider locked if accessed very recently (within 10 seconds)
+                        is_locked = (time.time() - last_access) < 10
+                    except (ValueError, FileNotFoundError, OSError, IOError):
+                        last_access = 0
+
+                models_info.append(
+                    {
+                        "cache_key": item.name,
+                        "path": item,
+                        "last_access": last_access,
+                        "is_locked": is_locked,
+                        "is_downloading": is_downloading,
+                    }
+                )
+            except (OSError, IOError) as e:
+                # Skip problematic directories but continue processing others
+                print(
+                    f"⚠️ [{self.replica_id}] Error processing cache directory {item}: {e}"
+                )
+                continue
+
+        return models_info
+
+    async def _ensure_cache_space(
+        self, cache_key: str, max_retries: int = 10, retry_delay: float = 5.0
+    ) -> None:
+        """Ensure there's space in cache for a new model, evicting old ones if necessary."""
+        print(
+            f"🔍 [{self.replica_id}] Checking cache space for new model: '{cache_key}'"
+        )
+
+        for attempt in range(max_retries):
+            # Add small random delay to reduce contention between replicas
+            if attempt > 0:
+                jitter = asyncio.create_task(asyncio.sleep(0.1 + (attempt * 0.1)))
+                await jitter
+
+            models_info = await self._get_cached_models_info()
+
+            # Count current models (including downloading ones)
+            current_count = len(models_info)
+            downloading_marker = self.models_dir / f".downloading_{cache_key}"
+            if downloading_marker.exists():
+                current_count += 1  # Count the model we're about to download
+
+            print(
+                f"📊 [{self.replica_id}] Current cache usage: {current_count}/{self.max_models}"
+            )
+
+            if current_count <= self.max_models:
+                print(f"✅ [{self.replica_id}] Cache has space for new model")
+                return
+
+            # Need to evict models - sort by last access time (oldest first)
+            evictable_models = [
+                model
+                for model in models_info
+                if not model["is_locked"] and not model["is_downloading"]
+            ]
+
+            if not evictable_models:
+                if attempt < max_retries - 1:
+                    print(
+                        f"⏳ [{self.replica_id}] All models are locked or downloading, waiting {retry_delay}s (attempt {attempt + 1}/{max_retries})"
+                    )
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    print(
+                        f"⚠️ [{self.replica_id}] No models can be evicted after {max_retries} attempts, proceeding anyway"
+                    )
+                    return
+
+            # Sort by last access time (oldest first)
+            evictable_models.sort(key=lambda x: x["last_access"])
+
+            # Evict the oldest model
+            oldest_model = evictable_models[0]
+            print(
+                f"🗑️ [{self.replica_id}] Evicting oldest model: {oldest_model['cache_key']} (last accessed: {oldest_model['last_access']})"
+            )
+
+            try:
+                await asyncio.to_thread(remove_package, oldest_model["path"])
+                print(
+                    f"✅ [{self.replica_id}] Successfully evicted model: {oldest_model['cache_key']}"
+                )
+                return  # Successfully made space
+            except Exception as e:
+                print(
+                    f"❌ [{self.replica_id}] Failed to evict model {oldest_model['cache_key']}: {e}"
+                )
+                # Check if the model was already removed by another replica
+                if not oldest_model["path"].exists():
+                    print(
+                        f"🔍 [{self.replica_id}] Model was already removed by another replica"
+                    )
+                    return  # Space was freed by another replica
+
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    print(
+                        f"⚠️ [{self.replica_id}] Could not evict any models, proceeding anyway"
+                    )
+                    return
 
     def _unzip_package(self, zip_file: Path) -> None:
         """Extract ZIP file contents and cleanup."""
@@ -273,7 +548,9 @@ class ModelRunner:
         print(f"✅ [{self.replica_id}] Package extraction completed")
 
     async def _download_model_from_url(self, model_id: str, package_path: Path) -> None:
-        """Download unpublished model as ZIP from Hypha server."""
+        """Download unpublished model as ZIP from Hypha server with progress bar."""
+        from tqdm.asyncio import tqdm
+
         download_url = (
             f"{self.server_url}/{self.workspace}/artifacts/{model_id}/create-zip-file"
         )
@@ -283,15 +560,39 @@ class ModelRunner:
         download_timeout = httpx.Timeout(120.0)
 
         async with httpx.AsyncClient(timeout=download_timeout) as client:
-            response = await client.get(download_url)
-            if response.status_code != 200:
-                raise RuntimeError(
-                    f"Failed to download model from {download_url}: "
-                    f"HTTP {response.status_code} - {response.text}"
-                )
-            zip_content = response.content
+            # Stream the download to show progress
+            async with client.stream("GET", download_url) as response:
+                if response.status_code != 200:
+                    raise RuntimeError(
+                        f"Failed to download model from {download_url}: "
+                        f"HTTP {response.status_code} - {await response.aread()}"
+                    )
 
-        await asyncio.to_thread(zip_file.write_bytes, zip_content)
+                # Get content length for progress bar
+                total_size = int(response.headers.get("content-length", 0))
+
+                # Create progress bar
+                progress_desc = f"[{self.replica_id}] Downloading {model_id}"
+                progress_kwargs = {
+                    "unit": "B",
+                    "unit_scale": True,
+                    "unit_divisor": 1024,
+                    "desc": progress_desc,
+                    "ncols": 80,
+                    "colour": "green",
+                }
+
+                # Only set total if we have content length
+                if total_size > 0:
+                    progress_kwargs["total"] = total_size
+
+                with tqdm(**progress_kwargs) as pbar:
+                    zip_content = bytearray()
+                    async for chunk in response.aiter_bytes(chunk_size=8192):
+                        zip_content.extend(chunk)
+                        pbar.update(len(chunk))
+
+        await asyncio.to_thread(zip_file.write_bytes, bytes(zip_content))
         file_size_mb = zip_file.stat().st_size / (1024 * 1024)
         print(
             f"💾 [{self.replica_id}] Downloaded {file_size_mb:.2f}MB ZIP file for model '{model_id}'"
@@ -310,40 +611,6 @@ class ModelRunner:
             save_bioimageio_package_as_folder, model_id, output_path=package_path
         )
         print(f"✅ [{self.replica_id}] Model '{model_id}' downloaded successfully")
-
-    async def _wait_for_download_completion(
-        self, package_dir: Path, max_wait_time: int = 300
-    ) -> bool:
-        """Wait for another replica to finish downloading. Returns True if successful."""
-        start_time = time.time()
-        downloading_marker = package_dir.parent / f".downloading_{package_dir.name}"
-
-        print(
-            f"⏳ [{self.replica_id}] Waiting for download completion: {package_dir.name}"
-        )
-
-        while time.time() - start_time < max_wait_time:
-            # Check if download is complete (package exists and no downloading marker)
-            if package_dir.exists() and not downloading_marker.exists():
-                print(
-                    f"✅ [{self.replica_id}] Download completed by another replica: {package_dir.name}"
-                )
-                return True
-
-            # Check if download failed (no package and no downloading marker)
-            if not package_dir.exists() and not downloading_marker.exists():
-                print(
-                    f"⚠️ [{self.replica_id}] Download appears to have failed on another replica: {package_dir.name}"
-                )
-                return False
-
-            await asyncio.sleep(2)  # Check every 2 seconds
-
-        # Timeout reached
-        print(
-            f"⏰ [{self.replica_id}] Timeout waiting for download completion: {package_dir.name}"
-        )
-        return False
 
     async def _download_model(self, cache_key: str) -> Path:
         """Download model with atomic operations to prevent conflicts between replicas."""
@@ -369,6 +636,14 @@ class ModelRunner:
         # Check if model already exists
         if package_dir.exists():
             print(f"💾 [{self.replica_id}] Model '{model_id}' already exists")
+            # Update access time
+            access_file = package_dir / ".last_access"
+            try:
+                await asyncio.to_thread(access_file.write_text, str(time.time()))
+            except (OSError, IOError) as e:
+                print(
+                    f"⚠️ [{self.replica_id}] Failed to update access time for existing model: {e}"
+                )
             return package_dir
 
         # Try to claim the download by creating a downloading marker atomically
@@ -381,6 +656,14 @@ class ModelRunner:
                 f"⏳ [{self.replica_id}] Another replica is downloading '{model_id}', waiting..."
             )
             if await self._wait_for_download_completion(package_dir):
+                # Update access time
+                access_file = package_dir / ".last_access"
+                try:
+                    await asyncio.to_thread(access_file.write_text, str(time.time()))
+                except (OSError, IOError) as e:
+                    print(
+                        f"⚠️ [{self.replica_id}] Failed to update access time after waiting: {e}"
+                    )
                 return package_dir
             else:
                 # Download failed or timed out, try to claim it ourselves
@@ -400,6 +683,9 @@ class ModelRunner:
                     )
 
         try:
+            # Ensure cache space AFTER claiming download (so download marker counts towards limit)
+            await self._ensure_cache_space(cache_key)
+
             # Create temporary download directory
             temp_download_dir.mkdir()
             print(
@@ -429,6 +715,15 @@ class ModelRunner:
                 f"🔄 [{self.replica_id}] Atomically moved model '{model_id}' to final location"
             )
 
+            # Create last access file
+            access_file = package_dir / ".last_access"
+            try:
+                await asyncio.to_thread(access_file.write_text, str(time.time()))
+            except (OSError, IOError) as e:
+                print(
+                    f"⚠️ [{self.replica_id}] Failed to create access file for new model: {e}"
+                )
+
         except Exception as e:
             print(f"❌ [{self.replica_id}] Failed to download model '{model_id}': {e}")
             # Clean up temporary directory
@@ -455,58 +750,10 @@ class ModelRunner:
         )
         return package_dir
 
-    async def _validate_model(self, package_path: Path) -> Path:
-        """Validate model RDF and return actual package path."""
-        from bioimageio.core import load_model_description
-        from bioimageio.spec import InvalidDescr
-
-        try:
-            # Find the RDF file in the package
-            rdf_files = list(package_path.rglob("rdf.yaml"))
-            if not rdf_files:
-                error_msg = f"No rdf.yaml found in {package_path}"
-                print(f"❌ [{self.replica_id}] {error_msg}")
-                raise FileNotFoundError(error_msg)
-
-            model_source = rdf_files[0]
-            actual_package_path = model_source.parent
-            print(f"🔍 [{self.replica_id}] Found model RDF at: {model_source}")
-
-            # Validate model source
-            model_description = load_model_description(model_source)
-            if isinstance(model_description, InvalidDescr):
-                error_msg = f"Downloaded model at {actual_package_path}/ is invalid: {model_description}"
-                print(f"❌ [{self.replica_id}] {error_msg}")
-                raise ValueError(error_msg)
-
-            model_id = model_description.id
-            print(f"✅ [{self.replica_id}] Model '{model_id}' validation successful")
-            return actual_package_path
-
-        except Exception as e:
-            print(f"❌ [{self.replica_id}] Model validation failed: {e}")
-            # Clean up invalid package
-            await asyncio.to_thread(remove_package, package_path)
-            raise
-
-    @serve.multiplexed(max_num_models_per_replica=os.environ.get("CACHE_N_MODELS", 30))
     async def _get_local_package_from_cache(
-        self, cache_key: str
+        self, model_id: str, published: bool = True, skip_cache: bool = False
     ) -> LocalBioimageioPackage:
         """Get model package from cache, downloading and validating if needed."""
-        # Download the model if it doesn't exist locally
-        package_path = await self._download_model(cache_key)
-
-        # Validate the model package
-        package_path = await self._validate_model(package_path)
-
-        # Return as LocalBioimageioPackage (deletes on eviction)
-        return LocalBioimageioPackage(package_path=package_path)
-
-    async def _get_model_source(
-        self, model_id: str, published: bool, skip_cache: bool
-    ) -> str:
-        """Get model RDF path, downloading if necessary or skipping cache."""
         cache_key = self._get_cache_key(model_id=model_id, published=published)
         package_dir = self.models_dir / cache_key
 
@@ -517,18 +764,16 @@ class ModelRunner:
             )
             await asyncio.to_thread(remove_package, package_dir)
 
-            # Download the model again
-            package_path = await self._download_model(cache_key)
+        # Download the model if it doesn't exist locally
+        package_path = await self._download_model(cache_key)
 
-            # Validate the model package
-            package_path = await self._validate_model(package_path)
+        # Create LocalBioimageioPackage and validate it
+        local_package = LocalBioimageioPackage(
+            package_path=package_path, replica_id=self.replica_id
+        )
+        await local_package.validate()
 
-        # Get the package (download if not cached; does not check local existence if in cache)
-        local_package = await self._get_local_package_from_cache(cache_key)
-
-        model_source = str(local_package.model_source)
-        print(f"📍 [{self.replica_id}] Model source for '{model_id}': {model_source}")
-        return model_source
+        return local_package
 
     # === Exposed BioEngine App Methods - all methods decorated with @schema_method will be exposed as API endpoints ===
     # Note: Parameter type hints and docstrings will be used to generate the API documentation.
@@ -565,15 +810,24 @@ class ModelRunner:
             f"📋 [{self.replica_id}] Getting RDF for model '{model_id}' (skip_cache={skip_cache})"
         )
 
-        # Only allow published BMZ model
-        model_source = await self._get_model_source(
+        # Get model package with access tracking (only published models for RDF)
+        local_package = await self._get_local_package_from_cache(
             model_id=model_id, published=True, skip_cache=skip_cache
         )
 
-        model_description = load_model_description(model_source)
-        print(f"✅ [{self.replica_id}] Successfully loaded RDF for model '{model_id}'")
+        # Use context manager to track access and prevent eviction during RDF loading
+        async with local_package:
+            model_source = str(local_package.model_source)
+            print(
+                f"📍 [{self.replica_id}] Model source for '{model_id}': {model_source}"
+            )
 
-        return json.loads(model_description.model_dump_json())
+            model_description = load_model_description(model_source)
+            print(
+                f"✅ [{self.replica_id}] Successfully loaded RDF for model '{model_id}'"
+            )
+
+            return json.loads(model_description.model_dump_json())
 
     @schema_method
     async def validate(
@@ -666,16 +920,23 @@ class ModelRunner:
             f"🧪 [{self.replica_id}] Testing model '{model_id}' (published={published}, skip_cache={skip_cache})"
         )
 
-        # Allow published BMZ models and unpublished models in review
-        model_source = await self._get_model_source(
+        # Get model package with access tracking
+        local_package = await self._get_local_package_from_cache(
             model_id=model_id, published=published, skip_cache=skip_cache
         )
 
         try:
-            test_result = await self.model_evaluation.test.remote(
-                model_source=model_source,
-                additional_requirements=additional_requirements,
-            )
+            # Use context manager to track access and prevent eviction during test
+            async with local_package:
+                model_source = str(local_package.model_source)
+                print(
+                    f"📍 [{self.replica_id}] Model source for '{model_id}': {model_source}"
+                )
+
+                test_result = await self.model_evaluation.test.remote(
+                    model_source=model_source,
+                    additional_requirements=additional_requirements,
+                )
         except RayTaskError as e:
             error_msg = f"Failed to run model test for '{model_id}': {e}"
             print(f"❌ [{self.replica_id}] {error_msg}")
@@ -733,30 +994,29 @@ class ModelRunner:
             Only published models from the bioimage.io model zoo are supported for inference.
             This method delegates to the model_inference deployment for optimized execution.
         """
-        # Only allow BMZ model IDs, not URLs
-        if model_id.startswith("http"):
-            raise ValueError(
-                "Model ID should not be a URL. Use the model ID from the BioImage Model Zoo."
-            )
+        print(f"🤖 [{self.replica_id}] Running inference for model '{model_id}'")
 
-        print(
-            f"🤖 [{self.replica_id}] Running inference for model '{model_id}'"
-        )
-
-        # Only allow published BMZ model
-        model_source = await self._get_model_source(
+        # Get model package with access tracking (only published models for inference)
+        local_package = await self._get_local_package_from_cache(
             model_id=model_id, published=True, skip_cache=skip_cache
         )
 
         try:
-            result = await self.model_inference.predict.remote(
-                model_source=model_source,
-                inputs=inputs,
-                weights_format=weights_format,
-                device=device,
-                default_blocksize_parameter=default_blocksize_parameter,
-                sample_id=sample_id,
-            )
+            # Use context manager to track access and prevent eviction during inference
+            async with local_package:
+                model_source = str(local_package.model_source)
+                print(
+                    f"📍 [{self.replica_id}] Model source for '{model_id}': {model_source}"
+                )
+
+                result = await self.model_inference.predict.remote(
+                    model_source=model_source,
+                    inputs=inputs,
+                    weights_format=weights_format,
+                    device=device,
+                    default_blocksize_parameter=default_blocksize_parameter,
+                    sample_id=sample_id,
+                )
         except RayTaskError as e:
             error_msg = f"Failed to run inference for model '{model_id}': {e}"
             print(f"❌ [{self.replica_id}] {error_msg}")
@@ -788,7 +1048,7 @@ if __name__ == "__main__":
         Path(__file__).resolve().parent.parent.parent
         / ".bioengine"
         / "apps"
-        / "bioimage_io_model_runner"
+        / "bioimage-io-model-runner"
     )
     deployment_workdir.mkdir(parents=True, exist_ok=True)
     os.environ["TMPDIR"] = str(deployment_workdir / "tmp")
@@ -807,8 +1067,13 @@ if __name__ == "__main__":
         model_runner = ModelRunner.func_or_class(
             model_inference=MockHandle(),
             model_evaluation=MockHandle(),
+            max_models=2,
         )
         asyncio.run(model_runner.async_init())
+
+        other_model_ids = ["polite-pig", "ambitious-ant"]
+        for model_id in other_model_ids:
+            asyncio.run(model_runner.get_model_rdf(model_id=model_id))
 
         asyncio.run(model_runner.test_deployment())
     finally:

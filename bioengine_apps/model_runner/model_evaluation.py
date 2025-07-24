@@ -106,15 +106,12 @@ if __name__ == "__main__":
     import os
     from pathlib import Path
 
-    # Test the deployment with a model that should pass all checks
-    TEST_BMZ_MODEL_ID = "charismatic-whale"
-
     # Set up the environment variables like in the real deployment
     deployment_workdir = (
         Path(__file__).resolve().parent.parent.parent
         / ".bioengine"
         / "apps"
-        / "bioimage_io_model_runner"
+        / "bioimage-io-model-runner"
     )
     deployment_workdir.mkdir(parents=True, exist_ok=True)
     os.environ["TMPDIR"] = str(deployment_workdir)
@@ -123,8 +120,10 @@ if __name__ == "__main__":
 
     model_evaluation = ModelEvaluation.func_or_class()
 
+    # Test the deployment with a model that should pass all checks
+    model_id = "charismatic-whale"
     model_source = str(
-        deployment_workdir / "models" / f"bmz_model_{TEST_BMZ_MODEL_ID}" / "rdf.yaml"
+        deployment_workdir / "models" / f"bmz_model_{model_id}" / "rdf.yaml"
     )
 
     test_result = asyncio.run(

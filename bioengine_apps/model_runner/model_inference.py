@@ -10,20 +10,6 @@ from ray import serve
 CACHE_N_PREDICTION_PIPELINES = int(os.environ.get("CACHE_N_PREDICTION_PIPELINES", 10))
 
 
-class CacheEntry:
-    """Container for cached prediction pipelines."""
-
-    def __init__(self, pipeline, cache_key: str, kwargs_cache: dict):
-        self.pipeline = pipeline
-        self.cache_key = cache_key
-        self.kwargs_cache = kwargs_cache
-
-    def __del__(self):
-        # Clean up the kwargs_cache to avoid memory leaks
-        print(f"🗑️ Cleaning up cache entry for key: {self.cache_key}")
-        self.kwargs_cache.pop(self.cache_key, None)
-
-
 @serve.deployment(
     ray_actor_options={
         "num_cpus": 1 / 3,
@@ -90,7 +76,7 @@ class ModelInference:
         return cache_key
 
     @serve.multiplexed(max_num_models_per_replica=CACHE_N_PREDICTION_PIPELINES)
-    async def _create_prediction_pipeline(self, cache_key: str) -> CacheEntry:
+    async def _create_prediction_pipeline(self, cache_key: str):
         """Create and cache prediction pipeline for the given cache key."""
         from bioimageio.core import create_prediction_pipeline, load_model_description
 
@@ -114,12 +100,13 @@ class ModelInference:
                 f"✅ Created and loaded prediction pipeline for model at {model_source}"
             )
 
-            return CacheEntry(
-                pipeline=pipeline, cache_key=cache_key, kwargs_cache=self._kwargs_cache
-            )
+            return pipeline
         except Exception as e:
             print(f"❌ Failed to create prediction pipeline: {str(e)}")
             raise
+        finally:
+            # Clean up the cache entry after use
+            self._kwargs_cache.pop(cache_key, None)
 
     async def predict(
         self,
@@ -143,8 +130,7 @@ class ModelInference:
                 device=device,
                 default_blocksize_parameter=default_blocksize_parameter,
             )
-            cache_entry = await self._create_prediction_pipeline(cache_key)
-            pipeline = cache_entry.pipeline
+            pipeline = await self._create_prediction_pipeline(cache_key)
 
             # Create sample from inputs
             # Handle single array input by creating a proper dictionary
@@ -167,22 +153,19 @@ class ModelInference:
 
         except Exception as e:
             print(f"❌ Prediction failed: {str(e)}")
-            raise
+            raise e
 
 
 if __name__ == "__main__":
     import asyncio
     from pathlib import Path
 
-    # Test the deployment with a model that should pass all checks
-    TEST_BMZ_MODEL_ID = "charismatic-whale"
-
     # Set up the environment variables like in the real deployment
     deployment_workdir = (
         Path(__file__).resolve().parent.parent.parent
         / ".bioengine"
         / "apps"
-        / "bioimage_io_model_runner"
+        / "bioimage-io-model-runner"
     )
     deployment_workdir.mkdir(parents=True, exist_ok=True)
     os.environ["TMPDIR"] = str(deployment_workdir)
@@ -191,13 +174,15 @@ if __name__ == "__main__":
 
     model_inference = ModelInference.func_or_class()
 
+    # Test the deployment with a model that should pass all checks
+    model_id = "charismatic-whale"
     model_source = str(
-        deployment_workdir / "models" / f"bmz_model_{TEST_BMZ_MODEL_ID}" / "rdf.yaml"
+        deployment_workdir / "models" / f"bmz_model_{model_id}" / "rdf.yaml"
     )
     test_image_path = str(
         deployment_workdir
         / "models"
-        / f"unpublished_model_{TEST_BMZ_MODEL_ID}"
+        / f"unpublished_model_{model_id}"
         / "new_test_input.npy"
     )
 

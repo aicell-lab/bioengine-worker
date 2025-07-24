@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
@@ -19,8 +20,6 @@ from bioengine_worker.utils import get_pip_requirements
 MAX_ONGOING_REQUESTS = int(os.getenv("BIOENGINE_APPLICATION_MAX_ONGOING_REQUESTS", 10))
 
 
-# TODO: Remove duplicated logging in Ray Serve logs
-# TODO: Handle number of peer connections and their states
 @deployment(
     ray_actor_options={
         "num_cpus": 0,
@@ -86,6 +85,7 @@ class RtcProxyDeployment:
         server_url: str,
         workspace: str,
         token: str,
+        worker_client_id: str,
         authorized_users: List[str],
         serve_http_url: str,
     ):
@@ -132,7 +132,7 @@ class RtcProxyDeployment:
         try:
             self.replica_id = get_replica_context().replica_tag
         except Exception:
-            self.replica_id = "unknown"
+            self.replica_id = f"uuid-{uuid.uuid4()[:8]}"
 
         print(
             f"🚀 [{self.replica_id}] Initializing RtcProxyDeployment for application: '{application_id}'"
@@ -154,6 +154,7 @@ class RtcProxyDeployment:
         self.server_url = server_url
         self.workspace = workspace
         self.token = token
+        self.worker_client_id = worker_client_id
         self.authorized_users = authorized_users
 
         # Service state
@@ -162,8 +163,8 @@ class RtcProxyDeployment:
         self.service_id: Optional[str] = None
         self.service_semaphore = asyncio.Semaphore(self.max_ongoing_requests)
 
-        # Store connection event handlers
-        self._connection_handlers: List[Callable] = []
+        # WebRTC peer connection tracking
+        self._active_peer_connections: Dict[str, Dict[str, Any]] = {}
 
         # Store request events
         self.serve_http_url = serve_http_url
@@ -222,6 +223,96 @@ class RtcProxyDeployment:
     # ===== Hypha Service Registration =====
     # Handles registration of WebSocket and WebRTC services with Hypha.
 
+    async def _on_webrtc_init(self, peer_connection: RTCPeerConnection) -> None:
+        """
+        ** Hypha Service Registration - WEBRTC CONNECTION LIFECYCLE MANAGEMENT**
+
+        Callback handler invoked by hypha-rpc when a new WebRTC peer connection
+        is established. Sets up connection state monitoring, tracks active connections,
+        and integrates WebRTC connection events with the deployment's operational state.
+
+        This method is registered as the "on_init" callback during WebRTC service
+        registration and follows the hypha-rpc WebRTC connection initialization pattern.
+
+        ## Connection State Monitoring
+        Registers event handlers for WebRTC connection state changes:
+        - "connected": Successful peer-to-peer connection established
+        - "failed": Connection failed due to network, NAT, or other issues
+        - "closed": Connection terminated by either peer
+        - "disconnected": Connection interrupted, may be temporary
+
+        ## Active Connection Tracking
+        Maintains a registry of active peer connections with:
+        - Unique connection identifiers for tracking
+        - State-based lifecycle management (add on init, remove on close/fail)
+        - Memory leak prevention through proper reference management
+
+        Note: Data channel activity (hypha-rpc message passing) does not trigger
+        connection state changes. Connections remain "connected" while actively
+        used, so we rely purely on WebRTC state transitions for lifecycle management.
+
+        ## Integration with Ray Serve Health System
+        While WebRTC connection failures don't directly affect Ray Serve health checks,
+        the connection state is monitored for:
+        - Operational visibility and debugging
+        - Future integration with advanced health criteria
+        - Client connection quality metrics
+
+        ## Process Cleanup
+        WebRTC connections are automatically cleaned up when the Ray Serve process
+        terminates, so no explicit cleanup handlers are needed.
+        """
+        try:
+            # Generate unique connection ID
+            connection_id = str(uuid.uuid4())
+            current_time = time.time()
+
+            print(
+                f"🔗 [{self.replica_id}] WebRTC peer connection initialized for '{self.application_id}' "
+                f"(Connection ID: {connection_id[:8]}...)"
+            )
+
+            # Add to active connections tracking
+            self._active_peer_connections[connection_id] = {
+                "peer_connection": peer_connection,
+                "created_at": current_time,
+                "state": "new",
+            }
+
+            # Set up connection state monitoring
+            @peer_connection.on("connectionstatechange")
+            def on_connection_state_change():
+                state = peer_connection.connectionState
+                print(
+                    f"🔄 [{self.replica_id}] WebRTC connection state changed to '{state}' "
+                    f"for '{self.application_id}' (Connection ID: {connection_id[:8]}...)"
+                )
+
+                # Update connection state
+                if connection_id in self._active_peer_connections:
+                    self._active_peer_connections[connection_id]["state"] = state
+
+                    # Remove connection if it's closed or failed
+                    if state in ["closed", "failed"]:
+                        print(
+                            f"🚫 [{self.replica_id}] Removing WebRTC connection '{connection_id[:8]}...' "
+                            f"for '{self.application_id}' (State: {state})"
+                        )
+                        del self._active_peer_connections[connection_id]
+
+                        print(
+                            f"📊 [{self.replica_id}] Active WebRTC connections: {len(self._active_peer_connections)}"
+                        )
+
+            print(
+                f"📊 [{self.replica_id}] Active WebRTC connections: {len(self._active_peer_connections)}"
+            )
+
+        except Exception as e:
+            print(
+                f"❌ [{self.replica_id}] Failed to initialize WebRTC connection for '{self.application_id}': {e}"
+            )
+
     async def _fetch_ice_servers(self) -> Optional[List[Dict[str, Any]]]:
         """
         **HYPHA SERVICE REGISTRATION - ICE SERVERS**
@@ -271,60 +362,6 @@ class RtcProxyDeployment:
             f"⚠️ [{self.replica_id}] Falling back to default ICE servers for {self.application_id}"
         )
         return None
-
-    async def _on_webrtc_init(self, peer_connection: RTCPeerConnection) -> None:
-        """
-        ** Hypha Service Registration - WEBRTC CONNECTION LIFECYCLE MANAGEMENT**
-
-        Callback handler invoked by hypha-rpc when a new WebRTC peer connection
-        is established. Sets up connection state monitoring and integrates WebRTC
-        connection events with the deployment's operational state.
-
-        This method is registered as the "on_init" callback during WebRTC service
-        registration and follows the hypha-rpc WebRTC connection initialization pattern.
-
-        ## Connection State Monitoring
-        Registers event handlers for WebRTC connection state changes:
-        - "connected": Successful peer-to-peer connection established
-        - "failed": Connection failed due to network, NAT, or other issues
-        - "closed": Connection terminated by either peer
-        - "disconnected": Connection interrupted, may be temporary
-
-        ## Integration with Ray Serve Health System
-        While WebRTC connection failures don't directly affect Ray Serve health checks,
-        the connection state is monitored for:
-        - Operational visibility and debugging
-        - Future integration with advanced health criteria
-        - Client connection quality metrics
-
-        ## Connection Cleanup Management
-        Stores connection event handlers in self._connection_handlers for proper
-        cleanup during deployment shutdown, preventing memory leaks and ensuring
-        graceful WebRTC resource management.
-        """
-        try:
-            print(
-                f"🔗 [{self.replica_id}] WebRTC peer connection initialized for '{self.application_id}'"
-            )
-
-            # Set up connection state monitoring
-            @peer_connection.on("connectionstatechange")
-            def on_connection_state_change():
-                state = peer_connection.connectionState
-                print(
-                    f"🔄 [{self.replica_id}] WebRTC connection state changed to '{state}' for '{self.application_id}'"
-                )
-
-            # Store handler reference for cleanup
-            self._connection_handlers.append(on_connection_state_change)
-
-        except Exception as e:
-            print(
-                f"❌ [{self.replica_id}] Failed to initialize WebRTC connection for '{self.application_id}': {e}"
-            )
-            raise RuntimeError(
-                f"Failed to initialize WebRTC connection for '{self.application_id}': {e}"
-            )
 
     async def _check_permissions(self, context: Optional[Dict[str, Any]]) -> None:
         """
@@ -556,6 +593,25 @@ class RtcProxyDeployment:
 
         return min(1.0, max(0.0, load))  # Ensure load is between 0 and 1
 
+    @schema_method
+    async def _get_num_pc(self) -> int:
+        """
+        **HYPHA SERVICE REGISTRATION - WEBRTC CONNECTION COUNT MONITORING**
+
+        Returns the current number of active WebRTC peer connections.
+        This method is used for monitoring and debugging WebRTC connection status.
+
+        Returns:
+            Integer count of currently active peer connections
+        """
+        num_connections = len(self._active_peer_connections)
+
+        print(
+            f"📊 [{self.replica_id}] Active WebRTC connections for '{self.application_id}': {num_connections}"
+        )
+
+        return num_connections
+
     async def _register_web_rtc_service(self) -> None:
         """
         **HYPHA SERVICE REGISTRATION - MAIN REGISTRATION**
@@ -573,6 +629,7 @@ class RtcProxyDeployment:
                     "server_url": self.server_url,
                     "token": self.token,
                     "workspace": self.workspace,
+                    "client_id": f"{self.worker_client_id}-{self.replica_id}",
                 }
             )
             client_id = self.server.config.client_id
@@ -588,14 +645,14 @@ class RtcProxyDeployment:
 
         # Register WebRTC service with custom ICE servers or fallback to defaults
         try:
-            # Fetch custom ICE servers
-            ice_servers = await self._fetch_ice_servers()
-
             # Prepare WebRTC config
             rtc_config = {
                 "visibility": "public",
                 "on_init": self._on_webrtc_init,  # Add WebRTC connection handler
             }
+
+            # Fetch custom ICE servers
+            ice_servers = await self._fetch_ice_servers()
 
             # Add custom ICE servers if available, otherwise hypha-rpc will use defaults
             if ice_servers:
@@ -630,6 +687,9 @@ class RtcProxyDeployment:
             # Add load check function - for service load balancing (https://docs.amun.ai/#/service-load-balancing)
             service_functions["get_load"] = self._get_load
 
+            # Add peer connection count function - for WebRTC connection monitoring
+            service_functions["get_num_pc"] = self._get_num_pc
+
             # Register the main service
             service_info = await self.server.register_service(
                 {
@@ -661,33 +721,6 @@ class RtcProxyDeployment:
 
     # ===== BioEngine Worker Interface =====
     # Methods for external management and service discovery.
-
-    @schema_method
-    async def get_service_ids(self) -> Dict[str, str]:
-        """
-        **BIOENGINE WORKER INTERFACE - SERVICE DISCOVERY**
-
-        Returns dictionary of registered service IDs:
-        - "websocket_service_id": ID of the main WebSocket service
-        - "webrtc_service_id": ID of the WebRTC service (if registered)
-
-        Raises RuntimeError if registration failed.
-        """
-        if self.service_id is None:
-            print(
-                f"❌ [{self.replica_id}] Service registration failed for '{self.application_id}'"
-            )
-            raise RuntimeError(
-                f"Service registration failed for '{self.application_id}'"
-            )
-
-        service_ids = {
-            "websocket_service_id": self.service_id,
-            "webrtc_service_id": self.rtc_service_id,
-        }
-
-        print(f"✅ [{self.replica_id}] Service IDs retrieved: {service_ids}")
-        return service_ids
 
     # ===== Ray Serve Health Check =====
     # Implements periodic health checks for Ray Serve.
@@ -782,7 +815,6 @@ if __name__ == "__main__":
 
         await deployment.check_health()
 
-        service_ids = await deployment.get_service_ids()
-        print(f"Service IDs: {service_ids}")
+        print("Deployment is healthy and services are registered")
 
     asyncio.run(main())

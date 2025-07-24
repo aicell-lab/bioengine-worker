@@ -122,12 +122,14 @@ async def test_startup_applications_deployment(
         ), f"Application {app_id} is not running: {app_status['status']}"
 
         # Verify service IDs are present
-        service_ids = app_status.get("service_ids", {})
+        service_ids = app_status.get("service_ids")
+        assert service_ids is not None, f"Service IDs missing for {app_id}"
+        first_replica = service_ids[0]
         assert (
-            "webrtc_service_id" in service_ids
+            "webrtc_service_id" in first_replica
         ), f"WebRTC service ID missing for {app_id}"
         assert (
-            "websocket_service_id" in service_ids
+            "websocket_service_id" in first_replica
         ), f"WebSocket service ID missing for {app_id}"
 
         # Verify available methods
@@ -164,9 +166,10 @@ async def test_application_websocket_connectivity(
     for app_config in startup_applications:
         app_id = app_config["application_id"]
         app_status = bioengine_apps[app_id]
+        first_replica = app_status["service_ids"][0]
 
         # Get WebSocket service
-        websocket_service_id = app_status["service_ids"]["websocket_service_id"]
+        websocket_service_id = first_replica["websocket_service_id"]
 
         # Validate service ID format
         assert (
@@ -219,9 +222,10 @@ async def test_application_webrtc_connectivity(
     for app_config in startup_applications:
         app_id = app_config["application_id"]
         app_status = bioengine_apps[app_id]
+        first_replica = app_status["service_ids"][0]
 
         # Get WebRTC service
-        webrtc_service_id = app_status["service_ids"]["webrtc_service_id"]
+        webrtc_service_id = first_replica["webrtc_service_id"]
         assert webrtc_service_id.endswith(
             "rtc"
         ), f"Invalid WebRTC service ID: {webrtc_service_id}"

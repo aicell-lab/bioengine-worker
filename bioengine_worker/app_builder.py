@@ -813,6 +813,7 @@ class AppBuilder:
             server_url=self.server.config.public_base_url,
             workspace=self.server.config.workspace,
             token=self._token,
+            worker_client_id=self.server.config.client_id,
             authorized_users=manifest["authorized_users"],
             serve_http_url=self.serve_http_url,
         )

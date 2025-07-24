@@ -308,9 +308,6 @@ class AppsManager:
             # Await the coroutine to start the deployment
             app_handle = await deployment_coroutine
 
-            # Get the application service IDs
-            application_service_ids = await app_handle.get_service_ids.remote()
-
             # Update application metadata in the internal state
             self._deployed_applications[application_id]["display_name"] = app.metadata[
                 "name"
@@ -327,10 +324,6 @@ class AppsManager:
             self._deployed_applications[application_id]["available_methods"] = (
                 app.metadata["available_methods"]
             )
-            self._deployed_applications[application_id]["service_ids"] = {
-                "websocket_service_id": application_service_ids["websocket_service_id"],
-                "webrtc_service_id": application_service_ids["webrtc_service_id"],
-            }
 
             # Mark the application as deployed
             self._deployed_applications[application_id]["is_deployed"].set()
@@ -853,10 +846,6 @@ class AppsManager:
                 "application_resources": {},
                 "authorized_users": [],
                 "available_methods": [],
-                "service_ids": {
-                    "websocket_service_id": None,
-                    "webrtc_service_id": None,
-                },
                 "last_updated_by": user_id,
                 "deployment_task": None,  # Track the deployment task
                 "is_deployed": asyncio.Event(),  # Track if the deployment has been started
@@ -1100,6 +1089,30 @@ class AppsManager:
                     status = "NOT_STARTED"
                 deployments = {}
 
+            # Construct the service IDs for the application using the replica IDs
+            workspace = self.server.config.workspace
+            replica_ids = (
+                await self.ray_cluster.proxy_actor_handle.get_deployment_replica.remote(
+                    app_name=application_id, deployment_name="RtcProxyDeployment"
+                )
+            )
+            if replica_ids:
+                worker_client_id = self._server.config.client_id
+                service_ids = [
+                    {
+                        "websocket_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}",
+                        "webrtc_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}-rtc",
+                    }
+                    for replica_id in replica_ids
+                ]
+            else:
+                service_ids = [
+                    {
+                        "websocket_service_id": None,
+                        "webrtc_service_id": None,
+                    }
+                ]
+
             # class ApplicationStatus(str, Enum):
             #     NOT_STARTED = "NOT_STARTED"
             #     DEPLOYING = "DEPLOYING"
@@ -1138,7 +1151,7 @@ class AppsManager:
                 "application_resources": application_info["application_resources"],
                 "authorized_users": application_info["authorized_users"],
                 "available_methods": application_info["available_methods"],
-                "service_ids": application_info["service_ids"],
+                "service_ids": service_ids,
                 "last_updated_by": application_info["last_updated_by"],
             }
 

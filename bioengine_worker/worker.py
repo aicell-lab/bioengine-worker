@@ -361,9 +361,11 @@ class BioEngineWorker:
         user_id = self._server.config.user["id"]
         user_email = self._server.config.user["email"]
 
-        # Update connection configuration from server response
-        self.workspace = self._server.config.workspace
-        self.client_id = self._server.config.client_id
+        # Update connection configuration from server response (if not set)
+        if self.workspace is None:
+            self.workspace = self._server.config.workspace
+        if self.client_id is None:
+            self.client_id = self._server.config.client_id
 
         self.logger.info(
             f"User '{user_id}' ({user_email}) connected as client "

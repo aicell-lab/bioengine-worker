@@ -1,7 +1,7 @@
 import re
 import uuid
 from dataclasses import asdict
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, List
 
 import psutil
 import ray
@@ -231,3 +231,19 @@ class BioEngineProxyActor:
             )
 
         return cluster_state
+
+    def get_deployment_replica(self, app_name: str, deployment_name: str) -> List[str]:
+        class_name = f"ServeReplica:{app_name}:{deployment_name}"
+        replica_actors = self.state_api_client.list(
+            resource=StateResource.ACTORS,
+            options=ListApiOptions(
+                limit=DEFAULT_LIMIT,
+                timeout=DEFAULT_RPC_TIMEOUT,
+                filters=[("class_name", "=", class_name), ("state", "=", "ALIVE")],
+                detail=False,
+                explain=False,
+            ),
+            raise_on_missing_output=True,
+        )
+        replica_ids = [actor.name.split("#")[-1] for actor in replica_actors]
+        return replica_ids

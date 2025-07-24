@@ -17,19 +17,19 @@ requirements = [
 
 @serve.deployment(
     ray_actor_options={
-        "num_cpus": 1,
+        "num_cpus": 1 / 3,
         "num_gpus": 0,
-        "memory": 16 * 1024 * 1024 * 1024,  # 16GB RAM limit
+        # "memory": 16 * 1024 * 1024 * 1024,  # 16GB RAM limit
         "runtime_env": {
             "pip": requirements,
         },
     },
-    max_ongoing_requests=5,
+    max_ongoing_requests=1,
     autoscaling_config={
         "min_replicas": 1,
         "initial_replicas": 1,
         "max_replicas": 5,
-        "target_num_ongoing_requests_per_replica": 3,
+        "target_num_ongoing_requests_per_replica": 0.8,
         "metrics_interval_s": 2.0,
         "look_back_period_s": 10.0,
         "downscale_delay_s": 300,
@@ -43,32 +43,27 @@ requirements = [
 class ModelEvaluation:
     """Internal deployment for running model testing using bioimageio.core."""
 
-    def __init__(self):
-        print("🚀 Initializing ModelEvaluation deployment")
-
     def _test(self, model_source: str) -> dict:
         """Run bioimageio.core test_model on the given model source."""
+        from pathlib import Path
+
         from bioimageio.core import test_model
 
-        print(f"🧪 Testing model at: {model_source}")
-
         try:
+            if not Path(model_source).exists():
+                raise FileNotFoundError(f"Model source not found: {model_source}")
             validation_summary = test_model(model_source)
             test_result = validation_summary.model_dump(mode="json")
 
-            print(f"✅ Model test completed successfully")
             return test_result
         except Exception as e:
             print(f"❌ Model test failed: {str(e)}")
             raise
 
-    def test(
+    async def test(
         self, model_source: str, additional_requirements: Optional[List[str]] = None
     ) -> dict:
         """Test model inference using bioimageio.core with optional additional requirements."""
-        print(f"🔍 Starting model test for: {model_source}")
-        print(f"📦 Additional requirements: {additional_requirements}")
-
         additional_packages = []
         if additional_requirements:
             if not isinstance(additional_requirements, list):
@@ -100,7 +95,6 @@ class ModelEvaluation:
             print(f"📋 Submitted remote test job")
             return result_ref
         else:
-            print(f"⚙️ Running test in current deployment without additional packages")
             # Run execution in this deployment without additional packages
             test_result = self._test(model_source)
 
@@ -108,6 +102,7 @@ class ModelEvaluation:
 
 
 if __name__ == "__main__":
+    import asyncio
     import os
     from pathlib import Path
 
@@ -132,7 +127,7 @@ if __name__ == "__main__":
         deployment_workdir / "models" / f"bmz_model_{TEST_BMZ_MODEL_ID}" / "rdf.yaml"
     )
 
-    test_result = model_evaluation.test(
-        model_source, additional_requirements=["torch==2.5.1"]
+    test_result = asyncio.run(
+        model_evaluation.test(model_source, additional_requirements=["torch==2.5.1"])
     )
     print("Model evaluation completed successfully")

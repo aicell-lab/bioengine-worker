@@ -9,7 +9,7 @@ from httpx import AsyncClient, HTTPStatusError, RequestError
 from hypha_rpc import connect_to_server, register_rtc_service
 from hypha_rpc.utils.schema import schema_function, schema_method
 from ray.exceptions import RayTaskError
-from ray.serve import deployment
+from ray.serve import deployment, get_replica_context
 from ray.serve.handle import DeploymentHandle
 from starlette.requests import Request
 
@@ -128,11 +128,19 @@ class RtcProxyDeployment:
                             this application. Use ["*"] for public access.
                             Empty list denies all access.
         """
-        print(f"🚀 Initializing RtcProxyDeployment for application: '{application_id}'")
-        print(f"🔗 Server URL: {server_url}")
-        print(f"🏢 Workspace: '{workspace}'")
-        print(f"👥 Authorized users: {authorized_users}")
-        print(f"⚙️ Max ongoing requests: {MAX_ONGOING_REQUESTS}")
+        # Get replica identifier for logging
+        try:
+            self.replica_id = get_replica_context().replica_tag
+        except Exception:
+            self.replica_id = "unknown"
+
+        print(
+            f"🚀 [{self.replica_id}] Initializing RtcProxyDeployment for application: '{application_id}'"
+        )
+        print(f"🔗 [{self.replica_id}] Server URL: {server_url}")
+        print(f"🏢 [{self.replica_id}] Workspace: '{workspace}'")
+        print(f"👥 [{self.replica_id}] Authorized users: {authorized_users}")
+        print(f"⚙️ [{self.replica_id}] Max ongoing requests: {MAX_ONGOING_REQUESTS}")
 
         # BioEngine application metadata
         self.application_id = application_id
@@ -177,11 +185,15 @@ class RtcProxyDeployment:
         Returns:
             JSON response with completion status
         """
-        print(f"🌐 Received {request.method} request to RtcProxyDeployment")
+        print(
+            f"🌐 [{self.replica_id}] Received {request.method} request to RtcProxyDeployment"
+        )
 
         # Only accept POST requests for mimic coordination
         if request.method != "POST":
-            print(f"❌ Method {request.method} not supported - only POST allowed")
+            print(
+                f"❌ [{self.replica_id}] Method {request.method} not supported - only POST allowed"
+            )
             return {
                 "status": "error",
                 "message": f"Method {request.method} not supported - only POST allowed",
@@ -189,21 +201,21 @@ class RtcProxyDeployment:
 
         request_id = request.headers.get("X-Request-ID")
         if not request_id:
-            print("❌ Missing X-Request-ID header in request")
+            print(f"❌ [{self.replica_id}] Missing X-Request-ID header in request")
             return {
                 "status": "error",
                 "message": "Missing X-Request-ID header",
             }
 
-        print(f"⏳ Waiting for request event: {request_id}")
+        print(f"⏳ [{self.replica_id}] Waiting for request event: {request_id}")
         # Wait for the corresponding request event
         event = self._request_events.get(request_id)
         if event:
             await event.wait()
-            print(f"✅ Request completed: {request_id}")
+            print(f"✅ [{self.replica_id}] Request completed: {request_id}")
             return {"status": "completed", "request_id": request_id}
         else:
-            print(f"⚠️ Request event not found: {request_id}")
+            print(f"⚠️ [{self.replica_id}] Request event not found: {request_id}")
             # Request may have already completed
             return {"status": "not_found", "request_id": request_id}
 
@@ -238,20 +250,26 @@ class RtcProxyDeployment:
                 )
                 response.raise_for_status()
                 ice_servers = response.json()
-                print(f"✅ Successfully fetched ICE servers for {self.application_id}")
+                print(
+                    f"✅ [{self.replica_id}] Successfully fetched ICE servers for {self.application_id}"
+                )
                 return ice_servers
         except HTTPStatusError as e:
-            print(f"❌ HTTP error fetching ICE servers for {self.application_id}: {e}")
+            print(
+                f"❌ [{self.replica_id}] HTTP error fetching ICE servers for {self.application_id}: {e}"
+            )
         except RequestError as e:
             print(
-                f"❌ Request error fetching ICE servers for {self.application_id}: {e}"
+                f"❌ [{self.replica_id}] Request error fetching ICE servers for {self.application_id}: {e}"
             )
         except Exception as e:
             print(
-                f"❌ Unexpected error fetching ICE servers for {self.application_id}: {e}"
+                f"❌ [{self.replica_id}] Unexpected error fetching ICE servers for {self.application_id}: {e}"
             )
 
-        print(f"⚠️ Falling back to default ICE servers for {self.application_id}")
+        print(
+            f"⚠️ [{self.replica_id}] Falling back to default ICE servers for {self.application_id}"
+        )
         return None
 
     async def _on_webrtc_init(self, peer_connection: RTCPeerConnection) -> None:
@@ -285,14 +303,16 @@ class RtcProxyDeployment:
         graceful WebRTC resource management.
         """
         try:
-            print(f"🔗 WebRTC peer connection initialized for '{self.application_id}'")
+            print(
+                f"🔗 [{self.replica_id}] WebRTC peer connection initialized for '{self.application_id}'"
+            )
 
             # Set up connection state monitoring
             @peer_connection.on("connectionstatechange")
             def on_connection_state_change():
                 state = peer_connection.connectionState
                 print(
-                    f"🔄 WebRTC connection state changed to '{state}' for '{self.application_id}'"
+                    f"🔄 [{self.replica_id}] WebRTC connection state changed to '{state}' for '{self.application_id}'"
                 )
 
             # Store handler reference for cleanup
@@ -300,7 +320,7 @@ class RtcProxyDeployment:
 
         except Exception as e:
             print(
-                f"❌ Failed to initialize WebRTC connection for '{self.application_id}': {e}"
+                f"❌ [{self.replica_id}] Failed to initialize WebRTC connection for '{self.application_id}': {e}"
             )
             raise RuntimeError(
                 f"Failed to initialize WebRTC connection for '{self.application_id}': {e}"
@@ -328,15 +348,17 @@ class RtcProxyDeployment:
         Raises:
             PermissionError: If user is not authorized or context is invalid
         """
-        print(f"🔒 Checking permissions for application: {self.application_id}")
+        print(
+            f"🔒 [{self.replica_id}] Checking permissions for application: {self.application_id}"
+        )
 
         if not isinstance(context, dict) or "user" not in context:
-            print("❌ Invalid context without user information")
+            print(f"❌ [{self.replica_id}] Invalid context without user information")
             raise PermissionError("Invalid context without user information")
 
         user = context["user"]
         if not isinstance(user, dict) or ("id" not in user and "email" not in user):
-            print("❌ Invalid user information in context")
+            print(f"❌ [{self.replica_id}] Invalid user information in context")
             raise PermissionError("Invalid user information in context")
 
         # Check authorization
@@ -344,14 +366,14 @@ class RtcProxyDeployment:
         user_email = user["email"]
 
         if "*" in self.authorized_users:
-            print(f"✅ Wildcard access granted for user: {user_id}")
+            print(f"✅ [{self.replica_id}] Wildcard access granted for user: {user_id}")
             return
 
         if user_id in self.authorized_users or user_email in self.authorized_users:
-            print(f"✅ User authorized: {user_id} ({user_email})")
+            print(f"✅ [{self.replica_id}] User authorized: {user_id} ({user_email})")
             return
 
-        print(f"❌ User not authorized: {user_id} ({user_email})")
+        print(f"❌ [{self.replica_id}] User not authorized: {user_id} ({user_email})")
         raise PermissionError(
             f"User '{user_id}' ({user_email}) is not authorized to access application '{self.application_id}'"
         )
@@ -367,7 +389,9 @@ class RtcProxyDeployment:
         Args:
             request_id: Unique identifier for correlating with the RPC call
         """
-        print(f"📡 Sending autoscaling trigger for request: {request_id}")
+        print(
+            f"📡 [{self.replica_id}] Sending autoscaling trigger for request: {request_id}"
+        )
 
         try:
             timeout = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0)
@@ -379,12 +403,14 @@ class RtcProxyDeployment:
                     json={"mimic_request": True},
                 )
 
-            print(f"✅ Autoscaling trigger sent successfully for request: {request_id}")
+            print(
+                f"✅ [{self.replica_id}] Autoscaling trigger sent successfully for request: {request_id}"
+            )
 
         except Exception as e:
             # Log but don't fail the user request
             print(
-                f"⚠️ Failed to send autoscaling trigger for '{self.application_id}' request {request_id}: {e}"
+                f"⚠️ [{self.replica_id}] Failed to send autoscaling trigger for '{self.application_id}' request {request_id}: {e}"
             )
 
     def _create_deployment_function(
@@ -430,7 +456,7 @@ class RtcProxyDeployment:
                     user_info = context.get("user", {}) if context else {}
                     user_id = user_info.get("id", "unknown")
                     print(
-                        f"🎯 User {user_id} calling method '{method_name}' on app '{self.application_id}'"
+                        f"🎯 [{self.replica_id}] User {user_id} calling method '{method_name}' on app '{self.application_id}'"
                     )
 
                     # Mimic a request to trigger autoscaling (do not block)
@@ -443,7 +469,7 @@ class RtcProxyDeployment:
                     def handle_mimic_error(task):
                         if task.exception():
                             print(
-                                f"⚠️ Mimic request task failed for '{self.application_id}' request ID {request_id}: {task.exception()}"
+                                f"⚠️ [{self.replica_id}] Mimic request task failed for '{self.application_id}' request ID {request_id}: {task.exception()}"
                             )
 
                     mimic_task.add_done_callback(handle_mimic_error)
@@ -452,7 +478,7 @@ class RtcProxyDeployment:
                     method = getattr(self.entry_deployment_handle, method_name, None)
                     if method is None:
                         print(
-                            f"❌ Method '{method_name}' not found on entry deployment"
+                            f"❌ [{self.replica_id}] Method '{method_name}' not found on entry deployment"
                         )
                         raise AttributeError(
                             f"Method '{method_name}' not found on entry deployment"
@@ -462,21 +488,29 @@ class RtcProxyDeployment:
                     try:
                         result = await method.remote(*args, **kwargs)
                         print(
-                            f"✅ Successfully executed method '{method_name}' for user {user_id}"
+                            f"✅ [{self.replica_id}] Successfully executed method '{method_name}' for user {user_id}"
                         )
                         return result
                     except RayTaskError as e:
-                        print(f"❌ Ray task error in method '{method_name}': {e}")
+                        print(
+                            f"❌ [{self.replica_id}] Ray task error in method '{method_name}': {e}"
+                        )
                         raise
                     except Exception as e:
-                        print(f"❌ Unexpected error in method '{method_name}': {e}")
+                        print(
+                            f"❌ [{self.replica_id}] Unexpected error in method '{method_name}': {e}"
+                        )
                         raise
 
                 except PermissionError as e:
-                    print(f"⚠️ Permission denied for method '{method_name}': {e}")
+                    print(
+                        f"⚠️ [{self.replica_id}] Permission denied for method '{method_name}': {e}"
+                    )
                     raise
                 except Exception as e:
-                    print(f"❌ Error in proxy function '{method_name}': {e}")
+                    print(
+                        f"❌ [{self.replica_id}] Error in proxy function '{method_name}': {e}"
+                    )
                     raise
                 finally:
                     # Remove the event to prevent memory leaks
@@ -517,7 +551,7 @@ class RtcProxyDeployment:
         load = active_requests / total_slots
 
         print(
-            f"📊 Service load for '{self.application_id}': {load:.2f} ({active_requests}/{total_slots} active requests)"
+            f"📊 [{self.replica_id}] Service load for '{self.application_id}': {load:.2f} ({active_requests}/{total_slots} active requests)"
         )
 
         return min(1.0, max(0.0, load))  # Ensure load is between 0 and 1
@@ -541,13 +575,14 @@ class RtcProxyDeployment:
                     "workspace": self.workspace,
                 }
             )
+            client_id = self.server.config.client_id
             print(
-                f"✅ Successfully connected to Hypha server for '{self.application_id}'"
+                f"✅ [{self.replica_id}] Successfully connected to Hypha server as client '{client_id}' for '{self.application_id}'"
             )
         except Exception as e:
             self.server = None
             print(
-                f"❌ Error connecting to Hypha server for '{self.application_id}': {e}"
+                f"❌ [{self.replica_id}] Error connecting to Hypha server for '{self.application_id}': {e}"
             )
             raise
 
@@ -574,12 +609,12 @@ class RtcProxyDeployment:
             )
             self.rtc_service_id = rtc_service_info["id"]
             print(
-                f"✅ Registered WebRTC service for '{self.application_id}' with ID: {self.rtc_service_id}"
+                f"✅ [{self.replica_id}] Registered WebRTC service for '{self.application_id}' with ID: {self.rtc_service_id}"
             )
 
         except Exception as e:
             print(
-                f"⚠️  Warning: Failed to register WebRTC service for '{self.application_id}': {e}"
+                f"⚠️  [{self.replica_id}] Warning: Failed to register WebRTC service for '{self.application_id}': {e}"
             )
             # Don't fail the entire deployment if WebRTC registration fails
 
@@ -610,15 +645,17 @@ class RtcProxyDeployment:
 
             self.service_id = service_info["id"]
             print(
-                f"✅ Successfully registered WebSocket service for '{self.application_id}' "
+                f"✅ [{self.replica_id}] Successfully registered WebSocket service for '{self.application_id}' "
                 f"with ID {self.service_id}."
             )
-            print(f"📋 Service functions registered: {list(service_functions.keys())}")
+            print(
+                f"📋 [{self.replica_id}] Service functions registered: {list(service_functions.keys())}"
+            )
 
         except Exception as e:
             self.service_id = None
             print(
-                f"❌ Error registering WebSocket service for '{self.application_id}': {e}"
+                f"❌ [{self.replica_id}] Error registering WebSocket service for '{self.application_id}': {e}"
             )
             raise
 
@@ -637,7 +674,9 @@ class RtcProxyDeployment:
         Raises RuntimeError if registration failed.
         """
         if self.service_id is None:
-            print(f"❌ Service registration failed for '{self.application_id}'")
+            print(
+                f"❌ [{self.replica_id}] Service registration failed for '{self.application_id}'"
+            )
             raise RuntimeError(
                 f"Service registration failed for '{self.application_id}'"
             )
@@ -647,7 +686,7 @@ class RtcProxyDeployment:
             "webrtc_service_id": self.rtc_service_id,
         }
 
-        print(f"✅ Service IDs retrieved: {service_ids}")
+        print(f"✅ [{self.replica_id}] Service IDs retrieved: {service_ids}")
         return service_ids
 
     # ===== Ray Serve Health Check =====
@@ -669,7 +708,9 @@ class RtcProxyDeployment:
         try:
             await self.server.echo("ping")
         except Exception as e:
-            print(f"❌ Hypha server connection failed for '{self.application_id}': {e}")
+            print(
+                f"❌ [{self.replica_id}] Hypha server connection failed for '{self.application_id}': {e}"
+            )
             raise RuntimeError("Hypha server connection failed")
 
         # All checks passed - deployment is healthy
@@ -685,13 +726,15 @@ class RtcProxyDeployment:
             version: Configuration version for the reconfigure operation
         """
         print(
-            f"🔄 Reconfiguring RtcProxyDeployment for application: {self.application_id}"
+            f"🔄 [{self.replica_id}] Reconfiguring RtcProxyDeployment for application: {self.application_id}"
         )
-        print(f"📋 Configuration version: {version}")
+        print(f"📋 [{self.replica_id}] Configuration version: {version}")
         # user_config: Config to pass to the reconfigure method of the deployment. This
         # can be updated dynamically without restarting the replicas of the
         # deployment. The user_config must be fully JSON-serializable.
-        print(f"✅ Reconfiguration completed for application: {self.application_id}")
+        print(
+            f"✅ [{self.replica_id}] Reconfiguration completed for application: {self.application_id}"
+        )
 
 
 if __name__ == "__main__":

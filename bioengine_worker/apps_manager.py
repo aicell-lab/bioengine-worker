@@ -481,7 +481,7 @@ class AppsManager:
                 # Application has failed multiple times, undeploy and remove from tracking
                 self.logger.warning(
                     f"Application '{application_id}' for artifact '{application_info['artifact_id']}', "
-                    f"version '{application_info['version']}' has failed multiple times. It will be "
+                    f"version '{application_info['version'] or 'latest'}' has failed multiple times. It will be "
                     "undeployed and removed from tracking."
                 )
                 application_info["deployment_task"].cancel()

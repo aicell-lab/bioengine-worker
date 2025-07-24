@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+from pathlib import Path
 from typing import Dict, Literal, Optional, Union
 
 import numpy as np
@@ -25,9 +26,9 @@ class CacheEntry:
 
 @serve.deployment(
     ray_actor_options={
-        "num_cpus": 1,
+        "num_cpus": 1 / 3,
         "num_gpus": 1 / 3,
-        "memory": 8 * 1024 * 1024 * 1024,  # 8GB RAM limit
+        # "memory": 8 * 1024 * 1024 * 1024,  # 8GB RAM limit
         "runtime_env": {
             "pip": [
                 "bioimageio.core==0.9.0",
@@ -61,7 +62,6 @@ class ModelInference:
     """Internal deployment for running model inference using bioimageio.core."""
 
     def __init__(self):
-        print("🚀 Initializing ModelInference deployment")
         self._kwargs_cache = {}
 
     def _set_prediction_kwargs(
@@ -72,7 +72,6 @@ class ModelInference:
         default_blocksize_parameter: int,
     ) -> str:
         """Generate cache key for prediction pipeline configuration."""
-        print(f"🔧 Setting prediction kwargs for model: {model_source}")
 
         pipeline_kwargs = {
             "model_source": model_source,
@@ -87,12 +86,11 @@ class ModelInference:
         cache_key = hashlib.md5(json_str.encode()).hexdigest()
 
         self._kwargs_cache[cache_key] = pipeline_kwargs
-        print(f"📦 Cached pipeline kwargs with key: {cache_key}")
 
         return cache_key
 
     @serve.multiplexed(max_num_models_per_replica=CACHE_N_PREDICTION_PIPELINES)
-    def _create_prediction_pipeline(self, cache_key: str) -> CacheEntry:
+    async def _create_prediction_pipeline(self, cache_key: str) -> CacheEntry:
         """Create and cache prediction pipeline for the given cache key."""
         from bioimageio.core import create_prediction_pipeline, load_model_description
 
@@ -104,8 +102,6 @@ class ModelInference:
 
         model_source = pipeline_kwargs["model_source"]
         create_kwargs = pipeline_kwargs["create_kwargs"]
-
-        print(f"🔄 Creating prediction pipeline for model at {model_source}")
 
         try:
             model_description = load_model_description(model_source)
@@ -125,7 +121,7 @@ class ModelInference:
             print(f"❌ Failed to create prediction pipeline: {str(e)}")
             raise
 
-    def predict(
+    async def predict(
         self,
         model_source: str,
         inputs: Union[np.ndarray, Dict[str, np.ndarray]],
@@ -137,42 +133,36 @@ class ModelInference:
         """Run inference on model using bioimageio.core prediction pipeline."""
         from bioimageio.core.digest_spec import create_sample_for_model
 
-        print(f"🔮 Starting prediction for model: {model_source}")
-        print(
-            f"📊 Input type: {type(inputs)}, device: {device}, sample_id: {sample_id}"
-        )
-
         try:
+            if not Path(model_source).exists():
+                raise FileNotFoundError(f"Model source not found: {model_source}")
+
             cache_key = self._set_prediction_kwargs(
                 model_source=model_source,
                 weights_format=weights_format,
                 device=device,
                 default_blocksize_parameter=default_blocksize_parameter,
             )
-            cache_entry = self._create_prediction_pipeline(cache_key)
+            cache_entry = await self._create_prediction_pipeline(cache_key)
+            pipeline = cache_entry.pipeline
 
-            print(f"🎯 Creating sample for model prediction")
             # Create sample from inputs
             # Handle single array input by creating a proper dictionary
             sample = create_sample_for_model(
-                cache_entry.pipeline.model_description,
+                pipeline.model_description,
                 inputs=inputs,
                 sample_id=sample_id,
             )
 
-            print(
-                f"⚙️ Running prediction (blocking: {bool(default_blocksize_parameter)})"
-            )
             # Run prediction using the pipeline
             if default_blocksize_parameter:
-                result = cache_entry.pipeline.predict_sample_with_blocking(sample)
+                result = pipeline.predict_sample_with_blocking(sample)
             else:
-                result = cache_entry.pipeline.predict_sample_without_blocking(sample)
+                result = pipeline.predict_sample_without_blocking(sample)
 
             # Convert outputs back to numpy arrays
             outputs = {str(k): v.data.data for k, v in result.members.items()}
 
-            print(f"✅ Prediction completed, output keys: {list(outputs.keys())}")
             return outputs
 
         except Exception as e:
@@ -181,6 +171,7 @@ class ModelInference:
 
 
 if __name__ == "__main__":
+    import asyncio
     from pathlib import Path
 
     # Test the deployment with a model that should pass all checks
@@ -204,7 +195,10 @@ if __name__ == "__main__":
         deployment_workdir / "models" / f"bmz_model_{TEST_BMZ_MODEL_ID}" / "rdf.yaml"
     )
     test_image_path = str(
-        deployment_workdir / "models" / f"unpublished_model_{TEST_BMZ_MODEL_ID}" / "new_test_input.npy"
+        deployment_workdir
+        / "models"
+        / f"unpublished_model_{TEST_BMZ_MODEL_ID}"
+        / "new_test_input.npy"
     )
 
     # Load the test image from the package
@@ -213,5 +207,5 @@ if __name__ == "__main__":
     # Reshape to match expected format: (batch=1, y, x, channels=1)
     input_image = image[np.newaxis, :, :, np.newaxis]
 
-    result = model_inference.predict(model_source, inputs=input_image)
+    result = asyncio.run(model_inference.predict(model_source, inputs=input_image))
     print(f"Model inference result: {result}")

@@ -11,6 +11,7 @@ import httpx
 import numpy as np
 from hypha_rpc.utils.schema import schema_method
 from ray import serve
+from ray.exceptions import RayTaskError
 from ray.serve.handle import DeploymentHandle
 
 
@@ -61,9 +62,9 @@ class LocalBioimageioPackage:
         self.package_path = package_path
         self.model_source = package_path / "rdf.yaml"
 
-    def __del__(self) -> None:
-        """Clean up package when evicted from cache."""
-        remove_package(self.package_path)
+    # def __del__(self) -> None:
+    #     """Clean up package when evicted from cache."""
+    #     remove_package(self.package_path)
 
 
 # Test the deployment with a model that should pass all checks
@@ -72,9 +73,9 @@ TEST_BMZ_MODEL_ID = "charismatic-whale"
 
 @serve.deployment(
     ray_actor_options={
-        "num_cpus": 1,
+        "num_cpus": 1 / 3,
         "num_gpus": 0,
-        "memory": 16 * 1024 * 1024 * 1024,  # 16GB RAM limit
+        # "memory": 16 * 1024 * 1024 * 1024,  # 16GB RAM limit
         "runtime_env": {
             "pip": [
                 "bioimageio.core==0.9.0",
@@ -110,11 +111,11 @@ class ModelRunner:
 
     def __init__(
         self,
-        model_inference: DeploymentHandle,
         model_evaluation: DeploymentHandle,
+        model_inference: DeploymentHandle,
     ) -> None:
-        self.model_inference = model_inference
         self.model_evaluation = model_evaluation
+        self.model_inference = model_inference
 
         # Set Hypha server and workspace
         self.server_url = "https://hypha.aicell.io"
@@ -181,130 +182,72 @@ class ModelRunner:
         Returns detailed test results with timing and success metrics for monitoring.
         """
         print(
-            f"🧪 [{self.replica_id}] Starting comprehensive deployment test with model: {TEST_BMZ_MODEL_ID}"
+            f"🧪 [{self.replica_id}] Starting comprehensive deployment test with model: '{TEST_BMZ_MODEL_ID}'"
         )
-        test_results = {}
-        start_time = time.time()
+        # Test 1: Get model RDF for validation
+        print(f"🔍 [{self.replica_id}] Test 1/6: Getting model RDF...")
+        rdf_start = time.time()
+        model_rdf = await self.get_model_rdf(model_id=TEST_BMZ_MODEL_ID)
+        rdf_duration = time.time() - rdf_start
+        print(
+            f"✅ [{self.replica_id}] RDF retrieval successful ({rdf_duration:.2f}s)"
+        )
 
-        try:
-            # Test 1: Get model RDF for validation
-            print(f"🔍 [{self.replica_id}] Test 1/6: Getting model RDF...")
-            rdf_start = time.time()
-            model_rdf = await self.get_model_rdf(model_id=TEST_BMZ_MODEL_ID)
-            test_results["get_model_rdf"] = {
-                "success": True,
-                "duration_s": time.time() - rdf_start,
-                "model_id": model_rdf.get("id", "unknown"),
-            }
-            print(
-                f"✅ [{self.replica_id}] RDF retrieval successful ({test_results['get_model_rdf']['duration_s']:.2f}s)"
-            )
+        # Test 2: Validate the RDF
+        print(f"🔬 [{self.replica_id}] Test 2/6: Validating RDF...")
+        val_start = time.time()
+        validation_result = await self.validate(rdf_dict=model_rdf)
+        val_duration = time.time() - val_start
+        print(
+            f"✅ [{self.replica_id}] Validation {'passed' if validation_result['success'] else 'failed'} ({val_duration:.2f}s)"
+        )
 
-            # Test 2: Validate the RDF
-            print(f"🔬 [{self.replica_id}] Test 2/6: Validating RDF...")
-            val_start = time.time()
-            validation_result = await self.validate(rdf_dict=model_rdf)
-            test_results["validate"] = {
-                "success": validation_result["success"],
-                "duration_s": time.time() - val_start,
-                "details": (
-                    validation_result["details"][:200] + "..."
-                    if len(validation_result["details"]) > 200
-                    else validation_result["details"]
-                ),
-            }
-            print(
-                f"✅ [{self.replica_id}] Validation {'passed' if validation_result['success'] else 'failed'} ({test_results['validate']['duration_s']:.2f}s)"
-            )
+        # Test 3: Test the model (published)
+        print(f"🧩 [{self.replica_id}] Test 3/6: Testing published model...")
+        test1_start = time.time()
+        test_result1 = await self.test(model_id=TEST_BMZ_MODEL_ID, published=True)
+        test1_duration = time.time() - test1_start
+        print(
+            f"✅ [{self.replica_id}] Published model test completed ({test1_duration:.2f}s)"
+        )
 
-            # Test 3: Test the model (published)
-            print(f"🧩 [{self.replica_id}] Test 3/6: Testing published model...")
-            test1_start = time.time()
-            test_result1 = await self.test(model_id=TEST_BMZ_MODEL_ID, published=True)
-            test_results["test_published"] = {
-                "success": isinstance(test_result1, dict),
-                "duration_s": time.time() - test1_start,
-            }
-            print(
-                f"✅ [{self.replica_id}] Published model test completed ({test_results['test_published']['duration_s']:.2f}s)"
-            )
+        # Test 4: Test the model (unpublished)
+        print(f"🧩 [{self.replica_id}] Test 4/6: Testing unpublished model...")
+        test2_start = time.time()
+        test_result2 = await self.test(model_id=TEST_BMZ_MODEL_ID, published=False)
+        test2_duration = time.time() - test2_start
+        print(
+            f"✅ [{self.replica_id}] Unpublished model test completed ({test2_duration:.2f}s)"
+        )
 
-            # Test 4: Test the model (unpublished)
-            print(f"🧩 [{self.replica_id}] Test 4/6: Testing unpublished model...")
-            test2_start = time.time()
-            test_result2 = await self.test(model_id=TEST_BMZ_MODEL_ID, published=False)
-            test_results["test_unpublished"] = {
-                "success": isinstance(test_result2, dict),
-                "duration_s": time.time() - test2_start,
-            }
-            print(
-                f"✅ [{self.replica_id}] Unpublished model test completed ({test_results['test_unpublished']['duration_s']:.2f}s)"
-            )
+        # Test 5: Test with skip_cache=True
+        print(f"🔄 [{self.replica_id}] Test 5/6: Testing with cache skip...")
+        test3_start = time.time()
+        test_result3 = await self.test(
+            model_id=TEST_BMZ_MODEL_ID, published=False, skip_cache=True
+        )
+        test3_duration = time.time() - test3_start
+        print(
+            f"✅ [{self.replica_id}] Skip cache test completed ({test3_duration:.2f}s)"
+        )
 
-            # Test 5: Test with skip_cache=True
-            print(f"🔄 [{self.replica_id}] Test 5/6: Testing with cache skip...")
-            test3_start = time.time()
-            test_result3 = await self.test(
-                model_id=TEST_BMZ_MODEL_ID, published=False, skip_cache=True
-            )
-            test_results["test_skip_cache"] = {
-                "success": isinstance(test_result3, dict),
-                "duration_s": time.time() - test3_start,
-            }
-            print(
-                f"✅ [{self.replica_id}] Skip cache test completed ({test_results['test_skip_cache']['duration_s']:.2f}s)"
-            )
+        # Test 6: Test inference
+        print(f"🤖 [{self.replica_id}] Test 6/6: Testing inference...")
+        inf_start = time.time()
 
-            # Test 6: Test inference
-            print(f"🤖 [{self.replica_id}] Test 6/6: Testing inference...")
-            inf_start = time.time()
+        # Load the test image from the package
+        cache_key = self._get_cache_key(model_id=TEST_BMZ_MODEL_ID, published=False)
+        test_image_path = self.models_dir / cache_key / "new_test_input.npy"
+        image = np.load(test_image_path).astype("float32")
 
-            # Load the test image from the package
-            cache_key = self._get_cache_key(model_id=TEST_BMZ_MODEL_ID, published=False)
-            test_image_path = self.models_dir / cache_key / "new_test_input.npy"
-            image = np.load(test_image_path).astype("float32")
+        # Reshape to match expected format: (batch=1, y, x, channels=1)
+        input_image = image[np.newaxis, :, :, np.newaxis]
 
-            # Reshape to match expected format: (batch=1, y, x, channels=1)
-            input_image = image[np.newaxis, :, :, np.newaxis]
-
-            outputs = await self.infer(model_id=TEST_BMZ_MODEL_ID, inputs=input_image)
-            test_results["inference"] = {
-                "success": isinstance(outputs, dict) and len(outputs) > 0,
-                "duration_s": time.time() - inf_start,
-                "output_keys": (
-                    list(outputs.keys()) if isinstance(outputs, dict) else []
-                ),
-            }
-            print(
-                f"✅ [{self.replica_id}] Inference test completed ({test_results['inference']['duration_s']:.2f}s)"
-            )
-
-            # Overall results
-            total_duration = time.time() - start_time
-            all_tests_passed = all(
-                result["success"] for result in test_results.values()
-            )
-
-            test_results["summary"] = {
-                "all_tests_passed": all_tests_passed,
-                "total_duration_s": total_duration,
-                "replica_id": self.replica_id,
-            }
-
-            print(
-                f"🎉 [{self.replica_id}] All deployment tests {'PASSED' if all_tests_passed else 'FAILED'} (total: {total_duration:.2f}s)"
-            )
-            return test_results
-
-        except Exception as e:
-            error_msg = f"Deployment test failed: {str(e)}"
-            print(f"❌ [{self.replica_id}] {error_msg}")
-            test_results["error"] = {
-                "success": False,
-                "error": error_msg,
-                "total_duration_s": time.time() - start_time,
-            }
-            return test_results
+        outputs = await self.infer(model_id=TEST_BMZ_MODEL_ID, inputs=input_image)
+        inf_duration = time.time() - inf_start
+        print(
+            f"✅ [{self.replica_id}] Inference test completed ({inf_duration:.2f}s)"
+        )
 
     # === Internal Methods ===
 
@@ -574,7 +517,13 @@ class ModelRunner:
             )
             await asyncio.to_thread(remove_package, package_dir)
 
-        # Get the package (download if not cached)
+            # Download the model again
+            package_path = await self._download_model(cache_key)
+
+            # Validate the model package
+            package_path = await self._validate_model(package_path)
+
+        # Get the package (download if not cached; does not check local existence if in cache)
         local_package = await self._get_local_package_from_cache(cache_key)
 
         model_source = str(local_package.model_source)
@@ -722,10 +671,15 @@ class ModelRunner:
             model_id=model_id, published=published, skip_cache=skip_cache
         )
 
-        test_result = await self.model_evaluation.test.remote(
-            model_source=model_source,
-            additional_requirements=additional_requirements,
-        )
+        try:
+            test_result = await self.model_evaluation.test.remote(
+                model_source=model_source,
+                additional_requirements=additional_requirements,
+            )
+        except RayTaskError as e:
+            error_msg = f"Failed to run model test for '{model_id}': {e}"
+            print(f"❌ [{self.replica_id}] {error_msg}")
+            raise RuntimeError(error_msg)
 
         print(f"✅ [{self.replica_id}] Model test completed for '{model_id}'")
         return test_result
@@ -786,7 +740,7 @@ class ModelRunner:
             )
 
         print(
-            f"🤖 [{self.replica_id}] Running inference for model '{model_id}' (sample_id='{sample_id}')"
+            f"🤖 [{self.replica_id}] Running inference for model '{model_id}'"
         )
 
         # Only allow published BMZ model
@@ -794,14 +748,19 @@ class ModelRunner:
             model_id=model_id, published=True, skip_cache=skip_cache
         )
 
-        result = await self.model_inference.predict.remote(
-            model_source=model_source,
-            inputs=inputs,
-            weights_format=weights_format,
-            device=device,
-            default_blocksize_parameter=default_blocksize_parameter,
-            sample_id=sample_id,
-        )
+        try:
+            result = await self.model_inference.predict.remote(
+                model_source=model_source,
+                inputs=inputs,
+                weights_format=weights_format,
+                device=device,
+                default_blocksize_parameter=default_blocksize_parameter,
+                sample_id=sample_id,
+            )
+        except RayTaskError as e:
+            error_msg = f"Failed to run inference for model '{model_id}': {e}"
+            print(f"❌ [{self.replica_id}] {error_msg}")
+            raise RuntimeError(error_msg)
 
         print(f"✅ [{self.replica_id}] Inference completed for model '{model_id}'")
         return result

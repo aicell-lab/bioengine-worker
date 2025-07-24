@@ -431,7 +431,7 @@ class RayCluster:
 
         if self.lock_file.exists():
             # Lock file exists, check if it's from a stale process
-            self.logger.warning(f"Lock file already exists: {self.lock_file}")
+            self.logger.info(f"Lock file already exists: {self.lock_file}")
 
             # Attempt to read and validate the existing lock file
             try:
@@ -457,24 +457,24 @@ class RayCluster:
                             )
                         except ProcessLookupError:
                             # Process no longer exists, remove stale lock and retry
-                            self.logger.warning(
+                            self.logger.info(
                                 f"Removing stale lock file from non-existent process {existing_pid}"
                             )
 
                     except (ValueError, IndexError):
                         # Cannot parse PID, treat as stale lock
-                        self.logger.warning(
+                        self.logger.info(
                             f"Removing malformed lock file: {existing_info}"
                         )
                 else:
                     # Not standard format, treat as potentially stale
-                    self.logger.warning(
+                    self.logger.info(
                         f"Removing potentially stale lock file: {existing_info}"
                     )
 
             except (OSError, IOError) as e:
                 # Error reading lock file, assume it's corrupted
-                self.logger.warning(f"Removing corrupted lock file due to error: {e}")
+                self.logger.info(f"Removing corrupted lock file due to error: {e}")
 
             # Remove stale lock file before creating new one
             self.lock_file.unlink(missing_ok=True)
@@ -485,7 +485,7 @@ class RayCluster:
             f.flush()
             os.fsync(f.fileno())
 
-        self.logger.debug(f"Successfully acquired lock: {self.lock_file}")
+        self.logger.info(f"Successfully acquired lock: {self.lock_file}")
 
     def _update_symlink(self, ray_temp_dir: Path) -> None:
         """

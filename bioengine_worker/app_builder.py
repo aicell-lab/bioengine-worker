@@ -1,9 +1,10 @@
 import inspect
 import logging
 import os
+import time
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union, TypedDict
+from typing import Any, Dict, List, Optional, Union, TypedDict
 
 import httpx
 import yaml
@@ -253,15 +254,21 @@ class AppBuilder:
             import os
             from pathlib import Path
 
+            # Get replica identifier for logging
+            try:
+                self.replica_id = serve.get_replica_context().replica_tag
+            except Exception:
+                self.replica_id = "unknown"
+
             # Ensure the workdir is set to the BIOENGINE_WORKDIR environment variable
             workdir = Path(os.environ["BIOENGINE_WORKDIR"])
             workdir.mkdir(parents=True, exist_ok=True)
             os.chdir(workdir)
-            print(f"📁 Working directory: {workdir}")
+            print(f"📁 [{self.replica_id}] Working directory: {workdir}")
 
             # Log data directory
             data_dir = os.environ["BIOENGINE_DATA_DIR"]
-            print(f"📂 Data directory: {data_dir}")
+            print(f"📂 [{self.replica_id}] Data directory: {data_dir}")
 
             # Initialize deployment states
             self._deployment_initialized = False
@@ -292,7 +299,10 @@ class AppBuilder:
 
         @wraps(orig_async_init)
         async def wrapped_async_init(self):
-            print(f"⚡ Running async initialization for '{self.__class__.__name__}'...")
+            start_time = time.time()
+            print(
+                f"⚡ [{self.replica_id}] Running async initialization for '{self.__class__.__name__}'..."
+            )
 
             try:
                 # Check if the original async_init method is async
@@ -302,14 +312,15 @@ class AppBuilder:
                     # If it's a regular function, call it directly
                     orig_async_init(self)
 
+                elapsed_time = time.time() - start_time
                 self._deployment_initialized = True
                 print(
-                    f"✅ Deployment '{self.__class__.__name__}' async initialized successfully"
+                    f"✅ [{self.replica_id}] Deployment '{self.__class__.__name__}' async initialized successfully in {elapsed_time:.2f}s"
                 )
-
             except Exception as e:
+                elapsed_time = time.time() - start_time
                 print(
-                    f"❌ Async initialization failed for '{self.__class__.__name__}': {e}"
+                    f"❌ [{self.replica_id}] Async initialization failed for '{self.__class__.__name__}' after {elapsed_time:.2f}s: {e}"
                 )
                 raise
 
@@ -335,7 +346,10 @@ class AppBuilder:
 
         @wraps(orig_test_deployment)
         async def wrapped_test_deployment(self):
-            print(f"🧪 Running deployment test for '{self.__class__.__name__}'...")
+            start_time = time.time()
+            print(
+                f"🧪 [{self.replica_id}] Running deployment test for '{self.__class__.__name__}'..."
+            )
 
             try:
                 # Check if the original test_deployment method is async
@@ -345,11 +359,18 @@ class AppBuilder:
                     # If it's a regular function, call it directly
                     orig_test_deployment(self)
 
+                # Mark the deployment as tested
+                elapsed_time = time.time() - start_time
                 self._deployment_tested = True
-                print(f"✅ Deployment '{self.__class__.__name__}' tested successfully")
+                print(
+                    f"✅ [{self.replica_id}] Deployment '{self.__class__.__name__}' tested successfully in {elapsed_time:.2f}s"
+                )
 
             except Exception as e:
-                print(f"❌ Deployment test failed for '{self.__class__.__name__}': {e}")
+                elapsed_time = time.time() - start_time
+                print(
+                    f"❌ [{self.replica_id}] Deployment test failed for '{self.__class__.__name__}' after {elapsed_time:.2f}s: {e}"
+                )
                 raise RuntimeError(
                     f"Deployment test failed for '{self.__class__.__name__}': {e}"
                 )
@@ -399,7 +420,9 @@ class AppBuilder:
                 return result
 
             except Exception as e:
-                print(f"❌ Health check failed for '{self.__class__.__name__}': {e}")
+                print(
+                    f"❌ [{self.replica_id}] Health check failed for '{self.__class__.__name__}': {e}"
+                )
                 raise
 
         # Add the updated health check method to the deployment class
@@ -419,13 +442,24 @@ class AppBuilder:
             Dictionary mapping parameter names to their type and default value information
 
         Note:
-            Excludes 'self' parameter from the returned dictionary
+            Excludes 'self', '*args', and '**kwargs' parameters from the returned dictionary
         """
         sig = inspect.signature(deployment.func_or_class.__init__)
         params = {}
+        has_var_positional = False
+        has_var_keyword = False
+
         for name, param in sig.parameters.items():
             if name == "self":
                 continue
+            # Skip *args and **kwargs parameters as they have special handling
+            if param.kind == inspect.Parameter.VAR_POSITIONAL:
+                has_var_positional = True
+                continue
+            if param.kind == inspect.Parameter.VAR_KEYWORD:
+                has_var_keyword = True
+                continue
+
             param_type = (
                 param.annotation
                 if param.annotation is not inspect.Parameter.empty
@@ -438,6 +472,10 @@ class AppBuilder:
                 "type": param_type,
                 "default": default,
             }
+
+        # Store information about *args and **kwargs for validation
+        params["__has_var_positional__"] = {"type": None, "default": has_var_positional}
+        params["__has_var_keyword__"] = {"type": None, "default": has_var_keyword}
         return params
 
     def _check_params(
@@ -452,24 +490,37 @@ class AppBuilder:
 
         Raises:
             ValueError: If there are unexpected parameters, missing required parameters,
-                       or type mismatches
+                       type mismatches, or *args parameters are detected
         """
+        # Extract special flags for **kwargs handling (*args is not supported)
+        has_var_keyword = init_params.get("__has_var_keyword__", {}).get(
+            "default", False
+        )
+
+        # Remove special flags from init_params for normal processing
+        filtered_init_params = {
+            k: v for k, v in init_params.items() if not k.startswith("__has_var_")
+        }
+
         # Check if all provided parameters are expected
         for key in kwargs:
-            if key not in init_params:
-                raise ValueError(
-                    f"Unexpected parameter '{key}' provided. "
-                    f"Expected one of {list(init_params.keys())}."
-                )
-            expected_type = init_params[key]["type"]
-            if expected_type and not isinstance(kwargs[key], expected_type):
-                raise ValueError(
-                    f"Parameter '{key}' must be of type {expected_type.__name__}, "
-                    f"but got {type(kwargs[key]).__name__}."
-                )
+            if key not in filtered_init_params:
+                if not has_var_keyword:
+                    raise ValueError(
+                        f"Unexpected parameter '{key}' provided. "
+                        f"Expected one of {list(filtered_init_params.keys())}."
+                    )
+                # If **kwargs is present, allow any additional parameters
+            else:
+                expected_type = filtered_init_params[key]["type"]
+                if expected_type and not isinstance(kwargs[key], expected_type):
+                    raise ValueError(
+                        f"Parameter '{key}' must be of type {expected_type.__name__}, "
+                        f"but got {type(kwargs[key]).__name__}."
+                    )
 
         # Check if all required parameters are provided
-        for key, param_info in init_params.items():
+        for key, param_info in filtered_init_params.items():
             if param_info["type"] == DeploymentHandle:
                 # DeploymentHandle parameters are handled separately
                 continue
@@ -536,6 +587,7 @@ class AppBuilder:
             with open(local_path, "r") as f:
                 code_content = f.read()
         else:
+            local_path = None
             try:
                 # Get download URL for the file
                 download_url = await self.artifact_manager.get_file(
@@ -591,9 +643,14 @@ class AppBuilder:
             deployment = self._update_test_deployment(deployment)
             deployment = self._update_health_check(deployment)
 
-            self.logger.info(
-                f"Successfully loaded and configured deployment class '{class_name}' from artifact '{artifact_id}'"
-            )
+            if local_path:
+                self.logger.info(
+                    f"Successfully loaded and configured deployment class '{class_name}' from local path '{local_path}/'"
+                )
+            else:
+                self.logger.info(
+                    f"Successfully loaded and configured deployment class '{class_name}' from artifact '{artifact_id}'"
+                )
             return deployment
         except Exception as e:
             self.logger.error(
@@ -698,6 +755,7 @@ class AppBuilder:
 
         # Get all schema_methods from the entry deployment class
         entry_deployment = deployments[0]
+        class_name = entry_deployment.func_or_class.__name__
         method_schemas = []
         for method_name in dir(entry_deployment.func_or_class):
             method = getattr(entry_deployment.func_or_class, method_name)
@@ -706,12 +764,10 @@ class AppBuilder:
 
         if not method_schemas:
             raise ValueError(
-                f"No schema methods found in the entry deployment class: "
-                f"{entry_deployment.func_or_class.__name__}."
+                f"No schema methods found in the entry deployment class: {class_name}."
             )
 
         # Get kwargs for the entry deployment
-        class_name = entry_deployment.func_or_class.__name__
         entry_deployment_kwargs = deployment_kwargs.get(class_name, {}).copy()
         entry_init_params = self._get_init_param_info(entry_deployment)
         self._check_params(entry_init_params, entry_deployment_kwargs)
@@ -723,6 +779,7 @@ class AppBuilder:
             )
 
             # Add the composition deployment class(es) to the entry deployment kwargs
+            # TODO: use kwargs instead of args to pass deployment handles
             deployment_handle_params = [
                 param_name
                 for param_name, param_info in entry_init_params.items()
@@ -802,7 +859,9 @@ if __name__ == "__main__":
             log_file=None,
             debug=True,
         )
-        app_builder.initialize(server, artifact_manager)
+        app_builder.initialize(
+            server, artifact_manager, serve_http_url="https://test-url"
+        )
 
         app = await app_builder.build(
             application_id="test-application-1234",

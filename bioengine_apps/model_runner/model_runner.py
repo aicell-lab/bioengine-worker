@@ -332,12 +332,8 @@ class ModelRunner:
 
         async with local_package:
             test_image_path = local_package.package_path / "new_test_input.npy"
-            image = np.load(test_image_path).astype("float32")
-
-            # Reshape to match expected format: (batch=1, y, x, channels=1)
-            input_image = image[np.newaxis, :, :, np.newaxis]
-
-            outputs = await self.infer(model_id=model_id, inputs=input_image)
+            test_image = np.load(test_image_path).astype("float32")
+            outputs = await self.infer(model_id=model_id, inputs=test_image)
 
         inf_duration = time.time() - inf_start
         print(f"✅ [{self.replica_id}] Inference test completed ({inf_duration:.2f}s)")

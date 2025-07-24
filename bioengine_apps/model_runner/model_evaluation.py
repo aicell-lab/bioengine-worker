@@ -126,6 +126,7 @@ if __name__ == "__main__":
         deployment_workdir / "models" / f"bmz_model_{model_id}" / "rdf.yaml"
     )
 
+    # Run the model test
     test_result = asyncio.run(
         model_evaluation.test(model_source, additional_requirements=["torch==2.5.1"])
     )

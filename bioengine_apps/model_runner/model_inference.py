@@ -179,18 +179,16 @@ if __name__ == "__main__":
     model_source = str(
         deployment_workdir / "models" / f"bmz_model_{model_id}" / "rdf.yaml"
     )
+
+    # Load the test image from the package
     test_image_path = str(
         deployment_workdir
         / "models"
         / f"unpublished_model_{model_id}"
         / "new_test_input.npy"
     )
+    test_image = np.load(test_image_path).astype("float32")
 
-    # Load the test image from the package
-    image = np.load(test_image_path).astype("float32")
-
-    # Reshape to match expected format: (batch=1, y, x, channels=1)
-    input_image = image[np.newaxis, :, :, np.newaxis]
-
-    result = asyncio.run(model_inference.predict(model_source, inputs=input_image))
+    # Run the prediction
+    result = asyncio.run(model_inference.predict(model_source, inputs=test_image))
     print(f"Model inference result: {result}")

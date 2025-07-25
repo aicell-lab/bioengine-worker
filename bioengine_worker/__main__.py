@@ -41,11 +41,10 @@ License: MIT
 import argparse
 import asyncio
 import json
-import signal
 import sys
 import time
 from pathlib import Path
-from typing import Dict, Literal
+from typing import Dict
 
 from bioengine_worker import __version__
 from bioengine_worker.utils import create_logger
@@ -150,11 +149,13 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "Default: https://bioimage.io/#/bioengine",
     )
     core_group.add_argument(
-        "--no_logging",
-        action="store_true",
-        default=False,
-        help="Disable logging to file. Output will only go to console. "
-        "Useful for development and debugging in interactive environments.",
+        "--log_file",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to the log file. If set to 'off', logging will only go to console. "
+        "If not specified (None), a log file will be created in '<cache_dir>/logs'. ",
+        choices=[None, "off"] + [str(Path)],
     )
     core_group.add_argument(
         "--debug",
@@ -541,38 +542,19 @@ def read_startup_applications(
 
 async def main(group_configs):
     """Main function to initialize and register BioEngine worker"""
+    # Create BioEngine worker instance
+    bioengine_worker = BioEngineWorker(
+        **group_configs["Core Options"],
+        **group_configs["Hypha Options"],
+        ray_cluster_config={
+            **group_configs["Ray Cluster Options"],
+            **group_configs["SLURM Job Options"],
+            **group_configs["Ray Autoscaler Options"],
+        },
+    )
 
-    # Set up logging and pass log file to BioEngine worker
-    create_log_file = not group_configs["Core Options"].pop("no_logging")
-    if create_log_file:
-        log_dir = Path(group_configs["Core Options"]["cache_dir"]) / "logs"
-        log_file = log_dir / f"bioengine_worker_{time.strftime('%Y%m%d_%H%M%S')}.log"
-        group_configs["Core Options"]["log_file"] = log_file
-    else:
-        log_file = None
-    logger = create_logger("__main__", log_file=log_file)
-
-    try:
-        # Create BioEngine worker instance
-        bioengine_worker = BioEngineWorker(
-            **group_configs["Core Options"],
-            **group_configs["Hypha Options"],
-            ray_cluster_config={
-                **group_configs["Ray Cluster Options"],
-                **group_configs["SLURM Job Options"],
-                **group_configs["Ray Autoscaler Options"],
-            },
-        )
-
-        # Start the worker and wait until shutdown is triggered
-        await bioengine_worker.start(blocking=True)
-
-    except Exception as e:
-        logger.error(f"Exception in main: {str(e)}")
-        raise
-
-    finally:
-        await bioengine_worker._stop(blocking=True)
+    # Start the worker and wait until shutdown is triggered
+    await bioengine_worker.start(blocking=True)
 
 
 if __name__ == "__main__":

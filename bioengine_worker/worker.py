@@ -202,11 +202,33 @@ class BioEngineWorker:
             the initialization process by starting the Ray cluster and registering with
             the Hypha server.
         """
+        # Store configuration parameters
         self.admin_users = admin_users or []
         self.cache_dir = Path(cache_dir).resolve()
         self.data_dir = Path(data_dir).resolve()
         self.dashboard_url = dashboard_url.rstrip("/")
         self.monitoring_interval_seconds = monitoring_interval_seconds
+
+        # Initialize structured logging
+        if log_file == "off":
+            # Disable file logging, only console output
+            log_file = None
+
+        elif log_file is None:
+            # Create a timestamped log file in the cache directory
+            log_dir = self.cache_dir / "logs"
+            log_file = (
+                log_dir / f"bioengine_worker_{time.strftime('%Y%m%d_%H%M%S')}.log"
+            )
+
+        self.logger = create_logger(
+            name="BioEngineWorker",
+            level=logging.DEBUG if debug else logging.INFO,
+            log_file=log_file,
+        )
+        self.logger.info(
+            f"Initializing BioEngineWorker v{__version__} with mode '{mode}'"
+        )
 
         # Hypha server configuration
         self.server_url = server_url
@@ -226,16 +248,6 @@ class BioEngineWorker:
         self.graceful_shutdown_timeout = graceful_shutdown_timeout
         self.full_service_id = None
         self._admin_context = None
-
-        # Initialize structured logging
-        self.logger = create_logger(
-            name="BioEngineWorker",
-            level=logging.DEBUG if debug else logging.INFO,
-            log_file=log_file,
-        )
-        self.logger.info(
-            f"Initializing BioEngineWorker v{__version__} with mode '{mode}'"
-        )
 
         try:
             # Ensure cache and data directories exist with proper permissions
@@ -424,7 +436,7 @@ class BioEngineWorker:
         else:
             description += " in a pre-existing Ray environment."
 
-        # TODO: return more informative error messages, e.g. return error
+        # TODO: return more informative error messages, e.g. by returning error instead of raising it
         service_info = await self._server.register_service(
             {
                 "id": self.service_id,
@@ -477,7 +489,7 @@ class BioEngineWorker:
         All cleanup operations are wrapped in try-catch blocks to ensure
         that failure in one component doesn't prevent cleanup of others.
         """
-        self.logger.info("Starting comprehensive cleanup of BioEngine worker...")
+        self.logger.info("Starting cleanup of BioEngine worker...")
         cleanup_start_time = time.time()
 
         # Ensure the is_ready event is reset to prevent new operations
@@ -620,43 +632,48 @@ class BioEngineWorker:
             self.logger.error(f"Unexpected error in monitoring task: {e}")
             raise
         finally:
-            # Perform comprehensive cleanup of all components
+            # Always perform comprehensive cleanup of all components
             await self._cleanup()
 
     async def _stop(self, blocking: bool = False) -> None:
-        # Check if the worker is running
-        if not self.start_time:
-            self.logger.info("BioEngine worker is not running. Nothing to stop.")
-            return
+        try:
+            # Check if the worker is running
+            if self._shutdown_event.is_set():
+                self.logger.info("BioEngine worker is not running. Nothing to stop.")
+                return
 
-        msg = "Sent shutdown signal to BioEngine worker."
+            if self._monitoring_task and not self._monitoring_task.done():
+                # If monitoring task is running, cancel it and wait for graceful shutdown
+                self._monitoring_task.cancel()
+            else:
+                # Fallback cleanup if monitoring task is not running
+                asyncio.create_task(self._cleanup())
 
-        if self._monitoring_task and not self._monitoring_task.done():
-            # If monitoring task is running, cancel it and wait for graceful shutdown
-            self._monitoring_task.cancel()
-        else:
-            # Fallback cleanup if monitoring task is not running
-            asyncio.create_task(self._cleanup())
+            msg = "Initiated graceful shutdown of BioEngine worker. "
+            if blocking:
+                self.logger.info(msg + "Waiting for graceful shutdown to complete...")
+                try:
+                    await asyncio.wait_for(
+                        self._shutdown_event.wait(),
+                        timeout=self.graceful_shutdown_timeout,
+                    )
+                    self.logger.info("Graceful shutdown completed successfully.")
+                except asyncio.TimeoutError:
+                    self.logger.warning(
+                        f"Graceful shutdown timed out after {self.graceful_shutdown_timeout} seconds. "
+                        "Force exiting without complete cleanup."
+                    )
+                    # Force exit immediately with code 1 because of timeout
+                    os._exit(1)
+                else:
+                    self.logger.info(msg + "Shutdown will happen in the background.")
 
-        if blocking:
-            msg += " Waiting for graceful shutdown to complete..."
-            self.logger.info(msg)
-            try:
-                await asyncio.wait_for(
-                    self._shutdown_event.wait(), timeout=self.graceful_shutdown_timeout
-                )
-            except TimeoutError:
-                self.logger.warning(
-                    f"Graceful shutdown timed out after {self.graceful_shutdown_timeout} seconds. "
-                    "Force exiting without cleanup."
-                )
-                # Force exit immediately
-                import os
-
-                os._exit(1)
-        else:
-            msg += " Shutdown will happen in the background."
-            self.logger.info(msg)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            self.logger.info(
+                "Shutdown signal received during cleanup. Force exiting without complete cleanup."
+            )
+            # Force exit immediately with code 0 to indicate successful shutdown
+            os._exit(0)
 
     async def start(self, blocking: bool = True) -> str:
         """
@@ -674,45 +691,57 @@ class BioEngineWorker:
             RuntimeError: If Ray is already initialized when connecting to existing cluster
             Exception: If startup of any component fails
         """
-        # Reset the shutdown event to allow starting the worker
-        self._shutdown_event.clear()
+        try:
+            # Reset the shutdown event to allow starting the worker
+            self._shutdown_event.clear()
 
-        # Set the start time for monitoring and uptime tracking
-        self.start_time = time.time()
+            # Set the start time for monitoring and uptime tracking
+            self.start_time = time.time()
 
-        # Start the Ray cluster
-        await self.ray_cluster.start()
+            # Start the Ray cluster
+            await self.ray_cluster.start()
 
-        # Register the BioEngine worker service with the Hypha server
-        await self._connect_to_server()
-        await self._check_hypha_connection(reconnect=False)
+            # Register the BioEngine worker service with the Hypha server
+            await self._connect_to_server()
+            await self._check_hypha_connection(reconnect=False)
 
-        # Initialize component managers with the server connection
-        await self.apps_manager.initialize(
-            server=self._server, admin_users=self.admin_users
-        )
-        await self.dataset_manager.initialize(
-            server=self._server, admin_users=self.admin_users
-        )
+            # Initialize component managers with the server connection
+            await self.apps_manager.initialize(
+                server=self._server, admin_users=self.admin_users
+            )
+            await self.dataset_manager.initialize(
+                server=self._server, admin_users=self.admin_users
+            )
 
-        # Register the BioEngine worker service interface
-        await self._register_bioengine_worker_service()
+            # Register the BioEngine worker service interface
+            await self._register_bioengine_worker_service()
 
-        # Start the monitoring task
-        self._monitoring_task = asyncio.create_task(
-            self._create_monitoring_task(),
-            name="BioEngineWorker Monitoring Task",
-        )
+            # Start the monitoring task
+            self._monitoring_task = asyncio.create_task(
+                self._create_monitoring_task(),
+                name="BioEngineWorker Monitoring Task",
+            )
 
-        if blocking is True:
-            # Keep the worker running until a shutdown signal is received
-            self.logger.info("Keeping BioEngine worker running...")
+            # Wait for the monitoring task to signal readiness
+            await self.is_ready.wait()
 
-            # Wait for the monitoring task to complete (which happens during shutdown)
-            await self._shutdown_event.wait()
+            if blocking is True:
+                # Keep the worker running until a shutdown signal is received
+                self.logger.info(
+                    "BioEngine worker will run until shutdown signal is received. "
+                    "Press Ctrl+C for graceful shutdown. Press Ctrl+C again to force exit."
+                )
 
-            # Allow time for cleanup tasks to complete
-            await asyncio.sleep(0.1)
+                # Wait for the monitoring task to complete (which happens during shutdown)
+                await self._shutdown_event.wait()
+
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            self.logger.info("Shutdown signal received.")
+            await self._stop(blocking=True)
+        except Exception as e:
+            self.logger.error(f"Failed to start BioEngine worker: {e}")
+            await self._stop(blocking=True)
+            raise
 
         return self.full_service_id
 
@@ -772,6 +801,8 @@ class BioEngineWorker:
 
         await self._stop(blocking=blocking)
 
+        return "BioEngine worker shutdown initiated. Cleanup will continue in the background."
+
     @schema_method
     async def get_status(self, context: Optional[Dict[str, Any]] = None) -> dict:
         """
@@ -811,7 +842,6 @@ class BioEngineWorker:
         status = {
             "service_start_time": self.start_time,
             "service_uptime": current_time - self.start_time if self.start_time else 0,
-            "service_id": self.full_service_id,
             "worker_mode": self.ray_cluster.mode,
             "workspace": self.workspace,
             "client_id": self.client_id,

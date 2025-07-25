@@ -155,7 +155,6 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         metavar="PATH",
         help="Path to the log file. If set to 'off', logging will only go to console. "
         "If not specified (None), a log file will be created in '<cache_dir>/logs'. ",
-        choices=[None, "off"] + [str(Path)],
     )
     core_group.add_argument(
         "--debug",
@@ -489,13 +488,14 @@ def read_startup_applications(
 
     Processes startup application specifications from command-line arguments,
     parsing JSON configuration strings and validating their format. Each
-    application configuration should specify deployment parameters.
+    application configuration should specify deployment parameters. The parsed
+    dictionaries are passed to BioEngineWorker, replacing the original JSON strings.
 
     Args:
         group_configs: Dictionary of grouped command-line arguments
 
     Returns:
-        Updated group_configs with parsed startup_applications list
+        Updated group_configs with parsed startup_applications as list of dictionaries
 
     Raises:
         ValueError: If JSON configuration is malformed or invalid

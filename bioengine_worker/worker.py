@@ -79,6 +79,8 @@ class BioEngineWorker:
         data_dir (Path): Root directory for dataset storage and access
         dashboard_url (str): URL of the BioEngine dashboard for worker management
         monitoring_interval_seconds (int): Interval for status monitoring and health checks
+        log_file (Optional[str]): Path to log file for structured logging output
+        graceful_shutdown_timeout (int): Timeout in seconds for graceful shutdown operations
         server_url (str): URL of the Hypha server for service registration
         workspace (str): Hypha workspace name for service isolation
         client_id (str): Unique client identifier for Hypha connection
@@ -100,6 +102,10 @@ class BioEngineWorker:
             cache_dir="/tmp/bioengine",
             data_dir="/shared/datasets",
             server_url="https://hypha.aicell.io",
+            startup_applications=[
+                {"artifact_id": "<my-workspace>/<my_artifact>", "num_gpus": 1},
+                {"artifact_id": "<my-workspace>/<another_artifact>", "num_cpus": 4}
+            ],
             ray_cluster_config={
                 "max_workers": 10,
                 "default_num_gpus": 1,
@@ -126,7 +132,7 @@ class BioEngineWorker:
         admin_users: Optional[List[str]] = None,
         cache_dir: str = "/tmp/bioengine",
         data_dir: str = "/data",
-        startup_applications: Optional[List[Union[str, Tuple[str, str]]]] = None,
+        startup_applications: Optional[List[dict]] = None,
         monitoring_interval_seconds: int = 10,
         # Hypha server connection configuration
         server_url: str = "https://hypha.aicell.io",
@@ -154,10 +160,12 @@ class BioEngineWorker:
         The initialization process:
         1. Validates and normalizes configuration parameters
         2. Sets up secure logging infrastructure with optional file output
-        3. Attempts Hypha server authentication (interactive login if needed)
+        3. Performs interactive login if no token provided (for token acquisition only)
         4. Initializes RayCluster with environment-specific configuration
         5. Prepares AppsManager and DatasetsManager for later initialization
         6. Configures monitoring and health check systems
+
+        Note: Server connection and service registration occurs later during start().
 
         Args:
             mode: Ray cluster deployment mode determining the operational environment:
@@ -170,8 +178,10 @@ class BioEngineWorker:
                       Must be accessible and have sufficient space for Ray operations.
             data_dir: Root directory path for dataset storage and access. Should be mounted
                      storage accessible across worker nodes in distributed deployments.
-            startup_applications: List of applications to deploy automatically during worker
-                                 startup. Can be artifact IDs or (artifact_id, app_id) tuples.
+            startup_applications: List of application configuration dictionaries to deploy
+                                 automatically during worker startup. Each dictionary should contain
+                                 deployment parameters including 'artifact_id' and optionally
+                                 resource requirements like 'num_gpus', 'num_cpus', etc.
             monitoring_interval_seconds: Interval in seconds for status monitoring, health
                                        checks, and cluster state updates.
             server_url: URL of the Hypha server for service registration and remote access.
@@ -193,14 +203,13 @@ class BioEngineWorker:
 
         Raises:
             ValueError: If configuration parameters are invalid or incompatible
-            ConnectionError: If unable to authenticate with Hypha server
             PermissionError: If insufficient permissions for cache/data directories
             Exception: If Ray cluster initialization fails
 
         Note:
             The worker is not ready for use until `start()` is called, which completes
             the initialization process by starting the Ray cluster and registering with
-            the Hypha server.
+            the Hypha server. Server connection errors will occur during start(), not init.
         """
         # Store configuration parameters
         self.admin_users = admin_users or []

@@ -5,22 +5,19 @@ This configuration applies to all test modules in the tests/ directory.
 Provides common fixtures for environment setup, authentication, and Hypha client management.
 """
 
-import asyncio
 import os
-import time
+import tempfile
 from pathlib import Path
+import asyncio
 
 import pytest
 import pytest_asyncio
-import shutil
 from dotenv import load_dotenv
 from hypha_rpc import connect_to_server
 from hypha_rpc.rpc import RemoteService
 
 # Load environment variables from .env file
 load_dotenv()
-
-
 
 
 @pytest.fixture(scope="session")
@@ -80,27 +77,24 @@ def hypha_token() -> str:
     return token
 
 
-@pytest.fixture(scope="function")
-def cache_dir():
+@pytest.fixture(scope="session")
+def cache_dir() -> Path:
     """
-    Create and return a function-scoped test cache directory.
+    Create and return a test cache directory.
 
-    Creates a unique cache directory for each test function to ensure
-    isolation and prevent interference between tests.
+    Creates a unique cache directory for each test session to avoid conflicts
+    and ensure test isolation. The directory is cleaned up after the session ends.
 
     Returns:
-        Path to test cache directory with timestamp for uniqueness
+        Path to the test cache directory
     """
-    cache_dir = Path("/tmp/bioengine_test") / f"function_{int(time.time())}"
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="bioengine_worker_cache_"
+    ) as temp_cache_dir:
+        cache_dir = Path(temp_cache_dir)
+        yield cache_dir
 
-    yield cache_dir
-
-    # Ensure cache directory is removed after test function completes
-    try:
-        shutil.rmtree(str(cache_dir))
-    except Exception as e:
-        print(f"⚠️  Warning: Could not remove cache directory: {e}")
+    # Cleanup is handled automatically by TemporaryDirectory context manager
 
 
 @pytest.fixture(scope="session")
@@ -120,7 +114,7 @@ def data_dir(workspace_folder: Path) -> Path:
 
 
 @pytest_asyncio.fixture(scope="function")
-async def hypha_client(hypha_token: str):
+async def hypha_client(hypha_token: str) -> RemoteService:
     """
     Create a Hypha client for service interaction testing.
 
@@ -140,7 +134,6 @@ async def hypha_client(hypha_token: str):
         Each test gets its own client instance to avoid connection
         conflicts and ensure proper cleanup between tests.
     """
-    client: RemoteService
     client = await connect_to_server(
         {
             "server_url": "https://hypha.aicell.io",

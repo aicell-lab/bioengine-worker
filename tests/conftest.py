@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+import shutil
 from dotenv import load_dotenv
 from hypha_rpc import connect_to_server
 from hypha_rpc.rpc import RemoteService
@@ -20,12 +21,6 @@ from hypha_rpc.rpc import RemoteService
 load_dotenv()
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for the test session."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
 
 
 @pytest.fixture(scope="session")
@@ -36,7 +31,12 @@ def workspace_folder() -> Path:
     Returns:
         Path to the workspace folder for test operations
     """
-    return Path(__file__).resolve().parent.parent
+    folder = Path(__file__).resolve().parent.parent
+
+    # Set the local artifact path for BioEngine Worker tests
+    os.environ["BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"] = str(folder / "tests")
+
+    return folder
 
 
 @pytest.fixture(scope="session")
@@ -80,21 +80,27 @@ def hypha_token() -> str:
     return token
 
 
-@pytest.fixture(scope="session")
-def cache_dir() -> Path:
+@pytest.fixture(scope="function")
+def cache_dir():
     """
-    Create and return a session-wide test cache directory.
+    Create and return a function-scoped test cache directory.
 
-    Creates a unique cache directory for the entire test session to be
-    shared across all tests, improving performance while maintaining
-    isolation from other test sessions.
+    Creates a unique cache directory for each test function to ensure
+    isolation and prevent interference between tests.
 
     Returns:
         Path to test cache directory with timestamp for uniqueness
     """
-    cache_dir = Path("/tmp/bioengine_test") / f"session_{int(time.time())}"
+    cache_dir = Path("/tmp/bioengine_test") / f"function_{int(time.time())}"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir
+
+    yield cache_dir
+
+    # Ensure cache directory is removed after test function completes
+    try:
+        shutil.rmtree(str(cache_dir))
+    except Exception as e:
+        print(f"⚠️  Warning: Could not remove cache directory: {e}")
 
 
 @pytest.fixture(scope="session")
@@ -113,7 +119,6 @@ def data_dir(workspace_folder: Path) -> Path:
     return data_dir
 
 
-# TODO: Change to session scope
 @pytest_asyncio.fixture(scope="function")
 async def hypha_client(hypha_token: str):
     """
@@ -142,15 +147,13 @@ async def hypha_client(hypha_token: str):
             "token": hypha_token,
         }
     )
+    yield client
 
     try:
-        yield client
-    finally:
-        try:
-            await client.disconnect()
-        except Exception as e:
-            # Log disconnect errors but don't fail tests
-            print(f"Warning: Hypha client disconnect failed: {e}")
+        await client.disconnect()
+    except Exception as e:
+        # Log disconnect errors but don't fail tests
+        print(f"⚠️  Warning: Hypha client disconnect failed: {e}")
 
 
 @pytest.fixture(scope="function")

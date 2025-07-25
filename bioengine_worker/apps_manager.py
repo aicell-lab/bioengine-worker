@@ -1097,7 +1097,7 @@ class AppsManager:
                 )
             )
             if replica_ids:
-                worker_client_id = self._server.config.client_id
+                worker_client_id = self.server.config.client_id
                 service_ids = [
                     {
                         "websocket_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}",

@@ -565,7 +565,7 @@ class RtcProxyDeployment:
         )
 
     @schema_method
-    async def _get_load(self) -> float:
+    async def _get_load(self, context) -> float:
         """
         **HYPHA SERVICE REGISTRATION - SERVICE LOAD MONITORING**
 
@@ -594,7 +594,7 @@ class RtcProxyDeployment:
         return min(1.0, max(0.0, load))  # Ensure load is between 0 and 1
 
     @schema_method
-    async def _get_num_pc(self) -> int:
+    async def _get_num_pcs(self, context) -> int:
         """
         **HYPHA SERVICE REGISTRATION - WEBRTC CONNECTION COUNT MONITORING**
 
@@ -688,7 +688,7 @@ class RtcProxyDeployment:
             service_functions["get_load"] = self._get_load
 
             # Add peer connection count function - for WebRTC connection monitoring
-            service_functions["get_num_pc"] = self._get_num_pc
+            service_functions["get_num_pcs"] = self._get_num_pcs
 
             # Register the main service
             service_info = await self.server.register_service(

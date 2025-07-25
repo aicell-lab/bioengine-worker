@@ -270,21 +270,23 @@ class ModelRunner:
         )
 
     async def test_deployment(
-        self, model_id: str = "charismatic-whale"
+        self, model_id: str = "charismatic-whale", test_skip_cache: bool = False
     ) -> Dict[str, Union[bool, str, float, Dict]]:
         """Comprehensive test of all public endpoints using a known working model (that should pass all checks)."""
+        total_tests = 6 if test_skip_cache else 5
+
         print(
             f"🧪 [{self.replica_id}] Starting comprehensive deployment test with model: '{model_id}'"
         )
         # Test 1: Get model RDF for validation
-        print(f"🔍 [{self.replica_id}] Test 1/6: Getting model RDF...")
+        print(f"🔍 [{self.replica_id}] Test 1/{total_tests}: Getting model RDF...")
         rdf_start = time.time()
         model_rdf = await self.get_model_rdf(model_id=model_id)
         rdf_duration = time.time() - rdf_start
         print(f"✅ [{self.replica_id}] RDF retrieval successful ({rdf_duration:.2f}s)")
 
         # Test 2: Validate the RDF
-        print(f"🔬 [{self.replica_id}] Test 2/6: Validating RDF...")
+        print(f"🔬 [{self.replica_id}] Test 2/{total_tests}: Validating RDF...")
         val_start = time.time()
         validation_result = await self.validate(rdf_dict=model_rdf)
         val_duration = time.time() - val_start
@@ -293,7 +295,9 @@ class ModelRunner:
         )
 
         # Test 3: Test the model (published)
-        print(f"🧩 [{self.replica_id}] Test 3/6: Testing published model...")
+        print(
+            f"🧩 [{self.replica_id}] Test 3/{total_tests}: Testing published model..."
+        )
         test1_start = time.time()
         test_result1 = await self.test(model_id=model_id, published=True)
         test1_duration = time.time() - test1_start
@@ -302,7 +306,9 @@ class ModelRunner:
         )
 
         # Test 4: Test the model (unpublished)
-        print(f"🧩 [{self.replica_id}] Test 4/6: Testing unpublished model...")
+        print(
+            f"🧩 [{self.replica_id}] Test 4/{total_tests}: Testing unpublished model..."
+        )
         test2_start = time.time()
         test_result2 = await self.test(model_id=model_id, published=False)
         test2_duration = time.time() - test2_start
@@ -311,18 +317,24 @@ class ModelRunner:
         )
 
         # Test 5: Test with skip_cache=True
-        print(f"🔄 [{self.replica_id}] Test 5/6: Testing with cache skip...")
-        test3_start = time.time()
-        test_result3 = await self.test(
-            model_id=model_id, published=False, skip_cache=True
-        )
-        test3_duration = time.time() - test3_start
-        print(
-            f"✅ [{self.replica_id}] Skip cache test completed ({test3_duration:.2f}s)"
-        )
+        if test_skip_cache:
+            print(
+                f"🔄 [{self.replica_id}] Test 5/{total_tests}: Testing with cache skip..."
+            )
+            test3_start = time.time()
+            test_result3 = await self.test(
+                model_id=model_id, published=False, skip_cache=True
+            )
+            test3_duration = time.time() - test3_start
+            print(
+                f"✅ [{self.replica_id}] Skip cache test completed ({test3_duration:.2f}s)"
+            )
 
         # Test 6: Test inference
-        print(f"🤖 [{self.replica_id}] Test 6/6: Testing inference...")
+        current_test = 6 if test_skip_cache else 5
+        print(
+            f"🤖 [{self.replica_id}] Test {current_test}/{total_tests}: Testing inference..."
+        )
         inf_start = time.time()
 
         # Get the model package to load test image
@@ -1071,7 +1083,7 @@ if __name__ == "__main__":
         for model_id in other_model_ids:
             asyncio.run(model_runner.get_model_rdf(model_id=model_id))
 
-        asyncio.run(model_runner.test_deployment())
+        asyncio.run(model_runner.test_deployment(test_skip_cache=True))
     finally:
         # Restore original function
         serve.get_replica_context = original_get_replica_context

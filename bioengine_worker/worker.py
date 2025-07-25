@@ -221,7 +221,7 @@ class BioEngineWorker:
         self._server = None
         self.is_ready = asyncio.Event()
         self._shutdown_event = asyncio.Event()
-        self._shutdown_event.clear()
+        self._shutdown_event.set()
         self._monitoring_task = None
         self.graceful_shutdown_timeout = graceful_shutdown_timeout
         self.full_service_id = None

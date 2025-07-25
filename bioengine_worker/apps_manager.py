@@ -325,14 +325,14 @@ class AppsManager:
                 app.metadata["available_methods"]
             )
 
-            # Mark the application as deployed
-            self._deployed_applications[application_id]["is_deployed"].set()
-
             # Track the application in the internal state
             self.logger.info(
                 f"Successfully completed deployment of application '{application_id}' from "
                 f"artifact '{artifact_id}', version '{version or 'latest'}'."
             )
+
+            # Mark the application as deployed
+            self._deployed_applications[application_id]["is_deployed"].set()
 
             # Keep the deployment task running until cancelled
             event = asyncio.Event()
@@ -819,7 +819,7 @@ class AppsManager:
                     timeout = 10
                     try:
                         await asyncio.wait_for(
-                            application_info["deployment_task"], timeout=timeout
+                            application_info["is_deployed"], timeout=timeout
                         )
                     except asyncio.TimeoutError:
                         self.logger.warning(
@@ -983,12 +983,12 @@ class AppsManager:
             completing. Service registration is updated after cleanup regardless
             of individual task failures.
         """
-        self._check_initialized()
-
         # Check if any deployments exist
         if not self._deployed_applications:
             self.logger.info("No applications are currently deployed.")
             return
+
+        self._check_initialized()
 
         # Check user permissions
         check_permissions(

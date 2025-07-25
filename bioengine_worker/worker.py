@@ -140,6 +140,8 @@ class BioEngineWorker:
         # Logger configuration
         log_file: Optional[str] = None,
         debug: bool = False,
+        # Graceful shutdown timeout
+        graceful_shutdown_timeout: int = 60,
     ):
         """
         Initialize BioEngine worker with enterprise-grade configuration and component managers.
@@ -187,6 +189,7 @@ class BioEngineWorker:
             log_file: File path for structured logging output. Auto-generated timestamp-based
                      filename if not specified.
             debug: Enable debug-level logging for detailed troubleshooting and development.
+            graceful_shutdown_timeout: Timeout in seconds for graceful shutdown operations.
 
         Raises:
             ValueError: If configuration parameters are invalid or incompatible
@@ -218,7 +221,9 @@ class BioEngineWorker:
         self._server = None
         self.is_ready = asyncio.Event()
         self._shutdown_event = asyncio.Event()
+        self._shutdown_event.clear()
         self._monitoring_task = None
+        self.graceful_shutdown_timeout = graceful_shutdown_timeout
         self.full_service_id = None
         self._admin_context = None
 
@@ -261,8 +266,10 @@ class BioEngineWorker:
             self._set_parameter(
                 ray_cluster_config, "ray_temp_dir", self.cache_dir / "ray"
             )
-            force_clean_up = not ray_cluster_config.pop("skip_cleanup", False)
-            self._set_parameter(ray_cluster_config, "force_clean_up", force_clean_up)
+            force_ray_clean_up = not ray_cluster_config.pop("skip_ray_cleanup", False)
+            self._set_parameter(
+                ray_cluster_config, "force_clean_up", force_ray_clean_up
+            )
             self._set_parameter(ray_cluster_config, "log_file", log_file)
             self._set_parameter(ray_cluster_config, "debug", debug)
 
@@ -289,6 +296,13 @@ class BioEngineWorker:
         except Exception as e:
             self.logger.error(f"Failed to initialize BioEngineWorker: {e}")
             raise
+
+    def __del__(self):
+        if self.start_time:
+            self.logger.warning(
+                "BioEngineWorker is being garbage collected with partially/completely initialized components. "
+                "Consider calling stop() explicitly for proper cleanup."
+            )
 
     def _set_parameter(
         self,
@@ -443,6 +457,88 @@ class BioEngineWorker:
             f"Manage BioEngine worker at: {self.dashboard_url}/worker?service_id={self.full_service_id}"
         )
 
+    async def _cleanup(self) -> None:
+        """
+        Perform comprehensive cleanup of all BioEngine worker components.
+
+        This method handles cleanup in a robust manner, ensuring that each component
+        is properly cleaned up regardless of the current state of the worker. It
+        handles cases where components may not be initialized, may have failed
+        during startup, or may already be in the process of shutting down.
+
+        The cleanup process:
+        1. Unregister service from Hypha server (if registered)
+        2. Clean up dataset manager (if initialized)
+        3. Clean up apps manager (if initialized)
+        4. Stop Ray cluster (if initialized and ready)
+        5. Disconnect from Hypha server (if connected)
+        6. Reset worker state variables
+
+        All cleanup operations are wrapped in try-catch blocks to ensure
+        that failure in one component doesn't prevent cleanup of others.
+        """
+        self.logger.info("Starting comprehensive cleanup of BioEngine worker...")
+        cleanup_start_time = time.time()
+
+        # Ensure the is_ready event is reset to prevent new operations
+        if hasattr(self, "is_ready"):
+            self.is_ready.clear()
+
+        # Clean up dataset manager
+        if hasattr(self, "dataset_manager") and self.dataset_manager:
+            try:
+                admin_context = getattr(self, "_admin_context", None)
+                await self.dataset_manager.cleanup(admin_context)
+            except Exception as e:
+                self.logger.error(f"Error cleaning up dataset manager: {e}")
+
+        # Clean up apps manager
+        if hasattr(self, "apps_manager") and self.apps_manager:
+            try:
+                admin_context = getattr(self, "_admin_context", None)
+                await self.apps_manager.cleanup(admin_context)
+            except Exception as e:
+                self.logger.error(f"Error cleaning up apps manager: {e}")
+
+        # Stop Ray cluster
+        if hasattr(self, "ray_cluster") and self.ray_cluster:
+            try:
+                # Check if Ray cluster is ready before attempting to stop
+                if (
+                    hasattr(self.ray_cluster, "is_ready")
+                    and self.ray_cluster.is_ready.is_set()
+                ):
+                    await self.ray_cluster.stop()
+            except Exception as e:
+                self.logger.error(f"Error stopping Ray cluster: {e}")
+
+        # Disconnect from the Hypha server
+        if hasattr(self, "_server") and self._server:
+            try:
+                self.logger.info("Disconnecting from Hypha server...")
+                await self._server.disconnect()
+            except Exception as e:
+                self.logger.error(f"Error disconnecting from Hypha server: {e}")
+
+        # Reset worker state variables
+        try:
+            self.start_time = None
+            self._monitoring_task = None
+            if hasattr(self, "full_service_id"):
+                self.full_service_id = None
+            if hasattr(self, "_admin_context"):
+                self._admin_context = None
+        except Exception as e:
+            self.logger.error(f"Error resetting worker state: {e}")
+
+        duration = time.time() - cleanup_start_time
+        self.logger.info(
+            f"BioEngine worker cleanup completed in {duration:.2f} seconds."
+        )
+
+        # Signal that the worker has completed cleanup
+        self._shutdown_event.set()
+
     async def _create_monitoring_task(self, max_consecutive_errors: int = 5) -> None:
         """Continuously monitor cluster status and update worker nodes history.
 
@@ -519,60 +615,50 @@ class BioEngineWorker:
                         self.is_ready.clear()
 
         except asyncio.CancelledError:
-            self.logger.info("Monitoring task cancelled. Stopping BioEngine worker...")
+            self.logger.info("Monitoring task cancelled.")
         except Exception as e:
             self.logger.error(f"Unexpected error in monitoring task: {e}")
             raise
         finally:
-            # Ensure the is_ready event is reset
-            self.is_ready.clear()
+            # Perform comprehensive cleanup of all components
+            await self._cleanup()
 
-            # Remove the service from Hypha server
-            self.start_time = None
+    async def _stop(self, blocking: bool = False) -> None:
+        # Check if the worker is running
+        if not self.start_time:
+            self.logger.info("BioEngine worker is not running. Nothing to stop.")
+            return
+
+        msg = "Sent shutdown signal to BioEngine worker."
+
+        if self._monitoring_task and not self._monitoring_task.done():
+            # If monitoring task is running, cancel it and wait for graceful shutdown
+            self._monitoring_task.cancel()
+        else:
+            # Fallback cleanup if monitoring task is not running
+            asyncio.create_task(self._cleanup())
+
+        if blocking:
+            msg += " Waiting for graceful shutdown to complete..."
+            self.logger.info(msg)
             try:
-                await self._server.unregister_service(self.full_service_id)
-                self.logger.info(
-                    f"BioEngine worker service '{self.full_service_id}' removed."
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(), timeout=self.graceful_shutdown_timeout
                 )
-            except Exception:
-                self.logger.error(
-                    f"Failed to remove BioEngine worker service '{self.full_service_id}'"
+            except TimeoutError:
+                self.logger.warning(
+                    f"Graceful shutdown timed out after {self.graceful_shutdown_timeout} seconds. "
+                    "Force exiting without cleanup."
                 )
+                # Force exit immediately
+                import os
 
-            # Clean up all components
-            try:
-                await self.dataset_manager.cleanup(self._admin_context)
-            except Exception:
-                # Do not raise an exception here to allow other cleanup tasks to run
-                pass
+                os._exit(1)
+        else:
+            msg += " Shutdown will happen in the background."
+            self.logger.info(msg)
 
-            try:
-                await self.apps_manager.cleanup(self._admin_context)
-            except Exception:
-                # Do not raise an exception here to allow other cleanup tasks to run
-                pass
-
-            try:
-                await self.ray_cluster.stop()
-            except Exception:
-                # Do not raise an exception here to allow other cleanup tasks to run
-                pass
-
-            # Disconnect from the Hypha server
-            try:
-                self.logger.info("Disconnecting from Hypha server...")
-                await self._server.disconnect()
-            except Exception as e:
-                self.logger.error(f"Error closing Hypha server connection: {e}")
-
-            # Clear the monitoring task reference
-            self._monitoring_task = None
-            self.logger.info("BioEngine worker shutdown complete.")
-
-            # Signal waiting tasks that shutdown is complete
-            self._shutdown_event.set()
-
-    async def start(self, block: bool = True) -> str:
+    async def start(self, blocking: bool = True) -> str:
         """
         Start the BioEngine worker and all component services.
 
@@ -582,12 +668,16 @@ class BioEngineWorker:
         deployments.
 
         Returns:
-            str: Service ID assigned after successful registration with Hypha
+            str: Service ID assigned after successful registration with Hypha server.
 
         Raises:
             RuntimeError: If Ray is already initialized when connecting to existing cluster
             Exception: If startup of any component fails
         """
+        # Reset the shutdown event to allow starting the worker
+        self._shutdown_event.clear()
+
+        # Set the start time for monitoring and uptime tracking
         self.start_time = time.time()
 
         # Start the Ray cluster
@@ -614,12 +704,17 @@ class BioEngineWorker:
             name="BioEngineWorker Monitoring Task",
         )
 
-        if block is True:
+        if blocking is True:
             # Keep the worker running until a shutdown signal is received
-            self._shutdown_event.clear()
+            self.logger.info("Keeping BioEngine worker running...")
+
+            # Wait for the monitoring task to complete (which happens during shutdown)
             await self._shutdown_event.wait()
 
-            await asyncio.sleep(0.1)  # Allow time for cleanup tasks to complete
+            # Allow time for cleanup tasks to complete
+            await asyncio.sleep(0.1)
+
+        return self.full_service_id
 
     async def notify(self, delay_s: int = 0) -> None:
         """
@@ -640,7 +735,9 @@ class BioEngineWorker:
             self._last_monitoring = time.time() - self._last_monitoring + delay_s
 
     @schema_method
-    async def stop(self, context: Dict[str, Any] = None) -> None:
+    async def stop(
+        self, blocking: bool = False, context: Dict[str, Any] = None
+    ) -> None:
         """
         Gracefully shutdown the BioEngine worker and cleanup all resources.
 
@@ -659,6 +756,7 @@ class BioEngineWorker:
 
         Args:
             timeout: Maximum time in seconds to wait for each cleanup operation
+            blocking: If True, waits for all cleanup operations to complete before returning
             context: Request context containing user information for permission checking
 
         Raises:
@@ -672,14 +770,7 @@ class BioEngineWorker:
             resource_name="shutdown the BioEngine worker",
         )
 
-        # Check if the worker is ready
-        if not self.is_ready.is_set() or not self._monitoring_task:
-            self.logger.info("BioEngine worker is not running. Nothing to stop.")
-            return
-
-        # Cancel and wait for monitoring task to finish
-        self._monitoring_task.cancel()
-        self.logger.info("Sent shutdown signal to BioEngine worker.")
+        await self._stop(blocking=blocking)
 
     @schema_method
     async def get_status(self, context: Optional[Dict[str, Any]] = None) -> dict:

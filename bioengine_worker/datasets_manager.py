@@ -569,6 +569,10 @@ class DatasetsManager:
             PermissionError: If user lacks admin permissions
             Exception: If cleanup operations fail
         """
+        if not self.loaded_datasets:
+            self.logger.info("No datasets are currently loaded.")
+            return
+
         self._check_initialized()
 
         # Check admin permissions for cleanup operations
@@ -581,15 +585,9 @@ class DatasetsManager:
         user_id = context["user"]["id"] if context and "user" in context else "unknown"
 
         try:
-            if not self.loaded_datasets:
-                self.logger.info("No datasets are currently loaded.")
-                return "No datasets to close."
-
             self.logger.info(f"User '{user_id}' is starting cleanup of all datasets...")
             for dataset_id in list(self.loaded_datasets.keys()):
                 await self.close_dataset(dataset_id, context)
-
-            return "All datasets closed successfully."
         except Exception as e:
             self.logger.error(f"Error closing all datasets: {e}")
             raise e

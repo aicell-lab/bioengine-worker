@@ -723,7 +723,7 @@ class RayCluster:
         if re.search(r"Stopped all \d+ Ray processes\.", output):
             self.logger.info("All Ray processes stopped successfully")
         elif "Did not find any active Ray processes." in output:
-            self.logger.info("No active Ray processes found")
+            self.logger.info("Did not find any active Ray processes.")
         else:
             message = re.search(
                 r"Stopped only (\d+) out of (\d+) Ray processes within the grace period (\d+) seconds\.",

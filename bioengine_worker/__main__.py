@@ -163,6 +163,13 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         help="Enable debug-level logging for detailed troubleshooting and development. "
         "Increases log verbosity significantly.",
     )
+    core_group.add_argument(
+        "--graceful_shutdown_timeout",
+        type=int,
+        default=60,
+        metavar="SECONDS",
+        help="Timeout in seconds for graceful shutdown operations. " "Default: 60",
+    )
 
     # Hypha server connection options
     hypha_group = parser.add_argument_group(
@@ -307,7 +314,7 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "Larger cache improves environment setup time. Default: 30",
     )
     ray_cluster_group.add_argument(
-        "--skip_cleanup",
+        "--skip_ray_cleanup",
         action="store_true",
         default=False,
         help="Skip cleanup of previous Ray cluster processes and data. "
@@ -545,39 +552,6 @@ async def main(group_configs):
         log_file = None
     logger = create_logger("__main__", log_file=log_file)
 
-    # Setup signal-aware shutdown
-    is_shutting_down = False
-    bioengine_worker = None
-
-    def _handle_shutdown_signal(sig_name: Literal["SIGINT", "SIGTERM"]):
-        """
-        Handle shutdown signals for graceful termination.
-
-        Args:
-            sig_name: The name of the signal received, either "SIGINT" for user interrupt (Ctrl+C) or "SIGTERM" for termination request.
-        """
-        nonlocal is_shutting_down, bioengine_worker
-        if is_shutting_down and sig_name == "SIGINT":
-            logger.info("Received second SIGINT, stopping immediately...")
-            sys.exit(1)
-
-        logger.info(
-            f"Received {sig_name}, starting graceful shutdown. Press Ctrl+C again to force exit."
-        )
-        is_shutting_down = True
-
-        if bioengine_worker:
-            # TODO: when running in Apptainer, the container’s overlay filesystem is torn down before the graceful shutdown completes -> results in OSError [Errno 107] because executables like Ray or scancel are not found
-            asyncio.create_task(
-                bioengine_worker.cleanup(context=bioengine_worker._admin_context),
-                name="BioEngineWorker.cleanup",
-            )
-
-    # Register signal handlers
-    loop = asyncio.get_running_loop()
-    loop.add_signal_handler(signal.SIGINT, _handle_shutdown_signal, "SIGINT")
-    loop.add_signal_handler(signal.SIGTERM, _handle_shutdown_signal, "SIGTERM")
-
     try:
         # Create BioEngine worker instance
         bioengine_worker = BioEngineWorker(
@@ -591,11 +565,14 @@ async def main(group_configs):
         )
 
         # Start the worker and wait until shutdown is triggered
-        await bioengine_worker.start(block=True)
+        await bioengine_worker.start(blocking=True)
 
     except Exception as e:
         logger.error(f"Exception in main: {str(e)}")
         raise
+
+    finally:
+        await bioengine_worker._stop(blocking=True)
 
 
 if __name__ == "__main__":
@@ -614,9 +591,6 @@ if __name__ == "__main__":
         # Start the main worker process
         asyncio.run(main(group_configs))
 
-    except KeyboardInterrupt:
-        print("\nShutdown interrupted by user")
-        sys.exit(0)
     except Exception as e:
         print(f"Failed to start BioEngine worker: {e}")
         sys.exit(1)

@@ -18,6 +18,7 @@ from bioengine_worker import __version__
 from bioengine_worker.apps_manager import AppsManager
 from bioengine_worker.datasets_manager import DatasetsManager
 from bioengine_worker.ray_cluster import RayCluster
+from bioengine_worker.code_executer import CodeExecuter
 from bioengine_worker.utils import check_permissions, create_context, create_logger
 
 
@@ -314,6 +315,12 @@ class BioEngineWorker:
                 debug=debug,
             )
 
+            self.code_executor = CodeExecuter(
+                notify_function=self.notify,
+                log_file=log_file,
+                debug=debug,
+            )
+
         except Exception as e:
             self.logger.error(f"Failed to initialize BioEngineWorker: {e}")
             raise
@@ -461,7 +468,7 @@ class BioEngineWorker:
                 "load_dataset": self.dataset_manager.load_dataset,
                 "close_dataset": self.dataset_manager.close_dataset,
                 "cleanup_datasets": self.dataset_manager.cleanup,
-                "execute_python_code": self.execute_python_code,
+                "execute_python_code": self.code_executor.execute_python_code,
                 "create_artifact": self.apps_manager.create_artifact,
                 "delete_artifact": self.apps_manager.delete_artifact,
                 "deploy_application": self.apps_manager.deploy_application,
@@ -721,6 +728,7 @@ class BioEngineWorker:
             await self.dataset_manager.initialize(
                 server=self._server, admin_users=self.admin_users
             )
+            await self.code_executor.initialize(admin_users=self.admin_users)
 
             # Register the BioEngine worker service interface
             await self._register_bioengine_worker_service()
@@ -862,181 +870,6 @@ class BioEngineWorker:
         }
 
         return status
-
-    @schema_method(arbitrary_types_allowed=True)
-    async def execute_python_code(
-        self,
-        code: str = None,
-        function_name: str = "analyze",
-        func_bytes: bytes = None,
-        mode: Literal["source", "pickle"] = "source",
-        remote_options: Dict[str, Any] = None,
-        args: List[Any] = None,
-        kwargs: Dict[str, Any] = None,
-        write_stdout: Optional[callable] = None,
-        write_stderr: Optional[callable] = None,
-        context: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """
-        Execute Python code in a distributed Ray task with comprehensive resource management.
-
-        Provides secure execution of user-provided Python code in isolated Ray tasks with
-        configurable resource allocation, output streaming, and error handling. Supports
-        both source code execution and pre-serialized function execution for maximum
-        flexibility in distributed computing scenarios.
-
-        The execution process:
-        1. Validates admin permissions for code execution
-        2. Deserializes function (from source or pickle) with error handling
-        3. Creates isolated Ray task with specified resource requirements
-        4. Executes function with stdout/stderr capture and timeout protection
-        5. Returns results with comprehensive output and error information
-        6. Streams output to client if callback functions provided
-
-        Security Features:
-        - Admin-only access control with permission validation
-        - Isolated execution environment in Ray tasks
-        - Resource limits through Ray remote options
-        - Timeout protection to prevent infinite execution
-        - Comprehensive error handling and logging
-
-        Args:
-            code: Python source code string containing the function to execute.
-                 Must define a function with the specified function_name.
-            function_name: Name of the function to execute from the source code.
-                          Defaults to "analyze" for conventional usage.
-            func_bytes: Pre-serialized function bytes using cloudpickle.
-                       Used when mode='pickle' for optimized execution.
-            mode: Execution mode determining input format:
-                 - 'source': Execute function from source code string
-                 - 'pickle': Execute pre-serialized function from func_bytes
-            remote_options: Ray remote decorator options for resource allocation:
-                          - num_cpus: Number of CPU cores to allocate
-                          - num_gpus: Number of GPU devices to allocate
-                          - memory: Memory allocation in bytes
-                          - runtime_env: Python environment configuration
-            args: Positional arguments to pass to the target function
-            kwargs: Keyword arguments to pass to the target function
-            write_stdout: Optional async callback function for streaming stdout output.
-                         Called with each line of stdout as it's generated.
-            write_stderr: Optional async callback function for streaming stderr output.
-                         Called with each line of stderr as it's generated.
-            context: Request context containing user information for permission checking
-
-        Returns:
-            Dict containing comprehensive execution results:
-                - result: Function return value (if execution successful)
-                - error: Error message string (if execution failed)
-                - traceback: Full Python traceback (if execution failed)
-                - stdout: Captured stdout output as string
-                - stderr: Captured stderr output as string
-                - available_functions: List of functions found in source (if function not found)
-
-        Raises:
-            PermissionError: If user is not authorized to execute Python code
-            ValueError: If both code and func_bytes are None, or invalid mode specified
-            RuntimeError: If Ray cluster is not initialized or task execution fails
-            TimeoutError: If function execution exceeds 600 second timeout
-            Exception: If function deserialization or execution encounters critical errors
-
-        Example:
-            ```python
-            # Execute source code with resource allocation
-            result = await worker.execute_python_code(
-                code=\"\"\"
-                def analyze(data):
-                    return {"mean": sum(data) / len(data)}
-                \"\"\",
-                args=[[1, 2, 3, 4, 5]],
-                remote_options={"num_cpus": 2, "memory": 1000000000}
-            )
-            print(result["result"])  # {"mean": 3.0}
-            ```
-
-        Note:
-            This method requires admin privileges as it allows arbitrary code execution
-            in the distributed Ray environment. The execution is isolated but should
-            only be used by trusted administrators.
-        """
-        check_permissions(
-            context=context,
-            authorized_users=self.admin_users,
-            resource_name=f"execute Python code in a Ray task",
-        )
-
-        self.logger.info("Executing Python code in Ray task...")
-
-        args = args or []
-        kwargs = kwargs or {}
-        # The @ray.remote decorator requires arguments when using parentheses
-        remote_options = remote_options or {"num_cpus": 1}
-
-        # Deserialize function before Ray execution
-        if mode == "pickle":
-            try:
-                user_func = cloudpickle.loads(func_bytes)
-            except Exception as e:
-                return {
-                    "error": f"Failed to unpickle function: {e}",
-                    "traceback": traceback.format_exc(),
-                }
-        else:
-            exec_namespace = {}
-            exec(textwrap.dedent(code), exec_namespace)
-            user_func = exec_namespace.get(function_name)
-            if not user_func:
-                return {
-                    "error": f"Function '{function_name}' not found in source code",
-                    "available_functions": [
-                        k for k, v in exec_namespace.items() if inspect.isfunction(v)
-                    ],
-                }
-
-        # The Ray task itself (pure, pickle-safe)
-        @ray.remote(**remote_options)
-        def ray_task(func, args, kwargs):
-            import asyncio
-            import contextlib
-            import io
-            import traceback
-
-            stdout_buffer = io.StringIO()
-            stderr_buffer = io.StringIO()
-
-            with (
-                contextlib.redirect_stdout(stdout_buffer),
-                contextlib.redirect_stderr(stderr_buffer),
-            ):
-                try:
-                    result = func(*args, **kwargs)
-                    if asyncio.iscoroutine(result):
-                        result = asyncio.run(result)
-                    return {
-                        "result": result,
-                        "stdout": stdout_buffer.getvalue(),
-                        "stderr": stderr_buffer.getvalue(),
-                    }
-                except Exception as e:
-                    return {
-                        "error": str(e),
-                        "traceback": traceback.format_exc(),
-                        "stdout": stdout_buffer.getvalue(),
-                        "stderr": stderr_buffer.getvalue(),
-                    }
-
-        obj_ref = ray_task.remote(user_func, args, kwargs)
-        await self.notify()
-        result = await asyncio.wait_for(obj_ref, timeout=600)
-
-        # Stream output to client
-        if write_stdout and result.get("stdout"):
-            for line in result["stdout"].splitlines():
-                await write_stdout(line)
-        if write_stderr and result.get("stderr"):
-            for line in result["stderr"].splitlines():
-                await write_stderr(line)
-
-        return result
 
 
 if __name__ == "__main__":

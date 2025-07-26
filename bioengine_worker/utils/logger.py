@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Optional, Union
 
 stream_logging_format = "\033[36m%(asctime)s\033[0m - \033[32m%(name)s\033[0m - \033[1;33m%(levelname)s\033[0m - %(message)s"
 file_logging_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -7,7 +8,7 @@ date_format = "%Y-%m-%d %H:%M:%S"
 
 
 def create_logger(
-    name: str, level: int = logging.INFO, log_file: str = None
+    name: str, level: int = logging.INFO, log_file: Optional[Union[str, Path]] = None
 ) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(level)

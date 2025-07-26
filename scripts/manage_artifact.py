@@ -11,7 +11,7 @@ from bioengine_worker.utils import create_logger
 
 
 async def manage_artifact(
-    deployment_dir: str,
+    directory: str,
     server_url: str,
     workspace: str = None,
     token: str = None,
@@ -48,7 +48,7 @@ async def manage_artifact(
     logger.info("Connected to artifact manager")
 
     # Get the deployment manifest and content
-    with open(deployment_dir / "manifest.yaml", "r") as f:
+    with open(directory / "manifest.yaml", "r") as f:
         deployment_manifest = yaml.safe_load(f)
     logger.info("Deployment manifest loaded")
 
@@ -64,10 +64,10 @@ async def manage_artifact(
         raise ValueError(
             f"Invalid deployment id: '{artifact_id}'. Please use lowercase letters, numbers, and hyphens only."
         )
-    
+
     workspace = server.config.workspace
     artifact_id = artifact_id if "/" in artifact_id else f"{workspace}/{artifact_id}"
-    
+
     if delete is True:
         try:
             await artifact_manager.delete(artifact_id=artifact_id)
@@ -90,9 +90,13 @@ async def manage_artifact(
         try:
             await artifact_manager.read(collection_id)
         except Exception as e:
-            expected_error = f'KeyError: "Artifact with ID \'{collection_id}\' does not exist."'
+            expected_error = (
+                f"KeyError: \"Artifact with ID '{collection_id}' does not exist.\""
+            )
             if str(e).strip().endswith(expected_error):
-                logger.info(f"Collection '{collection_id}' does not exist. Creating it.")
+                logger.info(
+                    f"Collection '{collection_id}' does not exist. Creating it."
+                )
 
             collection_manifest = {
                 "name": "BioEngine Apps",
@@ -102,7 +106,7 @@ async def manage_artifact(
                 alias=collection_id,
                 type="collection",
                 manifest=collection_manifest,
-                config={"permissions": {"*": "r", "@": "r+"}}
+                config={"permissions": {"*": "r", "@": "r+"}},
             )
             logger.info(f"Bioengine Apps collection created with ID: {collection.id}")
 
@@ -117,30 +121,32 @@ async def manage_artifact(
         logger.info(f"Artifact created with ID: {artifact.id}")
 
     # Upload all files in the deployment directory
-    for file_path in deployment_dir.rglob("*"):
+    for file_path in directory.rglob("*"):
         if file_path.is_file():
-            relative_path = file_path.relative_to(deployment_dir)
-            
+            relative_path = file_path.relative_to(directory)
+
             # Get upload URL
-            upload_url = await artifact_manager.put_file(artifact.id, file_path=str(relative_path))
-            
+            upload_url = await artifact_manager.put_file(
+                artifact.id, file_path=str(relative_path)
+            )
+
             # Read file content and upload
             try:
                 # Try to read as text first
                 with open(file_path, "r", encoding="utf-8") as f:
                     file_content = f.read()
-                
+
                 # Upload as text
                 async with httpx.AsyncClient(timeout=30) as client:
                     response = await client.put(upload_url, data=file_content)
                     response.raise_for_status()
                     logger.info(f"Uploaded {relative_path} to artifact (text)")
-                    
+
             except UnicodeDecodeError:
                 # If text reading fails, read as binary
                 with open(file_path, "rb") as f:
                     file_content = f.read()
-                
+
                 # Upload as binary
                 async with httpx.AsyncClient(timeout=30) as client:
                     response = await client.put(upload_url, content=file_content)
@@ -161,7 +167,8 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--deployment_dir",
+        "-d",
+        "--directory",
         type=Path,
         required=True,
         help="Path to the deployment directory",
@@ -192,7 +199,7 @@ if __name__ == "__main__":
 
     asyncio.run(
         manage_artifact(
-            deployment_dir=args.deployment_dir,
+            directory=args.directory,
             server_url=args.server_url,
             workspace=args.workspace,
             token=args.token,

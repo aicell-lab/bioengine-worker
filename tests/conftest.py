@@ -1,122 +1,161 @@
-"""Common fixtures and mocks for BioEngine worker tests."""
+"""
+Global pytest configuration for BioEngine Worker tests.
+
+This configuration applies to all test modules in the tests/ directory.
+Provides common fixtures for environment setup, authentication, and Hypha client management.
+"""
 
 import os
-import sys
 import tempfile
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+import asyncio
+
 import pytest
-import yaml
-import numpy as np
-import logging
+import pytest_asyncio
+from dotenv import load_dotenv
+from hypha_rpc import connect_to_server
+from hypha_rpc.rpc import RemoteService
 
-# Add the project root directory to Python's path
-sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
-
-
-@pytest.fixture
-def mock_ray():
-    """Mock Ray module for testing."""
-    with patch('bioengine_worker.ray_cluster_manager.ray') as mock_ray:
-        # Mock ray.is_initialized() to return False by default
-        mock_ray.is_initialized.return_value = False
-        
-        # Mock ray.init()
-        mock_ray.init = MagicMock()
-        
-        # Mock ray.shutdown()
-        mock_ray.shutdown = MagicMock()
-        
-        # Mock ray.get_runtime_context()
-        mock_context = MagicMock()
-        mock_context.gcs_address = "127.0.0.1:6379"
-        mock_ray.get_runtime_context.return_value = mock_context
-        
-        # Mock ray.nodes() - Make sure IsSyncPoint is correctly set:
-        # Head node has IsSyncPoint=True, workers have IsSyncPoint=False
-        mock_ray.nodes.return_value = [
-            {"Alive": True, "NodeID": "head_node", "IsSyncPoint": True},  # Head node 
-            {"Alive": True, "NodeID": "worker_node1", "IsSyncPoint": False},  # Worker 1
-            {"Alive": True, "NodeID": "worker_node2", "IsSyncPoint": False},  # Worker 2
-        ]
-        
-        yield mock_ray
+# Load environment variables from .env file
+load_dotenv()
 
 
-@pytest.fixture
-def mock_subprocess():
-    """Mock subprocess module for testing."""
-    with patch('bioengine_worker.ray_cluster_manager.subprocess') as mock_subprocess:
-        # Mock successful command execution
-        mock_process = MagicMock()
-        mock_process.returncode = 0
-        mock_process.stdout = "Submitted batch job 12345"
-        mock_process.stderr = ""
-        
-        # Mock run method
-        mock_subprocess.run.return_value = mock_process
-        mock_subprocess.CalledProcessError = Exception
-        
-        yield mock_subprocess
-
-
-@pytest.fixture
-def temp_config_file():
-    """Create a temporary worker configuration file."""
-    # Create a temporary file path but don't open it yet
-    with tempfile.NamedTemporaryFile(suffix='.yaml', delete=False) as temp_file:
-        temp_file_path = temp_file.name
-    
-    # Create the config
-    config = {
-        'machine_name': 'test-machine',
-        'max_gpus': 4,
-        'dataset_paths': ['/path/to/dataset1', '/path/to/dataset2'],
-        'trusted_models': ['ghcr.io/aicell-lab/tabula:0.1.1', 'ghcr.io/aicell-lab/model:1.0.0'],
-        'server_url': 'https://hypha.aicell.io',
-    }
-    
-    # Write the config to the file in text mode
-    with open(temp_file_path, 'w') as f:
-        yaml.dump(config, f)
-    
-    yield temp_file_path
-    
-    # Clean up
-    try:
-        os.unlink(temp_file_path)
-    except:
-        pass
-
-
-@pytest.fixture
-def mock_dataset():
-    """Create a mock dataset with info.npz file."""
-    with tempfile.TemporaryDirectory() as ray_temp_dir:
-        # Create mock info.npz file
-        info_data = {'length': np.array([1000])}
-        np.savez(os.path.join(ray_temp_dir, 'info.npz'), **info_data)
-        
-        yield ray_temp_dir
-
-
-@pytest.fixture
-def real_ray_manager():
-    """Create a real (non-mocked) RayClusterManager for testing.
-    
-    This allows testing with a real Ray manager when appropriate,
-    but without connecting to actual Ray clusters.
+@pytest.fixture(scope="session")
+def workspace_folder() -> Path:
     """
-    from bioengine_worker.ray_cluster_manager import RayClusterManager
-    
-    # Create a logger for the test
-    logger = logging.getLogger("test_ray_manager")
-    logger.setLevel(logging.INFO)
-    
-    # Create the manager
-    manager = RayClusterManager(logger=logger)
-    
-    # Patch only the check_cluster method to prevent it from trying 
-    # to connect to a real Ray cluster during tests
-    manager.check_cluster = MagicMock(return_value={"head_running": False, "worker_count": 0})
-    
-    return manager
+    Return the workspace folder path for testing.
+
+    Returns:
+        Path to the workspace folder for test operations
+    """
+    folder = Path(__file__).resolve().parent.parent
+
+    # Set the local artifact path for BioEngine Worker tests
+    os.environ["BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"] = str(folder / "tests")
+
+    return folder
+
+
+@pytest.fixture(scope="session")
+def server_url() -> str:
+    """
+    Return the Hypha server URL for testing.
+
+    Returns:
+        URL of the Hypha server for test connections
+    """
+    return "https://hypha.aicell.io"
+
+
+@pytest.fixture(scope="session")
+def hypha_token() -> str:
+    """
+    Retrieve Hypha authentication token from environment.
+
+    The token should be available in the HYPHA_TOKEN environment variable,
+    typically loaded from a .env file.
+
+    Returns:
+        Authentication token for Hypha server access
+
+    Raises:
+        pytest.skip: If HYPHA_TOKEN environment variable is not set
+
+    Note:
+        Activate the bioengine-worker conda environment before running tests:
+        ```bash
+        conda activate bioengine-worker
+        pytest tests/
+        ```
+    """
+    token = os.environ.get("HYPHA_TOKEN")
+    if not token:
+        pytest.skip(
+            "HYPHA_TOKEN environment variable not set. "
+            "Please ensure .env file contains HYPHA_TOKEN and activate bioengine-worker environment."
+        )
+    return token
+
+
+@pytest.fixture(scope="session")
+def cache_dir() -> Path:
+    """
+    Create and return a test cache directory.
+
+    Creates a unique cache directory for each test session to avoid conflicts
+    and ensure test isolation. The directory is cleaned up after the session ends.
+
+    Returns:
+        Path to the test cache directory
+    """
+    with tempfile.TemporaryDirectory(
+        prefix="bioengine_worker_cache_"
+    ) as temp_cache_dir:
+        cache_dir = Path(temp_cache_dir)
+        yield cache_dir
+
+    # Cleanup is handled automatically by TemporaryDirectory context manager
+
+
+@pytest.fixture(scope="session")
+def data_dir(workspace_folder: Path) -> Path:
+    """
+    Return the BioEngine Worker data directory.
+
+    Args:
+        workspace_folder: Path to the workspace folder
+
+    Returns:
+        Path to the BioEngine Worker data directory
+    """
+    data_dir = workspace_folder / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
+
+
+@pytest_asyncio.fixture(scope="function")
+async def hypha_client(hypha_token: str) -> RemoteService:
+    """
+    Create a Hypha client for service interaction testing.
+
+    Provides a fresh Hypha client connection for each test function,
+    ensuring test isolation and proper connection management.
+
+    Args:
+        hypha_token: Authentication token for Hypha server
+
+    Yields:
+        Connected Hypha client instance
+
+    Raises:
+        Exception: If client connection fails
+
+    Note:
+        Each test gets its own client instance to avoid connection
+        conflicts and ensure proper cleanup between tests.
+    """
+    client = await connect_to_server(
+        {
+            "server_url": "https://hypha.aicell.io",
+            "token": hypha_token,
+        }
+    )
+    yield client
+
+    try:
+        await client.disconnect()
+    except Exception as e:
+        # Log disconnect errors but don't fail tests
+        print(f"⚠️  Warning: Hypha client disconnect failed: {e}")
+
+
+@pytest.fixture(scope="function")
+def hypha_workspace(hypha_client: RemoteService) -> str:
+    """
+    Hypha Workspace
+    """
+    return hypha_client.config.workspace
+
+
+# Configure asyncio for pytest
+pytest_plugins = ("pytest_asyncio",)

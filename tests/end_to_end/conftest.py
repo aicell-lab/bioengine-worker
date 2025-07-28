@@ -1,100 +1,92 @@
 """
 End-to-end test configuration for BioEngine Worker.
 
-Provides specialized fixtures for end-to-end testing including BioEngine Worker
-initialization and test application configurations.
+Provides specialized fixtures for comprehensive testing including worker
+initialization, application deployment, and service interaction patterns.
+
+Supports both local worker instances and connecting to running workers
+via USE_RUNNING_WORKER environment variable.
 """
 
-import asyncio
-import time
+import os
 from typing import Dict, List
 
 import pytest
+import pytest_asyncio
 
 from bioengine_worker.worker import BioEngineWorker
+
+# Configuration for test execution mode
+# When True, tests connect to an already running worker instead of starting their own
+USE_RUNNING_WORKER = os.getenv("USE_RUNNING_WORKER", "False").lower() == "true"
 
 
 @pytest.fixture(scope="session")
 def worker_mode() -> str:
-    """
-    Define the worker mode for end-to-end tests.
-
-    Returns:
-        The mode in which the BioEngine Worker will operate.
-    """
+    """Return 'single-machine' mode for local Ray cluster testing."""
     return "single-machine"
 
 
-# Test application configurations for startup deployments
+# Test application configurations for automatic startup deployment
 @pytest.fixture(scope="session")
 def startup_applications() -> List[Dict]:
     """
-    Define test applications for startup deployment validation.
-
-    Provides a consistent set of test applications used across all
-    end-to-end tests to validate worker functionality.
-
-    Returns:
-        List of application configurations for testing including:
-        - Simple demo application
-        - Complex composition application with deployment parameters
+    Define test applications for automatic deployment during worker startup.
+    
+    Returns list with demo-app for basic functionality testing.
     """
     return [
         {
-            "artifact_id": "composition-app",
-            "application_id": "composition-app",
-            "deployment_kwargs": {
-                "CompositionDeployment": {"demo_input": "Hello World!"},
-                "Deployment2": {"start_number": 10},
-            },
+            "artifact_id": "demo-app",
+            "application_id": "demo-app",
         },
     ]
 
 
 @pytest.fixture(scope="session")
 def monitoring_interval_seconds() -> int:
-    """Define the monitoring interval for the worker."""
+    """Return 10-second monitoring interval for responsive test feedback."""
     return 10
 
 
 @pytest.fixture(scope="session")
 def dashboard_url() -> str:
-    """Define the URL for the dashboard."""
+    """Return BioEngine dashboard URL for worker integration."""
     return "https://bioimage.io/#/bioengine"
 
 
 @pytest.fixture(scope="session")
 def graceful_shutdown_timeout() -> int:
-    """Define the timeout for graceful shutdown of the worker."""
+    """Return 60-second timeout for graceful worker shutdown."""
     return 60
 
 
 @pytest.fixture(scope="session")
 def application_check_timeout() -> int:
-    """Define the timeout for application connectivity checks."""
+    """Return 30-second timeout for application readiness checks."""
     return 30
 
 
 @pytest.fixture(scope="session")
 def num_cpus() -> int:
-    """Define the number of CPUs available for the worker."""
+    """Return 4 CPU cores for Ray cluster head node."""
     return 4
 
 
 @pytest.fixture(scope="session")
 def num_gpus() -> int:
-    """Define the number of GPUs available for the worker."""
+    """Return 0 GPUs for testing (no GPU required)."""
     return 0
 
 
 @pytest.fixture(scope="session")
 def memory_in_gb() -> int:
-    """Define the memory available for the worker."""
+    """Return 4GB memory allocation for worker."""
     return 4
 
 
-@pytest.fixture(scope="session", autouse=True)
-def bioengine_worker(
+@pytest_asyncio.fixture(scope="function")
+async def bioengine_worker_service_id(
     worker_mode,
     cache_dir,
     data_dir,
@@ -102,22 +94,20 @@ def bioengine_worker(
     monitoring_interval_seconds,
     server_url,
     hypha_token,
+    session_id,
     num_cpus,
     num_gpus,
     memory_in_gb,
     dashboard_url,
     graceful_shutdown_timeout,
+    hypha_client,
 ):
     """
-    Create a shared BioEngine worker for remote interaction tests.
-
-    This fixture provides a single worker instance that is shared across all
-    remote interaction tests to avoid the overhead of starting multiple workers.
-    The worker includes startup applications for comprehensive testing.
+    Create BioEngine worker instance and return service ID.
+    
+    Initializes worker with startup applications and manages lifecycle.
+    Automatically starts worker and cleans up after test completion.
     """
-    # Generate unique client ID for test isolation
-    test_client_id = f"remote_test_worker_{int(time.time())}"
-
     # Initialize the BioEngine worker with startup applications
     bioengine_worker = BioEngineWorker(
         mode=worker_mode,
@@ -129,7 +119,7 @@ def bioengine_worker(
         server_url=server_url,
         workspace=None,
         token=hypha_token,
-        client_id=test_client_id,
+        client_id=f"bioengine_test_worker_{session_id}",
         ray_cluster_config={
             "head_num_cpus": num_cpus,
             "head_num_gpus": num_gpus,
@@ -141,30 +131,54 @@ def bioengine_worker(
         graceful_shutdown_timeout=graceful_shutdown_timeout,
     )
 
-    async def cleanup_worker():
-        nonlocal bioengine_worker
+    try:
+        # Start the worker
+        await bioengine_worker.start(blocking=False)
 
+        # Return the worker service for use in tests
+        yield bioengine_worker.full_service_id
+
+    finally:
+        # Cleanup after all tests are done
         if bioengine_worker:
             await bioengine_worker._stop(blocking=True)
 
-    # Setup worker in a background task
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.create_task(bioengine_worker.start(blocking=True))
 
-    # Wait for the worker to be ready before yielding
-    loop.run_until_complete(bioengine_worker.is_ready.wait())
+if USE_RUNNING_WORKER:
 
-    yield bioengine_worker
+    @pytest_asyncio.fixture(scope="function")
+    async def bioengine_worker_service(hypha_client, hypha_workspace):
+        """Connect to existing BioEngine worker service."""
+        # Get the BioEngine worker service
+        bioengine_worker_service_id = f"{hypha_workspace}/bioengine-worker"
+        bioengine_worker_service = await hypha_client.get_service(
+            bioengine_worker_service_id
+        )
 
-    # Cleanup after all tests are done
-    loop.run_until_complete(cleanup_worker())
-    loop.close()
+        # Return the worker service for use in tests
+        return bioengine_worker_service
+
+else:
+
+    @pytest_asyncio.fixture(scope="function")
+    async def bioengine_worker_service(hypha_client, bioengine_worker_service_id):
+        """Get BioEngine worker service from created worker instance."""
+        # Get the BioEngine worker service
+        bioengine_worker_service = await hypha_client.get_service(
+            bioengine_worker_service_id
+        )
+
+        # Return the worker service for use in tests
+        return bioengine_worker_service
 
 
-@pytest.fixture(scope="session")
-def bioengine_worker_service_id(bioengine_worker) -> str:
-    """
-    Provide the shared BioEngine worker service ID for each test function.
-    """
-    return bioengine_worker.full_service_id
+@pytest.fixture(scope="function")
+def bioengine_worker_workspace(bioengine_worker_service_id) -> str:
+    """Extract workspace from worker service ID."""
+    return bioengine_worker_service_id.split("/")[0]
+
+
+@pytest.fixture(scope="function")
+def bioengine_worker_client_id(bioengine_worker_service_id) -> str:
+    """Extract client ID from worker service ID."""
+    return bioengine_worker_service_id.split("/")[1].split(":")[0]

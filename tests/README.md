@@ -28,7 +28,7 @@ pytest tests/ -v
 
 ### Specific Test Categories
 ```bash
-# End-to-end tests only
+# End-to-end tests that verify Hypha service API interaction with BioEngine worker
 pytest tests/end_to_end/ -v
 ```
 
@@ -43,7 +43,7 @@ pytest tests/ --cov=bioengine_worker --cov-report=html
 
 ## Test Structure
 
-- `tests/end_to_end/` - Full system tests with Hypha server and Ray cluster
+- `tests/end_to_end/` - Full system tests that verify Hypha service API interaction with BioEngine worker, including Ray cluster integration
 - `tests/conftest.py` - Shared fixtures and configuration
 
 ## Environment Requirements

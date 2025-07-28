@@ -1,14 +1,16 @@
 """
 Global pytest configuration for BioEngine Worker tests.
 
-This configuration applies to all test modules in the tests/ directory.
-Provides common fixtures for environment setup, authentication, and Hypha client management.
+Provides common fixtures for environment setup, Hypha authentication,
+and test isolation across the entire test suite.
+
+Requires HYPHA_TOKEN in environment and bioengine-worker conda environment.
 """
 
 import os
 import tempfile
 from pathlib import Path
-import asyncio
+from datetime import datetime
 
 import pytest
 import pytest_asyncio
@@ -21,12 +23,17 @@ load_dotenv()
 
 
 @pytest.fixture(scope="session")
+def session_id() -> str:
+    """Generate unique timestamp-based session ID for test isolation."""
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+@pytest.fixture(scope="session")
 def workspace_folder() -> Path:
     """
-    Return the workspace folder path for testing.
-
-    Returns:
-        Path to the workspace folder for test operations
+    Return project root directory and set BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH.
+    
+    Configures environment for local test artifact discovery.
     """
     folder = Path(__file__).resolve().parent.parent
 
@@ -38,35 +45,16 @@ def workspace_folder() -> Path:
 
 @pytest.fixture(scope="session")
 def server_url() -> str:
-    """
-    Return the Hypha server URL for testing.
-
-    Returns:
-        URL of the Hypha server for test connections
-    """
+    """Return Hypha server URL for test connections."""
     return "https://hypha.aicell.io"
 
 
 @pytest.fixture(scope="session")
 def hypha_token() -> str:
     """
-    Retrieve Hypha authentication token from environment.
-
-    The token should be available in the HYPHA_TOKEN environment variable,
-    typically loaded from a .env file.
-
-    Returns:
-        Authentication token for Hypha server access
-
-    Raises:
-        pytest.skip: If HYPHA_TOKEN environment variable is not set
-
-    Note:
-        Activate the bioengine-worker conda environment before running tests:
-        ```bash
-        conda activate bioengine-worker
-        pytest tests/
-        ```
+    Get Hypha authentication token from HYPHA_TOKEN environment variable.
+    
+    Skips test if token not found. Required for Hypha server access.
     """
     token = os.environ.get("HYPHA_TOKEN")
     if not token:
@@ -78,18 +66,10 @@ def hypha_token() -> str:
 
 
 @pytest.fixture(scope="session")
-def cache_dir() -> Path:
-    """
-    Create and return a test cache directory.
-
-    Creates a unique cache directory for each test session to avoid conflicts
-    and ensure test isolation. The directory is cleaned up after the session ends.
-
-    Returns:
-        Path to the test cache directory
-    """
+def cache_dir():
+    """Create temporary cache directory with automatic cleanup."""
     with tempfile.TemporaryDirectory(
-        prefix="bioengine_worker_cache_"
+        prefix=f"bioengine_worker_cache_"
     ) as temp_cache_dir:
         cache_dir = Path(temp_cache_dir)
         yield cache_dir
@@ -99,62 +79,42 @@ def cache_dir() -> Path:
 
 @pytest.fixture(scope="session")
 def data_dir(workspace_folder: Path) -> Path:
-    """
-    Return the BioEngine Worker data directory.
-
-    Args:
-        workspace_folder: Path to the workspace folder
-
-    Returns:
-        Path to the BioEngine Worker data directory
-    """
+    """Create and return BioEngine Worker data directory."""
     data_dir = workspace_folder / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir
 
 
 @pytest_asyncio.fixture(scope="function")
-async def hypha_client(hypha_token: str) -> RemoteService:
+async def hypha_client(hypha_token: str, session_id: str):
     """
-    Create a Hypha client for service interaction testing.
-
-    Provides a fresh Hypha client connection for each test function,
-    ensuring test isolation and proper connection management.
-
-    Args:
-        hypha_token: Authentication token for Hypha server
-
-    Yields:
-        Connected Hypha client instance
-
-    Raises:
-        Exception: If client connection fails
-
-    Note:
-        Each test gets its own client instance to avoid connection
-        conflicts and ensure proper cleanup between tests.
+    Create Hypha RPC client with unique ID for each test function.
+    
+    Automatically connects and disconnects for proper test isolation.
     """
+    client: RemoteService
     client = await connect_to_server(
         {
             "server_url": "https://hypha.aicell.io",
             "token": hypha_token,
+            "client_id": f"bioengine_test_client_{session_id}",
         }
     )
     yield client
 
-    try:
-        await client.disconnect()
-    except Exception as e:
-        # Log disconnect errors but don't fail tests
-        print(f"⚠️  Warning: Hypha client disconnect failed: {e}")
+    await client.disconnect()
 
 
 @pytest.fixture(scope="function")
 def hypha_workspace(hypha_client: RemoteService) -> str:
-    """
-    Hypha Workspace
-    """
+    """Extract workspace ID from connected Hypha client."""
     return hypha_client.config.workspace
+
+
+@pytest.fixture(scope="function")
+def hypha_client_id(hypha_client: RemoteService) -> str:
+    """Extract unique client ID from connected Hypha client."""
+    return hypha_client.config.client_id
 
 
 # Configure asyncio for pytest

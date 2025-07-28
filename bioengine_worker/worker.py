@@ -16,9 +16,9 @@ from hypha_rpc.utils.schema import schema_method
 
 from bioengine_worker import __version__
 from bioengine_worker.apps_manager import AppsManager
+from bioengine_worker.code_executor import CodeExecutor
 from bioengine_worker.datasets_manager import DatasetsManager
 from bioengine_worker.ray_cluster import RayCluster
-from bioengine_worker.code_executor import CodeExecutor
 from bioengine_worker.utils import check_permissions, create_context, create_logger
 
 
@@ -463,7 +463,6 @@ class BioEngineWorker:
                     "visibility": "public",
                     "require_context": True,
                 },
-                "is_ready": lambda context: self.is_ready.is_set(),
                 "get_status": self.get_status,
                 "load_dataset": self.dataset_manager.load_dataset,
                 "close_dataset": self.dataset_manager.close_dataset,
@@ -681,8 +680,8 @@ class BioEngineWorker:
                     )
                     # Force exit immediately with code 1 because of timeout
                     os._exit(1)
-                else:
-                    self.logger.info(msg + "Shutdown will happen in the background.")
+            else:
+                self.logger.info(msg + "Shutdown will happen in the background.")
 
         except (KeyboardInterrupt, asyncio.CancelledError):
             self.logger.info(
@@ -799,8 +798,6 @@ class BioEngineWorker:
         )
 
         await self._stop(blocking=blocking)
-
-        return "BioEngine worker shutdown initiated. Cleanup will continue in the background."
 
     @schema_method
     async def get_status(self, context: Optional[Dict[str, Any]] = None) -> dict:

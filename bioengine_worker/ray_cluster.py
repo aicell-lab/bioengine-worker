@@ -144,6 +144,17 @@ class RayCluster:
             log_file=log_file,
         )
 
+        # Initialize cluster state and monitoring attributes
+        self.is_ready = asyncio.Event()
+        self.lock_file = None
+        self.start_time = None
+        self.head_node_address = None
+        self.serve_http_url = None
+        self.proxy_actor_handle = None
+        self.cluster_status_history = OrderedDict()
+        self.max_status_history_length = 100
+        self.slurm_workers = None
+
         # Find and store Ray executable path
         self.ray_exec_path = self._find_ray_executable()
         self.serve_exec_path = (
@@ -220,19 +231,6 @@ class RayCluster:
                 "log_file": log_file,
                 "debug": bool(debug),
             }
-
-        # Initialize cluster state and monitoring attributes
-        self.is_ready = asyncio.Event()
-        self.lock_file = None
-        self.start_time = None
-        self.head_node_address = None
-        self.serve_http_url = None
-
-        self.proxy_actor_handle = None
-        self.cluster_status_history = OrderedDict()
-        self.max_status_history_length = 100
-
-        self.slurm_workers = None
 
     def __del__(self):
         """Cleanup lock file when the RayCluster instance is destroyed."""

@@ -399,7 +399,7 @@ class CodeExecutor:
             f"User '{user_id}' is executing Python function '{function_name}' "
             f"in Ray task (remote_options={json.dumps(remote_options)})"
         )
-        obj_ref = configured_ray_task.remote(None, user_func, args, kwargs)
+        obj_ref = configured_ray_task.remote(user_func, args, kwargs)
 
         await self._signal_new_resource_request()
 

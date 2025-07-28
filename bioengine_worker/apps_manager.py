@@ -443,57 +443,62 @@ class AppsManager:
         if not self._deployed_applications:
             return
 
-        # Get status of actively running deployments
-        await self.ray_cluster.check_connection()
-        serve_status = await asyncio.to_thread(serve.status)
+        try:
 
-        application_ids = list(self._deployed_applications.keys())
-        for application_id in application_ids:
-            application_info = self._deployed_applications.get(application_id)
-            if not application_info:
-                # Application no longer tracked, skip monitoring
-                continue
-            if not application_info["is_deployed"].is_set():
-                # Application not yet deployed, skip monitoring
-                continue
+            # Get status of actively running deployments
+            await self.ray_cluster.check_connection()
+            serve_status = await asyncio.to_thread(serve.status)
 
-            # Get the application status from Ray Serve
-            application = serve_status.applications.get(application_id)
-            if not application:
-                # Application not found in Ray Serve, increment failure count and clear is_deployed
-                application_info["consecutive_failures"] += 1
-            elif application.status.value == "DEPLOY_FAILED":
-                # If the application deployment failed, increment failure count
-                # Allow application to recover from transient issues (UNHEALTHY -> HEALTHY)
-                application_info["consecutive_failures"] += 1
-            else:
-                # Reset consecutive failures if the application is healthy
-                application_info["consecutive_failures"] = 0
+            application_ids = list(self._deployed_applications.keys())
+            for application_id in application_ids:
+                application_info = self._deployed_applications.get(application_id)
+                if not application_info:
+                    # Application no longer tracked, skip monitoring
+                    continue
+                if not application_info["is_deployed"].is_set():
+                    # Application not yet deployed, skip monitoring
+                    continue
 
-            if application_info["consecutive_failures"] > 3:
-                # Application has failed multiple times, undeploy and remove from tracking
-                self.logger.warning(
-                    f"Application '{application_id}' for artifact '{application_info['artifact_id']}', "
-                    f"version '{application_info['version'] or 'latest'}' has failed multiple times. It will be "
-                    "undeployed and removed from tracking."
-                )
-                application_info["deployment_task"].cancel()
-                self._deployed_applications.pop(application_id, None)
+                # Get the application status from Ray Serve
+                application = serve_status.applications.get(application_id)
+                if not application:
+                    # Application not found in Ray Serve, increment failure count and clear is_deployed
+                    application_info["consecutive_failures"] += 1
+                elif application.status.value == "DEPLOY_FAILED":
+                    # If the application deployment failed, increment failure count
+                    # Allow application to recover from transient issues (UNHEALTHY -> HEALTHY)
+                    application_info["consecutive_failures"] += 1
+                else:
+                    # Reset consecutive failures if the application is healthy
+                    application_info["consecutive_failures"] = 0
 
-            elif application_info["consecutive_failures"] > 0:
-                # Application is experiencing issues, trigger redeployment
-                self.logger.warning(
-                    f"Application '{application_id}' for artifact '{application_info['artifact_id']}' "
-                    f"is experiencing issues. Consecutive failures: {application_info['consecutive_failures']}"
-                )
+                if application_info["consecutive_failures"] > 3:
+                    # Application has failed multiple times, undeploy and remove from tracking
+                    self.logger.warning(
+                        f"Application '{application_id}' for artifact '{application_info['artifact_id']}', "
+                        f"version '{application_info['version'] or 'latest'}' has failed multiple times. It will be "
+                        "undeployed and removed from tracking."
+                    )
+                    application_info["deployment_task"].cancel()
+                    self._deployed_applications.pop(application_id, None)
 
-                # Re-deploy the application
-                deployment_task = asyncio.create_task(
-                    self._deploy_application(application_id=application_id),
-                    name=f"Deploy_{application_id}",
-                )
-                # Overwrite the existing deployment task
-                application_info["deployment_task"] = deployment_task
+                elif application_info["consecutive_failures"] > 0:
+                    # Application is experiencing issues, trigger redeployment
+                    self.logger.warning(
+                        f"Application '{application_id}' for artifact '{application_info['artifact_id']}' "
+                        f"is experiencing issues. Consecutive failures: {application_info['consecutive_failures']}"
+                    )
+
+                    # Re-deploy the application
+                    deployment_task = asyncio.create_task(
+                        self._deploy_application(application_id=application_id),
+                        name=f"Deploy_{application_id}",
+                    )
+                    # Overwrite the existing deployment task
+                    application_info["deployment_task"] = deployment_task
+        except Exception as e:
+            self.logger.error(f"Error monitoring applications: {e}")
+            raise e
 
     @schema_method
     async def create_artifact(

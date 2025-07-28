@@ -1,5 +1,4 @@
 import re
-import uuid
 from dataclasses import asdict
 from typing import Dict, Optional, Union, List
 
@@ -20,7 +19,6 @@ from ray.util.state.common import (
     num_cpus=0,
     resources={"node:__internal_head__": 0.001},
     max_restarts=-1,  # Allow unlimited restarts
-    name=f"BIOENGINE_PROXY_ACTOR-{uuid.uuid4()}",  # Unique name for the actor
 )
 class BioEngineProxyActor:
     def __init__(

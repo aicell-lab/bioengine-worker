@@ -18,7 +18,7 @@ from bioengine_worker import __version__
 from bioengine_worker.apps_manager import AppsManager
 from bioengine_worker.datasets_manager import DatasetsManager
 from bioengine_worker.ray_cluster import RayCluster
-from bioengine_worker.code_executer import CodeExecuter
+from bioengine_worker.code_executor import CodeExecutor
 from bioengine_worker.utils import check_permissions, create_context, create_logger
 
 
@@ -315,8 +315,8 @@ class BioEngineWorker:
                 debug=debug,
             )
 
-            self.code_executor = CodeExecuter(
-                notify_function=self.notify,
+            self.code_executor = CodeExecutor(
+                ray_cluster=self.ray_cluster,
                 log_file=log_file,
                 debug=debug,
             )
@@ -761,24 +761,6 @@ class BioEngineWorker:
             raise
 
         return self.full_service_id
-
-    async def notify(self, delay_s: int = 0) -> None:
-        """
-        Notify SLURM workers' autoscaling system of a change in cluster state.
-
-        This method triggers the autoscaling system to check for scaling opportunities
-        after a specified delay. It's typically called when new tasks are submitted
-        or when the cluster state changes in a way that might require scaling.
-
-        Args:
-            delay_s: Delay in seconds before triggering scaling decision
-
-        Raises:
-            RuntimeError: If SLURM workers are not initialized
-        """
-        if self.ray_cluster.mode == "slurm":
-            self.logger.info("Notifying SLURM workers of cluster state change")
-            self._last_monitoring = time.time() - self._last_monitoring + delay_s
 
     @schema_method
     async def stop(

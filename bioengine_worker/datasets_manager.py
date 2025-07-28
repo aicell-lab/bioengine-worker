@@ -444,8 +444,12 @@ class DatasetsManager:
         Placeholder for future dataset monitoring functionality such as
         service health checks, usage statistics, and performance metrics.
         """
-        # TODO: Implement monitoring
-        pass
+        try:
+            # TODO: Implement monitoring
+            pass
+        except Exception as e:
+            self.logger.error(f"Error monitoring datasets: {e}")
+            raise e
 
     @schema_method
     async def load_dataset(

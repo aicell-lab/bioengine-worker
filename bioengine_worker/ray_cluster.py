@@ -681,9 +681,18 @@ class RayCluster:
             exclude_head_node = self.mode == "slurm"
             check_pending_resources = self.mode == "slurm"
 
-            self.proxy_actor_handle = BioEngineProxyActor.remote(
+            # Generate a unique name for the proxy actor
+            proxy_actor_name = f"BIOENGINE_PROXY_ACTOR-{uuid.uuid4()}"
+            proxy_actor = BioEngineProxyActor.options(name=proxy_actor_name)
+            self.proxy_actor_handle = proxy_actor.remote(
                 exclude_head_node=exclude_head_node,
                 check_pending_resources=check_pending_resources,
+            )
+
+            # Test the connection by getting the cluster state
+            await self.proxy_actor_handle.get_cluster_state.remote()
+            self.logger.info(
+                f"Connected to Ray cluster at '{self.head_node_address}' with Serve HTTP URL {self.serve_http_url}"
             )
 
             return context
@@ -750,26 +759,26 @@ class RayCluster:
 
         if not ray.is_initialized():
             self.logger.warning(f"Ray client disconnected. Reconnecting...")
-
-            # TODO: Re-import ray to reset the connection
-            # importlib.reload(ray)
-            # importlib.reload(BioEngineProxyActor)
             await self._connect_to_cluster()
 
     async def monitor_cluster(self) -> None:
         """Monitor cluster status and update worker nodes history."""
-        # Get the current status of the cluster from the BioEngineProxy
-        cluster_status = await self.proxy_actor_handle.get_cluster_state.remote()
+        try:
+            # Get the current status of the cluster from the BioEngineProxy
+            cluster_status = await self.proxy_actor_handle.get_cluster_state.remote()
 
-        self.cluster_status_history[time.time()] = cluster_status
+            self.cluster_status_history[time.time()] = cluster_status
 
-        # Limit the history size
-        if len(self.cluster_status_history) > self.max_status_history_length:
-            self.cluster_status_history.popitem(last=False)
+            # Limit the history size
+            if len(self.cluster_status_history) > self.max_status_history_length:
+                self.cluster_status_history.popitem(last=False)
 
-        # Check if SLURM workers need to scale
-        if self.slurm_workers:
-            await self.slurm_workers.check_scaling()
+            # Check if SLURM workers need to scale
+            if self.slurm_workers:
+                await self.slurm_workers.check_scaling()
+        except Exception as e:
+            self.logger.error(f"Error monitoring cluster: {e}")
+            raise e
 
     async def start(self) -> None:
         """Start the Ray cluster based on the configured mode.

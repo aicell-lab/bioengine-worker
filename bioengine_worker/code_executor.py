@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import textwrap
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Union
@@ -11,14 +12,71 @@ import ray
 from hypha_rpc.utils.schema import schema_method
 
 from bioengine_worker import __version__
+from bioengine_worker.ray_cluster import RayCluster
 from bioengine_worker.utils import check_permissions, create_logger
 
 
-class CodeExecuter:
+@ray.remote
+def ray_task(func, args, kwargs):
+    """
+    Pure Ray task for executing a Python function with arguments.
+
+    This task runs in a Ray worker and captures stdout/stderr output.
+    It handles both synchronous and asynchronous functions, returning
+    the result or error information as a dictionary.
+
+    Args:
+        func: The Python function to execute.
+        args: Positional arguments to pass to the function.
+        kwargs: Keyword arguments to pass to the function.
+
+    Returns:
+        Dict containing:
+            - result: Function return value (if successful)
+            - error: Error message string (if failed)
+            - traceback: Full Python traceback (if failed)
+            - stdout: Captured stdout output as string
+            - stderr: Captured stderr output as string
+
+    Raises:
+        Exception: If the function execution fails, the error message and
+                    traceback are captured and returned in the result.
+    """
+    import asyncio
+    import contextlib
+    import io
+    import traceback
+
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+
+    with (
+        contextlib.redirect_stdout(stdout_buffer),
+        contextlib.redirect_stderr(stderr_buffer),
+    ):
+        try:
+            result = func(*args, **kwargs)
+            if asyncio.iscoroutine(result):
+                result = asyncio.run(result)
+            return {
+                "result": result,
+                "stdout": stdout_buffer.getvalue(),
+                "stderr": stderr_buffer.getvalue(),
+            }
+        except Exception as e:
+            return {
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+                "stdout": stdout_buffer.getvalue(),
+                "stderr": stderr_buffer.getvalue(),
+            }
+
+
+class CodeExecutor:
     """
     Secure Python code execution service for distributed Ray environments.
 
-    The CodeExecuter provides a secure, isolated environment for executing arbitrary
+    The CodeExecutor provides a secure, isolated environment for executing arbitrary
     Python code in distributed Ray tasks with comprehensive resource management,
     output streaming, and error handling capabilities. It supports both source code
     execution and pre-serialized function execution for maximum flexibility.
@@ -39,7 +97,7 @@ class CodeExecuter:
     Example:
         ```python
         # Initialize the code executer
-        executer = CodeExecuter(debug=True)
+        executer = CodeExecutor(debug=True)
         await executer.initialize(admin_users=["admin@example.com"])
 
         # Execute Python code
@@ -56,19 +114,19 @@ class CodeExecuter:
 
     Attributes:
         logger: Configured logger instance for execution tracking
-        notify_function: Optional callback for execution notifications
+        notify_function: Optional callback for Ray cluster change notifications
         admin_users: List of authorized admin user identifiers
     """
 
     def __init__(
         self,
-        notify_function: Optional[Callable[[], None]] = None,
+        ray_cluster: RayCluster,
         # Logger
         log_file: Optional[Union[str, Path]] = None,
         debug: bool = False,
     ) -> None:
         """
-        Initialize the CodeExecuter with optional notification and logging configuration.
+        Initialize the CodeExecutor with optional notification and logging configuration.
 
         Args:
             notify_function: Optional async callback function to notify when tasks start.
@@ -83,11 +141,11 @@ class CodeExecuter:
         """
         # Set up logging
         self.logger = create_logger(
-            name="CodeExecuter",
+            name="CodeExecutor",
             level=logging.DEBUG if debug else logging.INFO,
             log_file=log_file,
         )
-        self.notify_function = notify_function
+        self.ray_cluster = ray_cluster
         self.admin_users = None
 
     def _load_func_from_source(self, code: str, function_name: str) -> Callable:
@@ -127,9 +185,27 @@ class CodeExecuter:
         user_func = exec_namespace.get(function_name)
         return user_func
 
+    async def _signal_new_resource_request(self, delay_s: int = 0) -> None:
+        """
+        Notify SLURM workers' autoscaling system of a change in cluster state.
+
+        This method triggers the autoscaling system to check for scaling opportunities
+        after a specified delay. It's typically called when new tasks are submitted
+        or when the cluster state changes in a way that might require scaling.
+
+        Args:
+            delay_s: Delay in seconds before triggering scaling decision
+
+        Raises:
+            RuntimeError: If SLURM workers are not initialized
+        """
+        if self.ray_cluster.mode == "slurm":
+            self.logger.info("Notifying SLURM workers of cluster state change")
+            self._last_monitoring = time.time() - self._last_monitoring + delay_s
+
     async def initialize(self, admin_users: List[str]) -> None:
         """
-        Initialize the CodeExecuter with admin user permissions.
+        Initialize the CodeExecutor with admin user permissions.
 
         Sets up the list of authorized admin users who are permitted to execute
         arbitrary Python code. This method must be called before any code execution
@@ -156,11 +232,12 @@ class CodeExecuter:
         function_name: Optional[str] = "analyze",
         func_bytes: Optional[bytes] = None,
         mode: Literal["source", "pickle"] = "source",
-        remote_options: Optional[Dict[str, Any]] = None,
         args: Optional[List[Any]] = None,
         kwargs: Optional[Dict[str, Any]] = None,
+        remote_options: Optional[Dict[str, Any]] = None,
         write_stdout: Optional[Callable[[str], None]] = None,
         write_stderr: Optional[Callable[[str], None]] = None,
+        timeout: int = 180,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -199,21 +276,24 @@ class CodeExecuter:
             mode: Execution mode determining input format:
                  - 'source': Execute function from source code string (default)
                  - 'pickle': Execute pre-serialized function from func_bytes
-            remote_options: Optional Ray remote decorator options for resource allocation:
-                          - num_cpus: Number of CPU cores to allocate (default: 1)
-                          - num_gpus: Number of GPU devices to allocate
-                          - memory: Memory allocation in bytes
-                          - runtime_env: Python environment configuration
             args: Optional positional arguments to pass to the target function.
                  Defaults to empty list if not provided.
             kwargs: Optional keyword arguments to pass to the target function.
                    Defaults to empty dict if not provided.
+            remote_options: Optional Ray remote decorator options for resource allocation:
+                          - num_cpus: Number of CPU cores to allocate (default: 1)
+                          - num_gpus: Number of GPU devices to allocate (default: 0)
+                          - memory: Memory allocation in bytes (default: no limit)
+                          - runtime_env: Python environment configuration (default: no additional packages)
             write_stdout: Optional callback function for streaming stdout output.
                          Called with each line of stdout as it's generated.
                          Must accept a single string parameter.
             write_stderr: Optional callback function for streaming stderr output.
                          Called with each line of stderr as it's generated.
                          Must accept a single string parameter.
+            timeout: Maximum execution time in seconds for the function.
+                    Defaults to 180 seconds (3 minutes). If the function execution
+                    exceeds this time, a TimeoutError is raised.
             context: Optional request context containing user information for permission checking.
                     Must contain context['user']['id'] for admin validation.
 
@@ -276,12 +356,12 @@ class CodeExecuter:
         try:
             # Deserialize function before Ray execution
             if mode == "pickle":
-                self.logger.info(
+                self.logger.debug(
                     f"User '{user_id}' is loading Python function '{function_name}' from pickle."
                 )
                 user_func = await asyncio.to_thread(cloudpickle.loads, func_bytes)
             else:
-                self.logger.info(
+                self.logger.debug(
                     f"User '{user_id}' is loading Python function '{function_name}' from source."
                 )
                 user_func = await asyncio.to_thread(
@@ -290,7 +370,7 @@ class CodeExecuter:
 
             if not callable(user_func):
                 raise ValueError(
-                    f"Deserialized object '{function_name}' is not callable: {user_func}"
+                    f"Object '{function_name}' is not callable: {user_func}"
                 )
 
         except Exception as e:
@@ -300,52 +380,41 @@ class CodeExecuter:
                 "traceback": traceback.format_exc(),
             }
 
-        # The @ray.remote decorator requires arguments when using parentheses
-        remote_options = remote_options or {"num_cpus": 1}
+        # Configure Ray task with resource options (validates provided remote_options)
+        remote_options = remote_options or {}
+        try:
+            configured_ray_task = ray_task.options(**remote_options)
+        except ValueError as e:
+            return {
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            }
 
         # Prepare arguments for Ray task
         args = args or []
         kwargs = kwargs or {}
 
-        # The Ray task itself (pure, pickle-safe)
-        @ray.remote(**remote_options)
-        def ray_task(func, args, kwargs):
-            import asyncio
-            import contextlib
-            import io
-            import traceback
-
-            stdout_buffer = io.StringIO()
-            stderr_buffer = io.StringIO()
-
-            with (
-                contextlib.redirect_stdout(stdout_buffer),
-                contextlib.redirect_stderr(stderr_buffer),
-            ):
-                try:
-                    result = func(*args, **kwargs)
-                    if asyncio.iscoroutine(result):
-                        result = asyncio.run(result)
-                    return {
-                        "result": result,
-                        "stdout": stdout_buffer.getvalue(),
-                        "stderr": stderr_buffer.getvalue(),
-                    }
-                except Exception as e:
-                    return {
-                        "error": str(e),
-                        "traceback": traceback.format_exc(),
-                        "stdout": stdout_buffer.getvalue(),
-                        "stderr": stderr_buffer.getvalue(),
-                    }
-
+        # Execute the function in a Ray task
         self.logger.info(
             f"User '{user_id}' is executing Python function '{function_name}' "
             f"in Ray task (remote_options={json.dumps(remote_options)})"
         )
-        obj_ref = ray_task.remote(user_func, args, kwargs)
-        await self.notify_function()
-        result = await asyncio.wait_for(obj_ref, timeout=600)
+        obj_ref = configured_ray_task.remote(None, user_func, args, kwargs)
+
+        await self._signal_new_resource_request()
+
+        try:
+            result = await asyncio.wait_for(obj_ref, timeout=timeout)
+        except asyncio.TimeoutError:
+            return {
+                "error": f"Function execution timed out after {timeout} seconds.",
+                "traceback": "TimeoutError: Function execution exceeded maximum allowed time.",
+            }
+        except Exception as e:
+            return {
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            }
 
         # Stream output to client
         if write_stdout and result.get("stdout"):
@@ -359,7 +428,11 @@ class CodeExecuter:
 
 
 if __name__ == "__main__":
-    executer = CodeExecuter()
+
+    class MockRayCluster:
+        mode = "mock"
+
+    executer = CodeExecutor(ray_cluster=MockRayCluster())
 
     # Load and execute a simple function from code
     simple_code = """

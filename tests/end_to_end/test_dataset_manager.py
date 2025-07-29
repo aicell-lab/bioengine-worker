@@ -34,7 +34,7 @@ async def test_load_and_interact_with_dataset(bioengine_worker_service):
     - Test dataset browsing functionality
     """
     # TODO: Implement test logic
-    raise NotImplementedError
+    pytest.skip("Test logic not implemented yet")
 
 
 @pytest.mark.asyncio
@@ -58,7 +58,7 @@ async def test_close_dataset(bioengine_worker_service):
     - Check that resources are freed from worker status
     """
     # TODO: Implement test logic
-    raise NotImplementedError
+    pytest.skip("Test logic not implemented yet")
 
 
 @pytest.mark.asyncio
@@ -82,4 +82,4 @@ async def test_cleanup(bioengine_worker_service):
     - Confirm system resources are properly freed
     """
     # TODO: Implement test logic
-    raise NotImplementedError
+    pytest.skip("Test logic not implemented yet")

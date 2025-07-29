@@ -16,6 +16,7 @@ from typing import Dict, List, Tuple
 
 import pytest
 import yaml
+from hypha_rpc import get_rtc_service
 from hypha_rpc.rpc import ObjectProxy, RemoteService
 
 
@@ -947,6 +948,7 @@ async def test_deploy_application_from_artifact(
 async def test_call_demo_app_functions(
     monkeypatch: pytest.MonkeyPatch,
     tests_dir: Path,
+    hypha_workspace: str,
     bioengine_worker_service: ObjectProxy,
     hypha_client: RemoteService,
 ):
@@ -962,27 +964,120 @@ async def test_call_demo_app_functions(
     assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") == str(tests_dir)
 
     # Deploy the demo-app with apps_manager.deploy_application from local path
+    demo_artifact_id = f"{hypha_workspace}/demo-app"
+
+    app_id = await bioengine_worker_service.deploy_application(
+        artifact_id=demo_artifact_id
+    )
+
+    # Wait for deployment to complete
+    timeout = 30  # 30 seconds timeout
+    poll_interval = 2  # Check every 2 seconds
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
+        status = await bioengine_worker_service.get_status()
+        bioengine_apps = status.get("bioengine_apps", {})
+
+        if app_id in bioengine_apps:
+            app_status = bioengine_apps[app_id]
+            if (
+                app_status["status"] == "RUNNING"
+                and len(app_status.get("service_ids", [])) > 0
+            ):
+                break
+
+        await asyncio.sleep(poll_interval)
+    else:
+        pytest.fail("Demo app deployment timed out")
 
     # Get the service ID from the worker status
+    status = await bioengine_worker_service.get_status()
+    bioengine_apps = status["bioengine_apps"]
+    app_status = bioengine_apps[app_id]
+    first_replica = app_status["service_ids"][0]
+
+    websocket_service_id = first_replica["websocket_service_id"]
+    webrtc_service_id = first_replica["webrtc_service_id"]
 
     # Get the websocket service using hypha_client
+    websocket_service = await hypha_client.get_service(websocket_service_id)
+    assert (
+        websocket_service
+    ), f"Could not connect to WebSocket service {websocket_service_id}"
 
     # Call the application functions using the WebSocket service
+    # Test ping method
+    ping_result = await asyncio.wait_for(websocket_service.ping(), timeout=10)
+    assert ping_result is not None, "Ping should return a result"
+    assert isinstance(ping_result, dict), "Ping result should be a dictionary"
+    assert (
+        ping_result["status"] == "ok"
+    ), f"Expected status 'ok', got {ping_result.get('status')}"
+    assert "message" in ping_result, "Ping result should contain 'message'"
+    assert "timestamp" in ping_result, "Ping result should contain 'timestamp'"
+    assert "uptime" in ping_result, "Ping result should contain 'uptime'"
+
+    # Test ascii_art method
+    ascii_result = await asyncio.wait_for(websocket_service.ascii_art(), timeout=10)
+    assert ascii_result is not None, "ASCII art should return a result"
+    assert isinstance(ascii_result, list), "ASCII art result should be a list"
+    assert len(ascii_result) > 0, "ASCII art should not be empty"
+    assert all(
+        isinstance(line, str) for line in ascii_result
+    ), "All ASCII lines should be strings"
 
     # Get the peer connection
+    peer_connection = await get_rtc_service(hypha_client, webrtc_service_id)
+    assert peer_connection, f"Could not connect to WebRTC service {webrtc_service_id}"
 
-    # Get the service using the peer connection instead of hypha_client
+    try:
+        # Get the service using the peer connection instead of hypha_client
+        peer_service = await peer_connection.get_service(app_id)
+        assert peer_service, "Could not get peer service from WebRTC"
 
-    # Call the application functions using the peer connection service
+        # Call the application functions using the peer connection service
+        # Test ping method through WebRTC
+        rtc_ping_result = await asyncio.wait_for(
+            peer_service.ping(context=hypha_client.config), timeout=10
+        )
+        assert rtc_ping_result is not None, "WebRTC ping should return a result"
+        assert isinstance(
+            rtc_ping_result, dict
+        ), "WebRTC ping result should be a dictionary"
+        assert (
+            rtc_ping_result["status"] == "ok"
+        ), f"Expected status 'ok', got {rtc_ping_result.get('status')}"
 
-    # TODO: Implement test logic
-    raise NotImplementedError
+        # Test ascii_art method through WebRTC
+        rtc_ascii_result = await asyncio.wait_for(
+            peer_service.ascii_art(context=hypha_client.config), timeout=10
+        )
+        assert rtc_ascii_result is not None, "WebRTC ASCII art should return a result"
+        assert isinstance(
+            rtc_ascii_result, list
+        ), "WebRTC ASCII art result should be a list"
+        assert len(rtc_ascii_result) > 0, "WebRTC ASCII art should not be empty"
+
+        # Results should be the same through both channels
+        assert (
+            rtc_ping_result["status"] == ping_result["status"]
+        ), "Ping results should match"
+        assert rtc_ascii_result == ascii_result, "ASCII art results should match"
+
+    finally:
+        # Clean up WebRTC connection
+        await peer_connection.disconnect()
+
+    # Clean up: undeploy the application
+    await bioengine_worker_service.undeploy_application(app_id)
 
 
 @pytest.mark.asyncio
 async def test_call_composition_app_functions(
     monkeypatch: pytest.MonkeyPatch,
     tests_dir: Path,
+    hypha_workspace: str,
     bioengine_worker_service: ObjectProxy,
     hypha_client: RemoteService,
 ):
@@ -998,18 +1093,131 @@ async def test_call_composition_app_functions(
     assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") == str(tests_dir)
 
     # Deploy the composition-app with apps_manager.deploy_application from local path
+    composition_app_config = {
+        "artifact_id": f"{hypha_workspace}/composition_app",
+        "deployment_kwargs": {
+            "CompositionDeployment": {"demo_input": "Test Hello World!"},
+            "Deployment2": {"start_number": 100},
+        },
+    }
+
+    app_id = await bioengine_worker_service.deploy_application(**composition_app_config)
+
+    # Wait for deployment to complete
+    timeout = 30  # 30 seconds timeout
+    poll_interval = 2  # Check every 2 seconds
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
+        status = await bioengine_worker_service.get_status()
+        bioengine_apps = status.get("bioengine_apps", {})
+
+        if app_id in bioengine_apps:
+            app_status = bioengine_apps[app_id]
+            if (
+                app_status["status"] == "RUNNING"
+                and len(app_status.get("service_ids", [])) > 0
+            ):
+                break
+
+        await asyncio.sleep(poll_interval)
+    else:
+        pytest.fail("Composition app deployment timed out")
 
     # Get the service ID from the worker status
+    status = await bioengine_worker_service.get_status()
+    bioengine_apps = status["bioengine_apps"]
+    app_status = bioengine_apps[app_id]
+    first_replica = app_status["service_ids"][0]
+
+    websocket_service_id = first_replica["websocket_service_id"]
+    webrtc_service_id = first_replica["webrtc_service_id"]
 
     # Get the websocket service using hypha_client
+    websocket_service = await hypha_client.get_service(websocket_service_id)
+    assert (
+        websocket_service
+    ), f"Could not connect to WebSocket service {websocket_service_id}"
 
     # Call the application functions using the WebSocket service
+    # Test ping method
+    ping_result = await asyncio.wait_for(websocket_service.ping(), timeout=10)
+    assert ping_result is not None, "Ping should return a result"
+    assert isinstance(ping_result, str), "Ping result should be a string"
+    assert ping_result == "pong", f"Expected 'pong', got {ping_result}"
+
+    # Test calculate_result method
+    test_number = 42
+    calc_result = await asyncio.wait_for(
+        websocket_service.calculate_result(number=test_number), timeout=15
+    )
+    assert calc_result is not None, "Calculate result should return a result"
+    assert isinstance(calc_result, str), "Calculate result should be a string"
+    assert "Uptime:" in calc_result, "Result should contain uptime information"
+    assert "Result:" in calc_result, "Result should contain calculation result"
+    assert "Demo string:" in calc_result, "Result should contain demo string"
+    assert "Test Hello World!" in calc_result, "Result should contain the demo input"
+    # The result should be start_number (100) + test_number (42) = 142
+    assert (
+        "142" in calc_result
+    ), f"Result should contain 142 (100 + 42), got: {calc_result}"
 
     # Get the peer connection
+    peer_connection = await get_rtc_service(hypha_client, webrtc_service_id)
+    assert peer_connection, f"Could not connect to WebRTC service {webrtc_service_id}"
 
-    # Get the service using the peer connection instead of hypha_client
+    try:
+        # Get the service using the peer connection instead of hypha_client
+        peer_service = await peer_connection.get_service(app_id)
+        assert peer_service, "Could not get peer service from WebRTC"
 
-    # Call the application functions using the peer connection service
+        # Call the application functions using the peer connection service
+        # Test ping method through WebRTC
+        rtc_ping_result = await asyncio.wait_for(
+            peer_service.ping(context=hypha_client.config), timeout=10
+        )
+        assert rtc_ping_result is not None, "WebRTC ping should return a result"
+        assert isinstance(rtc_ping_result, str), "WebRTC ping result should be a string"
+        assert rtc_ping_result == "pong", f"Expected 'pong', got {rtc_ping_result}"
 
-    # TODO: Implement test logic
-    raise NotImplementedError
+        # Test calculate_result method through WebRTC
+        rtc_calc_result = await asyncio.wait_for(
+            peer_service.calculate_result(
+                number=test_number, context=hypha_client.config
+            ),
+            timeout=15,
+        )
+        assert (
+            rtc_calc_result is not None
+        ), "WebRTC calculate result should return a result"
+        assert isinstance(
+            rtc_calc_result, str
+        ), "WebRTC calculate result should be a string"
+        assert (
+            "Uptime:" in rtc_calc_result
+        ), "WebRTC result should contain uptime information"
+        assert (
+            "Result:" in rtc_calc_result
+        ), "WebRTC result should contain calculation result"
+        assert (
+            "Demo string:" in rtc_calc_result
+        ), "WebRTC result should contain demo string"
+        assert (
+            "Test Hello World!" in rtc_calc_result
+        ), "WebRTC result should contain the demo input"
+        assert (
+            "142" in rtc_calc_result
+        ), f"WebRTC result should contain 142 (100 + 42), got: {rtc_calc_result}"
+
+        # Results should be the same through both channels
+        assert rtc_ping_result == ping_result, "Ping results should match"
+        # Note: Uptime may differ slightly between calls, so we check key components
+        assert "Test Hello World!" in rtc_calc_result, "Demo string should match"
+        assert "142" in rtc_calc_result, "Calculation result should match"
+
+    finally:
+        # Clean up WebRTC connection
+        await peer_connection.disconnect()
+
+    # Clean up: undeploy the application
+    await bioengine_worker_service.undeploy_application(app_id)

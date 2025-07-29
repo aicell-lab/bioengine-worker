@@ -140,8 +140,9 @@ def ray_address() -> Generator[str, None, None]:
         # Use RayCluster to start a local Ray cluster
         ray_cluster = RayCluster(
             mode="single-machine",
-            head_num_cpus=4,
+            head_num_cpus=6,
             head_num_gpus=0,
+            head_memory_in_gb=12,  # TODO: Check when 0
             ray_temp_dir=temp_dir,
             debug=True,
         )

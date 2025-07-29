@@ -543,7 +543,7 @@ class RayCluster:
                 "--head",
                 f"--num-cpus={self.ray_cluster_config['head_num_cpus']}",
                 f"--num-gpus={self.ray_cluster_config['head_num_gpus']}",
-                f"--memory={self.ray_cluster_config['head_memory_in_gb'] * 1024**3}",
+                f"--memory={self.ray_cluster_config['head_memory_in_gb'] * 1024**3}",  # TODO: --memory does not show in ray start --help
                 f"--node-ip-address={self.ray_cluster_config['head_node_address']}",
                 f"--port={self.ray_cluster_config['head_node_port']}",
                 f"--node-manager-port={self.ray_cluster_config['node_manager_port']}",

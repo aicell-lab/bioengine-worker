@@ -1215,7 +1215,7 @@ class AppsManager:
                 "display_name": application_info["display_name"],
                 "description": application_info["description"],
                 "artifact_id": application_info["artifact_id"],
-                "version": application_info["version"],
+                "version": application_info["version"] or "latest",
                 "start_time": start_time,
                 "status": status,
                 "message": message,

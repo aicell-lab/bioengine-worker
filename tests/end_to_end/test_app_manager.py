@@ -9,7 +9,7 @@ peer connections, artifact management, and cleanup operations.
 import base64
 import warnings
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import pytest
 import yaml
@@ -291,30 +291,341 @@ async def test_create_and_delete_artifacts(
 
 
 @pytest.mark.asyncio
-async def test_startup_application_and_cleanup(bioengine_worker_service):
+async def test_startup_application(
+    worker_mode: str,
+    bioengine_worker_service: ObjectProxy,
+    startup_applications: List[Dict],
+):
     """
-    Test that the startup application 'demo-app' is properly deployed and cleanup operations.
+    Test that all startup applications are properly deployed.
 
-    This test validates:
-    1. Startup application configuration is processed
-    2. The 'demo-app' is automatically deployed during worker startup
-    3. Application status shows as running and healthy
-    4. Required resources are allocated correctly
-    5. Application endpoints are accessible
-    6. Cleanup operation through cleanup_deployments API
-    7. Complete resource deallocation and cleanup
+    This test validates the AppsManager status reporting and startup application deployment:
+    1. Retrieves comprehensive worker status including AppsManager state
+    2. Validates "bioengine_apps" field structure and content
+    3. Checks that startup applications are properly deployed and healthy
+    4. Verifies application metadata, resource allocation, and service registration
+    5. Ensures deployment configuration matches expected startup specifications
 
-    Steps:
-    - Connect to Hypha server and get worker service
-    - Check worker status to see deployed applications
-    - Verify 'demo-app' is listed in active deployments
-    - Check application health and resource allocation
-    - Validate deployment configuration matches startup spec
-    - Call cleanup_deployments to remove all applications
-    - Verify all deployments are properly cleaned up
+    Expected AppsManager Status Structure:
+    - bioengine_apps: Dict[application_id, application_info] where each application_info contains:
+      - display_name, description, artifact_id, version
+      - start_time, status (RUNNING/HEALTHY/etc), message
+      - deployments: Dict of deployment status and replica states
+      - resource allocation: application_resources, deployment_options
+      - service_ids: WebSocket and WebRTC service endpoints
+      - access control: authorized_users, last_updated_by
+      - available_methods: List of exposed application methods
     """
-    # TODO: Implement test logic
-    raise NotImplementedError
+    if worker_mode == "external-cluster":
+        pytest.skip(
+            "Startup applications are disabled in external cluster mode. Skipping test."
+        )
+
+    # Ensure at least one startup application is configured
+    assert (
+        startup_applications and len(startup_applications) > 0
+    ), "No startup applications configured for this test. Please define at least one in the fixture."
+
+    # Get comprehensive worker status
+    status = await bioengine_worker_service.get_status()
+
+    # Validate bioengine_apps field exists and is properly structured
+    assert (
+        "bioengine_apps" in status
+    ), "Worker status should contain 'bioengine_apps' field"
+    apps_status = status["bioengine_apps"]
+    assert isinstance(apps_status, dict), "bioengine_apps should be a dictionary"
+
+    # Assert that applications are deployed based on startup configuration
+    expected_app_count = len(startup_applications)
+    assert (
+        len(apps_status) > 0
+    ), f"Expected {expected_app_count} startup applications to be deployed, but found {len(apps_status)} applications"
+
+    # Validate each deployed application's status structure
+    for application_id, app_info in apps_status.items():
+        assert isinstance(
+            application_id, str
+        ), f"Application ID '{application_id}' should be a string"
+        assert isinstance(
+            app_info, dict
+        ), f"Application info for '{application_id}' should be a dictionary"
+
+        # Required application metadata fields
+        required_fields = [
+            "display_name",
+            "description",
+            "artifact_id",
+            "version",
+            "status",
+            "message",
+            "deployments",
+            "deployment_options",
+            "application_resources",
+            "authorized_users",
+            "available_methods",
+            "service_ids",
+            "last_updated_by",
+        ]
+
+        for field in required_fields:
+            assert (
+                field in app_info
+            ), f"Application '{application_id}' should contain '{field}' field"
+
+        # Validate field types and values
+        assert isinstance(
+            app_info["display_name"], str
+        ), f"display_name should be a string for '{application_id}'"
+        assert isinstance(
+            app_info["description"], str
+        ), f"description should be a string for '{application_id}'"
+        assert isinstance(
+            app_info["artifact_id"], str
+        ), f"artifact_id should be a string for '{application_id}'"
+        assert isinstance(
+            app_info["version"], str
+        ), f"version should be a string for '{application_id}'"
+        assert isinstance(
+            app_info["status"], str
+        ), f"status should be a string for '{application_id}'"
+        assert isinstance(
+            app_info["message"], str
+        ), f"message should be a string for '{application_id}'"
+        assert isinstance(
+            app_info["deployments"], dict
+        ), f"deployments should be a dictionary for '{application_id}'"
+        assert isinstance(
+            app_info["deployment_options"], dict
+        ), f"deployment_options should be a dictionary for '{application_id}'"
+        assert isinstance(
+            app_info["application_resources"], dict
+        ), f"application_resources should be a dictionary for '{application_id}'"
+        assert isinstance(
+            app_info["authorized_users"], list
+        ), f"authorized_users should be a list for '{application_id}'"
+        assert isinstance(
+            app_info["available_methods"], list
+        ), f"available_methods should be a list for '{application_id}'"
+        assert isinstance(
+            app_info["service_ids"], list
+        ), f"service_ids should be a list for '{application_id}'"
+
+        # Validate application status is in expected states
+        valid_statuses = [
+            "NOT_STARTED",
+            "DEPLOYING",
+            "DEPLOY_FAILED",
+            "RUNNING",
+            "UNHEALTHY",
+            "DELETING",
+        ]
+        assert (
+            app_info["status"] in valid_statuses
+        ), f"Application status '{app_info['status']}' should be one of {valid_statuses}"
+
+        # Validate start_time if present (can be None for failed deployments)
+        if "start_time" in app_info and app_info["start_time"] is not None:
+            assert isinstance(
+                app_info["start_time"], (int, float)
+            ), f"start_time should be a number for '{application_id}'"
+            assert (
+                app_info["start_time"] > 0
+            ), f"start_time should be positive for '{application_id}'"
+
+        # For healthy applications, check deployment details
+        if app_info["status"] == "RUNNING":
+            # Should have deployments
+            assert (
+                len(app_info["deployments"]) > 0
+            ), f"Running application '{application_id}' should have active deployments"
+
+            # Validate each deployment
+            for deployment_name, deployment_info in app_info["deployments"].items():
+                assert isinstance(
+                    deployment_name, str
+                ), f"Deployment name should be a string in '{application_id}'"
+                assert isinstance(
+                    deployment_info, dict
+                ), f"Deployment info should be a dictionary in '{application_id}'"
+
+                # Required deployment fields
+                deployment_fields = ["status", "message", "replica_states"]
+                for field in deployment_fields:
+                    assert (
+                        field in deployment_info
+                    ), f"Deployment '{deployment_name}' should contain '{field}' field"
+
+                # Validate deployment status
+                valid_deployment_statuses = [
+                    "UPDATING",
+                    "HEALTHY",
+                    "UNHEALTHY",
+                    "UPSCALING",
+                    "DOWNSCALING",
+                ]
+                assert (
+                    deployment_info["status"] in valid_deployment_statuses
+                ), f"Deployment status '{deployment_info['status']}' should be one of {valid_deployment_statuses}"
+
+                # Validate replica states
+                assert isinstance(
+                    deployment_info["replica_states"], dict
+                ), f"replica_states should be a dictionary for deployment '{deployment_name}'"
+
+            # Should have service IDs for running applications
+            assert (
+                len(app_info["service_ids"]) > 0
+            ), f"Running application '{application_id}' should have service IDs"
+
+            # Validate service ID structure
+            for service_info in app_info["service_ids"]:
+                assert isinstance(
+                    service_info, dict
+                ), f"Service info should be a dictionary for '{application_id}'"
+                assert (
+                    "websocket_service_id" in service_info
+                ), f"Service info should contain websocket_service_id for '{application_id}'"
+                assert (
+                    "webrtc_service_id" in service_info
+                ), f"Service info should contain webrtc_service_id for '{application_id}'"
+
+        # Validate resource allocation structure
+        if app_info["application_resources"]:
+            assert isinstance(
+                app_info["application_resources"], dict
+            ), f"application_resources should be a dictionary for '{application_id}'"
+            # Common resource fields (may vary based on deployment)
+            for resource_key, resource_value in app_info[
+                "application_resources"
+            ].items():
+                assert isinstance(
+                    resource_key, str
+                ), f"Resource key should be a string in '{application_id}'"
+                assert isinstance(
+                    resource_value, (int, float, str)
+                ), f"Resource value should be numeric or string in '{application_id}'"
+
+        # Validate deployment options structure
+        if app_info["deployment_options"]:
+            assert isinstance(
+                app_info["deployment_options"], dict
+            ), f"deployment_options should be a dictionary for '{application_id}'"
+
+        # Validate authorized users
+        assert (
+            len(app_info["authorized_users"]) > 0
+        ), f"Application '{application_id}' should have authorized users"
+        for user in app_info["authorized_users"]:
+            assert isinstance(
+                user, str
+            ), f"Authorized user should be a string in '{application_id}'"
+
+        # Validate available methods
+        for method in app_info["available_methods"]:
+            assert isinstance(
+                method, str
+            ), f"Available method should be a string in '{application_id}'"
+
+    # Log summary of application status for debugging
+    app_count = len(apps_status)
+    running_count = sum(1 for app in apps_status.values() if app["status"] == "RUNNING")
+    healthy_count = sum(
+        1
+        for app in apps_status.values()
+        if app["status"] == "RUNNING"
+        and any(dep["status"] == "HEALTHY" for dep in app["deployments"].values())
+    )
+
+    print(
+        f"AppsManager Status Summary: {app_count} total applications, "
+        f"{running_count} running, {healthy_count} healthy"
+    )
+    print(f"Expected startup applications: {expected_app_count}")
+
+    # Validate startup applications deployment - ALL must be running and healthy
+
+    # Assert that exactly the expected number of applications are deployed
+    assert (
+        app_count == expected_app_count
+    ), f"Expected exactly {expected_app_count} startup applications, but found {app_count} total applications"
+
+    # ALL startup applications must be running
+    assert (
+        running_count == expected_app_count
+    ), f"Expected all {expected_app_count} startup applications to be running, but found only {running_count} running applications"
+
+    # ALL startup applications must be healthy
+    assert (
+        healthy_count == expected_app_count
+    ), f"Expected all {expected_app_count} startup applications to be healthy, but found only {healthy_count} healthy applications"
+
+    # Validate that each configured startup application exists and is in perfect state
+    startup_apps_validated = 0
+    for startup_app in startup_applications:
+        artifact_id = startup_app.get("artifact_id")
+        if artifact_id:
+            # Check if any deployed app has this artifact_id
+            matching_apps = [
+                app
+                for app in apps_status.values()
+                if app.get("artifact_id").endswith(artifact_id)
+            ]
+            assert (
+                len(matching_apps) == 1
+            ), f"Expected exactly one deployment for startup application with artifact_id '{artifact_id}', but found {len(matching_apps)}"
+
+            app_info = matching_apps[0]
+
+            # Check that the app is running
+            assert (
+                app_info.get("status") == "RUNNING"
+            ), f"Startup application with artifact_id '{artifact_id}' is not running (status: {app_info.get('status')})"
+
+            # Check that all deployments are healthy
+            assert (
+                len(app_info["deployments"]) > 0
+            ), f"Startup application with artifact_id '{artifact_id}' has no deployments"
+
+            for deployment_name, deployment_info in app_info["deployments"].items():
+                assert (
+                    deployment_info["status"] == "HEALTHY"
+                ), f"Deployment '{deployment_name}' of startup application '{artifact_id}' is not healthy (status: {deployment_info['status']})"
+
+            # Check that service IDs are properly configured
+            assert (
+                len(app_info["service_ids"]) > 0
+            ), f"Startup application with artifact_id '{artifact_id}' has no service IDs configured"
+
+            for service_info in app_info["service_ids"]:
+                # WebSocket service must be present
+                has_valid_service = service_info.get("websocket_service_id") is not None
+                assert (
+                    has_valid_service
+                ), f"Startup application with artifact_id '{artifact_id}' has no valid service endpoints"
+
+            # Check that the application has available methods
+            assert (
+                len(app_info["available_methods"]) > 0
+            ), f"Startup application with artifact_id '{artifact_id}' has no available methods"
+
+            # Check that start_time is set (indicating successful deployment)
+            assert (
+                app_info.get("start_time") is not None
+            ), f"Startup application with artifact_id '{artifact_id}' has no start_time set"
+            assert isinstance(
+                app_info["start_time"], (int, float)
+            ), f"Startup application with artifact_id '{artifact_id}' has invalid start_time type"
+            assert (
+                app_info["start_time"] > 0
+            ), f"Startup application with artifact_id '{artifact_id}' has invalid start_time value"
+
+            startup_apps_validated += 1
+
+    # Ensure we validated all expected startup applications
+    assert (
+        startup_apps_validated == expected_app_count
+    ), f"Expected to validate {expected_app_count} startup applications, but only validated {startup_apps_validated}"
 
 
 @pytest.mark.asyncio

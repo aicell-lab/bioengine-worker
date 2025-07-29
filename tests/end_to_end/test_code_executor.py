@@ -208,9 +208,7 @@ def process_data(numbers=None, texts=None, threshold=10, multiplier=1):
 
 
 @pytest.mark.asyncio
-async def test_execute_python_code_with_standard_libraries(
-    bioengine_worker_service
-):
+async def test_execute_python_code_with_standard_libraries(bioengine_worker_service):
     """
     Test executing functions that use standard Python library imports.
 
@@ -339,9 +337,7 @@ def analyze_with_libraries(numbers, texts, seed=42):
 
 
 @pytest.mark.asyncio
-async def test_execute_python_code_with_runtime_env_packages(
-    bioengine_worker_service
-):
+async def test_execute_python_code_with_runtime_env_packages(bioengine_worker_service):
     """
     Test executing functions that use runtime environment packages.
 
@@ -725,6 +721,7 @@ async def test_execute_python_code_with_pickle_mode(bioengine_worker_service):
     - Test functions with closures and complex return types
     - Verify results match expected behavior
     """
+
     # Define a simple function to pickle
     def simple_calculation(x, y, operation="add"):
         operations = {
@@ -877,7 +874,7 @@ async def test_execute_python_code_with_pickle_mode(bioengine_worker_service):
 
 @pytest.mark.asyncio
 async def test_execute_python_code_with_stdout_stderr_callbacks(
-    bioengine_worker_service
+    bioengine_worker_service,
 ):
     """
     Test Python code execution with stdout and stderr callback functions.

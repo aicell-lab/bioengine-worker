@@ -8,6 +8,7 @@ Supports both local worker instances and connecting to running workers
 via USE_RUNNING_WORKER environment variable.
 """
 
+import os
 from typing import AsyncGenerator, Dict, List
 
 import pytest
@@ -20,18 +21,23 @@ from bioengine_worker.worker import BioEngineWorker
 
 # Test application configurations for automatic startup deployment
 @pytest.fixture(scope="session")
-def startup_applications() -> List[Dict]:
+def startup_applications(worker_mode: str) -> List[Dict]:
     """
-    Define test applications for automatic deployment during worker startup.
+    Return startup applications based on worker mode.
 
-    Returns list with demo-app for basic functionality testing.
+    For external-cluster mode, no startup applications are deployed since
+    multiple function-scoped workers would conflict with the same application
+    deployed across different test functions to the same cluster.
     """
-    return [
-        {
-            "artifact_id": "demo-app",
-            "application_id": "demo-app",
-        },
-    ]
+    if worker_mode == "external-cluster":
+        return None
+    else:
+        return [
+            {
+                "artifact_id": "demo-app",
+                "application_id": "demo-app",
+            },
+        ]
 
 
 @pytest.fixture(scope="session")
@@ -59,9 +65,9 @@ def application_check_timeout() -> int:
 
 
 @pytest.fixture(scope="session")
-def num_cpus() -> int:
-    """Return 4 CPU cores for Ray cluster head node."""
-    return 4
+def num_cpus(worker_mode: str) -> int:
+    """Return CPU cores based on worker mode."""
+    return 4 if worker_mode != "external-cluster" else 0
 
 
 @pytest.fixture(scope="session")
@@ -71,15 +77,29 @@ def num_gpus() -> int:
 
 
 @pytest.fixture(scope="session")
-def memory_in_gb() -> int:
-    """Return 4GB memory allocation for worker."""
-    return 4
+def memory_in_gb(worker_mode: str) -> int:
+    """Return memory allocation based on worker mode."""
+    return 4 if worker_mode != "external-cluster" else 0
+
+
+@pytest.fixture(scope="session")
+def head_node_address(ray_address: str, worker_mode: str) -> str:
+    """Return head node address based on worker mode."""
+    address, _ = ray_address.split(":")
+    return address if worker_mode == "external-cluster" else None
+
+
+@pytest.fixture(scope="session")
+def head_node_port(ray_address: str, worker_mode: str) -> int:
+    """Return head node port based on worker mode."""
+    _, port = ray_address.split(":")
+    return int(port) if worker_mode == "external-cluster" else 6379
 
 
 @pytest_asyncio.fixture(scope="function")
 async def bioengine_worker_service_id(
+    monkeypatch: pytest.MonkeyPatch,
     worker_mode: str,
-    ray_address: str,
     cache_dir: Path,
     data_dir: Path,
     startup_applications: List[Dict],
@@ -90,8 +110,11 @@ async def bioengine_worker_service_id(
     num_cpus: int,
     num_gpus: int,
     memory_in_gb: int,
+    head_node_address: str,
+    head_node_port: int,
     dashboard_url: str,
     graceful_shutdown_timeout: int,
+    tests_dir: Path,
 ) -> AsyncGenerator[str, None]:
     """
     Create BioEngine worker instance and return service ID.
@@ -100,16 +123,9 @@ async def bioengine_worker_service_id(
     Automatically starts worker and cleans up after test completion.
     """
 
-    # Set parameters based on worker mode
-    startup_applications = (
-        startup_applications if worker_mode != "external-cluster" else None
-    )
-    head_node_address, head_node_port = ray_address.split(":")
-    head_node_address = head_node_address if worker_mode == "external-cluster" else None
-    head_node_port = head_node_port if worker_mode == "external-cluster" else 6379
-    head_num_cpus = num_cpus if worker_mode != "external-cluster" else 0
-    head_num_gpus = num_gpus if worker_mode != "external-cluster" else 0
-    head_memory_in_gb = memory_in_gb if worker_mode != "external-cluster" else 0
+    # Set environment variables for startup application deployment from local path
+    monkeypatch.setenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH", str(tests_dir))
+    assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") == str(tests_dir)
 
     # Initialize the BioEngine worker with startup applications
     bioengine_worker = BioEngineWorker(
@@ -126,9 +142,9 @@ async def bioengine_worker_service_id(
         ray_cluster_config={
             "head_node_address": head_node_address,
             "head_node_port": head_node_port,
-            "head_num_cpus": head_num_cpus,
-            "head_num_gpus": head_num_gpus,
-            "head_memory_in_gb": head_memory_in_gb,
+            "head_num_cpus": num_cpus,
+            "head_num_gpus": num_gpus,
+            "head_memory_in_gb": memory_in_gb,
         },
         dashboard_url=dashboard_url,
         log_file="off",

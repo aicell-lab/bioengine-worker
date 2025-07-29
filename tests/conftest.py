@@ -61,12 +61,6 @@ def worker_mode(request) -> str:
     return request.param
 
 
-@pytest.fixture(scope="function")
-def test_id() -> str:
-    """Generate unique timestamp-based session ID for test isolation."""
-    return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-
-
 @pytest.fixture(scope="session")
 def workspace_folder() -> Path:
     """
@@ -76,6 +70,12 @@ def workspace_folder() -> Path:
     """
     folder = Path(__file__).resolve().parent.parent
     return folder
+
+
+@pytest.fixture(scope="session")
+def tests_dir(workspace_folder: Path) -> Path:
+    """Return test directory."""
+    return workspace_folder / "tests"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -90,7 +90,9 @@ def validate_environment(workspace_folder) -> str:
             if match:
                 package_name = match.group(1)
                 try:
-                    subprocess.run(["pip", "show", package_name], check=True)
+                    subprocess.run(
+                        ["pip", "show", package_name], check=True, capture_output=True
+                    )
                 except subprocess.CalledProcessError:
                     pytest.exit(
                         f"Required package '{package_name}' not installed. "
@@ -98,17 +100,6 @@ def validate_environment(workspace_folder) -> str:
                     )
             else:
                 pytest.exit(f"Invalid requirement format: {req}")
-
-
-@pytest.fixture(scope="session", autouse=True)
-def tests_dir(workspace_folder: Path) -> Path:
-    """Return test directory."""
-    tests_dir = workspace_folder / "tests"
-
-    # Set the local artifact path for BioEngine Worker tests
-    os.environ["BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"] = str(tests_dir)
-
-    return tests_dir
 
 
 @pytest.fixture(scope="session")
@@ -120,10 +111,18 @@ def data_dir(workspace_folder: Path) -> Path:
 
 
 @pytest.fixture(scope="function")
+def test_id() -> str:
+    """Generate unique timestamp-based session ID for test isolation."""
+    return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+
+@pytest.fixture(scope="function")
 def cache_dir() -> Generator[Path, None, None]:
     """Create temporary cache directory with automatic cleanup."""
+    bioengine_dir = Path("/tmp") / "bioengine" / "tests"
+    bioengine_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
-        prefix=f"bioengine_worker_cache_"
+        dir=bioengine_dir,
     ) as temp_cache_dir:
         cache_dir = Path(temp_cache_dir)
         yield cache_dir

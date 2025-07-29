@@ -50,7 +50,11 @@ async def test_get_status(
     1. API Response Structure - Validates status dictionary format and completeness
     2. Service Metadata - Checks uptime, start time, workspace, and client information
     3. Worker Configuration - Verifies mode settings and operational parameters
-    4. Ray Cluster Status - Confirms distributed computing infrastructure health
+    4. Ray Cluster Status - Comprehensive validation of distributed computing infrastructure:
+       - Head node address and cluster mode validation
+       - Aggregated cluster resources (CPU, GPU, memory, object store)
+       - Individual node information and resource allocation
+       - Resource consistency checks (non-negative values, proper types)
     5. Component Status - Validates apps manager and datasets manager reporting
     6. Access Control - Ensures admin user permissions are properly configured
     7. Readiness State - Confirms worker is fully operational and accepting requests
@@ -59,7 +63,7 @@ async def test_get_status(
     - Returns comprehensive status dictionary with all required fields
     - Service uptime increases monotonically from start time
     - Worker mode matches one of the supported deployment modes
-    - Ray cluster status reflects current resource allocation
+    - Ray cluster status reflects current resource allocation with detailed node info
     - Admin users include the test client's credentials
     - Worker reports ready state when fully initialized
 
@@ -68,6 +72,7 @@ async def test_get_status(
     - Numeric values are within expected ranges (uptime >= 0)
     - String fields contain valid configuration values
     - Collection fields (lists, dicts) have appropriate structure
+    - Ray cluster structure matches BioEngineProxyActor.get_cluster_state format
     - Current user has administrative access to the worker
     """
     # Retrieve worker status through the service API
@@ -127,6 +132,97 @@ async def test_get_status(
     assert isinstance(
         status["bioengine_datasets"], dict
     ), "bioengine_datasets should be a dictionary"
+
+    # Extended validation for Ray cluster status
+    ray_cluster_status = status["ray_cluster"]
+
+    # Validate required Ray cluster fields
+    required_ray_fields = ["head_address", "start_time", "mode", "cluster", "nodes"]
+    for field in required_ray_fields:
+        assert (
+            field in ray_cluster_status
+        ), f"Ray cluster status should contain '{field}' field"
+
+    # Validate head_address
+    assert isinstance(
+        ray_cluster_status["head_address"], (str, type(None))
+    ), "head_address should be a string or None"
+
+    # Validate start_time (can be "N/A" for external-cluster mode)
+    assert isinstance(
+        ray_cluster_status["start_time"], (str, float, int, type(None))
+    ), "start_time should be a string, number, or None"
+
+    # Validate mode matches expected worker mode
+    assert isinstance(
+        ray_cluster_status["mode"], str
+    ), "Ray cluster mode should be a string"
+    assert (
+        ray_cluster_status["mode"] == worker_mode
+    ), f"Ray cluster mode should match worker mode: {worker_mode}"
+
+    # Validate cluster aggregated resources
+    assert isinstance(
+        ray_cluster_status["cluster"], dict
+    ), "cluster should be a dictionary"
+    cluster_resources = ray_cluster_status["cluster"]
+
+    # Required cluster resource fields
+    expected_cluster_fields = [
+        "total_cpu",
+        "available_cpu",
+        "total_gpu",
+        "available_gpu",
+        "total_memory",
+        "available_memory",
+        "total_object_store_memory",
+        "available_object_store_memory",
+    ]
+
+    for field in expected_cluster_fields:
+        if field in cluster_resources:  # May not be present in all modes
+            assert isinstance(
+                cluster_resources[field], (int, float)
+            ), f"cluster.{field} should be a number"
+            assert (
+                cluster_resources[field] >= 0
+            ), f"cluster.{field} should be non-negative"
+
+    # Validate individual node information
+    assert isinstance(ray_cluster_status["nodes"], dict), "nodes should be a dictionary"
+    nodes = ray_cluster_status["nodes"]
+
+    # If nodes are present, validate their structure
+    for node_id, node_info in nodes.items():
+        assert isinstance(node_id, str), "node_id should be a string"
+        assert isinstance(
+            node_info, dict
+        ), f"node info for {node_id} should be a dictionary"
+
+        # Expected node fields (some may be optional depending on configuration)
+        expected_node_fields = [
+            "node_ip",
+            "total_cpu",
+            "available_cpu",
+            "total_gpu",
+            "available_gpu",
+            "total_memory",
+            "available_memory",
+            "total_object_store_memory",
+            "available_object_store_memory",
+        ]
+
+        for field in expected_node_fields:
+            if field in node_info:
+                if field == "node_ip":
+                    assert isinstance(
+                        node_info[field], (str, type(None))
+                    ), f"node.{field} should be a string or None"
+                else:
+                    assert isinstance(
+                        node_info[field], (int, float)
+                    ), f"node.{field} should be a number"
+                    assert node_info[field] >= 0, f"node.{field} should be non-negative"
 
     # Validate administrative access control configuration
     assert isinstance(status["admin_users"], list), "admin_users should be a list"

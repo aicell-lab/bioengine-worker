@@ -303,11 +303,11 @@ class RayCluster:
         """
         try:
             subprocess.run(["sinfo"], capture_output=True, text=True, check=True)
-        except subprocess.CalledProcessError as e:
+        except FileNotFoundError:
             self.logger.error(
                 "SLURM is not available. Please ensure you are running this on a SLURM-managed HPC system."
             )
-            raise RuntimeError("SLURM is not available") from e
+            raise RuntimeError("SLURM is not available")
 
     def _check_ray_temp_dir_length(self, ray_temp_dir: str) -> None:
         # Simulate the longest possible session directory name

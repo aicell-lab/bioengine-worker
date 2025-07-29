@@ -138,6 +138,7 @@ class AppsManager:
         # Initialize state variables
         self.server = None
         self.artifact_manager = None
+        self.collection_id = None
         self.admin_users = None
         self.startup_applications = startup_applications
         self._deployment_lock = asyncio.Lock()
@@ -157,6 +158,39 @@ class AppsManager:
                 "Artifact manager not initialized. Call initialize() first."
             )
 
+    async def _ensure_bioengine_apps_collection(self) -> None:
+        """
+        Ensure the 'bioengine-apps' collection exists in the Hypha artifact manager.
+        Creates the collection if it does not exist, allowing for organized storage of BioEngine applications.
+
+        Raises:
+            RuntimeError: If the collection cannot be created or accessed
+        """
+        try:
+            await self.artifact_manager.read(self.collection_id)
+        except Exception as collection_error:
+            expected_error = (
+                f"KeyError: \"Artifact with ID '{self.collection_id}' does not exist.\""
+            )
+            if str(collection_error).strip().endswith(expected_error):
+                self.logger.info(
+                    f"Collection '{self.collection_id}' does not exist. Creating it."
+                )
+
+                collection_manifest = {
+                    "name": "BioEngine Apps",
+                    "description": "A collection of Ray deployments for the BioEngine.",
+                }
+                collection = await self.artifact_manager.create(
+                    alias=self.collection_id,
+                    type="collection",
+                    manifest=collection_manifest,
+                    config={"permissions": {"*": "r", "@": "r+"}},
+                )
+                self.logger.info(
+                    f"Bioengine Apps collection created with ID: {collection.id}."
+                )
+
     def _get_full_artifact_id(self, artifact_id: str) -> str:
         """
         Convert artifact ID to a full artifact ID.
@@ -171,6 +205,13 @@ class AppsManager:
         """
         if "/" not in artifact_id:
             return f"{self.server.config.workspace}/{artifact_id}"
+
+        # Ensure the artifact is in the correct workspace
+        if not artifact_id.startswith(f"{self.server.config.workspace}/"):
+            raise ValueError(
+                f"Artifact ID '{artifact_id}' does not belong to the current workspace '{self.server.config.workspace}'."
+            )
+
         return artifact_id
 
     async def _generate_application_id(self) -> str:
@@ -415,7 +456,11 @@ class AppsManager:
             self.artifact_manager = None
             raise
 
-        # Initialize artifact manager
+        # Set the collection ID for BioEngine applications
+        workspace = self.server.config.workspace
+        self.collection_id = f"{workspace}/bioengine-apps"
+
+        # Initialize the AppBuilder with the server and artifact manager
         self.app_builder.initialize(
             server=self.server,
             artifact_manager=self.artifact_manager,
@@ -501,11 +546,41 @@ class AppsManager:
             raise e
 
     @schema_method
-    async def create_artifact(
+    async def list_applications(
+        self, context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, List[str]]:
+        """
+        List all BioEngine application artifacts in the Hypha artifact manager.
+
+        Returns:
+            Dict[str, List[str]]: Mapping of artifact IDs to their file names in the BioEngine Apps collection
+        """
+        self._check_initialized()
+
+        check_permissions(
+            context=context,
+            authorized_users=self.admin_users,
+            resource_name=f"listing applications",
+        )
+
+        # Check if the 'bioengine-apps' collection exists
+        await self._ensure_bioengine_apps_collection()
+
+        bioengine_apps_artifacts = await self.artifact_manager.list(self.collection_id)
+
+        bioengine_apps = {}
+        for artifact in bioengine_apps_artifacts:
+            files = await self.artifact_manager.list_files(artifact.id)
+            bioengine_apps[artifact.id] = [file.name for file in files]
+
+        return bioengine_apps
+
+    @schema_method
+    async def create_application(
         self, files: List[dict], artifact_id: str = None, context: Optional[dict] = None
     ) -> str:
         """
-        Create a deployment artifact
+        Create a BioEngine application artifact in the Hypha artifact manager.
 
         Args:
             files: List of file dictionaries with 'name', 'content', and 'type' keys
@@ -521,7 +596,7 @@ class AppsManager:
         check_permissions(
             context=context,
             authorized_users=self.admin_users,
-            resource_name=f"create or modify an artifact",
+            resource_name=f"creating or modifying an application",
         )
 
         # Find the manifest file to extract metadata
@@ -559,24 +634,20 @@ class AppsManager:
         if artifact_id is not None:
             # If artifact_id is provided, we expect an existing artifact and will edit it
             workspace = self.server.config.workspace
-            full_artifact_id = (
-                artifact_id if "/" in artifact_id else f"{workspace}/{artifact_id}"
-            )
+            artifact_id = self._get_full_artifact_id(artifact_id)
 
             try:
                 # Try to edit existing artifact
-                self.logger.debug(f"Editing existing artifact '{full_artifact_id}'...")
+                self.logger.debug(f"Editing existing artifact '{artifact_id}'...")
                 artifact = await self.artifact_manager.edit(
-                    artifact_id=full_artifact_id,
+                    artifact_id=artifact_id,
                     manifest=deployment_manifest,
                     type="application",
                     stage=True,
                 )
             except Exception as e:
                 # If edit fails, throw an error since we expected an existing artifact
-                raise ValueError(
-                    f"Failed to edit existing artifact '{full_artifact_id}': {e}"
-                )
+                raise RuntimeError(f"Failed to edit artifact '{artifact_id}': {e}")
         else:
             # If artifact_id is not provided, create new artifact using alias from manifest
             deployment_manifest["created_by"] = context["user"]["id"]
@@ -605,42 +676,22 @@ class AppsManager:
                 )
 
             # Ensure the bioengine-apps collection exists
-            workspace = self.server.config.workspace
-            collection_id = f"{workspace}/bioengine-apps"
+            await self._ensure_bioengine_apps_collection()
+
             try:
-                await self.artifact_manager.read(collection_id)
-            except Exception as collection_error:
-                expected_error = (
-                    f"KeyError: \"Artifact with ID '{collection_id}' does not exist.\""
+                # Create new artifact using alias
+                self.logger.debug(f"Creating new artifact with alias '{alias}'...")
+                artifact = await self.artifact_manager.create(
+                    alias=alias,
+                    parent_id=self.collection_id,
+                    manifest=deployment_manifest,
+                    type=deployment_manifest.get("type", "application"),
+                    stage=True,
                 )
-                if str(collection_error).strip().endswith(expected_error):
-                    self.logger.info(
-                        f"Collection '{collection_id}' does not exist. Creating it."
-                    )
-
-                    collection_manifest = {
-                        "name": "BioEngine Apps",
-                        "description": "A collection of Ray deployments for the BioEngine.",
-                    }
-                    collection = await self.artifact_manager.create(
-                        alias=collection_id,
-                        type="collection",
-                        manifest=collection_manifest,
-                        config={"permissions": {"*": "r", "@": "r+"}},
-                    )
-                    self.logger.info(
-                        f"Bioengine Apps collection created with ID: {collection.id}."
-                    )
-
-            # Create new artifact using alias
-            self.logger.debug(f"Creating new artifact with alias '{alias}'...")
-            artifact = await self.artifact_manager.create(
-                alias=alias,
-                parent_id=collection_id,
-                manifest=deployment_manifest,
-                type=deployment_manifest.get("type", "application"),
-                stage=True,
-            )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to create artifact with alias '{alias}' in workspace '{workspace}': {e}"
+                )
 
         # Upload all files
         for file in files:
@@ -680,16 +731,27 @@ class AppsManager:
         await self.artifact_manager.commit(
             artifact_id=artifact.id,
         )
-        self.logger.info(f"Committed artifact with ID: {artifact.id}.")
+        self.logger.debug(f"Committed artifact with ID: {artifact.id}.")
+
+        # Verify the artifact is in the collection
+        available_artifacts = await self.list_applications(context=context)
+        if artifact.id not in available_artifacts:
+            raise ValueError(
+                f"Artifact '{artifact.id}' could not be created or is not in the collection."
+            )
+
+        self.logger.info(
+            f"Successfully created/updated application artifact '{artifact.id}'."
+        )
 
         return artifact.id
 
     @schema_method
-    async def delete_artifact(
+    async def delete_application(
         self, artifact_id: str, context: Optional[Dict[str, Any]] = None
-    ) -> str:
+    ) -> None:
         """
-        Delete a deployment artifact from Hypha.
+        Delete a BioEngine application artifact from the Hypha artifact manager.
 
         Args:
             artifact_id: ID of the artifact to delete
@@ -707,7 +769,7 @@ class AppsManager:
         check_permissions(
             context=context,
             authorized_users=self.admin_users,
-            resource_name=f"delete the artifact '{artifact_id}'",
+            resource_name=f"deleting the artifact '{artifact_id}'",
         )
 
         # Get the full artifact ID
@@ -716,6 +778,14 @@ class AppsManager:
 
         # Delete the artifact
         await self.artifact_manager.delete(artifact_id)
+
+        # Verify deletion
+        available_artifacts = await self.list_applications(context=context)
+        if artifact_id in available_artifacts:
+            raise ValueError(
+                f"Artifact '{artifact_id}' could not be deleted. It still exists in the collection."
+            )
+
         self.logger.info(f"Successfully deleted artifact '{artifact_id}'.")
 
     @schema_method
@@ -770,7 +840,7 @@ class AppsManager:
             check_permissions(
                 context=context,
                 authorized_users=self.admin_users,
-                resource_name=f"deploy the artifact '{artifact_id}'",
+                resource_name=f"deploying an application from artifact '{artifact_id}'",
             )
             user_id = context["user"]["id"]
 
@@ -945,7 +1015,7 @@ class AppsManager:
         check_permissions(
             context=context,
             authorized_users=self.admin_users,
-            resource_name=f"undeploy the application '{application_id}'",
+            resource_name=f"undeploying the application '{application_id}'",
         )
         user_id = context["user"]["id"]
 
@@ -999,7 +1069,7 @@ class AppsManager:
         check_permissions(
             context=context,
             authorized_users=self.admin_users,
-            resource_name="cleanup all deployments",
+            resource_name="cleaning up all deployments",
         )
         user_id = context["user"]["id"]
 

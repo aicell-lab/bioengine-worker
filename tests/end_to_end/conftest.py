@@ -8,23 +8,14 @@ Supports both local worker instances and connecting to running workers
 via USE_RUNNING_WORKER environment variable.
 """
 
-import os
-from typing import Dict, List
+from typing import AsyncGenerator, Dict, List
 
 import pytest
 import pytest_asyncio
+from anyio import Path
+from hypha_rpc.rpc import ObjectProxy, RemoteService
 
 from bioengine_worker.worker import BioEngineWorker
-
-# Configuration for test execution mode
-# When True, tests connect to an already running worker instead of starting their own
-USE_RUNNING_WORKER = os.getenv("USE_RUNNING_WORKER", "False").lower() == "true"
-
-
-@pytest.fixture(scope="session")
-def worker_mode() -> str:
-    """Return 'single-machine' mode for local Ray cluster testing."""
-    return "single-machine"
 
 
 # Test application configurations for automatic startup deployment
@@ -32,7 +23,7 @@ def worker_mode() -> str:
 def startup_applications() -> List[Dict]:
     """
     Define test applications for automatic deployment during worker startup.
-    
+
     Returns list with demo-app for basic functionality testing.
     """
     return [
@@ -87,27 +78,39 @@ def memory_in_gb() -> int:
 
 @pytest_asyncio.fixture(scope="function")
 async def bioengine_worker_service_id(
-    worker_mode,
-    cache_dir,
-    data_dir,
-    startup_applications,
-    monitoring_interval_seconds,
-    server_url,
-    hypha_token,
-    session_id,
-    num_cpus,
-    num_gpus,
-    memory_in_gb,
-    dashboard_url,
-    graceful_shutdown_timeout,
-    hypha_client,
-):
+    worker_mode: str,
+    ray_address: str,
+    cache_dir: Path,
+    data_dir: Path,
+    startup_applications: List[Dict],
+    monitoring_interval_seconds: int,
+    server_url: str,
+    hypha_token: str,
+    test_id: str,
+    num_cpus: int,
+    num_gpus: int,
+    memory_in_gb: int,
+    dashboard_url: str,
+    graceful_shutdown_timeout: int,
+) -> AsyncGenerator[str, None]:
     """
     Create BioEngine worker instance and return service ID.
-    
+
     Initializes worker with startup applications and manages lifecycle.
     Automatically starts worker and cleans up after test completion.
     """
+
+    # Set parameters based on worker mode
+    startup_applications = (
+        startup_applications if worker_mode != "external-cluster" else None
+    )
+    head_node_address, head_node_port = ray_address.split(":")
+    head_node_address = head_node_address if worker_mode == "external-cluster" else None
+    head_node_port = head_node_port if worker_mode == "external-cluster" else 6379
+    head_num_cpus = num_cpus if worker_mode != "external-cluster" else 0
+    head_num_gpus = num_gpus if worker_mode != "external-cluster" else 0
+    head_memory_in_gb = memory_in_gb if worker_mode != "external-cluster" else 0
+
     # Initialize the BioEngine worker with startup applications
     bioengine_worker = BioEngineWorker(
         mode=worker_mode,
@@ -119,11 +122,13 @@ async def bioengine_worker_service_id(
         server_url=server_url,
         workspace=None,
         token=hypha_token,
-        client_id=f"bioengine_test_worker_{session_id}",
+        client_id=f"bioengine_test_worker_{test_id}",
         ray_cluster_config={
-            "head_num_cpus": num_cpus,
-            "head_num_gpus": num_gpus,
-            "head_memory_in_gb": memory_in_gb,
+            "head_node_address": head_node_address,
+            "head_node_port": head_node_port,
+            "head_num_cpus": head_num_cpus,
+            "head_num_gpus": head_num_gpus,
+            "head_memory_in_gb": head_memory_in_gb,
         },
         dashboard_url=dashboard_url,
         log_file="off",
@@ -140,45 +145,30 @@ async def bioengine_worker_service_id(
 
     finally:
         # Cleanup after all tests are done
-        if bioengine_worker:
-            await bioengine_worker._stop(blocking=True)
+        await bioengine_worker._stop(blocking=True)
 
 
-if USE_RUNNING_WORKER:
+@pytest_asyncio.fixture(scope="function")
+async def bioengine_worker_service(
+    hypha_client: RemoteService, bioengine_worker_service_id: str
+) -> ObjectProxy:
+    """Get BioEngine worker service from created worker instance."""
+    # Get the BioEngine worker service
+    bioengine_worker_service = await hypha_client.get_service(
+        bioengine_worker_service_id
+    )
 
-    @pytest_asyncio.fixture(scope="function")
-    async def bioengine_worker_service(hypha_client, hypha_workspace):
-        """Connect to existing BioEngine worker service."""
-        # Get the BioEngine worker service
-        bioengine_worker_service_id = f"{hypha_workspace}/bioengine-worker"
-        bioengine_worker_service = await hypha_client.get_service(
-            bioengine_worker_service_id
-        )
-
-        # Return the worker service for use in tests
-        return bioengine_worker_service
-
-else:
-
-    @pytest_asyncio.fixture(scope="function")
-    async def bioengine_worker_service(hypha_client, bioengine_worker_service_id):
-        """Get BioEngine worker service from created worker instance."""
-        # Get the BioEngine worker service
-        bioengine_worker_service = await hypha_client.get_service(
-            bioengine_worker_service_id
-        )
-
-        # Return the worker service for use in tests
-        return bioengine_worker_service
+    # Return the worker service for use in tests
+    return bioengine_worker_service
 
 
 @pytest.fixture(scope="function")
-def bioengine_worker_workspace(bioengine_worker_service_id) -> str:
+def bioengine_worker_workspace(bioengine_worker_service_id: str) -> str:
     """Extract workspace from worker service ID."""
     return bioengine_worker_service_id.split("/")[0]
 
 
 @pytest.fixture(scope="function")
-def bioengine_worker_client_id(bioengine_worker_service_id) -> str:
+def bioengine_worker_client_id(bioengine_worker_service_id: str) -> str:
     """Extract client ID from worker service ID."""
     return bioengine_worker_service_id.split("/")[1].split(":")[0]

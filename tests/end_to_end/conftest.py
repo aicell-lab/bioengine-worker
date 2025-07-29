@@ -79,7 +79,7 @@ def num_gpus() -> int:
 @pytest.fixture(scope="session")
 def memory_in_gb(worker_mode: str) -> int:
     """Return memory allocation based on worker mode."""
-    return 4 if worker_mode != "external-cluster" else 0
+    return 6 if worker_mode != "external-cluster" else 0
 
 
 @pytest.fixture(scope="session")

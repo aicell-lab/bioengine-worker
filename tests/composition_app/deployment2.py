@@ -7,8 +7,8 @@ from ray import serve
         "num_cpus": 1,
         # Number of GPUs to allocate for the deployment
         "num_gpus": 0,
-        # Memory limit for the deployment (1 GB)
-        "memory": 1024 * 1024 * 1024,
+        # Memory limit for the deployment (0.5 GB)
+        "memory": 0.5 * 1024 * 1024 * 1024,
         # Runtime environment for the deployment (e.g., dependencies, environment variables)
         "runtime_env": {
             "pip": [

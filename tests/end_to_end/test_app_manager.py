@@ -6,14 +6,17 @@ including application deployment, undeployment, startup applications, WebSocket 
 peer connections, artifact management, and cleanup operations.
 """
 
+import asyncio
 import base64
+import os
+import time
 import warnings
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import pytest
 import yaml
-from hypha_rpc.rpc import ObjectProxy
+from hypha_rpc.rpc import ObjectProxy, RemoteService
 
 
 def _create_file_list_from_directory(
@@ -629,122 +632,384 @@ async def test_startup_application(
 
 
 @pytest.mark.asyncio
-async def test_deploy_application_locally(bioengine_worker_service):
+async def test_deploy_application_locally(
+    monkeypatch: pytest.MonkeyPatch,
+    tests_dir: Path,
+    worker_mode: str,
+    hypha_workspace: str,
+    bioengine_worker_service: ObjectProxy,
+):
     """
-    Test deploying the 'composition-app' application from local artifact path.
-
-    This test validates:
-    1. Local artifact deployment (BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH is set)
-    2. Application deployment through deploy_application API
-    3. Successful application startup and health checks
-    4. Resource allocation for the deployed application
-    5. Service registration and accessibility
-
-    Steps:
-    - Connect to worker service
-    - Call deploy_application with artifact_id="composition-app"
-    - Wait for deployment completion
-    - Verify application appears in worker status
-    - Check application health and endpoints
-    - Validate resource usage and allocation
+    Test deploying the 'demo-app' and 'composition-app' applications from local artifact path.
     """
+    if worker_mode == "external-cluster":
+        pytest.skip(
+            "Startup applications are disabled in external cluster mode. Skipping test."
+        )
+
+    # Set environment variables for startup application deployment from local path
+    monkeypatch.setenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH", str(tests_dir))
+    assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") == str(tests_dir)
+
+    # iterate over demo_app and composition_app directories
+    # Note: the demo app is already deployed by startup_applications, but the deployment below will use a different application ID
+
+    demo_artifact_id = f"{hypha_workspace}/demo-app"
+    demo_app_config = {
+        "artifact_id": demo_artifact_id,
+        "num_cpus": 2,
+        "num_gpus": 0,
+        "memory": 1.2 * 1024**3,
+    }  # Test random application ID generation, provide resource limits
+
+    composition_artifact_id = f"{hypha_workspace}/composition-app"
+    composition_app_config = {
+        "artifact_id": composition_artifact_id,
+        "application_id": f"composition-app",
+        "deployment_kwargs": {
+            "CompositionDeployment": {"demo_input": "Hello World!"},
+            "Deployment2": {"start_number": 10},
+        },
+    }  # provide custom application id and deployment kwargs
+
+    app_configs = [demo_app_config, composition_app_config]
+    deployed_app_ids = []
+
+    for app_config in app_configs:
+        # Deploy the application
+        application_id = await bioengine_worker_service.deploy_application(**app_config)
+        deployed_app_ids.append(application_id)
+        print(f"Deployed application: {application_id}")
+
+    # Wait for both applications to finish deploying
+    timeout = 30  # 30 seconds timeout
+    poll_interval = 2  # Check every 2 seconds
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
+        status = await bioengine_worker_service.get_status()
+        bioengine_apps = status.get("bioengine_apps", {})
+
+        # Check if all apps are no longer in DEPLOYING state
+        all_deployed = True
+        for app_id in deployed_app_ids:
+            if app_id in bioengine_apps:
+                app_status = bioengine_apps[app_id].get("status", "")
+                if app_status in ["NOT_STARTED", "DEPLOYING"]:
+                    all_deployed = False
+                    break
+            else:
+                all_deployed = False
+                break
+
+        if all_deployed:
+            break
+
+        await asyncio.sleep(poll_interval)
+    else:
+        raise TimeoutError(
+            f"Applications did not finish deploying within {timeout} seconds"
+        )
+
+    # Check that both apps are healthy and have running replicas
+    status = await bioengine_worker_service.get_status()
+    bioengine_apps = status.get("bioengine_apps", {})
+
+    for app_id in deployed_app_ids:
+        assert app_id in bioengine_apps, f"Application {app_id} not found in status"
+
+        app_info = bioengine_apps[app_id]
+        assert (
+            app_info["status"] == "RUNNING"
+        ), f"Application {app_id} is not running: {app_info['status']}"
+
+        # Check deployments are healthy
+        assert (
+            len(app_info["deployments"]) > 0
+        ), f"Application {app_id} should have active deployments"
+
+        for deployment_name, deployment_info in app_info["deployments"].items():
+            assert (
+                deployment_info["status"] == "HEALTHY"
+            ), f"Deployment {deployment_name} of app {app_id} is not healthy: {deployment_info['status']}"
+
+            # Check replica states
+            replica_states = deployment_info["replica_states"]
+            assert (
+                len(replica_states) > 0
+            ), f"Deployment {deployment_name} of app {app_id} should have replicas"
+
+            # Ensure at least one replica is running
+            running_replicas = replica_states.get("RUNNING", 0)
+            assert (
+                running_replicas > 0
+            ), f"Deployment {deployment_name} of app {app_id} should have at least one running replica"
+
+        print(f"Application {app_id} is healthy with running replicas")
+
+    # Does not need any cleanup because of function-scoped BioEngine worker
+
+
+@pytest.mark.asyncio
+async def test_deploy_application_from_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tests_dir: Path,
+    worker_mode: str,
+    test_id: str,
+    hypha_workspace: str,
+    bioengine_worker_service: ObjectProxy,
+):
+    """
+    Test deploying the 'demo-app' and 'composition-app' applications from remote artifact.
+
+    Note: The demo app is already deployed by startup_applications, deploying again will update the app
+    """
+    if worker_mode == "external-cluster":
+        pytest.skip(
+            "Startup applications are disabled in external cluster mode. Skipping test."
+        )
+
+    # Ensure BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH is not set to avoid local deployment
+    monkeypatch.delenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH", raising=False)
+    assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") is None
+
+    hyphen_test_id = test_id.replace("_", "-")
+
+    demo_app_path = tests_dir / "demo_app"
+    demo_artifact_id = f"{hypha_workspace}/demo-app-{hyphen_test_id}"
+    demo_app_config = {
+        "artifact_id": demo_artifact_id,
+        "num_cpus": 2,
+        "num_gpus": 0,
+        "memory": 1.2 * 1024**3,
+    }  # Test with resource limits
+
+    composition_app_path = tests_dir / "composition_app"
+    composition_artifact_id = f"{hypha_workspace}/composition-app-{hyphen_test_id}"
+    composition_app_config = {
+        "artifact_id": composition_artifact_id,
+        "application_id": f"composition-app-{hyphen_test_id}",
+        "deployment_kwargs": {
+            "CompositionDeployment": {"demo_input": "Hello World!"},
+            "Deployment2": {"start_number": 10},
+        },
+    }
+
+    app_paths = [demo_app_path, composition_app_path]
+    app_configs = [demo_app_config, composition_app_config]
+    artifact_ids = [demo_artifact_id, composition_artifact_id]
+    deployed_app_ids = []
+
+    # Verify the test directories exist
+    assert demo_app_path.exists(), f"Demo app directory not found: {demo_app_path}"
+    assert (
+        composition_app_path.exists()
+    ), f"Composition app directory not found: {composition_app_path}"
+
+    test_completed = False
+    try:
+        # Create artifacts first
+        for app_path, artifact_id in zip(app_paths, artifact_ids):
+            # Create file list from directory
+            files, created_artifact_id = _create_file_list_from_directory(
+                app_path, test_id, hypha_workspace
+            )
+            assert (
+                created_artifact_id == artifact_id
+            ), f"Artifact ID mismatch: expected {artifact_id}, got {created_artifact_id}"
+
+            # Create the artifact
+            result_artifact_id = await bioengine_worker_service.create_application(
+                files=files
+            )
+            assert (
+                result_artifact_id == artifact_id
+            ), f"Created artifact ID should match expected: {artifact_id}"
+            print(f"Created artifact: {artifact_id}")
+
+        # Verify artifacts exist
+        available_artifacts = await bioengine_worker_service.list_applications()
+        for artifact_id in artifact_ids:
+            assert (
+                artifact_id in available_artifacts
+            ), f"Artifact {artifact_id} should be listed in available artifacts"
+
+        # Deploy applications from artifacts
+        for app_config in app_configs:
+            application_id = await bioengine_worker_service.deploy_application(
+                **app_config
+            )
+            deployed_app_ids.append(application_id)
+            print(f"Deployed application: {application_id}")
+
+        # Wait for both applications to finish deploying
+        timeout = 30  # 30 seconds timeout
+        poll_interval = 2  # Check every 2 seconds
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            status = await bioengine_worker_service.get_status()
+            bioengine_apps = status.get("bioengine_apps", {})
+
+            # Check if all apps are no longer in DEPLOYING state
+            all_deployed = True
+            for app_id in deployed_app_ids:
+                if app_id in bioengine_apps:
+                    app_status = bioengine_apps[app_id].get("status", "")
+                    if app_status in ["NOT_STARTED", "DEPLOYING"]:
+                        all_deployed = False
+                        break
+                else:
+                    all_deployed = False
+                    break
+
+            if all_deployed:
+                break
+
+            await asyncio.sleep(poll_interval)
+        else:
+            raise TimeoutError(
+                f"Applications did not finish deploying within {timeout} seconds"
+            )
+
+        # Check that both apps are healthy and have running replicas
+        status = await bioengine_worker_service.get_status()
+        bioengine_apps = status.get("bioengine_apps", {})
+
+        for app_id in deployed_app_ids:
+            assert app_id in bioengine_apps, f"Application {app_id} not found in status"
+
+            app_info = bioengine_apps[app_id]
+            assert (
+                app_info["status"] == "RUNNING"
+            ), f"Application {app_id} is not running: {app_info['status']}"
+
+            # Check deployments are healthy
+            assert (
+                len(app_info["deployments"]) > 0
+            ), f"Application {app_id} should have active deployments"
+
+            for deployment_name, deployment_info in app_info["deployments"].items():
+                assert (
+                    deployment_info["status"] == "HEALTHY"
+                ), f"Deployment {deployment_name} of app {app_id} is not healthy: {deployment_info['status']}"
+
+                # Check replica states
+                replica_states = deployment_info["replica_states"]
+                assert (
+                    len(replica_states) > 0
+                ), f"Deployment {deployment_name} of app {app_id} should have replicas"
+
+                # Ensure at least one replica is running
+                running_replicas = replica_states.get("RUNNING", 0)
+                assert (
+                    running_replicas > 0
+                ), f"Deployment {deployment_name} of app {app_id} should have at least one running replica"
+
+            print(f"Application {app_id} is healthy with running replicas")
+
+        # Undeploy applications
+        for app_id in deployed_app_ids:
+            await bioengine_worker_service.undeploy_application(app_id)
+            print(f"Undeployed application: {app_id}")
+
+        test_completed = True
+
+    finally:
+        # Cleanup: Delete all created artifacts
+        cleanup_errors = []
+        for artifact_id in artifact_ids:
+            try:
+                await bioengine_worker_service.delete_application(
+                    artifact_id=artifact_id
+                )
+                print(f"Deleted artifact: {artifact_id}")
+            except Exception as e:
+                cleanup_errors.append(f"Failed to cleanup artifact {artifact_id}: {e}")
+
+        # Also cleanup any remaining deployed applications if test failed
+        if not test_completed:
+            for app_id in deployed_app_ids:
+                try:
+                    await bioengine_worker_service.undeploy_application(app_id)
+                except Exception as e:
+                    cleanup_errors.append(
+                        f"Failed to cleanup application {app_id}: {e}"
+                    )
+
+        # Log cleanup errors but don't fail the test if cleanup fails
+        if cleanup_errors:
+            for error in cleanup_errors:
+                print(f"Cleanup warning: {error}")
+
+
+@pytest.mark.asyncio
+async def test_call_demo_app_functions(
+    monkeypatch: pytest.MonkeyPatch,
+    tests_dir: Path,
+    bioengine_worker_service: ObjectProxy,
+    hypha_client: RemoteService,
+):
+    """
+    Test calling functions of the deployed demo application.
+
+    Exposed methods:
+    - `ping`
+    - `ascii_art`
+    """
+    # Set environment variables for startup application deployment from local path
+    monkeypatch.setenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH", str(tests_dir))
+    assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") == str(tests_dir)
+
+    # Deploy the demo-app with apps_manager.deploy_application from local path
+
+    # Get the service ID from the worker status
+
+    # Get the websocket service using hypha_client
+
+    # Call the application functions using the WebSocket service
+
+    # Get the peer connection
+
+    # Get the service using the peer connection instead of hypha_client
+
+    # Call the application functions using the peer connection service
+
     # TODO: Implement test logic
     raise NotImplementedError
 
 
 @pytest.mark.asyncio
-async def test_call_composition_app_functions(bioengine_worker_service):
+async def test_call_composition_app_functions(
+    monkeypatch: pytest.MonkeyPatch,
+    tests_dir: Path,
+    bioengine_worker_service: ObjectProxy,
+    hypha_client: RemoteService,
+):
     """
-    Test calling specific functions (calculate_result and ping) of the demo-app.
+    Test calling functions of the deployed composition application.
 
-    This test validates:
-    1. Service function discovery and access
-    2. Remote function invocation through Hypha RPC
-    3. Parameter passing and result retrieval
-    4. Function execution in Ray Serve environment
-    5. Response handling and error management
-
-    Steps:
-    - Connect to worker service
-    - Get demo-app service reference
-    - Call calculate_result function with test parameters
-    - Verify calculation results and response format
-    - Call ping function for connectivity testing
-    - Check function execution timing and performance
-    - Validate error handling for invalid parameters
+    Exposed methods:
+    - `ping`
+    - `calculate_result`
     """
-    # TODO: Implement test logic
-    raise NotImplementedError
+    # Set environment variables for startup application deployment from local path
+    monkeypatch.setenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH", str(tests_dir))
+    assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") == str(tests_dir)
 
+    # Deploy the composition-app with apps_manager.deploy_application from local path
 
-@pytest.mark.asyncio
-async def test_undeploy_application(bioengine_worker_service):
-    """
-    Test undeploying the 'composition-app' application.
+    # Get the service ID from the worker status
 
-    This test validates:
-    1. Application undeployment through undeploy_application API
-    2. Graceful shutdown of application services
-    3. Resource cleanup and deallocation
-    4. Removal from active deployments list
-    5. Service deregistration from Hypha server
+    # Get the websocket service using hypha_client
 
-    Steps:
-    - Ensure composition-app is deployed first
-    - Call undeploy_application with application_id="composition-app"
-    - Wait for undeployment completion
-    - Verify application no longer appears in worker status
-    - Check that resources are properly freed
-    - Confirm service endpoints are no longer accessible
-    """
-    # TODO: Implement test logic
-    raise NotImplementedError
+    # Call the application functions using the WebSocket service
 
+    # Get the peer connection
 
-@pytest.mark.asyncio
-async def test_get_websocket_service(bioengine_worker_service):
-    """
-    Test accessing the WebSocket service of the startup application.
+    # Get the service using the peer connection instead of hypha_client
 
-    This test validates:
-    1. WebSocket service availability for demo-app
-    2. WebSocket connection establishment
-    3. Service endpoint discovery through Hypha
-    4. Real-time communication capabilities
-    5. WebSocket message handling and responses
+    # Call the application functions using the peer connection service
 
-    Steps:
-    - Connect to worker service
-    - Get demo-app service information
-    - Locate WebSocket service endpoint
-    - Establish WebSocket connection
-    - Test basic message exchange
-    - Verify connection stability and cleanup
-    """
-    # TODO: Implement test logic
-    raise NotImplementedError
-
-
-@pytest.mark.asyncio
-async def test_get_peer_connection_websocket_service(bioengine_worker_service):
-    """
-    Test accessing peer connection and WebSocket service of the startup application.
-
-    This test validates:
-    1. Peer connection establishment for demo-app
-    2. WebRTC peer connection setup and signaling
-    3. Combined peer connection and WebSocket functionality
-    4. Real-time data channels and communication
-    5. Connection management and cleanup
-
-    Steps:
-    - Connect to worker service
-    - Get demo-app service with peer connection support
-    - Establish WebRTC peer connection
-    - Set up WebSocket communication channel
-    - Test bidirectional data exchange
-    - Verify connection quality and performance
-    - Clean up connections properly
-    """
     # TODO: Implement test logic
     raise NotImplementedError

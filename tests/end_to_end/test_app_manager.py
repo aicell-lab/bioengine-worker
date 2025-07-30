@@ -134,25 +134,25 @@ async def test_create_and_delete_artifacts(
     ), "Composition app directory should contain files"
 
     # Verify artifact has manifest files
-    demo_manifest = next(
+    demo_manifest_file = next(
         (f for f in demo_app_files if f["name"] == "manifest.yaml"), None
     )
-    composition_manifest = next(
+    composition_manifest_file = next(
         (f for f in composition_app_files if f["name"] == "manifest.yaml"), None
     )
 
     # Ensure manifest files are present
-    assert demo_manifest, "Demo app manifest not found"
-    assert composition_manifest, "Composition app manifest not found"
+    assert demo_manifest_file, "Demo app manifest not found"
+    assert composition_manifest_file, "Composition app manifest not found"
 
     # Ensure manifest files are valid YAML
     try:
-        yaml.safe_load(demo_manifest["content"])
+        demo_manifest = yaml.safe_load(demo_manifest_file["content"])
     except yaml.YAMLError as e:
         pytest.fail(f"Invalid YAML in demo app manifest: {e}")
 
     try:
-        yaml.safe_load(composition_manifest["content"])
+        composition_manifest = yaml.safe_load(composition_manifest_file["content"])
     except yaml.YAMLError as e:
         pytest.fail(f"Invalid YAML in composition app manifest: {e}")
 
@@ -236,16 +236,32 @@ async def test_create_and_delete_artifacts(
         ), "Composition artifact should be listed in available artifacts"
 
         # Verify all files in demo-app artifact
-
         assert all(
-            f["name"] in available_artifacts[demo_artifact_id] for f in demo_app_files
+            f["name"] in available_artifacts[demo_artifact_id]["files"]
+            for f in demo_app_files
         ), "All demo app files should be listed in artifact files"
+        received_manifest = available_artifacts[demo_artifact_id]["manifest"].toDict()
+        assert (
+            received_manifest["manifest"] == demo_manifest
+        ), "Demo app manifest should match expected manifest"
+        assert (
+            received_manifest["parent_id"] == f"{hypha_workspace}/bioengine-apps"
+        ), "Demo app manifest should be in bioengine-apps collection"
 
         # Verify all files in composition-app artifact
         assert all(
-            f["name"] in available_artifacts[composition_artifact_id]
+            f["name"] in available_artifacts[composition_artifact_id]["files"]
             for f in composition_app_files
         ), "All composition app files should be listed in artifact files"
+        received_manifest = available_artifacts[composition_artifact_id][
+            "manifest"
+        ].toDict()
+        assert (
+            received_manifest["manifest"] == composition_manifest
+        ), "Composition app manifest should match expected manifest"
+        assert (
+            received_manifest["parent_id"] == f"{hypha_workspace}/bioengine-apps"
+        ), "Composition app manifest should be in bioengine-apps collection"
 
         # Delete both artifacts
         await bioengine_worker_service.delete_application(artifact_id=demo_artifact_id)

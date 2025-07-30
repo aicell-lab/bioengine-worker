@@ -158,9 +158,7 @@ class RayCluster:
 
         # Find and store Ray executable path
         self.ray_exec_path = self._find_ray_executable()
-        self.serve_exec_path = (
-            self.ray_exec_path[:-3] + "serve"
-        )  # Replace 'ray' with 'serve'
+        self.serve_exec_path = self._find_serve_executable()
 
         # Check if mode is valid
         self.mode = mode
@@ -279,20 +277,41 @@ class RayCluster:
         """
         Find the Ray executable path in the current Python environment.
 
-        Searches for the Ray executable in the Python environment's bin directory
-        based on the current Python interpreter location.
-
         Returns:
             str: Path to the Ray executable
 
         Raises:
-            FileNotFoundError: If Ray executable is not found in the expected location
+            FileNotFoundError: If Ray executable can not be found with 'which' command
         """
-        ray_path = Path(sys.executable).parent / "ray"
-        if not ray_path.exists():
+        try:
+            ray_path = subprocess.run(
+                ["which", "ray"], capture_output=True, text=True, check=True
+            ).stdout.strip()
+        except FileNotFoundError:
             raise FileNotFoundError("Ray executable not found")
+
         self.logger.debug(f"Ray executable found at: {ray_path}")
         return str(ray_path)
+
+    def _find_serve_executable(self) -> str:
+        """
+        Find the Ray Serve executable path in the current Python environment.
+
+        Returns:
+            str: Path to the Ray Serve executable
+
+        Raises:
+            FileNotFoundError: If Ray Serve executable can not be found with 'which' command
+        """
+        try:
+            serve_path = subprocess.run(
+                ["which", "ray-serve"], capture_output=True, text=True, check=True
+            ).stdout.strip()
+        except FileNotFoundError:
+            raise FileNotFoundError("Ray Serve executable not found")
+
+        self.logger.debug(f"Ray Serve executable found at: {serve_path}")
+        return str(serve_path)
 
     def _check_slurm_available(self) -> None:
         """

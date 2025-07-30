@@ -305,7 +305,7 @@ class RayCluster:
         """
         try:
             serve_path = subprocess.run(
-                ["which", "ray-serve"], capture_output=True, text=True, check=True
+                ["which", "serve"], capture_output=True, text=True, check=True
             ).stdout.strip()
         except FileNotFoundError:
             raise FileNotFoundError("Ray Serve executable not found")

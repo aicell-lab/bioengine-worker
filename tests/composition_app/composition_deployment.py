@@ -1,7 +1,49 @@
-# All standard python libraries and libraries that are part of the BioEngine can be
-# imported at the top of this file. Take a look at the requirements.txt file to see
-# which libraries are part of the BioEngine:
-# https://github.com/aicell-lab/bioengine-worker/blob/main/requirements.txt)
+"""
+BioEngine Worker Multi-Deployment Application Example
+
+This demonstrates how to create applications with multiple deployments that work together.
+BioEngine Worker applications can consist of multiple Ray Serve deployments that are
+combined into a single application by the BioEngine Worker.
+
+MULTI-DEPLOYMENT ARCHITECTURE:
+- Applications can have multiple deployments listed in the manifest.yaml under 'deployments'
+- Each deployment is a separate Ray Serve deployment with its own resource allocation
+- Deployments can communicate with each other through DeploymentHandle parameters
+- The BioEngine Worker automatically wires deployment dependencies during startup
+- All deployments in an application share the same authorized users and lifecycle
+
+MIXED RESOURCE ALLOCATION:
+- Different deployments within the same application can have different resource requirements
+- Some deployments can be GPU-enabled while others are CPU-only
+- This example demonstrates mixed allocation: CompositionDeployment (CPU-only) orchestrates
+  Deployment1 (CPU-only) and Deployment2 (GPU-enabled via BIOENGINE_ENABLE_GPU)
+- Resource allocation is validated per deployment against available cluster resources
+
+DEPLOYMENT REQUIREMENTS:
+1. Use @ray.serve.deployment decorator with appropriate resource configuration
+2. Implement standard lifecycle methods (if needed)  
+3. Handle GPU allocation through BioEngine's resource management system
+4. Follow proper import patterns for external dependencies
+
+IMPORT HANDLING:
+- Standard Python libraries and libraries that are part of the BioEngine can be
+  imported at the top of this file. Take a look at the requirements.txt file to see
+  which libraries are part of the BioEngine:
+  https://github.com/aicell-lab/bioengine-worker/blob/main/requirements.txt
+- All libraries that are not part of the standard python library or the BioEngine
+  need to be specified in the runtime environment of the deployment and imported
+  in each method where they are used (see 'pandas' in the example below).
+
+The BIOENGINE_ENABLE_GPU environment variable is automatically set by the
+AppsManager when you call deploy_application() with enable_gpu=True.
+
+Resource allocation is validated against available cluster resources before deployment.
+See bioengine_worker/apps_manager.py for the deployment orchestration logic.
+
+Ray Serve deployment parameters: https://docs.ray.io/en/latest/serve/api/doc/ray.serve.deployment_decorator.html
+BioEngine app deployment guide: See project README for artifact structure requirements.
+"""
+
 import asyncio
 import os
 
@@ -9,16 +51,7 @@ from hypha_rpc.utils.schema import schema_method
 from ray import serve
 from ray.serve.handle import DeploymentHandle
 
-# All libraries that are not part of the standard python library or the BioEngine
-# need to be specified in the runtime environment of the deployment and imported
-# in each method where they are used (see 'pandas' in the example below).
 
-
-# The deployment class must be decorated with the @ray.serve.deployment decorator.
-# If environment variables such as 'NUM_CPUS', 'NUM_GPUS' and 'MEMORY'
-# are used, they can be set when deploying the application using the BioEngine. See all
-# deployment parameters here:
-# https://docs.ray.io/en/latest/serve/api/doc/ray.serve.deployment_decorator.html
 @serve.deployment(
     ray_actor_options={
         # Number of CPUs to allocate for the deployment

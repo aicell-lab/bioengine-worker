@@ -186,7 +186,10 @@ class AppBuilder:
         return manifest
 
     async def _update_actor_options(
-        self, deployment: serve.Deployment, application_id: str, token: str
+        self,
+        deployment: serve.Deployment,
+        application_id: str,
+        token: str,
     ) -> serve.Deployment:
         """
         Update Ray actor options for a deployment with BioEngine-specific configuration.
@@ -210,14 +213,16 @@ class AppBuilder:
             - Data directory access paths
         """
         ray_actor_options = deployment.ray_actor_options
+
+        # Update runtime environment with BioEngine requirements
         runtime_env = ray_actor_options.setdefault("runtime_env", {})
         pip_requirements = runtime_env.setdefault("pip", [])
         env_vars = runtime_env.setdefault("env_vars", {})
 
-        # Update pip requirements with BioEngine requirements
+        # Update with BioEngine requirements
         pip_requirements = update_requirements(pip_requirements)
 
-        # Set standard directories to ensure it only uses the specified workdir
+        # Set BioEngine environment variables
         app_work_dir = self.apps_cache_dir / application_id
         env_vars["BIOENGINE_WORKDIR"] = str(app_work_dir)
         env_vars["HOME"] = str(app_work_dir)
@@ -535,7 +540,7 @@ class AppBuilder:
         artifact_id: str,
         version: Optional[str],
         import_path: str,
-        deployment_options: Dict[str, Union[int, None]],
+        enable_gpu: bool,
         token: str,
     ) -> serve.Deployment:
         """
@@ -549,7 +554,7 @@ class AppBuilder:
             artifact_id: ID of the artifact containing the deployment code
             version: Version of the artifact to load (defaults to latest)
             import_path: Import path in format 'python_file:class_name'
-            deployment_options: Resource allocation options (CPUs, GPUs, memory)
+            enable_gpu: Whether to enable GPU support for the deployment
             token: Authentication token for Hypha server access
 
         Returns:
@@ -615,13 +620,7 @@ class AppBuilder:
                 raise e
 
         # Create a restricted globals dictionary for sandboxed execution - pass some deployment options
-        safe_globals = {}
-        if deployment_options["num_cpus"] is not None:
-            safe_globals["NUM_CPUS"] = deployment_options["num_cpus"]
-        if deployment_options["num_gpus"] is not None:
-            safe_globals["NUM_GPUS"] = deployment_options["num_gpus"]
-        if deployment_options["memory"] is not None:
-            safe_globals["MEMORY"] = deployment_options["memory"]
+        safe_globals = {"BIOENGINE_ENABLE_GPU": int(enable_gpu)}
 
         try:
             # Execute the code in a sandboxed environment
@@ -688,8 +687,8 @@ class AppBuilder:
         application_id: str,
         artifact_id: str,
         version: Optional[str] = None,
-        deployment_options: Optional[Dict[str, Union[int, None]]] = None,
         deployment_kwargs: Optional[Dict[str, Any]] = None,
+        enable_gpu: bool = True,
     ) -> serve.Application:
         """
         Build a complete BioEngine application from a deployment artifact.
@@ -740,7 +739,7 @@ class AppBuilder:
                 artifact_id=artifact_id,
                 version=version,
                 import_path=import_path,
-                deployment_options=deployment_options or {},
+                enable_gpu=enable_gpu,
                 token=self._token,
             )
             for import_path in manifest["deployments"]

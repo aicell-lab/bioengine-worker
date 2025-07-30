@@ -323,11 +323,11 @@ class AppsManager:
                 application_id=application_id,
                 artifact_id=artifact_id,
                 version=version,
-                deployment_options=self._deployed_applications[application_id][
-                    "deployment_options"
-                ],
                 deployment_kwargs=self._deployed_applications[application_id][
                     "deployment_kwargs"
+                ],
+                enable_gpu=self._deployed_applications[application_id][
+                    "gpu_enabled"
                 ],
             )
 
@@ -608,8 +608,8 @@ class AppsManager:
                 "message": message,
                 "deployments": deployments,
                 "consecutive_failures": application_info["consecutive_failures"],
-                "deployment_options": application_info["deployment_options"],
                 "deployment_kwargs": application_info["deployment_kwargs"],
+                "gpu_enabled": application_info["gpu_enabled"],
                 "application_resources": application_info["application_resources"],
                 "authorized_users": application_info["authorized_users"],
                 "available_methods": application_info["available_methods"],
@@ -687,6 +687,9 @@ class AppsManager:
         """
         List all BioEngine application artifacts in the Hypha artifact manager.
 
+        Args:
+            context: User context information automatically injected by Hypha.
+
         Returns:
             Dict[str, List[str]]: Mapping of artifact IDs to their file names in the BioEngine Apps collection
         """
@@ -711,7 +714,7 @@ class AppsManager:
                 file_names = [file.name for file in files]
                 bioengine_apps[artifact.id] = {
                     "manifest": manifest,
-                    "files": file_names
+                    "files": file_names,
                 }
             except Exception as e:
                 self.logger.error(f"Error reading artifact '{artifact.id}': {e}")
@@ -730,6 +733,7 @@ class AppsManager:
                    type can be 'text' or 'base64'
             artifact_id: Optional artifact ID. If provided, will edit existing artifact.
                         If not provided, will create new artifact using alias from manifest.
+            context: User context information automatically injected by Hypha.
 
         Returns:
             str: The artifact ID of the created/updated artifact
@@ -898,7 +902,7 @@ class AppsManager:
 
         Args:
             artifact_id: ID of the artifact to delete
-            context: Optional context information from Hypha request containing user info
+            context: User context information automatically injected by Hypha.
 
         Returns:
             str: The ID of the deleted artifact
@@ -937,10 +941,8 @@ class AppsManager:
         artifact_id: str,
         version: Optional[str] = None,
         application_id: Optional[str] = None,
-        num_cpus: int = None,
-        num_gpus: int = None,
-        memory: int = None,
         deployment_kwargs: Optional[Dict[str, Dict[str, Any]]] = None,
+        enable_gpu: bool = True,
         context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
@@ -959,7 +961,11 @@ class AppsManager:
             artifact_id: ID of the artifact to deploy
             mode: Optional deployment mode for multi-mode artifacts
             version: Optional version of the artifact to deploy
-            context: Optional context information from Hypha request containing user info
+            application_id: Optional unique ID for the application deployment.
+                        If not provided, a new ID will be generated.
+            deployment_kwargs: Optional dictionary of keyword arguments for deployment classes.
+            enable_gpu: Whether to enable GPU support for the deployment
+            context: User context information automatically injected by Hypha.
 
         Raises:
             RuntimeError: If server, artifact manager, or Ray is not initialized
@@ -1055,12 +1061,8 @@ class AppsManager:
                 "description": "",
                 "artifact_id": artifact_id,
                 "version": version,
-                "deployment_options": {
-                    "num_cpus": num_cpus,
-                    "num_gpus": num_gpus,
-                    "memory": memory,
-                },
                 "deployment_kwargs": deployment_kwargs,
+                "gpu_enabled": enable_gpu,
                 "application_resources": {},
                 "authorized_users": [],
                 "available_methods": [],
@@ -1085,10 +1087,18 @@ class AppsManager:
     @schema_method
     async def deploy_applications(self, app_configs: List[dict], context: dict) -> None:
         """
-        Deploy all startup deployments defined in the manager.
+        Deploy multiple BioEngine applications from a list of configurations.
 
-        Automatically deploys all artifacts specified in the startup_applications
-        list during initialization. Uses admin user context for authentication.
+        Iterates through the provided app_configs, validates each configuration,
+        and deploys each application using the deploy_application method. Returns
+        a list of application IDs for successfully deployed applications.
+
+        Args:
+            app_configs: List of dictionaries containing application configurations.
+                         Each dictionary must contain 'artifact_id' and may include
+                         'version', 'application_id', 'num_cpus', 'num_gpus', 'memory',
+                         and 'deployment_kwargs'.
+            context: User context information automatically injected by Hypha.
 
         Raises:
             RuntimeError: If server or artifact manager is not initialized
@@ -1139,7 +1149,7 @@ class AppsManager:
 
         Args:
             artifact_id: ID of the artifact to undeploy
-            context: Context information from Hypha request containing user info
+            context: User context information automatically injected by Hypha.
 
         Raises:
             RuntimeError: If server, artifact manager, or Ray is not initialized
@@ -1190,7 +1200,7 @@ class AppsManager:
         completion with timeout handling for robust operation.
 
         Args:
-            context: Context information from Hypha request containing user info
+            context: User context information automatically injected by Hypha.
 
         Raises:
             RuntimeError: If Ray cluster is not running or connections unavailable

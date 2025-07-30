@@ -1,7 +1,33 @@
-# All standard python libraries and libraries that are part of the BioEngine can be
-# imported at the top of this file. Take a look at the requirements.txt file to see
-# which libraries are part of the BioEngine:
-# https://github.com/aicell-lab/bioengine-worker/blob/main/requirements.txt)
+"""
+BioEngine Worker Application Deployment Example
+
+This demonstrates the standard deployment pattern for BioEngine Worker applications.
+All deployments must follow these conventions:
+
+1. Use @ray.serve.deployment decorator with appropriate resource configuration
+2. Implement standard lifecycle methods (if needed)
+3. Handle GPU allocation through BioEngine's resource management system
+4. Follow proper import patterns for external dependencies
+
+IMPORT HANDLING:
+- Standard Python libraries and libraries that are part of the BioEngine can be
+  imported at the top of this file. Take a look at the requirements.txt file to see
+  which libraries are part of the BioEngine:
+  https://github.com/aicell-lab/bioengine-worker/blob/main/requirements.txt
+- All libraries that are not part of the standard python library or the BioEngine
+  need to be specified in the runtime environment of the deployment and imported
+  in each method where they are used (see 'pandas' in the example below).
+
+The BIOENGINE_ENABLE_GPU environment variable is automatically set by the
+AppsManager when you call deploy_application() with enable_gpu=True.
+
+Resource allocation is validated against available cluster resources before deployment.
+See bioengine_worker/apps_manager.py for the deployment orchestration logic.
+
+Ray Serve deployment parameters: https://docs.ray.io/en/latest/serve/api/doc/ray.serve.deployment_decorator.html
+BioEngine app deployment guide: See project README for artifact structure requirements.
+"""
+
 import asyncio
 import os
 import time
@@ -11,24 +37,15 @@ from typing import Any, Dict, List, Union
 from hypha_rpc.utils.schema import schema_method
 from ray import serve
 
-# All libraries that are not part of the standard python library or the BioEngine
-# need to be specified in the runtime environment of the deployment and imported
-# in each method where they are used (see 'pandas' in the example below).
 
-
-# The deployment class must be decorated with the @ray.serve.deployment decorator.
-# If environment variables such as 'NUM_CPUS', 'NUM_GPUS' and 'MEMORY'
-# are used, they can be set when deploying the application using the BioEngine. See all
-# deployment parameters here:
-# https://docs.ray.io/en/latest/serve/api/doc/ray.serve.deployment_decorator.html
 @serve.deployment(
     ray_actor_options={
         # Number of CPUs to allocate for the deployment
-        "num_cpus": os.environ.get("NUM_CPUS", 1),
+        "num_cpus": 1,
         # Number of GPUs to allocate for the deployment
-        "num_gpus": os.environ.get("NUM_GPUS", 0),
-        # Memory limit for the deployment (1 GB)
-        "memory": os.environ.get("MEMORY", 1024 * 1024 * 1024),
+        "num_gpus": 1 if os.environ["BIOENGINE_ENABLE_GPU"] else 0,
+        # Memory limit for the deployment (0.5 GB)
+        "memory": 0.5 * 1024**3,
         # Runtime environment for the deployment (e.g., dependencies, environment variables)
         "runtime_env": {
             "pip": [

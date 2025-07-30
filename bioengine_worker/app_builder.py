@@ -4,7 +4,7 @@ import os
 import time
 from functools import wraps
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict, Union
 
 import httpx
 import yaml
@@ -262,6 +262,7 @@ class AppBuilder:
 
         @wraps(orig_init)
         def wrapped_init(self, *args, **kwargs):
+            import asyncio
             import os
             from pathlib import Path
 
@@ -284,6 +285,9 @@ class AppBuilder:
             # Initialize deployment states
             self._deployment_initialized = False
             self._deployment_tested = False
+
+            # Create a health check lock to synchronize health checks
+            self._health_check_lock = asyncio.Lock()
 
             # Call the original __init__ method
             orig_init(self, *args, **kwargs)
@@ -310,6 +314,8 @@ class AppBuilder:
 
         @wraps(orig_async_init)
         async def wrapped_async_init(self):
+            import asyncio
+
             start_time = time.time()
             print(
                 f"⚡ [{self.replica_id}] Running async initialization for '{self.__class__.__name__}'..."
@@ -321,7 +327,7 @@ class AppBuilder:
                     await orig_async_init(self)
                 else:
                     # If it's a regular function, call it directly
-                    orig_async_init(self)
+                    await asyncio.to_thread(orig_async_init, self)
 
                 elapsed_time = time.time() - start_time
                 self._deployment_initialized = True
@@ -357,6 +363,8 @@ class AppBuilder:
 
         @wraps(orig_test_deployment)
         async def wrapped_test_deployment(self):
+            import asyncio
+
             start_time = time.time()
             print(
                 f"🧪 [{self.replica_id}] Running deployment test for '{self.__class__.__name__}'..."
@@ -368,7 +376,7 @@ class AppBuilder:
                     await orig_test_deployment(self)
                 else:
                     # If it's a regular function, call it directly
-                    orig_test_deployment(self)
+                    await asyncio.to_thread(orig_test_deployment, self)
 
                 # Mark the deployment as tested
                 elapsed_time = time.time() - start_time
@@ -412,29 +420,32 @@ class AppBuilder:
 
         @wraps(orig_health_check)
         async def check_health(self):
-            # Ensure async initialization has completed
-            if not getattr(self, "_deployment_initialized", False):
-                await self.async_init()
+            import asyncio
 
-            # Ensure deployment testing has completed
-            if not getattr(self, "_deployment_tested", False):
-                await self.test_deployment()
+            async with self._health_check_lock:
+                # Ensure async initialization has completed
+                if not getattr(self, "_deployment_initialized", False):
+                    await self.async_init()
 
-            try:
-                # Check if the original health check method is async
-                if inspect.iscoroutinefunction(orig_health_check):
-                    result = await orig_health_check(self)
-                else:
-                    # If it's a regular function, call it directly
-                    result = orig_health_check(self)
+                # Ensure deployment testing has completed
+                if not getattr(self, "_deployment_tested", False):
+                    await self.test_deployment()
 
-                return result
+                try:
+                    # Check if the original health check method is async
+                    if inspect.iscoroutinefunction(orig_health_check):
+                        result = await orig_health_check(self)
+                    else:
+                        # If it's a regular function, call it directly
+                        result = await asyncio.to_thread(orig_health_check, self)
 
-            except Exception as e:
-                print(
-                    f"❌ [{self.replica_id}] Health check failed for '{self.__class__.__name__}': {e}"
-                )
-                raise
+                    return result
+
+                except Exception as e:
+                    print(
+                        f"❌ [{self.replica_id}] Health check failed for '{self.__class__.__name__}': {e}"
+                    )
+                    raise
 
         # Add the updated health check method to the deployment class
         setattr(deployment.func_or_class, "check_health", check_health)

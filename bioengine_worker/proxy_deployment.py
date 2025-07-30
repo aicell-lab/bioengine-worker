@@ -733,6 +733,9 @@ class RtcProxyDeployment:
         Triggers registration if needed. Raises RuntimeError if unhealthy.
         Called during deployment initialization and periodically.
         """
+        # Wait for the entry deployment to be ready and healthy
+        await self.entry_deployment_handle.check_health.remote()
+
         # Register WebRTC service if not already done
         if not self.server or not self.service_id:
             await self._register_web_rtc_service()

@@ -73,7 +73,7 @@ class RayCluster:
         ray_temp_dir: str = "/tmp/bioengine/ray",
         head_num_cpus: int = 0,
         head_num_gpus: int = 0,
-        head_memory_in_gb: int = 0,  # Only memory limit
+        head_memory_in_gb: Optional[int] = None,
         runtime_env_pip_cache_size_gb: int = 30,  # Ray default is 10 GB
         force_clean_up: bool = True,
         # SLURM Worker Configuration parameters
@@ -114,6 +114,7 @@ class RayCluster:
             ray_temp_dir: Temporary directory for Ray. Default '/tmp/bioengine/ray'.
             head_num_cpus: Number of CPUs for head node (single-machine mode). Default 0.
             head_num_gpus: Number of GPUs for head node (single-machine mode). Default 0.
+            head_memory_in_gb: Memory limit for head node in GB. If not set, Ray will auto-detect available memory.
             runtime_env_pip_cache_size_gb: Size of pip cache for runtime environments in GB. Default 30.
             force_clean_up: Force cleanup of previous Ray cluster on start. Default True.
             image: Container image for workers (SLURM mode). Default bioengine-worker.
@@ -193,7 +194,9 @@ class RayCluster:
             "ray_temp_dir": str(ray_temp_dir),
             "head_num_cpus": int(head_num_cpus),
             "head_num_gpus": int(head_num_gpus),
-            "head_memory_in_gb": int(head_memory_in_gb),
+            "head_memory_in_gb": (
+                int(head_memory_in_gb) if head_memory_in_gb is not None else None
+            ),
             "force_clean_up": bool(force_clean_up),
         }
 
@@ -543,7 +546,6 @@ class RayCluster:
                 "--head",
                 f"--num-cpus={self.ray_cluster_config['head_num_cpus']}",
                 f"--num-gpus={self.ray_cluster_config['head_num_gpus']}",
-                f"--memory={self.ray_cluster_config['head_memory_in_gb'] * 1024**3}",  # TODO: --memory does not show in ray start --help
                 f"--node-ip-address={self.ray_cluster_config['head_node_address']}",
                 f"--port={self.ray_cluster_config['head_node_port']}",
                 f"--node-manager-port={self.ray_cluster_config['node_manager_port']}",
@@ -557,6 +559,11 @@ class RayCluster:
                 f"--redis-password={self.ray_cluster_config['redis_password']}",
                 f"--temp-dir={ray_temp_dir}",
             ]
+
+            # Add memory limit if specified
+            if self.ray_cluster_config["head_memory_in_gb"] is not None:
+                memory_limit = self.ray_cluster_config["head_memory_in_gb"] * 1024**3
+                args.append(f"--memory={memory_limit}")
 
             # Prevent logging of Redis password in debug logs
             censored_args = [

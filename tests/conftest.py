@@ -139,7 +139,7 @@ def ray_address(worker_mode: str) -> Generator[str, None, None]:
                 mode="single-machine",
                 head_num_cpus=6,
                 head_num_gpus=0,
-                head_memory_in_gb=12,  # TODO: Check --memory flag in Ray CLI
+                head_memory_in_gb=12,
                 ray_temp_dir=temp_dir,
                 debug=True,
             )

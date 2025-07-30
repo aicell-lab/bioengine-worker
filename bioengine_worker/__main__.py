@@ -300,10 +300,9 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
     ray_cluster_group.add_argument(
         "--head_memory_in_gb",
         type=int,
-        default=0,
         metavar="GB",
         help="Memory allocation in GB for head node task execution. "
-        "Set to 0 for automatic detection. Default: 0",
+        "If not specified, Ray will auto-detect available memory.",
     )
     ray_cluster_group.add_argument(
         "--runtime_env_pip_cache_size_gb",

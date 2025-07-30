@@ -705,8 +705,16 @@ class AppsManager:
 
         bioengine_apps = {}
         for artifact in bioengine_apps_artifacts:
-            files = await self.artifact_manager.list_files(artifact.id)
-            bioengine_apps[artifact.id] = [file.name for file in files]
+            try:
+                manifest = await self.artifact_manager.read(artifact.id)
+                files = await self.artifact_manager.list_files(artifact.id)
+                file_names = [file.name for file in files]
+                bioengine_apps[artifact.id] = {
+                    "manifest": manifest,
+                    "files": file_names
+                }
+            except Exception as e:
+                self.logger.error(f"Error reading artifact '{artifact.id}': {e}")
 
         return bioengine_apps
 

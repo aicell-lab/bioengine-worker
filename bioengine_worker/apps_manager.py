@@ -484,6 +484,141 @@ class AppsManager:
                 if app_info:
                     await app_info["is_deployed"].wait()
 
+    async def get_status(self) -> Dict[str, Union[str, list, dict]]:
+        """
+        Get comprehensive status of all deployed artifacts with task state validation.
+
+        Returns detailed status information for all currently tracked deployments,
+        including deployment metadata, resource usage, and service availability.
+        Validates deployment state against both internal tracking and Ray Serve status
+        to ensure consistency.
+
+        The method cross-references _deployed_artifacts with Ray Serve status to
+        identify any inconsistencies and provides warnings for deployments that
+        may be in an unexpected state.
+
+        Returns:
+            Dict containing:
+                - service_id: Hypha service ID for deployments (if registered)
+                - Per artifact: deployment name, available methods, timing info,
+                  status, replica states, resource allocation, and task state
+
+        Raises:
+            RuntimeError: If Ray cluster is not running
+
+        Note:
+            Only deployments that exist in both internal tracking and Ray Serve
+            status are included in the output to ensure accuracy.
+        """
+        output = {}
+
+        if not self._deployed_applications:
+            return output
+
+        # Get status of actively running deployments
+        await self.ray_cluster.check_connection()
+        serve_status = await asyncio.to_thread(serve.status)
+
+        for application_id, application_info in self._deployed_applications.items():
+            application = serve_status.applications.get(application_id)
+
+            if application:
+                start_time = application.last_deployed_time_s
+                status = application.status.value
+                message = application.message
+                deployments = {
+                    class_name: {
+                        "status": deployment_info.status.value,
+                        "message": deployment_info.message,
+                        "replica_states": deployment_info.replica_states,
+                    }
+                    for class_name, deployment_info in application.deployments.items()
+                }
+
+            else:
+                start_time = None
+                if application_info["is_deployed"].is_set():
+                    status = "UNHEALTHY"
+                    message = f"Application '{application_id}' is marked as deployed but not found in Ray Serve status."
+                    self.logger.warning(
+                        f"Application '{application_id}' for artifact '{application_info['artifact_id']}' "
+                        "is marked as deployed but not found in Ray Serve status."
+                    )
+                else:
+                    status = "NOT_STARTED"
+                    message = (
+                        f"Application '{application_id}' has not been deployed yet."
+                    )
+                deployments = {}
+
+            # Construct the service IDs for the application using the replica IDs
+            workspace = self.server.config.workspace
+            replica_ids = (
+                await self.ray_cluster.proxy_actor_handle.get_deployment_replica.remote(
+                    app_name=application_id, deployment_name="RtcProxyDeployment"
+                )
+            )
+            if replica_ids:
+                worker_client_id = self.server.config.client_id
+                service_ids = [
+                    {
+                        "websocket_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}",
+                        "webrtc_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}-rtc",
+                    }
+                    for replica_id in replica_ids
+                ]
+            else:
+                service_ids = [
+                    {
+                        "websocket_service_id": None,
+                        "webrtc_service_id": None,
+                    }
+                ]
+
+            # class ApplicationStatus(str, Enum):
+            #     NOT_STARTED = "NOT_STARTED"
+            #     DEPLOYING = "DEPLOYING"
+            #     DEPLOY_FAILED = "DEPLOY_FAILED"
+            #     RUNNING = "RUNNING"
+            #     UNHEALTHY = "UNHEALTHY"
+            #     DELETING = "DELETING"
+
+            # class DeploymentStatus(str, Enum):
+            #     UPDATING = "UPDATING"
+            #     HEALTHY = "HEALTHY"
+            #     UNHEALTHY = "UNHEALTHY"
+            #     UPSCALING = "UPSCALING"
+            #     DOWNSCALING = "DOWNSCALING"
+
+            # class ReplicaState(str, Enum):
+            #     STARTING = "STARTING"
+            #     UPDATING = "UPDATING"
+            #     RECOVERING = "RECOVERING"
+            #     RUNNING = "RUNNING"
+            #     STOPPING = "STOPPING"
+            #     PENDING_MIGRATION = "PENDING_MIGRATION"
+
+            output[application_id] = {
+                "display_name": application_info["display_name"],
+                "description": application_info["description"],
+                "artifact_id": application_info["artifact_id"],
+                "version": application_info["version"] or "latest",
+                "start_time": start_time,
+                "status": status,
+                "message": message,
+                "deployments": deployments,
+                "consecutive_failures": application_info["consecutive_failures"],
+                "deployment_options": application_info["deployment_options"],
+                "deployment_kwargs": application_info["deployment_kwargs"],
+                "application_resources": application_info["application_resources"],
+                "authorized_users": application_info["authorized_users"],
+                "available_methods": application_info["available_methods"],
+                "service_ids": service_ids,
+                "last_updated_by": application_info["last_updated_by"],
+            }
+
+        return output
+
     async def monitor_applications(self) -> None:
         if not self._deployed_applications:
             return
@@ -1099,135 +1234,3 @@ class AppsManager:
             self.logger.warning(
                 f"Failed to clean up all deployments, {failed_attempts} remaining."
             )
-
-    async def get_status(self) -> Dict[str, Union[str, list, dict]]:
-        """
-        Get comprehensive status of all deployed artifacts with task state validation.
-
-        Returns detailed status information for all currently tracked deployments,
-        including deployment metadata, resource usage, and service availability.
-        Validates deployment state against both internal tracking and Ray Serve status
-        to ensure consistency.
-
-        The method cross-references _deployed_artifacts with Ray Serve status to
-        identify any inconsistencies and provides warnings for deployments that
-        may be in an unexpected state.
-
-        Returns:
-            Dict containing:
-                - service_id: Hypha service ID for deployments (if registered)
-                - Per artifact: deployment name, available methods, timing info,
-                  status, replica states, resource allocation, and task state
-
-        Raises:
-            RuntimeError: If Ray cluster is not running
-
-        Note:
-            Only deployments that exist in both internal tracking and Ray Serve
-            status are included in the output to ensure accuracy.
-        """
-        output = {}
-
-        if not self._deployed_applications:
-            return output
-
-        # Get status of actively running deployments
-        await self.ray_cluster.check_connection()
-        serve_status = await asyncio.to_thread(serve.status)
-
-        for application_id, application_info in self._deployed_applications.items():
-            application = serve_status.applications.get(application_id)
-
-            if application:
-                start_time = application.last_deployed_time_s
-                status = application.status.value
-                message = application.message
-                deployments = {
-                    class_name: {
-                        "status": deployment_info.status.value,
-                        "message": deployment_info.message,
-                        "replica_states": deployment_info.replica_states,
-                    }
-                    for class_name, deployment_info in application.deployments.items()
-                }
-
-            else:
-                start_time = None
-                if application_info["is_deployed"].is_set():
-                    status = "UNHEALTHY"
-                    message = f"Application '{application_id}' is marked as deployed but not found in Ray Serve status."
-                    self.logger.warning(
-                        f"Application '{application_id}' for artifact '{application_info['artifact_id']}' "
-                        "is marked as deployed but not found in Ray Serve status."
-                    )
-                else:
-                    status = "NOT_STARTED"
-                deployments = {}
-
-            # Construct the service IDs for the application using the replica IDs
-            workspace = self.server.config.workspace
-            replica_ids = (
-                await self.ray_cluster.proxy_actor_handle.get_deployment_replica.remote(
-                    app_name=application_id, deployment_name="RtcProxyDeployment"
-                )
-            )
-            if replica_ids:
-                worker_client_id = self.server.config.client_id
-                service_ids = [
-                    {
-                        "websocket_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}",
-                        "webrtc_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}-rtc",
-                    }
-                    for replica_id in replica_ids
-                ]
-            else:
-                service_ids = [
-                    {
-                        "websocket_service_id": None,
-                        "webrtc_service_id": None,
-                    }
-                ]
-
-            # class ApplicationStatus(str, Enum):
-            #     NOT_STARTED = "NOT_STARTED"
-            #     DEPLOYING = "DEPLOYING"
-            #     DEPLOY_FAILED = "DEPLOY_FAILED"
-            #     RUNNING = "RUNNING"
-            #     UNHEALTHY = "UNHEALTHY"
-            #     DELETING = "DELETING"
-
-            # class DeploymentStatus(str, Enum):
-            #     UPDATING = "UPDATING"
-            #     HEALTHY = "HEALTHY"
-            #     UNHEALTHY = "UNHEALTHY"
-            #     UPSCALING = "UPSCALING"
-            #     DOWNSCALING = "DOWNSCALING"
-
-            # class ReplicaState(str, Enum):
-            #     STARTING = "STARTING"
-            #     UPDATING = "UPDATING"
-            #     RECOVERING = "RECOVERING"
-            #     RUNNING = "RUNNING"
-            #     STOPPING = "STOPPING"
-            #     PENDING_MIGRATION = "PENDING_MIGRATION"
-
-            output[application_id] = {
-                "display_name": application_info["display_name"],
-                "description": application_info["description"],
-                "artifact_id": application_info["artifact_id"],
-                "version": application_info["version"] or "latest",
-                "start_time": start_time,
-                "status": status,
-                "message": message,
-                "deployments": deployments,
-                "consecutive_failures": application_info["consecutive_failures"],
-                "deployment_options": application_info["deployment_options"],
-                "deployment_kwargs": application_info["deployment_kwargs"],
-                "application_resources": application_info["application_resources"],
-                "authorized_users": application_info["authorized_users"],
-                "available_methods": application_info["available_methods"],
-                "service_ids": service_ids,
-                "last_updated_by": application_info["last_updated_by"],
-            }
-
-        return output

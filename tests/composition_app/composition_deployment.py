@@ -16,12 +16,14 @@ MIXED RESOURCE ALLOCATION:
 - Different deployments within the same application can have different resource requirements
 - Some deployments can be GPU-enabled while others are CPU-only
 - This example demonstrates mixed allocation: CompositionDeployment (CPU-only) orchestrates
-  Deployment1 (CPU-only) and Deployment2 (GPU-enabled via BIOENGINE_ENABLE_GPU)
+  Deployment1 (CPU-only) and Deployment2 (potentially GPU-enabled)
+- GPU allocation is managed by the AppBuilder which overwrites the num_gpus parameter
+  in the ray actor options based on the enable_gpu parameter (default: False)
 - Resource allocation is validated per deployment against available cluster resources
 
 DEPLOYMENT REQUIREMENTS:
 1. Use @ray.serve.deployment decorator with appropriate resource configuration
-2. Implement standard lifecycle methods (if needed)  
+2. Implement standard lifecycle methods (if needed)
 3. Handle GPU allocation through BioEngine's resource management system
 4. Follow proper import patterns for external dependencies
 
@@ -34,8 +36,9 @@ IMPORT HANDLING:
   need to be specified in the runtime environment of the deployment and imported
   in each method where they are used (see 'pandas' in the example below).
 
-The BIOENGINE_ENABLE_GPU environment variable is automatically set by the
-AppsManager when you call deploy_application() with enable_gpu=True.
+GPU allocation is managed by the AppBuilder which overwrites the num_gpus parameter
+in the ray actor options based on the enable_gpu parameter (default: False) passed to
+deploy_application().
 
 Resource allocation is validated against available cluster resources before deployment.
 See bioengine_worker/apps_manager.py for the deployment orchestration logic.

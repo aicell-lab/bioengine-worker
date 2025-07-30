@@ -18,8 +18,9 @@ IMPORT HANDLING:
   need to be specified in the runtime environment of the deployment and imported
   in each method where they are used (see 'pandas' in the example below).
 
-The BIOENGINE_ENABLE_GPU environment variable is automatically set by the
-AppsManager when you call deploy_application() with enable_gpu=True.
+GPU allocation is managed by the AppBuilder which overwrites the num_gpus parameter
+in the ray actor options based on the enable_gpu parameter (default: False) passed to
+deploy_application().
 
 Resource allocation is validated against available cluster resources before deployment.
 See bioengine_worker/apps_manager.py for the deployment orchestration logic.
@@ -43,7 +44,8 @@ from ray import serve
         # Number of CPUs to allocate for the deployment
         "num_cpus": 1,
         # Number of GPUs to allocate for the deployment
-        "num_gpus": 1 if os.environ["BIOENGINE_ENABLE_GPU"] else 0,
+        # This will be overwritten by the AppBuilder based on enable_gpu parameter
+        "num_gpus": 1,
         # Memory limit for the deployment (0.5 GB)
         "memory": 0.5 * 1024**3,
         # Runtime environment for the deployment (e.g., dependencies, environment variables)

@@ -104,8 +104,8 @@ class BioEngineWorker:
             data_dir="/shared/datasets",
             server_url="https://hypha.aicell.io",
             startup_applications=[
-                {"artifact_id": "<my-workspace>/<my_artifact>", "num_gpus": 1},
-                {"artifact_id": "<my-workspace>/<another_artifact>", "num_cpus": 4}
+                {"artifact_id": "<my-workspace>/<my_artifact>", "application_id": "my_custom_name"},
+                {"artifact_id": "<my-workspace>/<another_artifact>", "enable_gpu": False}
             ],
             ray_cluster_config={
                 "max_workers": 10,

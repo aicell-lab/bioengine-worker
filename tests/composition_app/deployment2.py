@@ -8,7 +8,8 @@ from ray import serve
         # Number of CPUs to allocate for the deployment
         "num_cpus": 1,
         # Number of GPUs to allocate for the deployment
-        "num_gpus": 1 if os.environ["BIOENGINE_ENABLE_GPU"] else 0,
+        # This will be overwritten by the AppBuilder based on enable_gpu parameter
+        "num_gpus": 1,
         # Memory limit for the deployment (0.5 GB)
         "memory": 0.5 * 1024 * 1024 * 1024,
         # Runtime environment for the deployment (e.g., dependencies, environment variables)

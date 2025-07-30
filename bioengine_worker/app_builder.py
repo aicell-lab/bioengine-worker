@@ -185,10 +185,11 @@ class AppBuilder:
 
         return manifest
 
-    async def _update_actor_options(
+    def _update_actor_options(
         self,
         deployment: serve.Deployment,
         application_id: str,
+        enable_gpu: bool,
         token: str,
     ) -> serve.Deployment:
         """
@@ -200,6 +201,7 @@ class AppBuilder:
         Args:
             deployment: The Ray Serve deployment to update
             application_id: Unique identifier for the application instance
+            enable_gpu: Flag indicating whether GPU support is enabled
             token: Authentication token for Hypha server access
 
         Returns:
@@ -212,7 +214,11 @@ class AppBuilder:
             - Hypha server connection parameters
             - Data directory access paths
         """
-        ray_actor_options = deployment.ray_actor_options
+        ray_actor_options = deployment.ray_actor_options.copy()
+
+        # Disable GPU if not enabled
+        if not enable_gpu:
+            ray_actor_options["num_gpus"] = 0
 
         # Update runtime environment with BioEngine requirements
         runtime_env = ray_actor_options.setdefault("runtime_env", {})
@@ -620,10 +626,9 @@ class AppBuilder:
                 raise e
 
         # Create a restricted globals dictionary for sandboxed execution - pass some deployment options
-        safe_globals = {"BIOENGINE_ENABLE_GPU": int(enable_gpu)}
-
         try:
             # Execute the code in a sandboxed environment
+            safe_globals = {}
             exec(code_content, safe_globals)
             if class_name not in safe_globals:
                 raise ValueError(f"{class_name} not found in {artifact_id}")
@@ -632,8 +637,8 @@ class AppBuilder:
                 raise RuntimeError(f"Error loading {class_name} from {artifact_id}")
 
             # Update environment variables and requirements
-            deployment = await self._update_actor_options(
-                deployment, application_id, token
+            deployment = self._update_actor_options(
+                deployment, application_id, enable_gpu, token
             )
 
             # Update the deployment class methods

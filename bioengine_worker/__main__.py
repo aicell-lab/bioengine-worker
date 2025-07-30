@@ -130,7 +130,7 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         metavar="JSON",
         help="List of applications to deploy automatically during worker startup. "
         "Each element should be a JSON string with deployment configuration. "
-        'Example: \'{"artifact_id": "my_model", "num_gpus": 1}\'',
+        'Example: \'{"artifact_id": "my_model", "application_id": "my_app"}\'',
     )
     core_group.add_argument(
         "--monitoring_interval_seconds",

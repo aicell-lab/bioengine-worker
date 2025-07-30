@@ -119,11 +119,7 @@ def test_id() -> str:
 @pytest.fixture(scope="function")
 def cache_dir() -> Generator[Path, None, None]:
     """Create temporary cache directory with automatic cleanup."""
-    bioengine_dir = Path("/tmp") / "bioengine" / "tests"
-    bioengine_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        dir=bioengine_dir,
-    ) as temp_cache_dir:
+    with tempfile.TemporaryDirectory(prefix="bioengine_test_") as temp_cache_dir:
         cache_dir = Path(temp_cache_dir)
         yield cache_dir
 

@@ -90,6 +90,7 @@ def _create_file_list_from_directory(
     return files, artifact_id
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_create_and_delete_artifacts(
     bioengine_worker_service: ObjectProxy,
@@ -310,9 +311,9 @@ async def test_create_and_delete_artifacts(
                 warnings.warn(error)
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_startup_application(
-    worker_mode: str,
     bioengine_worker_service: ObjectProxy,
     startup_applications: List[Dict],
 ):
@@ -331,16 +332,11 @@ async def test_startup_application(
       - display_name, description, artifact_id, version
       - start_time, status (RUNNING/HEALTHY/etc), message
       - deployments: Dict of deployment status and replica states
-      - resource allocation: application_resources, deployment_options
+      - resource allocation: application_resources, deployment_kwargs, gpu_enabled
       - service_ids: WebSocket and WebRTC service endpoints
       - access control: authorized_users, last_updated_by
       - available_methods: List of exposed application methods
     """
-    if worker_mode == "external-cluster":
-        pytest.skip(
-            "Startup applications are disabled in external cluster mode. Skipping test."
-        )
-
     # Ensure at least one startup application is configured
     assert (
         startup_applications and len(startup_applications) > 0
@@ -380,7 +376,8 @@ async def test_startup_application(
             "status",
             "message",
             "deployments",
-            "deployment_options",
+            "deployment_kwargs",
+            "gpu_enabled",
             "application_resources",
             "authorized_users",
             "available_methods",
@@ -416,8 +413,11 @@ async def test_startup_application(
             app_info["deployments"], dict
         ), f"deployments should be a dictionary for '{application_id}'"
         assert isinstance(
-            app_info["deployment_options"], dict
-        ), f"deployment_options should be a dictionary for '{application_id}'"
+            app_info["deployment_kwargs"], dict
+        ), f"deployment_kwargs should be a dictionary for '{application_id}'"
+        assert isinstance(
+            app_info["gpu_enabled"], bool
+        ), f"gpu_enabled should be a boolean for '{application_id}'"
         assert isinstance(
             app_info["application_resources"], dict
         ), f"application_resources should be a dictionary for '{application_id}'"
@@ -526,11 +526,16 @@ async def test_startup_application(
                     resource_value, (int, float, str)
                 ), f"Resource value should be numeric or string in '{application_id}'"
 
-        # Validate deployment options structure
-        if app_info["deployment_options"]:
+        # Validate deployment kwargs structure
+        if app_info["deployment_kwargs"]:
             assert isinstance(
-                app_info["deployment_options"], dict
-            ), f"deployment_options should be a dictionary for '{application_id}'"
+                app_info["deployment_kwargs"], dict
+            ), f"deployment_kwargs should be a dictionary for '{application_id}'"
+
+        # Validate gpu_enabled field
+        assert isinstance(
+            app_info["gpu_enabled"], bool
+        ), f"gpu_enabled should be a boolean for '{application_id}'"
 
         # Validate authorized users
         assert (
@@ -648,22 +653,18 @@ async def test_startup_application(
     ), f"Expected to validate {expected_app_count} startup applications, but only validated {startup_apps_validated}"
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_deploy_application_locally(
     monkeypatch: pytest.MonkeyPatch,
     tests_dir: Path,
-    worker_mode: str,
     hypha_workspace: str,
+    test_id: str,
     bioengine_worker_service: ObjectProxy,
 ):
     """
     Test deploying the 'demo-app' and 'composition-app' applications from local artifact path.
     """
-    if worker_mode == "external-cluster":
-        pytest.skip(
-            "Startup applications are disabled in external cluster mode. Skipping test."
-        )
-
     # Set environment variables for startup application deployment from local path
     monkeypatch.setenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH", str(tests_dir))
     assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") == str(tests_dir)
@@ -674,104 +675,116 @@ async def test_deploy_application_locally(
     demo_artifact_id = f"{hypha_workspace}/demo-app"
     demo_app_config = {
         "artifact_id": demo_artifact_id,
-        "num_cpus": 2,
-        "num_gpus": 0,
-        "memory": 1.2 * 1024**3,
-    }  # Test random application ID generation, provide resource limits
+        "enable_gpu": False,
+    }  # Test random application ID generation
 
     composition_artifact_id = f"{hypha_workspace}/composition-app"
+    hyphen_test_id = test_id.replace("_", "-")
     composition_app_config = {
         "artifact_id": composition_artifact_id,
-        "application_id": f"composition-app",
+        "application_id": f"composition-app-{hyphen_test_id}",
         "deployment_kwargs": {
             "CompositionDeployment": {"demo_input": "Hello World!"},
             "Deployment2": {"start_number": 10},
         },
-    }  # provide custom application id and deployment kwargs
+        "enable_gpu": False,
+    }  # Provide custom application id and deployment kwargs
 
     app_configs = [demo_app_config, composition_app_config]
     deployed_app_ids = []
 
-    for app_config in app_configs:
-        # Deploy the application
-        application_id = await bioengine_worker_service.deploy_application(**app_config)
-        deployed_app_ids.append(application_id)
-        print(f"Deployed application: {application_id}")
+    try:
+        for app_config in app_configs:
+            # Deploy the application
+            application_id = await bioengine_worker_service.deploy_application(
+                **app_config
+            )
+            deployed_app_ids.append(application_id)
+            print(f"Deployed application: {application_id}")
 
-    # Wait for both applications to finish deploying
-    timeout = 30  # 30 seconds timeout
-    poll_interval = 2  # Check every 2 seconds
-    start_time = time.time()
+        # Wait for both applications to finish deploying
+        timeout = 30  # 30 seconds timeout
+        poll_interval = 2  # Check every 2 seconds
+        start_time = time.time()
 
-    while time.time() - start_time < timeout:
+        while time.time() - start_time < timeout:
+            status = await bioengine_worker_service.get_status()
+            bioengine_apps = status.get("bioengine_apps", {})
+
+            # Check if all apps are no longer in DEPLOYING state
+            all_deployed = True
+            for app_id in deployed_app_ids:
+                if app_id in bioengine_apps:
+                    app_status = bioengine_apps[app_id].get("status", "")
+                    if app_status in ["NOT_STARTED", "DEPLOYING"]:
+                        all_deployed = False
+                        break
+                else:
+                    all_deployed = False
+                    break
+
+            if all_deployed:
+                break
+
+            await asyncio.sleep(poll_interval)
+        else:
+            raise TimeoutError(
+                f"Applications did not finish deploying within {timeout} seconds"
+            )
+
+        # Check that both apps are healthy and have running replicas
         status = await bioengine_worker_service.get_status()
         bioengine_apps = status.get("bioengine_apps", {})
 
-        # Check if all apps are no longer in DEPLOYING state
-        all_deployed = True
         for app_id in deployed_app_ids:
-            if app_id in bioengine_apps:
-                app_status = bioengine_apps[app_id].get("status", "")
-                if app_status in ["NOT_STARTED", "DEPLOYING"]:
-                    all_deployed = False
-                    break
-            else:
-                all_deployed = False
-                break
+            assert app_id in bioengine_apps, f"Application {app_id} not found in status"
 
-        if all_deployed:
-            break
-
-        await asyncio.sleep(poll_interval)
-    else:
-        raise TimeoutError(
-            f"Applications did not finish deploying within {timeout} seconds"
-        )
-
-    # Check that both apps are healthy and have running replicas
-    status = await bioengine_worker_service.get_status()
-    bioengine_apps = status.get("bioengine_apps", {})
-
-    for app_id in deployed_app_ids:
-        assert app_id in bioengine_apps, f"Application {app_id} not found in status"
-
-        app_info = bioengine_apps[app_id]
-        assert (
-            app_info["status"] == "RUNNING"
-        ), f"Application {app_id} is not running: {app_info['status']}"
-
-        # Check deployments are healthy
-        assert (
-            len(app_info["deployments"]) > 0
-        ), f"Application {app_id} should have active deployments"
-
-        for deployment_name, deployment_info in app_info["deployments"].items():
+            app_info = bioengine_apps[app_id]
             assert (
-                deployment_info["status"] == "HEALTHY"
-            ), f"Deployment {deployment_name} of app {app_id} is not healthy: {deployment_info['status']}"
+                app_info["status"] == "RUNNING"
+            ), f"Application {app_id} is not running: {app_info['status']}"
 
-            # Check replica states
-            replica_states = deployment_info["replica_states"]
+            # Check deployments are healthy
             assert (
-                len(replica_states) > 0
-            ), f"Deployment {deployment_name} of app {app_id} should have replicas"
+                len(app_info["deployments"]) > 0
+            ), f"Application {app_id} should have active deployments"
 
-            # Ensure at least one replica is running
-            running_replicas = replica_states.get("RUNNING", 0)
-            assert (
-                running_replicas > 0
-            ), f"Deployment {deployment_name} of app {app_id} should have at least one running replica"
+            for deployment_name, deployment_info in app_info["deployments"].items():
+                assert (
+                    deployment_info["status"] == "HEALTHY"
+                ), f"Deployment {deployment_name} of app {app_id} is not healthy: {deployment_info['status']}"
 
-        print(f"Application {app_id} is healthy with running replicas")
+                # Check replica states
+                replica_states = deployment_info["replica_states"]
+                assert (
+                    len(replica_states) > 0
+                ), f"Deployment {deployment_name} of app {app_id} should have replicas"
 
-    # Does not need any cleanup because of function-scoped BioEngine worker
+                # Ensure at least one replica is running
+                running_replicas = replica_states.get("RUNNING", 0)
+                assert (
+                    running_replicas > 0
+                ), f"Deployment {deployment_name} of app {app_id} should have at least one running replica"
+
+            print(f"Application {app_id} is healthy with running replicas")
+
+    finally:
+        # Cleanup: Ensure applications are undeployed (even if test fails)
+        for app_id in deployed_app_ids:
+            try:
+                await bioengine_worker_service.undeploy_application(
+                    application_id=app_id
+                )
+                print(f"Undeployed application: {app_id}")
+            except Exception as e:
+                warnings.warn(f"Failed to undeploy application {app_id}: {e}")
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_deploy_application_from_artifact(
     monkeypatch: pytest.MonkeyPatch,
     tests_dir: Path,
-    worker_mode: str,
     test_id: str,
     hypha_workspace: str,
     bioengine_worker_service: ObjectProxy,
@@ -781,11 +794,6 @@ async def test_deploy_application_from_artifact(
 
     Note: The demo app is already deployed by startup_applications, deploying again will update the app
     """
-    if worker_mode == "external-cluster":
-        pytest.skip(
-            "Startup applications are disabled in external cluster mode. Skipping test."
-        )
-
     # Ensure BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH is not set to avoid local deployment
     monkeypatch.delenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH", raising=False)
     assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") is None
@@ -796,10 +804,8 @@ async def test_deploy_application_from_artifact(
     demo_artifact_id = f"{hypha_workspace}/demo-app-{hyphen_test_id}"
     demo_app_config = {
         "artifact_id": demo_artifact_id,
-        "num_cpus": 2,
-        "num_gpus": 0,
-        "memory": 1.2 * 1024**3,
-    }  # Test with resource limits
+        "enable_gpu": False,
+    }  # Test random application ID generation
 
     composition_app_path = tests_dir / "composition_app"
     composition_artifact_id = f"{hypha_workspace}/composition-app-{hyphen_test_id}"
@@ -810,7 +816,8 @@ async def test_deploy_application_from_artifact(
             "CompositionDeployment": {"demo_input": "Hello World!"},
             "Deployment2": {"start_number": 10},
         },
-    }
+        "enable_gpu": False,
+    }  # Provide custom application id and deployment kwargs
 
     app_paths = [demo_app_path, composition_app_path]
     app_configs = [demo_app_config, composition_app_config]
@@ -823,7 +830,6 @@ async def test_deploy_application_from_artifact(
         composition_app_path.exists()
     ), f"Composition app directory not found: {composition_app_path}"
 
-    test_completed = False
     try:
         # Create artifacts first
         for app_path, artifact_id in zip(app_paths, artifact_ids):
@@ -925,16 +931,8 @@ async def test_deploy_application_from_artifact(
 
             print(f"Application {app_id} is healthy with running replicas")
 
-        # Undeploy applications
-        for app_id in deployed_app_ids:
-            await bioengine_worker_service.undeploy_application(app_id)
-            print(f"Undeployed application: {app_id}")
-
-        test_completed = True
-
     finally:
-        # Cleanup: Delete all created artifacts
-        cleanup_errors = []
+        # Cleanup: Delete all created artifacts (even if test fails)
         for artifact_id in artifact_ids:
             try:
                 await bioengine_worker_service.delete_application(
@@ -942,24 +940,20 @@ async def test_deploy_application_from_artifact(
                 )
                 print(f"Deleted artifact: {artifact_id}")
             except Exception as e:
-                cleanup_errors.append(f"Failed to cleanup artifact {artifact_id}: {e}")
+                warnings.warn(f"Failed to delete artifact {artifact_id}: {e}")
 
-        # Also cleanup any remaining deployed applications if test failed
-        if not test_completed:
-            for app_id in deployed_app_ids:
-                try:
-                    await bioengine_worker_service.undeploy_application(app_id)
-                except Exception as e:
-                    cleanup_errors.append(
-                        f"Failed to cleanup application {app_id}: {e}"
-                    )
-
-        # Log cleanup errors but don't fail the test if cleanup fails
-        if cleanup_errors:
-            for error in cleanup_errors:
-                print(f"Cleanup warning: {error}")
+        # Cleanup: Ensure applications are undeployed (even if test fails)
+        for app_id in deployed_app_ids:
+            try:
+                await bioengine_worker_service.undeploy_application(
+                    application_id=app_id
+                )
+                print(f"Undeployed application: {app_id}")
+            except Exception as e:
+                warnings.warn(f"Failed to undeploy application {app_id}: {e}")
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_call_demo_app_functions(
     monkeypatch: pytest.MonkeyPatch,
@@ -983,112 +977,123 @@ async def test_call_demo_app_functions(
     demo_artifact_id = f"{hypha_workspace}/demo-app"
 
     app_id = await bioengine_worker_service.deploy_application(
-        artifact_id=demo_artifact_id
+        artifact_id=demo_artifact_id, enable_gpu=False
     )
 
-    # Wait for deployment to complete
-    timeout = 30  # 30 seconds timeout
-    poll_interval = 2  # Check every 2 seconds
-    start_time = time.time()
-
-    while time.time() - start_time < timeout:
-        status = await bioengine_worker_service.get_status()
-        bioengine_apps = status.get("bioengine_apps", {})
-
-        if app_id in bioengine_apps:
-            app_status = bioengine_apps[app_id]
-            if (
-                app_status["status"] == "RUNNING"
-                and len(app_status.get("service_ids", [])) > 0
-            ):
-                break
-
-        await asyncio.sleep(poll_interval)
-    else:
-        pytest.fail("Demo app deployment timed out")
-
-    # Get the service ID from the worker status
-    status = await bioengine_worker_service.get_status()
-    bioengine_apps = status["bioengine_apps"]
-    app_status = bioengine_apps[app_id]
-    first_replica = app_status["service_ids"][0]
-
-    websocket_service_id = first_replica["websocket_service_id"]
-    webrtc_service_id = first_replica["webrtc_service_id"]
-
-    # Get the websocket service using hypha_client
-    websocket_service = await hypha_client.get_service(websocket_service_id)
-    assert (
-        websocket_service
-    ), f"Could not connect to WebSocket service {websocket_service_id}"
-
-    # Call the application functions using the WebSocket service
-    # Test ping method
-    ping_result = await asyncio.wait_for(websocket_service.ping(), timeout=10)
-    assert ping_result is not None, "Ping should return a result"
-    assert isinstance(ping_result, dict), "Ping result should be a dictionary"
-    assert (
-        ping_result["status"] == "ok"
-    ), f"Expected status 'ok', got {ping_result.get('status')}"
-    assert "message" in ping_result, "Ping result should contain 'message'"
-    assert "timestamp" in ping_result, "Ping result should contain 'timestamp'"
-    assert "uptime" in ping_result, "Ping result should contain 'uptime'"
-
-    # Test ascii_art method
-    ascii_result = await asyncio.wait_for(websocket_service.ascii_art(), timeout=10)
-    assert ascii_result is not None, "ASCII art should return a result"
-    assert isinstance(ascii_result, list), "ASCII art result should be a list"
-    assert len(ascii_result) > 0, "ASCII art should not be empty"
-    assert all(
-        isinstance(line, str) for line in ascii_result
-    ), "All ASCII lines should be strings"
-
-    # Get the peer connection
-    peer_connection = await get_rtc_service(hypha_client, webrtc_service_id)
-    assert peer_connection, f"Could not connect to WebRTC service {webrtc_service_id}"
-
     try:
-        # Get the service using the peer connection instead of hypha_client
-        peer_service = await peer_connection.get_service(app_id)
-        assert peer_service, "Could not get peer service from WebRTC"
+        # Wait for deployment to complete
+        timeout = 30  # 30 seconds timeout
+        poll_interval = 2  # Check every 2 seconds
+        start_time = time.time()
 
-        # Call the application functions using the peer connection service
-        # Test ping method through WebRTC
-        rtc_ping_result = await asyncio.wait_for(
-            peer_service.ping(context=hypha_client.config), timeout=10
-        )
-        assert rtc_ping_result is not None, "WebRTC ping should return a result"
-        assert isinstance(
-            rtc_ping_result, dict
-        ), "WebRTC ping result should be a dictionary"
+        while time.time() - start_time < timeout:
+            status = await bioengine_worker_service.get_status()
+            bioengine_apps = status.get("bioengine_apps", {})
+
+            if app_id in bioengine_apps:
+                app_status = bioengine_apps[app_id]
+                if (
+                    app_status["status"] == "RUNNING"
+                    and len(app_status.get("service_ids", [])) > 0
+                ):
+                    break
+
+            await asyncio.sleep(poll_interval)
+        else:
+            pytest.fail("Demo app deployment timed out")
+
+        # Get the service ID from the worker status
+        status = await bioengine_worker_service.get_status()
+        bioengine_apps = status["bioengine_apps"]
+        app_status = bioengine_apps[app_id]
+        first_replica = app_status["service_ids"][0]
+
+        websocket_service_id = first_replica["websocket_service_id"]
+        webrtc_service_id = first_replica["webrtc_service_id"]
+
+        # Get the websocket service using hypha_client
+        websocket_service = await hypha_client.get_service(websocket_service_id)
         assert (
-            rtc_ping_result["status"] == "ok"
-        ), f"Expected status 'ok', got {rtc_ping_result.get('status')}"
+            websocket_service
+        ), f"Could not connect to WebSocket service {websocket_service_id}"
 
-        # Test ascii_art method through WebRTC
-        rtc_ascii_result = await asyncio.wait_for(
-            peer_service.ascii_art(context=hypha_client.config), timeout=10
-        )
-        assert rtc_ascii_result is not None, "WebRTC ASCII art should return a result"
-        assert isinstance(
-            rtc_ascii_result, list
-        ), "WebRTC ASCII art result should be a list"
-        assert len(rtc_ascii_result) > 0, "WebRTC ASCII art should not be empty"
-
-        # Results should be the same through both channels
+        # Call the application functions using the WebSocket service
+        # Test ping method
+        ping_result = await asyncio.wait_for(websocket_service.ping(), timeout=10)
+        assert ping_result is not None, "Ping should return a result"
+        assert isinstance(ping_result, dict), "Ping result should be a dictionary"
         assert (
-            rtc_ping_result["status"] == ping_result["status"]
-        ), "Ping results should match"
-        assert rtc_ascii_result == ascii_result, "ASCII art results should match"
+            ping_result["status"] == "ok"
+        ), f"Expected status 'ok', got {ping_result.get('status')}"
+        assert "message" in ping_result, "Ping result should contain 'message'"
+        assert "timestamp" in ping_result, "Ping result should contain 'timestamp'"
+        assert "uptime" in ping_result, "Ping result should contain 'uptime'"
+
+        # Test ascii_art method
+        ascii_result = await asyncio.wait_for(websocket_service.ascii_art(), timeout=10)
+        assert ascii_result is not None, "ASCII art should return a result"
+        assert isinstance(ascii_result, list), "ASCII art result should be a list"
+        assert len(ascii_result) > 0, "ASCII art should not be empty"
+        assert all(
+            isinstance(line, str) for line in ascii_result
+        ), "All ASCII lines should be strings"
+
+        # Get the peer connection
+        peer_connection = await get_rtc_service(hypha_client, webrtc_service_id)
+        assert (
+            peer_connection
+        ), f"Could not connect to WebRTC service {webrtc_service_id}"
+
+        try:
+            # Get the service using the peer connection instead of hypha_client
+            peer_service = await peer_connection.get_service(app_id)
+            assert peer_service, "Could not get peer service from WebRTC"
+
+            # Call the application functions using the peer connection service
+            # Test ping method through WebRTC
+            rtc_ping_result = await asyncio.wait_for(
+                peer_service.ping(context=hypha_client.config), timeout=10
+            )
+            assert rtc_ping_result is not None, "WebRTC ping should return a result"
+            assert isinstance(
+                rtc_ping_result, dict
+            ), "WebRTC ping result should be a dictionary"
+            assert (
+                rtc_ping_result["status"] == "ok"
+            ), f"Expected status 'ok', got {rtc_ping_result.get('status')}"
+
+            # Test ascii_art method through WebRTC
+            rtc_ascii_result = await asyncio.wait_for(
+                peer_service.ascii_art(context=hypha_client.config), timeout=10
+            )
+            assert (
+                rtc_ascii_result is not None
+            ), "WebRTC ASCII art should return a result"
+            assert isinstance(
+                rtc_ascii_result, list
+            ), "WebRTC ASCII art result should be a list"
+            assert len(rtc_ascii_result) > 0, "WebRTC ASCII art should not be empty"
+
+            # Results should be the same through both channels
+            assert (
+                rtc_ping_result["status"] == ping_result["status"]
+            ), "Ping results should match"
+            assert rtc_ascii_result == ascii_result, "ASCII art results should match"
+
+        finally:
+            # Clean up WebRTC connection
+            await peer_connection.disconnect()
 
     finally:
-        # Clean up WebRTC connection
-        await peer_connection.disconnect()
+        # Cleanup: Ensure applications are undeployed (even if test fails)
+        try:
+            await bioengine_worker_service.undeploy_application(application_id=app_id)
+            print(f"Undeployed application: {app_id}")
+        except Exception as e:
+            warnings.warn(f"Failed to undeploy application {app_id}: {e}")
 
-    # Clean up: undeploy the application
-    await bioengine_worker_service.undeploy_application(app_id)
 
-
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_call_composition_app_functions(
     monkeypatch: pytest.MonkeyPatch,
@@ -1115,125 +1120,138 @@ async def test_call_composition_app_functions(
             "CompositionDeployment": {"demo_input": "Test Hello World!"},
             "Deployment2": {"start_number": 100},
         },
+        "enable_gpu": False,
     }
 
     app_id = await bioengine_worker_service.deploy_application(**composition_app_config)
 
-    # Wait for deployment to complete
-    timeout = 30  # 30 seconds timeout
-    poll_interval = 2  # Check every 2 seconds
-    start_time = time.time()
-
-    while time.time() - start_time < timeout:
-        status = await bioengine_worker_service.get_status()
-        bioengine_apps = status.get("bioengine_apps", {})
-
-        if app_id in bioengine_apps:
-            app_status = bioengine_apps[app_id]
-            if (
-                app_status["status"] == "RUNNING"
-                and len(app_status.get("service_ids", [])) > 0
-            ):
-                break
-
-        await asyncio.sleep(poll_interval)
-    else:
-        pytest.fail("Composition app deployment timed out")
-
-    # Get the service ID from the worker status
-    status = await bioengine_worker_service.get_status()
-    bioengine_apps = status["bioengine_apps"]
-    app_status = bioengine_apps[app_id]
-    first_replica = app_status["service_ids"][0]
-
-    websocket_service_id = first_replica["websocket_service_id"]
-    webrtc_service_id = first_replica["webrtc_service_id"]
-
-    # Get the websocket service using hypha_client
-    websocket_service = await hypha_client.get_service(websocket_service_id)
-    assert (
-        websocket_service
-    ), f"Could not connect to WebSocket service {websocket_service_id}"
-
-    # Call the application functions using the WebSocket service
-    # Test ping method
-    ping_result = await asyncio.wait_for(websocket_service.ping(), timeout=10)
-    assert ping_result is not None, "Ping should return a result"
-    assert isinstance(ping_result, str), "Ping result should be a string"
-    assert ping_result == "pong", f"Expected 'pong', got {ping_result}"
-
-    # Test calculate_result method
-    test_number = 42
-    calc_result = await asyncio.wait_for(
-        websocket_service.calculate_result(number=test_number), timeout=15
-    )
-    assert calc_result is not None, "Calculate result should return a result"
-    assert isinstance(calc_result, str), "Calculate result should be a string"
-    assert "Uptime:" in calc_result, "Result should contain uptime information"
-    assert "Result:" in calc_result, "Result should contain calculation result"
-    assert "Demo string:" in calc_result, "Result should contain demo string"
-    assert "Test Hello World!" in calc_result, "Result should contain the demo input"
-    # The result should be start_number (100) + test_number (42) = 142
-    assert (
-        "142" in calc_result
-    ), f"Result should contain 142 (100 + 42), got: {calc_result}"
-
-    # Get the peer connection
-    peer_connection = await get_rtc_service(hypha_client, webrtc_service_id)
-    assert peer_connection, f"Could not connect to WebRTC service {webrtc_service_id}"
-
     try:
-        # Get the service using the peer connection instead of hypha_client
-        peer_service = await peer_connection.get_service(app_id)
-        assert peer_service, "Could not get peer service from WebRTC"
+        # Wait for deployment to complete
+        timeout = 30  # 30 seconds timeout
+        poll_interval = 2  # Check every 2 seconds
+        start_time = time.time()
 
-        # Call the application functions using the peer connection service
-        # Test ping method through WebRTC
-        rtc_ping_result = await asyncio.wait_for(
-            peer_service.ping(context=hypha_client.config), timeout=10
+        while time.time() - start_time < timeout:
+            status = await bioengine_worker_service.get_status()
+            bioengine_apps = status.get("bioengine_apps", {})
+
+            if app_id in bioengine_apps:
+                app_status = bioengine_apps[app_id]
+                if (
+                    app_status["status"] == "RUNNING"
+                    and len(app_status.get("service_ids", [])) > 0
+                ):
+                    break
+
+            await asyncio.sleep(poll_interval)
+        else:
+            pytest.fail("Composition app deployment timed out")
+
+        # Get the service ID from the worker status
+        status = await bioengine_worker_service.get_status()
+        bioengine_apps = status["bioengine_apps"]
+        app_status = bioengine_apps[app_id]
+        first_replica = app_status["service_ids"][0]
+
+        websocket_service_id = first_replica["websocket_service_id"]
+        webrtc_service_id = first_replica["webrtc_service_id"]
+
+        # Get the websocket service using hypha_client
+        websocket_service = await hypha_client.get_service(websocket_service_id)
+        assert (
+            websocket_service
+        ), f"Could not connect to WebSocket service {websocket_service_id}"
+
+        # Call the application functions using the WebSocket service
+        # Test ping method
+        ping_result = await asyncio.wait_for(websocket_service.ping(), timeout=10)
+        assert ping_result is not None, "Ping should return a result"
+        assert isinstance(ping_result, str), "Ping result should be a string"
+        assert ping_result == "pong", f"Expected 'pong', got {ping_result}"
+
+        # Test calculate_result method
+        test_number = 42
+        calc_result = await asyncio.wait_for(
+            websocket_service.calculate_result(number=test_number), timeout=15
         )
-        assert rtc_ping_result is not None, "WebRTC ping should return a result"
-        assert isinstance(rtc_ping_result, str), "WebRTC ping result should be a string"
-        assert rtc_ping_result == "pong", f"Expected 'pong', got {rtc_ping_result}"
+        assert calc_result is not None, "Calculate result should return a result"
+        assert isinstance(calc_result, str), "Calculate result should be a string"
+        assert "Uptime:" in calc_result, "Result should contain uptime information"
+        assert "Result:" in calc_result, "Result should contain calculation result"
+        assert "Demo string:" in calc_result, "Result should contain demo string"
+        assert (
+            "Test Hello World!" in calc_result
+        ), "Result should contain the demo input"
+        # The result should be start_number (100) + test_number (42) = 142
+        assert (
+            "142" in calc_result
+        ), f"Result should contain 142 (100 + 42), got: {calc_result}"
 
-        # Test calculate_result method through WebRTC
-        rtc_calc_result = await asyncio.wait_for(
-            peer_service.calculate_result(
-                number=test_number, context=hypha_client.config
-            ),
-            timeout=15,
-        )
+        # Get the peer connection
+        peer_connection = await get_rtc_service(hypha_client, webrtc_service_id)
         assert (
-            rtc_calc_result is not None
-        ), "WebRTC calculate result should return a result"
-        assert isinstance(
-            rtc_calc_result, str
-        ), "WebRTC calculate result should be a string"
-        assert (
-            "Uptime:" in rtc_calc_result
-        ), "WebRTC result should contain uptime information"
-        assert (
-            "Result:" in rtc_calc_result
-        ), "WebRTC result should contain calculation result"
-        assert (
-            "Demo string:" in rtc_calc_result
-        ), "WebRTC result should contain demo string"
-        assert (
-            "Test Hello World!" in rtc_calc_result
-        ), "WebRTC result should contain the demo input"
-        assert (
-            "142" in rtc_calc_result
-        ), f"WebRTC result should contain 142 (100 + 42), got: {rtc_calc_result}"
+            peer_connection
+        ), f"Could not connect to WebRTC service {webrtc_service_id}"
 
-        # Results should be the same through both channels
-        assert rtc_ping_result == ping_result, "Ping results should match"
-        # Note: Uptime may differ slightly between calls, so we check key components
-        assert "Test Hello World!" in rtc_calc_result, "Demo string should match"
-        assert "142" in rtc_calc_result, "Calculation result should match"
+        try:
+            # Get the service using the peer connection instead of hypha_client
+            peer_service = await peer_connection.get_service(app_id)
+            assert peer_service, "Could not get peer service from WebRTC"
+
+            # Call the application functions using the peer connection service
+            # Test ping method through WebRTC
+            rtc_ping_result = await asyncio.wait_for(
+                peer_service.ping(context=hypha_client.config), timeout=10
+            )
+            assert rtc_ping_result is not None, "WebRTC ping should return a result"
+            assert isinstance(
+                rtc_ping_result, str
+            ), "WebRTC ping result should be a string"
+            assert rtc_ping_result == "pong", f"Expected 'pong', got {rtc_ping_result}"
+
+            # Test calculate_result method through WebRTC
+            rtc_calc_result = await asyncio.wait_for(
+                peer_service.calculate_result(
+                    number=test_number, context=hypha_client.config
+                ),
+                timeout=15,
+            )
+            assert (
+                rtc_calc_result is not None
+            ), "WebRTC calculate result should return a result"
+            assert isinstance(
+                rtc_calc_result, str
+            ), "WebRTC calculate result should be a string"
+            assert (
+                "Uptime:" in rtc_calc_result
+            ), "WebRTC result should contain uptime information"
+            assert (
+                "Result:" in rtc_calc_result
+            ), "WebRTC result should contain calculation result"
+            assert (
+                "Demo string:" in rtc_calc_result
+            ), "WebRTC result should contain demo string"
+            assert (
+                "Test Hello World!" in rtc_calc_result
+            ), "WebRTC result should contain the demo input"
+            assert (
+                "142" in rtc_calc_result
+            ), f"WebRTC result should contain 142 (100 + 42), got: {rtc_calc_result}"
+
+            # Results should be the same through both channels
+            assert rtc_ping_result == ping_result, "Ping results should match"
+            # Note: Uptime may differ slightly between calls, so we check key components
+            assert "Test Hello World!" in rtc_calc_result, "Demo string should match"
+            assert "142" in rtc_calc_result, "Calculation result should match"
+
+        finally:
+            # Clean up WebRTC connection
+            await peer_connection.disconnect()
 
     finally:
-        # Clean up WebRTC connection
-        await peer_connection.disconnect()
-
-    # Clean up: undeploy the application
-    await bioengine_worker_service.undeploy_application(app_id)
+        # Cleanup: Ensure applications are undeployed (even if test fails)
+        try:
+            await bioengine_worker_service.undeploy_application(application_id=app_id)
+            print(f"Undeployed application: {app_id}")
+        except Exception as e:
+            warnings.warn(f"Failed to undeploy application {app_id}: {e}")

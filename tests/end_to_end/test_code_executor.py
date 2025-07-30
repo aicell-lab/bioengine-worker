@@ -12,6 +12,7 @@ import cloudpickle
 import pytest
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_execute_python_code_simple_operations(bioengine_worker_service):
     """
@@ -207,6 +208,7 @@ def process_data(numbers=None, texts=None, threshold=10, multiplier=1):
     assert "error" not in result or result["error"] is None
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_execute_python_code_with_standard_libraries(bioengine_worker_service):
     """
@@ -336,6 +338,7 @@ def analyze_with_libraries(numbers, texts, seed=42):
     assert "error" not in result or result["error"] is None
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_execute_python_code_with_runtime_env_packages(bioengine_worker_service):
     """
@@ -567,6 +570,7 @@ def test_runtime_packages():
     print("✓ All required packages are available and functional in runtime environment")
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_execute_python_code_error_handling(bioengine_worker_service):
     """
@@ -704,6 +708,7 @@ def cause_specific_error(error_type):
     assert "error" not in result or result["error"] is None
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_execute_python_code_with_pickle_mode(bioengine_worker_service):
     """
@@ -872,6 +877,7 @@ async def test_execute_python_code_with_pickle_mode(bioengine_worker_service):
     assert "numpy_version" in result["result"]
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_execute_python_code_with_stdout_stderr_callbacks(
     bioengine_worker_service,

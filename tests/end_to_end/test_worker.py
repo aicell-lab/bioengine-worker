@@ -31,6 +31,7 @@ import time
 import pytest
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_get_status(
     bioengine_worker_service,
@@ -241,6 +242,7 @@ async def test_get_status(
     assert status["is_ready"], "Worker should be ready"
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_stop_worker(
     bioengine_worker_service,

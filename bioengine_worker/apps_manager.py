@@ -326,9 +326,7 @@ class AppsManager:
                 deployment_kwargs=self._deployed_applications[application_id][
                     "deployment_kwargs"
                 ],
-                enable_gpu=self._deployed_applications[application_id][
-                    "gpu_enabled"
-                ],
+                enable_gpu=self._deployed_applications[application_id]["enable_gpu"],
             )
 
             # Check if the required resources are available
@@ -609,7 +607,7 @@ class AppsManager:
                 "deployments": deployments,
                 "consecutive_failures": application_info["consecutive_failures"],
                 "deployment_kwargs": application_info["deployment_kwargs"],
-                "gpu_enabled": application_info["gpu_enabled"],
+                "gpu_enabled": application_info["enable_gpu"],
                 "application_resources": application_info["application_resources"],
                 "authorized_users": application_info["authorized_users"],
                 "available_methods": application_info["available_methods"],
@@ -1062,7 +1060,7 @@ class AppsManager:
                 "artifact_id": artifact_id,
                 "version": version,
                 "deployment_kwargs": deployment_kwargs,
-                "gpu_enabled": enable_gpu,
+                "enable_gpu": enable_gpu,
                 "application_resources": {},
                 "authorized_users": [],
                 "available_methods": [],
@@ -1096,8 +1094,7 @@ class AppsManager:
         Args:
             app_configs: List of dictionaries containing application configurations.
                          Each dictionary must contain 'artifact_id' and may include
-                         'version', 'application_id', 'num_cpus', 'num_gpus', 'memory',
-                         and 'deployment_kwargs'.
+                         'version', 'application_id', 'deployment_kwargs' and 'enable_gpu'.
             context: User context information automatically injected by Hypha.
 
         Raises:
@@ -1119,10 +1116,8 @@ class AppsManager:
                 artifact_id=app_config["artifact_id"],
                 version=app_config.get("version"),
                 application_id=app_config.get("application_id"),
-                num_cpus=app_config.get("num_cpus"),
-                num_gpus=app_config.get("num_gpus"),
-                memory=app_config.get("memory"),
                 deployment_kwargs=app_config.get("deployment_kwargs"),
+                enable_gpu=app_config.get("enable_gpu", True),
                 context=context,
             )
             application_ids.append(application_id)

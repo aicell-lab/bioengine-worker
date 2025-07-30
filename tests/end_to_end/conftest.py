@@ -21,23 +21,15 @@ from bioengine_worker.worker import BioEngineWorker
 
 # Test application configurations for automatic startup deployment
 @pytest.fixture(scope="session")
-def startup_applications(worker_mode: str) -> List[Dict]:
-    """
-    Return startup applications based on worker mode.
-
-    For external-cluster mode, no startup applications are deployed since
-    multiple function-scoped workers would conflict with the same application
-    deployed across different test functions to the same cluster.
-    """
-    if worker_mode == "external-cluster":
-        return None
-    else:
-        return [
-            {
-                "artifact_id": "demo-app",
-                "application_id": "demo-app",
-            },
-        ]
+def startup_applications() -> List[Dict]:
+    """Return startup applications for BioEngine Worker tests."""
+    return [
+        {
+            "artifact_id": "demo-app",
+            "application_id": "demo-app",
+            "enable_gpu": False,
+        },
+    ]
 
 
 @pytest.fixture(scope="session")

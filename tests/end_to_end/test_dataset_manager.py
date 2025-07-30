@@ -8,6 +8,7 @@ including dataset loading, interaction, closing, and cleanup operations.
 import pytest
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_load_and_interact_with_dataset(bioengine_worker_service):
     """
@@ -37,6 +38,7 @@ async def test_load_and_interact_with_dataset(bioengine_worker_service):
     pytest.skip("Test logic not implemented yet")
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_close_dataset(bioengine_worker_service):
     """
@@ -61,6 +63,7 @@ async def test_close_dataset(bioengine_worker_service):
     pytest.skip("Test logic not implemented yet")
 
 
+@pytest.mark.end_to_end
 @pytest.mark.asyncio
 async def test_cleanup(bioengine_worker_service):
     """

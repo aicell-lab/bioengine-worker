@@ -7,20 +7,87 @@ import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from hypha_rpc.rpc import RemoteService
+from hypha_rpc.utils.schema import schema_method
 
-from bioengine_worker.utils import create_logger
+from bioengine_worker.utils import check_permissions, create_logger
 
 
-# TODO: Add user authorization checks
 class DatasetsManager:
+    """
+    Manages dataset loading, access control, and HTTP streaming services for BioEngine datasets.
+
+    This class provides comprehensive dataset management by integrating with the Hypha
+    server to expose datasets as HTTP streaming services. It handles the complete lifecycle
+    from dataset discovery through service registration to cleanup, with robust permission
+    control and file streaming capabilities.
+
+    The DatasetsManager orchestrates:
+    - Dataset discovery and manifest validation from filesystem
+    - Permission-based access control for dataset operations and file access
+    - HTTP streaming service registration with Hypha server
+    - ASGI-based file serving with range request support
+    - Real-time dataset monitoring and status reporting
+    - Graceful service cleanup and resource management
+
+    Key Features:
+    - Automatic dataset discovery from directory structure with manifest validation
+    - Admin-level permission control for dataset loading/unloading operations
+    - User-level authorization for file access based on dataset configuration
+    - HTTP range request support for efficient large file streaming
+    - CORS-enabled endpoints for cross-origin access
+    - Comprehensive error handling and logging with proper state management
+    - Real-time service monitoring and status reporting
+
+    Dataset Structure:
+    Each dataset must contain a manifest.yml file with the following structure:
+    ```yaml
+    description: "Dataset description"
+    authorized_users: ["user@example.com", "*"]  # "*" for public access
+    files:
+      data_file.zarr:
+        description: "File description"
+        version: "1.0.0"
+        n_samples: 1000
+        n_vars: 500
+    ```
+
+    Attributes:
+        server: Hypha server connection instance
+        admin_users (List[str]): List of user emails with admin permissions for dataset operations
+        loaded_datasets (Dict): Tracking of currently loaded dataset services
+        service_id_base (str): Base service ID prefix for dataset services
+        logger: Logger instance for dataset operations
+        _datasets (Dict): Internal dataset registry with manifest data and file paths
+    """
+
     def __init__(
         self,
         data_dir: str,
-        admin_users: Optional[List[str]] = None,
         # Logger
         log_file: Optional[str] = None,
         debug: bool = False,
     ):
+        """
+        Initialize the DatasetsManager with dataset discovery and configuration.
+
+        Scans the specified data directory for dataset manifests and validates
+        dataset structure. Sets up logging and initializes state variables for
+        dataset service management.
+
+        Args:
+            data_dir: Root directory containing dataset subdirectories with manifest.yml files
+            log_file: Optional log file path for output
+            debug: Enable debug logging
+
+        Raises:
+            Exception: If dataset discovery or manifest validation fails
+
+        Note:
+            The admin_users parameter is passed during initialize() call,
+            not during construction. Server connection is also established
+            during initialization.
+        """
 
         # Set up logging
         self.logger = create_logger(
@@ -36,26 +103,53 @@ class DatasetsManager:
         self.service_id_base = "bioengine-dataset"
         self.loaded_datasets = {}
         self.server = None
+        self.admin_users = None
 
-        # TODO: Implement admin user checks if needed
-        self.admin_users = admin_users or []
+    def _check_initialized(self) -> None:
+        """
+        Check if the server connection is initialized.
+
+        Raises:
+            RuntimeError: If server connection is not available
+        """
+        if not self.server:
+            raise RuntimeError(
+                "Hypha server connection not available. Call initialize() first."
+            )
 
     @property
     def datasets(self) -> Dict[str, Dict]:
-        """Return the datasets without the internal attributes."""
+        """
+        Return the public dataset information without internal attributes.
+
+        Returns:
+            Dict containing dataset metadata excluding internal file paths
+        """
         if not self._datasets:
             return {}
         return {
             dataset_id: {
-                key: value
-                for key, value in dataset_info.items()
-                if not key.startswith("_")
+                key: value for key, value in dataset_info.items() if key != "_path"
             }
             for dataset_id, dataset_info in self._datasets.items()
         }
 
-    def _load_dataset_info(self, data_dir) -> Dict[str, Dict]:
-        """Read and parse a manifest.yaml file."""
+    def _load_dataset_info(self, data_dir: str) -> Dict[str, Dict]:
+        """
+        Read and parse dataset manifest files from the data directory.
+
+        Scans the data directory for subdirectories containing manifest.yml files,
+        validates dataset structure, and builds the internal dataset registry.
+
+        Args:
+            data_dir: Root directory path containing dataset subdirectories
+
+        Returns:
+            Dict mapping dataset IDs to their manifest data and file paths
+
+        Raises:
+            Exception: If directory access fails or manifest parsing errors occur
+        """
         try:
             data_dir = Path(data_dir).resolve()
 
@@ -103,12 +197,27 @@ class DatasetsManager:
                 manifest_file = dataset_path / "manifest.yml"
                 if not manifest_file.exists():
                     self.logger.warning(
-                        f"Manifest file not found in {dataset_path}. Skipping dataset."
+                        f"No manifest file found in {dataset_path}. Skipping dataset."
                     )
                     continue
 
                 with open(manifest_file, "r") as f:
                     manifest = yaml.safe_load(f)
+
+                # TODO: Update required manifest fields
+                # Validate required manifest fields
+                if "files" not in manifest:
+                    self.logger.warning(
+                        f"Manifest file {manifest_file} missing 'files' field. Skipping dataset."
+                    )
+                    continue
+
+                # Add default authorized_users if not specified
+                if "authorized_users" not in manifest:
+                    manifest["authorized_users"] = ["*"]  # Default to public access
+                    self.logger.warning(
+                        f"Dataset '{dataset_path.name}' missing 'authorized_users', defaulting to public access."
+                    )
 
                 dataset_id = dataset_path.name
                 datasets[dataset_id] = {
@@ -143,7 +252,18 @@ class DatasetsManager:
             raise e
 
     def _define_app(self, dataset_id: str) -> FastAPI:
-        """Define the FastAPI app for serving files."""
+        """
+        Define the FastAPI app for serving dataset files with permission control.
+
+        Creates a FastAPI application that serves dataset files with proper CORS
+        configuration, range request support, and user authorization checks.
+
+        Args:
+            dataset_id: ID of the dataset to serve
+
+        Returns:
+            FastAPI application instance configured for file serving
+        """
         app = FastAPI()
 
         # Enable CORS for all origins — you can restrict this to specific domains
@@ -168,6 +288,23 @@ class DatasetsManager:
 
         @app.get("/files/{path:path}")
         async def serve_file(path: str, request: Request):
+            # Extract context from request (provided by Hypha ASGI wrapper)
+            context = getattr(request.state, "context", None)
+
+            # Check user permissions for dataset file access using standardized check_permissions
+            try:
+                authorized_users = self._datasets[dataset_id]["authorized_users"]
+                check_permissions(
+                    context=context,
+                    authorized_users=authorized_users,
+                    resource_name=f"access files in dataset '{dataset_id}'",
+                )
+            except PermissionError as e:
+                self.logger.warning(
+                    f"File access denied for dataset '{dataset_id}': {e}"
+                )
+                raise HTTPException(status_code=403, detail=str(e))
+
             file_path = self._datasets[dataset_id]["_path"] / path
             if not file_path.exists() or not file_path.is_file():
                 raise HTTPException(status_code=404, detail="File not found")
@@ -239,9 +376,16 @@ class DatasetsManager:
         # Hypha ASGI service integration
         async def serve_fastapi(args, context=None):
             scope = args["scope"]
-            self.logger.debug(
-                f'{context["user"]["id"]} - {scope["client"]} - {scope["method"]} - {scope["path"]}'
-            )
+            if context and "user" in context:
+                self.logger.debug(
+                    f'{context["user"]["id"]} - {scope["client"]} - {scope["method"]} - {scope["path"]}'
+                )
+
+            # Attach context to request state for access in FastAPI endpoints
+            if "state" not in scope:
+                scope["state"] = {}
+            scope["state"]["context"] = context
+
             await dataset_app(args["scope"], args["receive"], args["send"])
 
         dataset_service_id = f"{self.service_id_base}-{dataset_id}"
@@ -263,16 +407,85 @@ class DatasetsManager:
         )
         self.logger.info(f"Access the app at: {service_info['url']}")
 
-    async def initialize(self, server) -> None:
-        """Initialize the dataset manager with a Hypha server connection
+    async def initialize(self, server: RemoteService, admin_users: List[str]) -> None:
+        """
+        Initialize the dataset manager with a Hypha server connection.
+
+        Establishes connection to the Hypha server for dataset service registration
+        and stores admin user permissions for dataset operations.
 
         Args:
-            server: Hypha server connection
-        """
-        self.server = server
+            server: Hypha server connection instance
+            admin_users: List of user IDs or emails with admin permissions for dataset operations
 
-    async def load_dataset(self, dataset_id, context=None) -> str:
-        """Load a dataset by ID."""
+        Raises:
+            Exception: If server connection initialization fails
+        """
+        # Store server connection and list of admin users
+        self.server = server
+        self.admin_users = admin_users
+
+    async def get_status(self) -> Dict[str, dict]:
+        """
+        Get the comprehensive status of the dataset manager.
+
+        Returns:
+            Dict containing available datasets and currently loaded dataset services
+        """
+        return {
+            "available_datasets": self.datasets,
+            "loaded_datasets": self.loaded_datasets,
+        }
+
+    async def monitor_datasets(self) -> None:
+        """
+        Monitor the datasets and log their status.
+
+        Placeholder for future dataset monitoring functionality such as
+        service health checks, usage statistics, and performance metrics.
+        """
+        try:
+            # TODO: Implement monitoring
+            pass
+        except Exception as e:
+            self.logger.error(f"Error monitoring datasets: {e}")
+            raise e
+
+    @schema_method
+    async def load_dataset(
+        self, dataset_id: str, context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Load a dataset by ID and register it as an HTTP streaming service.
+
+        Creates and registers a new Hypha ASGI service for the specified dataset,
+        enabling HTTP access to dataset files with proper authorization checks.
+        Requires admin permissions to perform dataset loading operations.
+
+        Args:
+            dataset_id: ID of the dataset to load
+            context: Request context containing user information for permission checks
+
+        Returns:
+            str: URL of the registered dataset service
+
+        Raises:
+            RuntimeError: If server connection is not initialized
+            PermissionError: If user lacks admin permissions
+            ValueError: If dataset is not available or already loaded
+            Exception: If service registration fails
+        """
+        self._check_initialized()
+
+        # Check admin permissions for dataset operations
+        check_permissions(
+            context=context,
+            authorized_users=self.admin_users,
+            resource_name=f"load dataset '{dataset_id}'",
+        )
+
+        user_id = context["user"]["id"] if context and "user" in context else "unknown"
+
         try:
             if dataset_id not in self._datasets.keys():
                 raise ValueError(f"Dataset '{dataset_id}' not available.")
@@ -280,6 +493,7 @@ class DatasetsManager:
                 self.logger.info(f"Dataset {dataset_id} is already open.")
                 return self.loaded_datasets[dataset_id]["url"]
 
+            self.logger.info(f"User '{user_id}' is loading dataset '{dataset_id}'...")
             await self._register_service(dataset_id)
 
             return self.loaded_datasets[dataset_id]["url"]
@@ -287,8 +501,41 @@ class DatasetsManager:
             self.logger.error(f"Error loading dataset {dataset_id}: {e}")
             raise e
 
-    async def close_dataset(self, dataset_id, context=None) -> str:
-        """Close a dataset by ID."""
+    @schema_method
+    async def close_dataset(
+        self, dataset_id: str, context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Close a dataset by ID and unregister its HTTP streaming service.
+
+        Unregisters the Hypha ASGI service for the specified dataset and removes
+        it from the loaded datasets tracking. Requires admin permissions to
+        perform dataset closing operations.
+
+        Args:
+            dataset_id: ID of the dataset to close
+            context: Request context containing user information for permission checks
+
+        Returns:
+            str: Confirmation message of successful dataset closure
+
+        Raises:
+            RuntimeError: If server connection is not initialized
+            PermissionError: If user lacks admin permissions
+            ValueError: If dataset is not available or not currently loaded
+            Exception: If service unregistration fails
+        """
+        self._check_initialized()
+
+        # Check admin permissions for dataset operations
+        check_permissions(
+            context=context,
+            authorized_users=self.admin_users,
+            resource_name=f"close dataset '{dataset_id}'",
+        )
+
+        user_id = context["user"]["id"] if context and "user" in context else "unknown"
+
         try:
             if dataset_id not in self._datasets.keys():
                 raise ValueError(f"Dataset '{dataset_id}' not available.")
@@ -296,6 +543,7 @@ class DatasetsManager:
                 self.logger.info(f"Dataset {dataset_id} is not loaded.")
                 raise ValueError(f"Dataset '{dataset_id}' is not loaded.")
 
+            self.logger.info(f"User '{user_id}' is closing dataset '{dataset_id}'...")
             service_info = self.loaded_datasets[dataset_id]
             await self.server.unregister_service(service_info["id"])
             self.loaded_datasets.pop(dataset_id)
@@ -305,60 +553,45 @@ class DatasetsManager:
             self.logger.error(f"Error closing dataset {dataset_id}: {e}")
             raise e
 
-    async def cleanup_datasets(self, context: Dict[str, Any]) -> str:
-        """Close all loaded datasets."""
+    @schema_method
+    async def cleanup(self, context: Dict[str, Any]) -> str:
+        """
+        Close all loaded datasets and clean up all HTTP streaming services.
+
+        Unregisters all currently loaded dataset services and clears the
+        loaded datasets tracking. Requires admin permissions to perform
+        cleanup operations.
+
+        Args:
+            context: Request context containing user information for permission checks
+
+        Returns:
+            str: Confirmation message of successful cleanup
+
+        Raises:
+            RuntimeError: If server connection is not initialized
+            PermissionError: If user lacks admin permissions
+            Exception: If cleanup operations fail
+        """
+        if not self.loaded_datasets:
+            self.logger.info("No datasets are currently loaded.")
+            return
+
+        self._check_initialized()
+
+        # Check admin permissions for cleanup operations
+        check_permissions(
+            context=context,
+            authorized_users=self.admin_users,
+            resource_name="cleanup all datasets",
+        )
+
+        user_id = context["user"]["id"] if context and "user" in context else "unknown"
+
         try:
-            if not self.loaded_datasets:
-                self.logger.info("No datasets are currently loaded.")
-                return "No datasets to close."
-
+            self.logger.info(f"User '{user_id}' is starting cleanup of all datasets...")
             for dataset_id in list(self.loaded_datasets.keys()):
-                await self.close_dataset(dataset_id)
-
-            return "All datasets closed successfully."
+                await self.close_dataset(dataset_id, context)
         except Exception as e:
             self.logger.error(f"Error closing all datasets: {e}")
             raise e
-
-    async def get_status(self) -> Dict[str, dict]:
-        """Get the status of the dataset manager."""
-        return {
-            "available_datasets": self.datasets,
-            "loaded_datasets": self.loaded_datasets,
-        }
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    from hypha_rpc import connect_to_server, login
-
-    async def test_dataset_manager(
-        server_url="https://hypha.aicell.io", keep_running=False
-    ):
-        # Connect to Hypha server using token from environment
-        token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
-        server = await connect_to_server({"server_url": server_url, "token": token})
-
-        # Initialize DatasetsManager
-        data_dir = Path(__file__).parent.parent / "data"
-        dataset_manager = DatasetsManager(
-            data_dir=str(data_dir),
-            debug=True,
-        )
-        await dataset_manager.initialize(server)
-
-        dataset_url = await dataset_manager.load_dataset("blood")
-        print("Dataset URL:", dataset_url)
-        _ = await dataset_manager.load_dataset("liver")
-        _ = await dataset_manager.close_dataset("liver")
-
-        # Print status
-        status = await dataset_manager.get_status()
-        print("Status:", status)
-
-        if keep_running:
-            await server.serve()
-
-    # Run the test function
-    asyncio.run(test_dataset_manager(keep_running=True))

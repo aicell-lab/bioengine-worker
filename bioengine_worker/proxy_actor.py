@@ -1,7 +1,8 @@
 import re
-from typing import Dict, Optional, Union
 from dataclasses import asdict
+from typing import Dict, Optional, Union, List
 
+import psutil
 import ray
 from ray._private.state import GlobalState
 from ray._raylet import GcsClientOptions
@@ -14,8 +15,12 @@ from ray.util.state.common import (
 )
 
 
-@ray.remote(num_cpus=0, resources={"node:__internal_head__": 0.001})
-class ClusterState:
+@ray.remote(
+    num_cpus=0,
+    resources={"node:__internal_head__": 0.001},
+    max_restarts=-1,  # Allow unlimited restarts
+)
+class BioEngineProxyActor:
     def __init__(
         self, exclude_head_node: bool = False, check_pending_resources: bool = False
     ):
@@ -83,16 +88,8 @@ class ClusterState:
                 timeout=DEFAULT_RPC_TIMEOUT,
                 filters=[
                     ("state", "=", "PENDING_NODE_ASSIGNMENT"),
-                    (
-                        "name",
-                        "!=",
-                        "ClusterState.get_state",
-                    ),  # Exclude this method itself
-                    (
-                        "type",
-                        "!=",
-                        "ACTOR_CREATION_TASK",
-                    ),  # Avoid duplicates with actors
+                    # Avoid duplicates with `_get_pending_actors`
+                    ("type", "!=", "ACTOR_CREATION_TASK"),
                 ],
                 detail=True,
                 explain=False,
@@ -124,7 +121,7 @@ class ClusterState:
             if resource_name.startswith("slurm_job_id:"):
                 return resource_name.split(":")[-1]
 
-    def get_state(self) -> Dict[str, Union[float, int, str]]:
+    def get_cluster_state(self) -> Dict[str, Union[float, int, str]]:
         """
         Get comprehensive cluster state including total and available resources per node with state 'ALIVE'.
 
@@ -168,13 +165,13 @@ class ClusterState:
                 "available_cpu": available_resources.get("CPU", 0),
                 "total_gpu": total_resources.get("GPU", 0),
                 "available_gpu": available_resources.get("GPU", 0),
-                "total_memory": total_resources.get("memory", 0),
-                "available_memory": available_resources.get("memory", 0),
+                "total_memory": total_resources.get("memory", 0),  # in bytes
+                "available_memory": available_resources.get("memory", 0),  # in bytes
                 "total_object_store_memory": total_resources.get(
-                    "object_store_memory", 0
+                    "object_store_memory", 0  # in bytes
                 ),
                 "available_object_store_memory": available_resources.get(
-                    "object_store_memory", 0
+                    "object_store_memory", 0  # in bytes
                 ),
                 "accelerator_type": self._get_accelerator_type(total_resources),
                 "slurm_job_id": self._get_slurm_job_id(total_resources),
@@ -201,3 +198,19 @@ class ClusterState:
             )
 
         return cluster_state
+
+    def get_deployment_replica(self, app_name: str, deployment_name: str) -> List[str]:
+        class_name = f"ServeReplica:{app_name}:{deployment_name}"
+        replica_actors = self.state_api_client.list(
+            resource=StateResource.ACTORS,
+            options=ListApiOptions(
+                limit=DEFAULT_LIMIT,
+                timeout=DEFAULT_RPC_TIMEOUT,
+                filters=[("class_name", "=", class_name), ("state", "=", "ALIVE")],
+                detail=False,
+                explain=False,
+            ),
+            raise_on_missing_output=True,
+        )
+        replica_ids = [actor.name.split("#")[-1] for actor in replica_actors]
+        return replica_ids

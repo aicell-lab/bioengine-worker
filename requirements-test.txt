@@ -1,0 +1,11 @@
+# Test requirements for BioEngine Worker
+# Core testing framework
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+
+# For mocking and test utilities
+pytest-mock>=3.10.0
+
+# Additional testing utilities that might be useful
+pytest-cov>=4.0.0  # Test coverage reporting
+pytest-xdist>=3.0.0  # Parallel test execution

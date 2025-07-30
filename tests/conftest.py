@@ -131,29 +131,55 @@ def cache_dir() -> Generator[Path, None, None]:
 
 
 @pytest.fixture(scope="session")
-def ray_address() -> Generator[str, None, None]:
+def ray_address(worker_mode: str) -> Generator[str, None, None]:
     """Start a Ray cluster a BioEngine Worker can connect to."""
-    with tempfile.TemporaryDirectory(
-        prefix=f"bioengine_worker_ray_cluster_"
-    ) as temp_dir:
+    if worker_mode == "external-cluster":
+        with tempfile.TemporaryDirectory(
+            prefix=f"bioengine_worker_ray_cluster_"
+        ) as temp_dir:
 
-        # Use RayCluster to start a local Ray cluster
-        ray_cluster = RayCluster(
-            mode="single-machine",
-            head_num_cpus=6,
-            head_num_gpus=0,
-            head_memory_in_gb=12,  # TODO: Check --memory flag in Ray CLI
-            ray_temp_dir=temp_dir,
-            debug=True,
-        )
-        asyncio.run(ray_cluster._start_cluster())
-        ray_cluster._set_head_node_address()
-        ray_cluster.is_ready.set()
+            # Use RayCluster to start a local Ray cluster
+            ray_cluster = RayCluster(
+                mode="single-machine",
+                head_num_cpus=6,
+                head_num_gpus=0,
+                head_memory_in_gb=12,  # TODO: Check --memory flag in Ray CLI
+                ray_temp_dir=temp_dir,
+                debug=True,
+            )
+            asyncio.run(ray_cluster._start_cluster())
+            ray_cluster._set_head_node_address()
+            ray_cluster.is_ready.set()
 
-        yield ray_cluster.head_node_address
+            yield ray_cluster.head_node_address
 
-        # Stop the Ray cluster after tests complete
-        asyncio.run(ray_cluster.stop())
+            # Stop the Ray cluster after tests complete
+            asyncio.run(ray_cluster.stop())
+    else:
+        # For single-machine or slurm modes, return no address
+        yield None
+
+
+@pytest.fixture(scope="session")
+def head_node_address(ray_address: str) -> str:
+    """Return head node address based on worker mode."""
+    if ray_address is None:
+        return None
+
+    # Extract address from Ray address format "address:port"
+    address, _ = ray_address.split(":")
+    return address
+
+
+@pytest.fixture(scope="session")
+def head_node_port(ray_address: str) -> int:
+    """Return head node port based on worker mode."""
+    if ray_address is None:
+        return 6379  # Default Ray port
+
+    # Extract port from Ray address format "address:port"
+    _, port = ray_address.split(":")
+    return int(port)
 
 
 @pytest.fixture(scope="session")

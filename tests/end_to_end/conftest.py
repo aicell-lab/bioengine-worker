@@ -82,20 +82,6 @@ def memory_in_gb(worker_mode: str) -> int:
     return 6 if worker_mode != "external-cluster" else 0
 
 
-@pytest.fixture(scope="session")
-def head_node_address(ray_address: str, worker_mode: str) -> str:
-    """Return head node address based on worker mode."""
-    address, _ = ray_address.split(":")
-    return address if worker_mode == "external-cluster" else None
-
-
-@pytest.fixture(scope="session")
-def head_node_port(ray_address: str, worker_mode: str) -> int:
-    """Return head node port based on worker mode."""
-    _, port = ray_address.split(":")
-    return int(port) if worker_mode == "external-cluster" else 6379
-
-
 @pytest_asyncio.fixture(scope="function")
 async def bioengine_worker_service_id(
     monkeypatch: pytest.MonkeyPatch,

@@ -185,24 +185,6 @@ class CodeExecutor:
         user_func = exec_namespace.get(function_name)
         return user_func
 
-    async def _signal_new_resource_request(self, delay_s: int = 0) -> None:
-        """
-        Notify SLURM workers' autoscaling system of a change in cluster state.
-
-        This method triggers the autoscaling system to check for scaling opportunities
-        after a specified delay. It's typically called when new tasks are submitted
-        or when the cluster state changes in a way that might require scaling.
-
-        Args:
-            delay_s: Delay in seconds before triggering scaling decision
-
-        Raises:
-            RuntimeError: If SLURM workers are not initialized
-        """
-        if self.ray_cluster.mode == "slurm":
-            self.logger.info("Notifying SLURM workers of cluster state change")
-            self._last_monitoring = time.time() - self._last_monitoring + delay_s
-
     async def initialize(self, admin_users: List[str]) -> None:
         """
         Initialize the CodeExecutor with admin user permissions.
@@ -401,7 +383,12 @@ class CodeExecutor:
         )
         obj_ref = configured_ray_task.remote(user_func, args, kwargs)
 
-        await self._signal_new_resource_request()
+        # If in SLURM mode, signal a resource request
+        if self.ray_cluster.mode == "slurm":
+            self.logger.info(
+                "Notifying SLURM workers' autoscaling system of a change in cluster state."
+            )
+            await self.ray_cluster.monitor_cluster()
 
         try:
             result = await asyncio.wait_for(obj_ref, timeout=timeout)

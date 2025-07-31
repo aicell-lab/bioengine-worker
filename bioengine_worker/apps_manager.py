@@ -203,6 +203,9 @@ class AppsManager:
         Returns:
             str: The converted full artifact ID in format 'workspace/artifact_id'
         """
+        if not isinstance(artifact_id, str):
+            raise TypeError("Artifact ID must be a string.")
+
         if "/" in artifact_id:
             return artifact_id
         else:
@@ -1037,29 +1040,22 @@ class AppsManager:
                     f"User '{user_id}' is deploying new application '{application_id}' from artifact '{artifact_id}', version '{version}' with kwargs: {kwargs_str}"
                 )
             else:
-                # Update existing application
+                # If already deployed, cancel the existing deployment task to update deployment in a new task
                 application_info = self._deployed_applications[application_id]
-                if application_info["is_deployed"].is_set():
-                    # If already deployed, cancel the existing deployment task to update deployment in a new task
-                    self.logger.info(
-                        f"User '{user_id}' is updating existing application from artifact '{artifact_id}', version '{version}' with kwargs: {kwargs_str}"
+                self.logger.info(
+                    f"User '{user_id}' is updating existing application from artifact '{artifact_id}', version '{version}' with kwargs: {kwargs_str}"
+                )
+                application_info["remove_on_exit"] = False
+                application_info["deployment_task"].cancel()
+                timeout = 60
+                try:
+                    await asyncio.wait_for(
+                        application_info["is_deployed"].wait(), timeout=timeout
                     )
-                    application_info["remove_on_exit"] = False
-                    application_info["deployment_task"].cancel()
-                    timeout = 10
-                    try:
-                        await asyncio.wait_for(
-                            application_info["is_deployed"], timeout=timeout
-                        )
-                    except asyncio.TimeoutError:
-                        self.logger.warning(
-                            f"Cancellation of existing deployment task for application '{application_id}' "
-                            f"did not finish in time ({timeout} seconds). Proceeding with new deployment."
-                        )
-                else:
-                    raise RuntimeError(
-                        f"Application '{application_id}' can not be updated as it is in an unfinished deployment process. "
-                        f" Wait for the current deployment to finish or call `undeploy_application()` first."
+                except asyncio.TimeoutError:
+                    self.logger.warning(
+                        f"Cancellation of existing deployment task for application '{application_id}' "
+                        f"did not finish in time ({timeout} seconds). Proceeding with new deployment."
                     )
 
             self._deployed_applications[application_id] = {

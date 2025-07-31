@@ -1,8 +1,7 @@
 import re
 from dataclasses import asdict
-from typing import Dict, Optional, Union, List
+from typing import Dict, List, Optional, Union
 
-import psutil
 import ray
 from ray._private.state import GlobalState
 from ray._raylet import GcsClientOptions

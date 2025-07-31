@@ -679,9 +679,7 @@ class AppsManager:
             raise e
 
     @schema_method
-    async def list_applications(
-        self, context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, List[str]]:
+    async def list_applications(self, context: Dict[str, Any]) -> Dict[str, List[str]]:
         """
         List all BioEngine application artifacts in the Hypha artifact manager.
 
@@ -721,7 +719,7 @@ class AppsManager:
 
     @schema_method
     async def create_application(
-        self, files: List[dict], artifact_id: str = None, context: Optional[dict] = None
+        self, files: List[dict], artifact_id: str = None, context: Dict[str, Any] = None
     ) -> str:
         """
         Create a BioEngine application artifact in the Hypha artifact manager.
@@ -893,7 +891,7 @@ class AppsManager:
 
     @schema_method
     async def delete_application(
-        self, artifact_id: str, context: Optional[Dict[str, Any]] = None
+        self, artifact_id: str, context: Dict[str, Any]
     ) -> None:
         """
         Delete a BioEngine application artifact from the Hypha artifact manager.
@@ -941,7 +939,7 @@ class AppsManager:
         application_id: Optional[str] = None,
         deployment_kwargs: Optional[Dict[str, Dict[str, Any]]] = None,
         enable_gpu: bool = True,
-        context: Optional[Dict[str, Any]] = None,
+        context: Dict[str, Any] = None,
     ) -> str:
         """
         Deploy a single artifact to Ray Serve with comprehensive state management.
@@ -1083,7 +1081,9 @@ class AppsManager:
             return application_id
 
     @schema_method
-    async def deploy_applications(self, app_configs: List[dict], context: dict) -> None:
+    async def deploy_applications(
+        self, app_configs: List[Dict[str, Any]], context: Dict[str, Any]
+    ) -> None:
         """
         Deploy multiple BioEngine applications from a list of configurations.
 

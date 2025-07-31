@@ -220,7 +220,7 @@ class CodeExecutor:
         write_stdout: Optional[Callable[[str], None]] = None,
         write_stderr: Optional[Callable[[str], None]] = None,
         timeout: int = 180,
-        context: Optional[Dict[str, Any]] = None,
+        context: Dict[str, Any] = None,
     ) -> Dict[str, Any]:
         """
         Execute Python code in a distributed Ray task with comprehensive resource management.
@@ -276,8 +276,7 @@ class CodeExecutor:
             timeout: Maximum execution time in seconds for the function.
                     Defaults to 180 seconds (3 minutes). If the function execution
                     exceeds this time, a TimeoutError is raised.
-            context: Optional request context containing user information for permission checking.
-                    Must contain context['user']['id'] for admin validation.
+            context: User context information automatically injected by Hypha.
 
         Returns:
             Dict containing comprehensive execution results:

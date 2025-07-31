@@ -763,45 +763,7 @@ class BioEngineWorker:
         return self.full_service_id
 
     @schema_method
-    async def stop(
-        self, blocking: bool = False, context: Dict[str, Any] = None
-    ) -> None:
-        """
-        Gracefully shutdown the BioEngine worker and cleanup all resources.
-
-        Performs comprehensive cleanup of all worker components including datasets,
-        deployments, Ray cluster, and monitoring tasks. Ensures proper resource
-        cleanup and service deregistration from the Hypha server.
-
-        The shutdown process:
-        1. Validates admin permissions for shutdown operation
-        2. Cancels monitoring tasks and waits for completion
-        3. Cleanup applications and deployments through AppsManager
-        4. Cleanup datasets and HTTP services through DatasetsManager
-        5. Shutdown Ray cluster (if managed by this worker)
-        6. Disconnect from Hypha server
-        7. Clear worker state and mark as not ready
-
-        Args:
-            timeout: Maximum time in seconds to wait for each cleanup operation
-            blocking: If True, waits for all cleanup operations to complete before returning
-            context: Request context containing user information for permission checking
-
-        Raises:
-            PermissionError: If user is not authorized for shutdown operations
-            TimeoutError: If cleanup operations exceed the specified timeout
-            Exception: If critical cleanup operations fail
-        """
-        check_permissions(
-            context=context,
-            authorized_users=self.admin_users,
-            resource_name="shutdown the BioEngine worker",
-        )
-
-        await self._stop(blocking=blocking)
-
-    @schema_method
-    async def get_status(self, context: Optional[Dict[str, Any]] = None) -> dict:
+    async def get_status(self, context: Dict[str, Any]) -> dict:
         """
         Retrieve comprehensive status information for the BioEngine worker and all components.
 
@@ -817,7 +779,7 @@ class BioEngineWorker:
         - System resource information and health metrics
 
         Args:
-            context: Optional request context for permission checking and audit logging
+            context: User context information automatically injected by Hypha.
 
         Returns:
             Dict containing comprehensive status information:
@@ -850,6 +812,44 @@ class BioEngineWorker:
         }
 
         return status
+
+    @schema_method
+    async def stop(
+        self, blocking: bool = False, context: Dict[str, Any] = None
+    ) -> None:
+        """
+        Gracefully shutdown the BioEngine worker and cleanup all resources.
+
+        Performs comprehensive cleanup of all worker components including datasets,
+        deployments, Ray cluster, and monitoring tasks. Ensures proper resource
+        cleanup and service deregistration from the Hypha server.
+
+        The shutdown process:
+        1. Validates admin permissions for shutdown operation
+        2. Cancels monitoring tasks and waits for completion
+        3. Cleanup applications and deployments through AppsManager
+        4. Cleanup datasets and HTTP services through DatasetsManager
+        5. Shutdown Ray cluster (if managed by this worker)
+        6. Disconnect from Hypha server
+        7. Clear worker state and mark as not ready
+
+        Args:
+            timeout: Maximum time in seconds to wait for each cleanup operation
+            blocking: If True, waits for all cleanup operations to complete before returning
+            context: User context information automatically injected by Hypha.
+
+        Raises:
+            PermissionError: If user is not authorized for shutdown operations
+            TimeoutError: If cleanup operations exceed the specified timeout
+            Exception: If critical cleanup operations fail
+        """
+        check_permissions(
+            context=context,
+            authorized_users=self.admin_users,
+            resource_name="shutdown the BioEngine worker",
+        )
+
+        await self._stop(blocking=blocking)
 
 
 if __name__ == "__main__":

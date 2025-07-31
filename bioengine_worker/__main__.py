@@ -42,12 +42,9 @@ import argparse
 import asyncio
 import json
 import sys
-import time
-from pathlib import Path
 from typing import Dict
 
 from bioengine_worker import __version__
-from bioengine_worker.utils import create_logger
 from bioengine_worker.worker import BioEngineWorker
 
 

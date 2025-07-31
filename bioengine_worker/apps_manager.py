@@ -2,7 +2,7 @@ import asyncio
 import base64
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
 import yaml
@@ -203,16 +203,11 @@ class AppsManager:
         Returns:
             str: The converted full artifact ID in format 'workspace/artifact_id'
         """
-        if "/" not in artifact_id:
+        if "/" in artifact_id:
+            return artifact_id
+        else:
+            # If artifact_id does not contain a slash, prepend the workspace
             return f"{self.server.config.workspace}/{artifact_id}"
-
-        # Ensure the artifact is in the correct workspace
-        if not artifact_id.startswith(f"{self.server.config.workspace}/"):
-            raise ValueError(
-                f"Artifact ID '{artifact_id}' does not belong to the current workspace '{self.server.config.workspace}'."
-            )
-
-        return artifact_id
 
     async def _generate_application_id(self) -> str:
         while True:
@@ -776,10 +771,16 @@ class AppsManager:
         if artifact_type != "application":
             raise ValueError(f"Type must be 'application', got '{artifact_type}'")
 
+        workspace = self.server.config.workspace
         if artifact_id is not None:
             # If artifact_id is provided, we expect an existing artifact and will edit it
-            workspace = self.server.config.workspace
             artifact_id = self._get_full_artifact_id(artifact_id)
+
+            # Ensure the artifact is in the correct workspace
+            if not artifact_id.startswith(f"{workspace}/"):
+                raise ValueError(
+                    f"Artifact ID '{artifact_id}' does not belong to the current workspace '{workspace}'."
+                )
 
             try:
                 # Try to edit existing artifact
@@ -920,6 +921,13 @@ class AppsManager:
         # Get the full artifact ID
         self.logger.debug(f"Deleting artifact '{artifact_id}'...")
         artifact_id = self._get_full_artifact_id(artifact_id)
+
+        # Ensure the artifact is in the correct workspace
+        workspace = self.server.config.workspace
+        if not artifact_id.startswith(f"{workspace}/"):
+            raise ValueError(
+                f"Artifact ID '{artifact_id}' does not belong to the current workspace '{workspace}'."
+            )
 
         # Delete the artifact
         await self.artifact_manager.delete(artifact_id)

@@ -748,7 +748,7 @@ class AppBuilder:
             )
 
         self.logger.info(
-            f"Building application '{application_id}' from artifact {artifact_id} (version: {version or 'latest'})"
+            f"Building application '{application_id}' from artifact '{artifact_id}' (version: {version})"
         )
 
         # Load the artifact manifest

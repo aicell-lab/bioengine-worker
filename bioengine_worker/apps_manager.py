@@ -362,7 +362,7 @@ class AppsManager:
             # Track the application in the internal state
             self.logger.info(
                 f"Successfully completed deployment of application '{application_id}' from "
-                f"artifact '{artifact_id}', version '{version or 'latest'}'."
+                f"artifact '{artifact_id}', version '{version}'."
             )
 
             # Mark the application as deployed
@@ -649,7 +649,7 @@ class AppsManager:
                     # Application has failed multiple times, undeploy and remove from tracking
                     self.logger.warning(
                         f"Application '{application_id}' for artifact '{application_info['artifact_id']}', "
-                        f"version '{application_info['version'] or 'latest'}' has failed multiple times. It will be "
+                        f"version '{application_info['version']}' has failed multiple times. It will be "
                         "undeployed and removed from tracking."
                     )
                     application_info["deployment_task"].cancel()
@@ -1034,7 +1034,7 @@ class AppsManager:
             if application_id not in self._deployed_applications:
                 # Create a new application if application_id is not provided
                 self.logger.info(
-                    f"User '{user_id}' is deploying new application '{application_id}' from artifact '{artifact_id}', version '{version or 'latest'}' with kwargs: {kwargs_str}"
+                    f"User '{user_id}' is deploying new application '{application_id}' from artifact '{artifact_id}', version '{version}' with kwargs: {kwargs_str}"
                 )
             else:
                 # Update existing application
@@ -1042,7 +1042,7 @@ class AppsManager:
                 if application_info["is_deployed"].is_set():
                     # If already deployed, cancel the existing deployment task to update deployment in a new task
                     self.logger.info(
-                        f"User '{user_id}' is updating existing application from artifact '{artifact_id}', version '{version or 'latest'}' with kwargs: {kwargs_str}"
+                        f"User '{user_id}' is updating existing application from artifact '{artifact_id}', version '{version}' with kwargs: {kwargs_str}"
                     )
                     application_info["remove_on_exit"] = False
                     application_info["deployment_task"].cancel()

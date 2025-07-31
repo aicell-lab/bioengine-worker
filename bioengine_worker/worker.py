@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from hypha_rpc import connect_to_server
 from hypha_rpc.sync import login
@@ -126,8 +126,8 @@ class BioEngineWorker:
         self,
         mode: Literal["slurm", "single-machine", "external-cluster"] = "slurm",
         admin_users: Optional[List[str]] = None,
-        cache_dir: str = "/tmp/bioengine",
-        data_dir: str = "/data",
+        cache_dir: Union[str, Path] = "/tmp/bioengine",
+        data_dir: Union[str, Path] = "/data",
         startup_applications: Optional[List[dict]] = None,
         monitoring_interval_seconds: int = 10,
         # Hypha server connection configuration
@@ -140,7 +140,7 @@ class BioEngineWorker:
         # BioEngine dashboard URL
         dashboard_url: str = "https://bioimage.io/#/bioengine",
         # Logger configuration
-        log_file: Optional[str] = None,
+        log_file: Optional[Union[str, Path]] = None,
         debug: bool = False,
         # Graceful shutdown timeout
         graceful_shutdown_timeout: int = 60,
@@ -209,8 +209,8 @@ class BioEngineWorker:
         """
         # Store configuration parameters
         self.admin_users = admin_users or []
-        self.cache_dir = Path(cache_dir).resolve()
-        self.data_dir = Path(data_dir).resolve()
+        self.cache_dir = Path(cache_dir)
+        self.data_dir = Path(data_dir)
         self.dashboard_url = dashboard_url.rstrip("/")
         self.monitoring_interval_seconds = monitoring_interval_seconds
 
@@ -255,10 +255,6 @@ class BioEngineWorker:
         self._admin_context = None
 
         try:
-            # Ensure cache and data directories exist with proper permissions
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-
             # Attempt interactive login if no token provided
             if not self._token:
                 self.logger.info(
@@ -318,7 +314,7 @@ class BioEngineWorker:
 
         except Exception as e:
             self.logger.error(f"Failed to initialize BioEngineWorker: {e}")
-            raise
+            raise e
 
     def __del__(self):
         if self.start_time:

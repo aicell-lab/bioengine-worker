@@ -113,8 +113,8 @@ class AppsManager:
             apps_data_dir = Path("/data")
         elif self.ray_cluster.mode == "single-machine":
             # Resolve local paths to ensure they are absolute
-            apps_cache_dir = Path(apps_cache_dir).resolve()
-            apps_data_dir = Path(apps_data_dir).resolve()
+            apps_cache_dir = Path(apps_cache_dir)
+            apps_data_dir = Path(apps_data_dir)
         elif self.ray_cluster.mode == "external-cluster":
             # For external clusters, use the provided paths directly
             apps_cache_dir = Path(apps_cache_dir)

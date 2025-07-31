@@ -273,14 +273,20 @@ class AppBuilder:
                 self.replica_id = "unknown"
 
             # Ensure the workdir is set to the BIOENGINE_WORKDIR environment variable
-            workdir = Path(os.environ["BIOENGINE_WORKDIR"])
+            workdir = Path(os.environ["BIOENGINE_WORKDIR"]).resolve()
+            os.environ["BIOENGINE_WORKDIR"] = str(workdir)
             workdir.mkdir(parents=True, exist_ok=True)
             os.chdir(workdir)
-            print(f"📁 [{self.replica_id}] Working directory: {workdir}")
+            print(f"📁 [{self.replica_id}] Working directory: {workdir}/")
 
             # Log data directory
-            data_dir = os.environ["BIOENGINE_DATA_DIR"]
-            print(f"📂 [{self.replica_id}] Data directory: {data_dir}")
+            data_dir = Path(os.environ["BIOENGINE_DATA_DIR"]).resolve()
+            if data_dir.exists() and data_dir.is_dir():
+                os.environ["BIOENGINE_DATA_DIR"] = str(data_dir)
+                print(f"📂 [{self.replica_id}] Data directory: {data_dir}/")
+            else:
+                del os.environ["BIOENGINE_DATA_DIR"]
+                print(f"📂 [{self.replica_id}] Data directory {data_dir}/ not found.")
 
             # Initialize deployment states
             self._deployment_initialized = False

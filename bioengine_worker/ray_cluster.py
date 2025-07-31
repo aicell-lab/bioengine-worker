@@ -58,7 +58,7 @@ class RayCluster:
 
     def __init__(
         self,
-        mode: Literal["slurm", "single-machine", "external-cluster"] = "slurm",
+        mode: Literal["single-machine", "slurm", "external-cluster"] = "single-machine",
         # Ray Head Node Configuration parameters
         head_node_address: Optional[str] = None,
         head_node_port: int = 6379,
@@ -100,7 +100,7 @@ class RayCluster:
         SLURM networking caveats: https://github.com/ray-project/ray/blob/1000ae9671967994f7bfdf7b1e1399223ad4fc61/doc/source/cluster/vms/user-guides/community/slurm.rst#id22
 
         Args:
-            mode: Mode of operation ('slurm', 'single-machine', or 'external-cluster').
+            mode: Mode of operation ('single-machine', 'slurm', or 'external-cluster').
             head_node_address: IP address for head node. Uses first system IP if None.
             head_node_port: Port for Ray head node and GCS server. Default 6379.
             node_manager_port: Base port for Ray node manager services. Default 6700.
@@ -155,28 +155,30 @@ class RayCluster:
         self.max_status_history_length = 100
         self.slurm_workers = None
 
-        # Find and store Ray executable path
-        self.ray_exec_path = self._find_ray_executable()
-        self.serve_exec_path = self._find_serve_executable()
-
-        # Check if mode is valid
+        # Set mode and validate configuration
         self.mode = mode
-        if self.mode == "slurm":
-            self._check_slurm_available()
-        elif self.mode not in ["single-machine", "external-cluster"]:
+        if self.mode in ["single-machine", "slurm"]:
+            # Find and store Ray executable path
+            self.ray_exec_path = self._find_ray_executable()
+            self.serve_exec_path = self._find_serve_executable()
+
+            # Check if Ray temp dir does not exceed length of 107 bytes
+            self._check_ray_temp_dir_length(ray_temp_dir)
+
+            # Set runtime environment pip cache size
+            if runtime_env_pip_cache_size_gb <= 0:
+                raise ValueError("runtime_env_pip_cache_size_gb must be greater than 0")
+            os.environ["RAY_RUNTIME_ENV_PIP_CACHE_SIZE_GB"] = str(
+                runtime_env_pip_cache_size_gb
+            )
+            self.logger.debug(
+                f"Setting RAY_RUNTIME_ENV_PIP_CACHE_SIZE_GB to {runtime_env_pip_cache_size_gb}"
+            )
+        elif self.mode != "external-cluster":
             raise ValueError(
                 f"Unsupported Ray cluster mode: '{self.mode}'. "
                 "Supported modes are 'slurm', 'single-machine' and 'external-cluster'."
             )
-
-        # Check number of CPUs and GPUs
-        if self.mode == "single-machine" and head_num_cpus <= 0:
-            raise ValueError(
-                "When running on a single machine, 'head_num_cpus' must be greater than 0"
-            )
-
-        # Check if Ray temp dir does not exceed length of 107 bytes
-        self._check_ray_temp_dir_length(ray_temp_dir)
 
         self.ray_cluster_config = {
             "head_node_address": str(head_node_address or self._find_internal_ip()),
@@ -197,17 +199,16 @@ class RayCluster:
             "force_clean_up": bool(force_clean_up),
         }
 
-        # Set runtime environment pip cache size
-        if runtime_env_pip_cache_size_gb <= 0:
-            raise ValueError("runtime_env_pip_cache_size_gb must be greater than 0")
-        os.environ["RAY_RUNTIME_ENV_PIP_CACHE_SIZE_GB"] = str(
-            runtime_env_pip_cache_size_gb
-        )
-        self.logger.debug(
-            f"Setting RAY_RUNTIME_ENV_PIP_CACHE_SIZE_GB to {runtime_env_pip_cache_size_gb}"
-        )
+        # Check number of CPUs if in single-machine mode
+        if self.mode == "single-machine" and head_num_cpus <= 0:
+            raise ValueError(
+                "When running on a single machine, 'head_num_cpus' must be greater than 0"
+            )
 
+        # Set SLURM worker configuration if in slurm mode
         if self.mode == "slurm":
+            self._check_slurm_available()
+
             if worker_cache_dir is None:
                 raise ValueError(
                     "worker_cache_dir must be provided when mode is 'slurm'"
@@ -335,7 +336,9 @@ class RayCluster:
         session_name = datetime.now().strftime(
             "session_%Y-%m-%d_%H-%M-%S_999999_9999999"
         )
-        full_path = str(Path(ray_temp_dir) / session_name / "sockets" / "plasma_store")
+        full_path = str(
+            Path(ray_temp_dir).resolve() / session_name / "sockets" / "plasma_store"
+        )
         path_length = len(full_path.encode("utf-8"))
 
         if path_length > 107:

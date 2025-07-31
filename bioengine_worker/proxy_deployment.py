@@ -363,7 +363,7 @@ class BioEngineProxyDeployment:
         )
         return None
 
-    async def _check_permissions(self, context: Optional[Dict[str, Any]]) -> None:
+    async def _check_permissions(self, context: Dict[str, Any]) -> None:
         """
         **HYPHA SERVICE REGISTRATION - PERMISSION VALIDATION**
 
@@ -482,7 +482,7 @@ class BioEngineProxyDeployment:
         """
         method_name = method_schema["name"]
 
-        async def deployment_function(*args, context, **kwargs) -> Any:
+        async def deployment_function(*args, context: Dict[str, Any], **kwargs) -> Any:
             async with self.service_semaphore:
                 request_id = str(uuid.uuid4())
                 try:
@@ -565,7 +565,7 @@ class BioEngineProxyDeployment:
         )
 
     @schema_method
-    async def _get_load(self, context) -> float:
+    async def _get_load(self, context: Dict[str, Any]) -> float:
         """
         **HYPHA SERVICE REGISTRATION - SERVICE LOAD MONITORING**
 
@@ -594,7 +594,7 @@ class BioEngineProxyDeployment:
         return min(1.0, max(0.0, load))  # Ensure load is between 0 and 1
 
     @schema_method
-    async def _get_num_pcs(self, context) -> int:
+    async def _get_num_pcs(self, context: Dict[str, Any]) -> int:
         """
         **HYPHA SERVICE REGISTRATION - WEBRTC CONNECTION COUNT MONITORING**
 

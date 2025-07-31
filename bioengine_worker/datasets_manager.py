@@ -13,6 +13,11 @@ from hypha_rpc.utils.schema import schema_method
 from bioengine_worker.utils import check_permissions, create_logger
 
 
+# TODO: Move all dataset interaction to Ray actors (or ray serve?)
+# TODO: for each loaded dataset, register a Hypha ASGI service in a separate Ray actor
+# TODO: Update status, only return loaded datasets and their status
+# TODO: Update list datasets, return available datasets and some information about them
+
 class DatasetsManager:
     """
     Manages dataset loading, access control, and HTTP streaming services for BioEngine datasets.
@@ -432,10 +437,7 @@ class DatasetsManager:
         Returns:
             Dict containing available datasets and currently loaded dataset services
         """
-        return {
-            "available_datasets": self.datasets,
-            "loaded_datasets": self.loaded_datasets,
-        }
+        return self.loaded_datasets
 
     async def monitor_datasets(self) -> None:
         """
@@ -450,11 +452,21 @@ class DatasetsManager:
         except Exception as e:
             self.logger.error(f"Error monitoring datasets: {e}")
             raise e
+        
+    async def list_datasets(self, context: Dict[str, Any]) -> Dict[str, Dict]:
+        """
+        List all available datasets with their metadata.
+
+        Returns:
+            Dict containing dataset IDs and their metadata
+
+        Raises:
+            RuntimeError: If server connection is not initialized
+        """
+        return self.datasets
 
     @schema_method
-    async def load_dataset(
-        self, dataset_id: str, context: Optional[Dict[str, Any]] = None
-    ) -> str:
+    async def load_dataset(self, dataset_id: str, context: Dict[str, Any]) -> str:
         """
         Load a dataset by ID and register it as an HTTP streaming service.
 
@@ -464,7 +476,7 @@ class DatasetsManager:
 
         Args:
             dataset_id: ID of the dataset to load
-            context: Request context containing user information for permission checks
+            context: User context information automatically injected by Hypha.
 
         Returns:
             str: URL of the registered dataset service
@@ -502,9 +514,7 @@ class DatasetsManager:
             raise e
 
     @schema_method
-    async def close_dataset(
-        self, dataset_id: str, context: Optional[Dict[str, Any]] = None
-    ) -> str:
+    async def close_dataset(self, dataset_id: str, context: Dict[str, Any]) -> str:
         """
         Close a dataset by ID and unregister its HTTP streaming service.
 
@@ -514,7 +524,7 @@ class DatasetsManager:
 
         Args:
             dataset_id: ID of the dataset to close
-            context: Request context containing user information for permission checks
+            context: User context information automatically injected by Hypha.
 
         Returns:
             str: Confirmation message of successful dataset closure
@@ -563,7 +573,7 @@ class DatasetsManager:
         cleanup operations.
 
         Args:
-            context: Request context containing user information for permission checks
+            context: User context information automatically injected by Hypha.
 
         Returns:
             str: Confirmation message of successful cleanup
@@ -591,7 +601,7 @@ class DatasetsManager:
         try:
             self.logger.info(f"User '{user_id}' is starting cleanup of all datasets...")
             for dataset_id in list(self.loaded_datasets.keys()):
-                await self.close_dataset(dataset_id, context)
+                await self.close_dataset(dataset_id=dataset_id, context=context)
         except Exception as e:
             self.logger.error(f"Error closing all datasets: {e}")
             raise e

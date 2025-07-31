@@ -455,6 +455,7 @@ class BioEngineWorker:
                     "require_context": True,
                 },
                 "get_status": self.get_status,
+                "list_datasets": self.dataset_manager.list_datasets,
                 "load_dataset": self.dataset_manager.load_dataset,
                 "close_dataset": self.dataset_manager.close_dataset,
                 "cleanup_datasets": self.dataset_manager.cleanup,
@@ -754,6 +755,58 @@ class BioEngineWorker:
         return self.full_service_id
 
     @schema_method
+    async def get_status(self, context: Dict[str, Any]) -> dict:
+        """
+        Retrieve comprehensive status information for the BioEngine worker and all components.
+
+        Provides detailed status information including Ray cluster health, active
+        deployments, loaded datasets, resource utilization, and worker uptime.
+        This method is used for monitoring, debugging, and dashboard displays.
+
+        The status report includes:
+        - Worker service information (start time, uptime, service ID)
+        - Ray cluster status (nodes, resources, health)
+        - Applications manager status (active deployments, resource usage)
+        - Datasets manager status (loaded datasets, service endpoints)
+        - System resource information and health metrics
+
+        Args:
+            context: User context information automatically injected by Hypha.
+
+        Returns:
+            Dict containing comprehensive status information:
+                - service_start_time: Timestamp when worker was started
+                - service_uptime: Duration since worker startup in seconds
+                - service_id: Full service identifier for Hypha registration
+                - worker_mode: Deployment mode (slurm/single-machine/external-cluster)
+                - ray_cluster: Ray cluster status including nodes and resources
+                - bioengine_apps: Applications manager status and active deployments
+                - bioengine_datasets: Datasets manager status and loaded datasets
+                - admin_users: List of users with administrative privileges
+                - is_ready: Boolean indicating if worker is fully initialized
+
+        Raises:
+            RuntimeError: If Ray cluster is not properly initialized
+            ConnectionError: If unable to retrieve status from components
+        """
+        # Does not require admin permissions
+        current_time = time.time()
+        status = {
+            "service_start_time": self.start_time,
+            "service_uptime": current_time - self.start_time if self.start_time else 0,
+            "worker_mode": self.ray_cluster.mode,
+            "workspace": self.workspace,
+            "client_id": self.client_id,
+            "ray_cluster": self.ray_cluster.status,
+            "bioengine_apps": await self.apps_manager.get_status(),
+            "bioengine_datasets": await self.dataset_manager.get_status(),
+            "admin_users": self.admin_users,
+            "is_ready": self.is_ready.is_set(),
+        }
+
+        return status
+
+    @schema_method
     async def stop(
         self, blocking: bool = False, context: Dict[str, Any] = None
     ) -> None:
@@ -776,7 +829,7 @@ class BioEngineWorker:
         Args:
             timeout: Maximum time in seconds to wait for each cleanup operation
             blocking: If True, waits for all cleanup operations to complete before returning
-            context: Request context containing user information for permission checking
+            context: User context information automatically injected by Hypha.
 
         Raises:
             PermissionError: If user is not authorized for shutdown operations
@@ -790,57 +843,6 @@ class BioEngineWorker:
         )
 
         await self._stop(blocking=blocking)
-
-    @schema_method
-    async def get_status(self, context: Optional[Dict[str, Any]] = None) -> dict:
-        """
-        Retrieve comprehensive status information for the BioEngine worker and all components.
-
-        Provides detailed status information including Ray cluster health, active
-        deployments, loaded datasets, resource utilization, and worker uptime.
-        This method is used for monitoring, debugging, and dashboard displays.
-
-        The status report includes:
-        - Worker service information (start time, uptime, service ID)
-        - Ray cluster status (nodes, resources, health)
-        - Applications manager status (active deployments, resource usage)
-        - Datasets manager status (loaded datasets, service endpoints)
-        - System resource information and health metrics
-
-        Args:
-            context: Optional request context for permission checking and audit logging
-
-        Returns:
-            Dict containing comprehensive status information:
-                - service_start_time: Timestamp when worker was started
-                - service_uptime: Duration since worker startup in seconds
-                - service_id: Full service identifier for Hypha registration
-                - worker_mode: Deployment mode (slurm/single-machine/external-cluster)
-                - ray_cluster: Ray cluster status including nodes and resources
-                - bioengine_apps: Applications manager status and active deployments
-                - bioengine_datasets: Datasets manager status and loaded datasets
-                - admin_users: List of users with administrative privileges
-                - is_ready: Boolean indicating if worker is fully initialized
-
-        Raises:
-            RuntimeError: If Ray cluster is not properly initialized
-            ConnectionError: If unable to retrieve status from components
-        """
-        current_time = time.time()
-        status = {
-            "service_start_time": self.start_time,
-            "service_uptime": current_time - self.start_time if self.start_time else 0,
-            "worker_mode": self.ray_cluster.mode,
-            "workspace": self.workspace,
-            "client_id": self.client_id,
-            "ray_cluster": self.ray_cluster.status,
-            "bioengine_apps": await self.apps_manager.get_status(),
-            "bioengine_datasets": await self.dataset_manager.get_status(),
-            "admin_users": self.admin_users,
-            "is_ready": self.is_ready.is_set(),
-        }
-
-        return status
 
 
 if __name__ == "__main__":

@@ -40,7 +40,7 @@ MAX_ONGOING_REQUESTS = int(os.getenv("BIOENGINE_APPLICATION_MAX_ONGOING_REQUESTS
     health_check_period_s=10,  # Check health every 10 seconds
     health_check_timeout_s=5,  # Timeout after 5 seconds
 )
-class RtcProxyDeployment:
+class BioEngineProxyDeployment:
     """
     Ray Serve deployment for BioEngine applications, acting as a proxy that registers both WebSocket and WebRTC services with Hypha to bridge Ray Serve applications and external clients.
     Enables efficient data handling via direct peer-to-peer WebRTC connections and standard RPC over WebSocket.
@@ -69,7 +69,7 @@ class RtcProxyDeployment:
             ↓
     (With WebSocket: Hypha Server )
             ↓
-    RtcProxyDeployment - Ray Cluster
+    BioEngineProxyDeployment - Ray Cluster
             ↓
     BioEngine Application - Ray Cluster
 
@@ -90,7 +90,7 @@ class RtcProxyDeployment:
         serve_http_url: str,
     ):
         """
-        Initialize the RtcProxyDeployment with BioEngine application configuration.
+        Initialize the BioEngineProxyDeployment with BioEngine application configuration.
 
         This constructor sets up the deployment state and initiates the background
         service registration process with the Hypha server. The deployment will
@@ -135,7 +135,7 @@ class RtcProxyDeployment:
             self.replica_id = f"uuid-{uuid.uuid4()[:8]}"
 
         print(
-            f"🚀 [{self.replica_id}] Initializing RtcProxyDeployment for application: '{application_id}'"
+            f"🚀 [{self.replica_id}] Initializing BioEngineProxyDeployment for application: '{application_id}'"
         )
         print(f"🔗 [{self.replica_id}] Server URL: {server_url}")
         print(f"🏢 [{self.replica_id}] Workspace: '{workspace}'")
@@ -187,7 +187,7 @@ class RtcProxyDeployment:
             JSON response with completion status
         """
         print(
-            f"🌐 [{self.replica_id}] Received {request.method} request to RtcProxyDeployment"
+            f"🌐 [{self.replica_id}] Received {request.method} request to BioEngineProxyDeployment"
         )
 
         # Only accept POST requests for mimic coordination
@@ -762,7 +762,7 @@ class RtcProxyDeployment:
             version: Configuration version for the reconfigure operation
         """
         print(
-            f"🔄 [{self.replica_id}] Reconfiguring RtcProxyDeployment for application: {self.application_id}"
+            f"🔄 [{self.replica_id}] Reconfiguring BioEngineProxyDeployment for application: {self.application_id}"
         )
         print(f"📋 [{self.replica_id}] Configuration version: {version}")
         # user_config: Config to pass to the reconfigure method of the deployment. This
@@ -790,9 +790,9 @@ if __name__ == "__main__":
         def __getattr__(self, name):
             return MockMethod(name)
 
-    # Example usage of RtcProxyDeployment
+    # Example usage of BioEngineProxyDeployment
     async def main():
-        rtc_deployment_class = RtcProxyDeployment.func_or_class
+        rtc_deployment_class = BioEngineProxyDeployment.func_or_class
         entry_deployment_handle = MockHandle()
         method_schema = {
             "name": "test_method",

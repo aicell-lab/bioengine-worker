@@ -553,7 +553,7 @@ class AppsManager:
             workspace = self.server.config.workspace
             replica_ids = (
                 await self.ray_cluster.proxy_actor_handle.get_deployment_replica.remote(
-                    app_name=application_id, deployment_name="RtcProxyDeployment"
+                    app_name=application_id, deployment_name="BioEngineProxyDeployment"
                 )
             )
             if replica_ids:

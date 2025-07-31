@@ -13,7 +13,7 @@ from hypha_rpc.utils import ObjectProxy
 from ray import serve
 from ray.serve.handle import DeploymentHandle
 
-from bioengine_worker.proxy_deployment import RtcProxyDeployment
+from bioengine_worker.proxy_deployment import BioEngineProxyDeployment
 from bioengine_worker.utils import create_logger, update_requirements
 
 
@@ -763,7 +763,7 @@ class AppBuilder:
         deployment_kwargs = deployment_kwargs or {}
 
         # Calculate the total number of required resources
-        rtc_proxy_deployment = RtcProxyDeployment
+        rtc_proxy_deployment = BioEngineProxyDeployment
         required_resources = self._calculate_required_resources(
             deployments + [rtc_proxy_deployment]
         )

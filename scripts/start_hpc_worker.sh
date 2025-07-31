@@ -1,6 +1,48 @@
 # !/bin/bash
 
-VERSION=0.3.2
+# Extract version from pyproject.toml (single source of truth)
+get_version_from_pyproject() {
+    local pyproject_path="$1/pyproject.toml"
+    if [[ -f "$pyproject_path" ]]; then
+        grep -E '^version\s*=' "$pyproject_path" | sed -E 's/version\s*=\s*"(.*)"/\1/' | head -1
+    fi
+}
+
+# Get version from GitHub API for remote execution
+get_version_from_github() {
+    local github_url="https://raw.githubusercontent.com/aicell-lab/bioengine-worker/main/pyproject.toml"
+    if command -v curl >/dev/null 2>&1; then
+        curl -s "$github_url" | grep -E '^version\s*=' | sed -E 's/version\s*=\s*"(.*)"/\1/' | head -1
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "$github_url" | grep -E '^version\s*=' | sed -E 's/version\s*=\s*"(.*)"/\1/' | head -1
+    fi
+}
+
+# Determine the script directory and project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Get version from pyproject.toml (local) or GitHub (remote)
+VERSION=$(get_version_from_pyproject "$PROJECT_ROOT")
+
+if [[ -z "$VERSION" ]]; then
+    # If no local pyproject.toml, try to fetch from GitHub
+    echo "Local pyproject.toml not found, fetching version from GitHub..."
+    VERSION=$(get_version_from_github)
+    
+    if [[ -z "$VERSION" ]]; then
+        echo "❌ Error: Could not determine version from local pyproject.toml or GitHub."
+        echo "   This script requires either:"
+        echo "   1. Running from a cloned bioengine-worker repository, or"
+        echo "   2. Internet access to fetch version from GitHub"
+        exit 1
+    else
+        echo "✅ Found version $VERSION from GitHub"
+    fi
+else
+    echo "✅ Found version $VERSION from local pyproject.toml"
+fi
+
 DEFAULT_IMAGE="ghcr.io/aicell-lab/bioengine-worker:$VERSION"
 WORKING_DIR=$(pwd)
 

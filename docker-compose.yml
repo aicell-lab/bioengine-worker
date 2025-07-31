@@ -5,7 +5,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/aicell-lab/bioengine-worker:0.3.2
+    # Run `BIOENGINE_VERSION=$(python scripts/get_version.py) docker compose up` to use a specific version
+    image: ghcr.io/aicell-lab/bioengine-worker:${BIOENGINE_VERSION:-latest}
     container_name: bioengine_worker
     user: "${UID}:${GID}"  # add UID and GID to .env file if not found
     # user: "nobody:nogroup"

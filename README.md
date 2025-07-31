@@ -15,7 +15,7 @@ The BioEngine worker comes in containerized form as Docker or Apptainer image.
 
 ### Docker (for workstations or K8s)
 
-A prebuilt Docker image is available under `ghcr.io/aicell-lab/bioengine-worker:0.3.2` (change the version if needed, see [all the versions](https://github.com/orgs/aicell-lab/packages/container/package/bioengine-worker)).
+A prebuilt Docker image is available under `ghcr.io/aicell-lab/bioengine-worker:latest` (see [all available versions](https://github.com/orgs/aicell-lab/packages/container/package/bioengine-worker) to use a specific version).
 
 To make use of the predefined settings, clone this Github repository and run `docker compose up`.
 
@@ -30,7 +30,7 @@ By default, the BioEngine worker will start a local Ray cluster with the provide
 
 An overview of all tags for the BioEngine worker can be accessed via:
 ```bash
-docker run --rm ghcr.io/aicell-lab/bioengine-worker:0.3.2 python -m bioengine_worker --help
+docker run --rm ghcr.io/aicell-lab/bioengine-worker:latest python -m bioengine_worker --help
 ```
 
 To run as your own user, the variables `UID` and `GID` are required. If not set, `export` them before running docker compose with `export UID=$(id -u)` and `export GID=$(id -g)` or add them to your `.env` file.
@@ -46,17 +46,17 @@ UID=$(id -u) GID=$(id -g) docker compose up
 The bash script [`start_hpc_worker.sh`](scripts/start_hpc_worker.sh) helps to start a BioEngine worker in Apptainer. Either clone this Github repository to run the script:
 
 ```bash
-bash scripts/start_worker.sh
+bash scripts/start_hpc_worker.sh
 ```
 
 or access the script directly from Github like this:
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/aicell-lab/bioengine-worker/scripts/start_worker.sh)
+bash <(curl -s https://raw.githubusercontent.com/aicell-lab/bioengine-worker/main/scripts/start_hpc_worker.sh)
 ```
 
 An overview of all tags for the BioEngine worker can be accessed via:
 ```bash
-bash scripts/start_worker.sh --help
+bash scripts/start_hpc_worker.sh --help
 ```
 
 The script will pull the latest BioEngine worker docker image and convert it into Singularity Image Format (SIF) using Apptainer. These Apptainer images will be saved to the directory `./images/`. 
@@ -73,12 +73,12 @@ It is possible to start a BioEngine worker with a different base image, provided
 
 Here are two examples of how this can be done, from a remote docker image:
 ```bash
-bash scripts/start_worker.sh --image <remote_docker_image>
+bash scripts/start_hpc_worker.sh --image <remote_docker_image>
 ```
 
 or from a local Apptainer image file:
 ```bash
-bash scripts/start_worker.sh --image <path_to_apptainer_image>.sif
+bash scripts/start_hpc_worker.sh --image <path_to_apptainer_image>.sif
 ```
 
 Note: When a Ray runtime environment is provided, it is not possible to access installations from the base image anymore.
@@ -110,12 +110,15 @@ The worker service provides the following functions:
 - `get_status()`
 - `load_dataset(dataset_id)`
 - `close_dataset(dataset_id)`
+- `cleanup_datasets()`
 - `execute_python_code(...)`
-- `create_artifact(files, artifact_id)`
-- `deploy_artifact(artifact_id)`
-- `undeploy_artifact(artifact_id)`
-- `cleanup_deployments()`
-- `cleanup()`
+- `list_applications()`
+- `create_application(files)`
+- `deploy_application(artifact_id, ...)`
+- `deploy_application(app_configurations)`
+- `undeploy_application(application_id)`
+- `cleanup_applications()`
+- `stop_worker()`
 
 As an example, the worker status can be called like this:
 ```python
@@ -214,6 +217,6 @@ To build the image, run the following command:
 ```bash
 docker buildx build \
     --platform linux/amd64,linux/arm64 \
-    -t ghcr.io/aicell-lab/bioengine-worker:0.3.2 \
+    -t ghcr.io/aicell-lab/bioengine-worker:latest \
     --push .
 ```

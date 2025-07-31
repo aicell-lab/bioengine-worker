@@ -474,7 +474,7 @@ class BioEngineWorker:
                 "deploy_application": self.apps_manager.deploy_application,
                 "deploy_applications": self.apps_manager.deploy_applications,
                 "undeploy_application": self.apps_manager.undeploy_application,
-                "cleanup_deployments": self.apps_manager.cleanup,
+                "cleanup_applications": self.apps_manager.cleanup,
                 "stop_worker": self.stop,
             },
             {"overwrite": True},

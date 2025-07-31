@@ -464,6 +464,7 @@ class BioEngineWorker:
                     "require_context": True,
                 },
                 "get_status": self.get_status,
+                "list_datasets": self.dataset_manager.list_datasets,
                 "load_dataset": self.dataset_manager.load_dataset,
                 "close_dataset": self.dataset_manager.close_dataset,
                 "cleanup_datasets": self.dataset_manager.cleanup,
@@ -797,6 +798,7 @@ class BioEngineWorker:
             RuntimeError: If Ray cluster is not properly initialized
             ConnectionError: If unable to retrieve status from components
         """
+        # Does not require admin permissions
         current_time = time.time()
         status = {
             "service_start_time": self.start_time,

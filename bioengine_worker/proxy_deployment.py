@@ -711,6 +711,20 @@ class BioEngineProxyDeployment:
             print(
                 f"📋 [{self.replica_id}] Service functions registered: {list(service_functions.keys())}"
             )
+            
+            mcp_service = await self.server.register_service({
+                "id": self.application_id + "-mcp",
+                "name": self.application_name + " MCP Service",
+                "description": "MCP Service for " + self.application_description,
+                "type": "mcp",
+                "config": {
+                    "visibility": "public",
+                    "run_in_executor": True,
+                },
+                "tools": service_functions,
+            })
+            
+            print(f"✅ [{self.replica_id}] Successfully registered MCP service for '{self.application_id}' with ID: {mcp_service['id']}")
 
         except Exception as e:
             self.service_id = None

@@ -470,19 +470,14 @@ class BioEngineWorker:
                     "require_context": True,
                 },
                 **worker_services,
-            },
-            {"overwrite": True},
+            }
         )
         self.full_service_id = service_info.id
 
-        self.logger.info(
-            f"Manage BioEngine worker at: {self.dashboard_url}/worker?service_id={self.full_service_id}"
-        )
-        
         mcp_service = await self._server.register_service({
             "id": self.service_id + "-mcp",
             "name": "BioEngine Worker MCP Service",
-            "description": "MCP Service for BioEngine Worker",
+            "description": "BioEngine Worker for managing ray serve applications and datasets",
             "type": "mcp",
             "config": {
                 "visibility": "public",
@@ -492,6 +487,10 @@ class BioEngineWorker:
         })
 
         self.logger.info(f"Successfully registered MCP service for BioEngine Worker with ID: {mcp_service['id']}")
+
+        self.logger.info(
+            f"Manage BioEngine worker at: {self.dashboard_url}/worker?service_id={self.full_service_id}"
+        )
 
     async def _cleanup(self) -> None:
         """

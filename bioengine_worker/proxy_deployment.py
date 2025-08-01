@@ -699,8 +699,7 @@ class BioEngineProxyDeployment:
                     "description": self.application_description,
                     "config": {"visibility": "public", "require_context": True},
                     **service_functions,
-                },
-                {"overwrite": True},
+                }
             )
 
             self.service_id = service_info["id"]

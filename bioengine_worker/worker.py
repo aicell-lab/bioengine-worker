@@ -477,7 +477,7 @@ class BioEngineWorker:
         mcp_service = await self._server.register_service({
             "id": self.service_id + "-mcp",
             "name": "BioEngine Worker MCP Service",
-            "description": "BioEngine Worker for managing ray serve applications and datasets",
+            "description": description,
             "type": "mcp",
             "config": {
                 "visibility": "public",

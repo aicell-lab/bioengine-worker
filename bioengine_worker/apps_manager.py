@@ -158,9 +158,9 @@ class AppsManager:
                 "Artifact manager not initialized. Call initialize() first."
             )
 
-    async def _ensure_bioengine_apps_collection(self) -> None:
+    async def _ensure_applications_collection(self) -> None:
         """
-        Ensure the 'bioengine-apps' collection exists in the Hypha artifact manager.
+        Ensure the 'applications' collection exists in the Hypha artifact manager.
         Creates the collection if it does not exist, allowing for organized storage of BioEngine applications.
 
         Raises:
@@ -177,15 +177,16 @@ class AppsManager:
                     f"Collection '{self.collection_id}' does not exist. Creating it."
                 )
 
+                workspace = self.server.config.workspace
                 collection_manifest = {
-                    "name": "BioEngine Apps",
-                    "description": "A collection of Ray deployments for the BioEngine.",
+                    "name": "Applications",
+                    "description": f"A collection of applications for workspace {workspace}",
                 }
                 collection = await self.artifact_manager.create(
-                    alias=self.collection_id,
                     type="collection",
+                    alias="applications",
                     manifest=collection_manifest,
-                    config={"permissions": {"*": "r", "@": "r+"}},
+                    overwrite=True,
                 )
                 self.logger.info(
                     f"Bioengine Apps collection created with ID: {collection.id}."
@@ -454,7 +455,7 @@ class AppsManager:
 
         # Set the collection ID for BioEngine applications
         workspace = self.server.config.workspace
-        self.collection_id = f"{workspace}/bioengine-apps"
+        self.collection_id = f"{workspace}/applications"
 
         # Initialize the AppBuilder with the server and artifact manager
         self.app_builder.initialize(
@@ -697,7 +698,7 @@ class AppsManager:
             resource_name=f"listing applications",
         )
 
-        # Check if the 'bioengine-apps' collection exists
+        # Check if the 'applications' collection exists
         await self._ensure_bioengine_apps_collection()
 
         bioengine_apps_artifacts = await self.artifact_manager.list(self.collection_id)
@@ -824,7 +825,7 @@ class AppsManager:
                     f"Invalid artifact alias: '{alias}'. Please use lowercase letters, numbers, and hyphens only."
                 )
 
-            # Ensure the bioengine-apps collection exists
+            # Ensure the 'applications' collection exists
             await self._ensure_bioengine_apps_collection()
 
             try:
@@ -834,7 +835,7 @@ class AppsManager:
                     alias=alias,
                     parent_id=self.collection_id,
                     manifest=deployment_manifest,
-                    type=deployment_manifest.get("type", "application"),
+                    type="application",
                     stage=True,
                 )
             except Exception as e:

@@ -86,7 +86,7 @@ async def manage_artifact(
         )
     except:
         artifact_workspace = artifact_id.split("/")[0]
-        collection_id = f"{artifact_workspace}/bioengine-apps"
+        collection_id = f"{artifact_workspace}/applications"
         try:
             await artifact_manager.read(collection_id)
         except Exception as e:
@@ -115,7 +115,7 @@ async def manage_artifact(
             alias=artifact_id,
             parent_id=collection_id,
             manifest=deployment_manifest,
-            type=deployment_manifest.get("type", "application"),
+            type="application",
             stage=True,
         )
         logger.info(f"Artifact created with ID: {artifact.id}")

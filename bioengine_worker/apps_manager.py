@@ -770,10 +770,10 @@ class AppsManager:
 
         deployment_manifest = yaml.safe_load(manifest_content)
 
-        # Check if type is set to 'application'
+        # Check if type is set to 'ray-serve'
         artifact_type = deployment_manifest.get("type")
-        if artifact_type != "application":
-            raise ValueError(f"Type must be 'application', got '{artifact_type}'")
+        if artifact_type != "ray-serve":
+            raise ValueError(f"Type must be 'ray-serve', got '{artifact_type}'")
 
         workspace = self.server.config.workspace
         if artifact_id is not None:

@@ -165,9 +165,9 @@ class AppBuilder:
             if field not in manifest:
                 raise ValueError(f"Manifest is missing required field: {field}")
 
-        if manifest["type"] != "application":
+        if manifest["type"] != "ray-serve":
             raise ValueError(
-                f"Invalid manifest type: {manifest['type']}. Expected 'application'."
+                f"Invalid manifest type: {manifest['type']}. Expected 'ray-serve'."
             )
 
         deployments = manifest["deployments"]

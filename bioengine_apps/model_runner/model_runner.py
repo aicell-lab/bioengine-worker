@@ -561,7 +561,7 @@ class ModelRunner:
         from tqdm.asyncio import tqdm
 
         download_url = (
-            f"{self.server_url}/{self.workspace}/artifacts/{model_id}/create-zip-file"
+            f"{self.server_url}/{self.workspace}/artifacts/{model_id}/create-zip-file?stage=true"
         )
         zip_file = package_path / "tmp_model_zip_file.zip"
 

@@ -699,8 +699,7 @@ class BioEngineProxyDeployment:
                     "description": self.application_description,
                     "config": {"visibility": "public", "require_context": True},
                     **service_functions,
-                },
-                {"overwrite": True},
+                }
             )
 
             self.service_id = service_info["id"]
@@ -711,6 +710,17 @@ class BioEngineProxyDeployment:
             print(
                 f"📋 [{self.replica_id}] Service functions registered: {list(service_functions.keys())}"
             )
+            
+            mcp_service = await self.server.register_service({
+                "id": self.application_id + "-mcp",
+                "name": self.application_name + " MCP Service",
+                "description": "MCP Service for " + self.application_description,
+                "type": "mcp",
+                "config": {"visibility": "public", "require_context": True},
+                "tools": service_functions,
+            })
+            
+            print(f"✅ [{self.replica_id}] Successfully registered MCP service for '{self.application_id}' with ID: {mcp_service['id']}")
 
         except Exception as e:
             self.service_id = None

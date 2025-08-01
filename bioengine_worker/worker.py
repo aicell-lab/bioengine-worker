@@ -443,6 +443,21 @@ class BioEngineWorker:
         else:
             description += " in a pre-existing Ray environment."
 
+        worker_services = {
+            "get_status": self.get_status,
+            "load_dataset": self.dataset_manager.load_dataset,
+            "close_dataset": self.dataset_manager.close_dataset,
+            "cleanup_datasets": self.dataset_manager.cleanup,
+            "execute_python_code": self.code_executor.execute_python_code,
+            "list_applications": self.apps_manager.list_applications,
+            "create_application": self.apps_manager.create_application,
+            "delete_application": self.apps_manager.delete_application,
+            "deploy_application": self.apps_manager.deploy_application,
+            "deploy_applications": self.apps_manager.deploy_applications,
+            "undeploy_application": self.apps_manager.undeploy_application,
+            "cleanup_applications": self.apps_manager.cleanup,
+            "stop_worker": self.stop,
+        }
         # TODO: return more informative error messages, e.g. by returning error instead of raising it
         service_info = await self._server.register_service(
             {
@@ -454,23 +469,24 @@ class BioEngineWorker:
                     "visibility": "public",
                     "require_context": True,
                 },
-                "get_status": self.get_status,
-                "load_dataset": self.dataset_manager.load_dataset,
-                "close_dataset": self.dataset_manager.close_dataset,
-                "cleanup_datasets": self.dataset_manager.cleanup,
-                "execute_python_code": self.code_executor.execute_python_code,
-                "list_applications": self.apps_manager.list_applications,
-                "create_application": self.apps_manager.create_application,
-                "delete_application": self.apps_manager.delete_application,
-                "deploy_application": self.apps_manager.deploy_application,
-                "deploy_applications": self.apps_manager.deploy_applications,
-                "undeploy_application": self.apps_manager.undeploy_application,
-                "cleanup_applications": self.apps_manager.cleanup,
-                "stop_worker": self.stop,
-            },
-            {"overwrite": True},
+                **worker_services,
+            }
         )
         self.full_service_id = service_info.id
+
+        mcp_service = await self._server.register_service({
+            "id": self.service_id + "-mcp",
+            "name": "BioEngine Worker MCP Service",
+            "description": description,
+            "type": "mcp",
+            "config": {
+                "visibility": "public",
+                "require_context": True,
+            },
+            "tools": worker_services,
+        })
+
+        self.logger.info(f"Successfully registered MCP service for BioEngine Worker with ID: {mcp_service['id']}")
 
         self.logger.info(
             f"Manage BioEngine worker at: {self.dashboard_url}/worker?service_id={self.full_service_id}"

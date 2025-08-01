@@ -18,7 +18,7 @@ requirements = [
 @serve.deployment(
     ray_actor_options={
         "num_cpus": 1 / 3,
-        "num_gpus": 0,
+        "num_gpus": 1 / 3,
         # "memory": 16 * 1024 * 1024 * 1024,  # 16GB RAM limit
         "runtime_env": {
             "pip": requirements,

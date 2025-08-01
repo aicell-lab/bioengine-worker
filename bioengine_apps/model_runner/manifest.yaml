@@ -13,7 +13,7 @@ links: []
 maintainers: []
 name: Model Runner
 tags: []
-type: application
+type: ray-serve
 version: 0.0.1
 deployments:
   - model_runner:ModelRunner

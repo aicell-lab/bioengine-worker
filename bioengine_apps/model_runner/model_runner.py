@@ -10,6 +10,7 @@ from typing import Dict, List, Literal, Optional, Union
 import httpx
 import numpy as np
 from hypha_rpc.utils.schema import schema_method
+from pydantic import Field
 from ray import serve
 from ray.exceptions import RayTaskError
 from ray.serve.handle import DeploymentHandle
@@ -299,7 +300,7 @@ class ModelRunner:
             f"🧩 [{self.replica_id}] Test 3/{total_tests}: Testing published model..."
         )
         test1_start = time.time()
-        test_result1 = await self.test(model_id=model_id, published=True)
+        test_result1 = await self.test(model_id=model_id, stage=False)
         test1_duration = time.time() - test1_start
         print(
             f"✅ [{self.replica_id}] Published model test completed ({test1_duration:.2f}s)"
@@ -310,27 +311,27 @@ class ModelRunner:
             f"🧩 [{self.replica_id}] Test 4/{total_tests}: Testing unpublished model..."
         )
         test2_start = time.time()
-        test_result2 = await self.test(model_id=model_id, published=False)
+        test_result2 = await self.test(model_id=model_id, stage=True)
         test2_duration = time.time() - test2_start
         print(
             f"✅ [{self.replica_id}] Unpublished model test completed ({test2_duration:.2f}s)"
         )
 
-        # Test 5: Test with skip_cache=True
+        # Test 5: Test with skip_cache=True (published)
         if test_skip_cache:
             print(
                 f"🔄 [{self.replica_id}] Test 5/{total_tests}: Testing with cache skip..."
             )
             test3_start = time.time()
             test_result3 = await self.test(
-                model_id=model_id, published=False, skip_cache=True
+                model_id=model_id, stage=False, skip_cache=True
             )
             test3_duration = time.time() - test3_start
             print(
                 f"✅ [{self.replica_id}] Skip cache test completed ({test3_duration:.2f}s)"
             )
 
-        # Test 6: Test inference
+        # Test 6: Test inference (published)
         current_test = 6 if test_skip_cache else 5
         print(
             f"🤖 [{self.replica_id}] Test {current_test}/{total_tests}: Testing inference..."
@@ -339,7 +340,7 @@ class ModelRunner:
 
         # Get the model package to load test image
         local_package = await self._get_local_package_from_cache(
-            model_id=model_id, published=False, skip_cache=False
+            model_id=model_id, stage=False, skip_cache=False
         )
 
         async with local_package:
@@ -352,9 +353,9 @@ class ModelRunner:
 
     # === Internal Methods ===
 
-    def _get_cache_key(self, model_id: str, published: bool) -> str:
+    def _get_cache_key(self, model_id: str, stage: bool) -> str:
         """Generate cache key from model ID and publication status."""
-        if published:
+        if not stage:
             return f"bmz_model_{model_id}"
         else:
             return f"unpublished_model_{model_id}"
@@ -625,10 +626,10 @@ class ModelRunner:
         # Parse cache key
         if cache_key.startswith("bmz_model_"):
             model_id = cache_key[len("bmz_model_") :]
-            published = True
+            stage = False
         elif cache_key.startswith("unpublished_model_"):
             model_id = cache_key[len("unpublished_model_") :]
-            published = False
+            stage = True
         else:
             raise ValueError(
                 f"Invalid cache key format: {cache_key}. "
@@ -703,7 +704,7 @@ class ModelRunner:
             download_start = time.time()
 
             # Download model to temporary directory
-            if published:
+            if not stage:
                 await self._download_model_from_id(
                     model_id=model_id, package_path=temp_download_dir
                 )
@@ -759,10 +760,10 @@ class ModelRunner:
         return package_dir
 
     async def _get_local_package_from_cache(
-        self, model_id: str, published: bool = True, skip_cache: bool = False
+        self, model_id: str, stage: bool = False, skip_cache: bool = False
     ) -> LocalBioimageioPackage:
         """Get model package from cache, downloading and validating if needed."""
-        cache_key = self._get_cache_key(model_id=model_id, published=published)
+        cache_key = self._get_cache_key(model_id=model_id, stage=stage)
         package_dir = self.models_dir / cache_key
 
         # Handle cache skipping
@@ -788,7 +789,15 @@ class ModelRunner:
 
     @schema_method
     async def get_model_rdf(
-        self, model_id: str, skip_cache: bool = False
+        self,
+        model_id: str = Field(
+            ...,
+            description="Unique identifier of the bioimage.io model (e.g., 'charismatic-whale')",
+        ),
+        skip_cache: Optional[bool] = Field(
+            False,
+            description="Force re-download from source even if model is cached locally",
+        ),
     ) -> Dict[str, Union[str, int, float, List, Dict]]:
         """
         Retrieve the Resource Description Framework (RDF) metadata for a bioimage.io model.
@@ -799,10 +808,6 @@ class ModelRunner:
         - Model architecture details and framework requirements
         - Training information and performance metrics
         - Compatible software versions and dependencies
-
-        Args:
-            model_id: Unique identifier of the bioimage.io model (e.g., "charismatic-whale")
-            skip_cache: Force re-download from source even if model is cached locally
 
         Returns:
             Dictionary containing the complete RDF metadata structure with nested
@@ -818,9 +823,11 @@ class ModelRunner:
             f"📋 [{self.replica_id}] Getting RDF for model '{model_id}' (skip_cache={skip_cache})"
         )
 
+        # TODO: Download only RDF, never cache
+
         # Get model package with access tracking (only published models for RDF)
         local_package = await self._get_local_package_from_cache(
-            model_id=model_id, published=True, skip_cache=skip_cache
+            model_id=model_id, stage=False, skip_cache=skip_cache
         )
 
         # Use context manager to track access and prevent eviction during RDF loading
@@ -840,8 +847,13 @@ class ModelRunner:
     @schema_method
     async def validate(
         self,
-        rdf_dict: Dict[str, Union[str, int, float, List, Dict]],
-        known_files: Optional[Dict[str, str]] = None,
+        rdf_dict: Dict[str, Union[str, int, float, List, Dict]] = Field(
+            ..., description="Complete RDF dictionary structure to validate"
+        ),
+        known_files: Optional[Dict[str, str]] = Field(
+            None,
+            description="Mapping of relative file paths to their content hashes for validating file references within the RDF",
+        ),
     ) -> Dict[str, Union[bool, str]]:
         """
         Validate a model Resource Description Framework (RDF) against bioimage.io specifications.
@@ -852,11 +864,6 @@ class ModelRunner:
         - Logical consistency verification between related fields
         - Tensor shape and dimension compatibility analysis
         - File reference and path validation (if known_files provided)
-
-        Args:
-            rdf_dict: Complete RDF dictionary structure to validate
-            known_files: Optional mapping of relative file paths to their content hashes
-                        for validating file references within the RDF
 
         Returns:
             Validation result containing:
@@ -889,10 +896,20 @@ class ModelRunner:
     @schema_method
     async def test(
         self,
-        model_id: str,
-        published: bool = True,
-        skip_cache: bool = False,
-        additional_requirements: Optional[List[str]] = None,
+        model_id: str = Field(
+            ..., description="Unique identifier of the bioimage.io model to test"
+        ),
+        stage: Optional[bool] = Field(
+            False,
+            description="Whether to test a published model from bioimage.io (False) or an unpublished model (True)",
+        ),
+        skip_cache: Optional[bool] = Field(
+            False, description="Force re-download of model package before testing"
+        ),
+        additional_requirements: Optional[List[str]] = Field(
+            None,
+            description='Extra Python packages to install in the test environment (e.g., ["scipy>=1.7.0", "scikit-image"])',
+        ),
     ) -> Dict[str, Union[str, bool, List, Dict]]:
         """
         Execute comprehensive bioimage.io model testing using the official test suite.
@@ -904,13 +921,6 @@ class ModelRunner:
         - Sample inference execution with synthetic or provided test data
         - Performance benchmarking and memory usage analysis
         - Framework-specific compatibility verification (PyTorch, TensorFlow, ONNX)
-
-        Args:
-            model_id: Unique identifier of the bioimage.io model to test
-            published: Whether to test the published version (True) or unpublished/review version (False)
-            skip_cache: Force re-download of model package before testing
-            additional_requirements: Extra Python packages to install in the test environment
-                                   (e.g., ["scipy>=1.7.0", "scikit-image"])
 
         Returns:
             Comprehensive test results including:
@@ -925,12 +935,12 @@ class ModelRunner:
             in a controlled environment with the specified requirements.
         """
         print(
-            f"🧪 [{self.replica_id}] Testing model '{model_id}' (published={published}, skip_cache={skip_cache})"
+            f"🧪 [{self.replica_id}] Testing model '{model_id}' (stage={stage}, skip_cache={skip_cache})"
         )
 
         # Get model package with access tracking
         local_package = await self._get_local_package_from_cache(
-            model_id=model_id, published=published, skip_cache=skip_cache
+            model_id=model_id, stage=stage, skip_cache=skip_cache
         )
 
         try:
@@ -956,13 +966,32 @@ class ModelRunner:
     @schema_method(arbitrary_types_allowed=True)
     async def infer(
         self,
-        model_id: str,
-        inputs: Union[np.ndarray, Dict[str, np.ndarray]],
-        weights_format: Optional[str] = None,
-        device: Optional[Literal["cuda", "cpu"]] = None,
-        default_blocksize_parameter: Optional[int] = None,
-        sample_id: str = "sample",
-        skip_cache: bool = False,
+        model_id: str = Field(
+            ..., description="Unique identifier of the published bioimage.io model"
+        ),
+        inputs: Union[np.ndarray, Dict[str, np.ndarray]] = Field(
+            ...,
+            description="Input data as numpy array or dictionary of named arrays. Must match the model's input specification for shape and data type. For single input models, provide np.ndarray. For multi-input models, provide dict with input names as keys.",
+        ),
+        weights_format: Optional[str] = Field(
+            None,
+            description='Preferred model weights format ("pytorch_state_dict", "torchscript", "onnx", "tensorflow_saved_model"). If None, automatically selects best available.',
+        ),
+        device: Optional[Literal["cuda", "cpu"]] = Field(
+            None,
+            description='Target computation device. "cuda" for GPU acceleration, "cpu" for CPU-only. If None, automatically selects based on availability and model compatibility.',
+        ),
+        default_blocksize_parameter: Optional[int] = Field(
+            None,
+            description="Override default tiling block size for memory management. Larger values use more memory but may be faster. Only applicable for models supporting tiled inference.",
+        ),
+        sample_id: Optional[str] = Field(
+            "sample",
+            description="Identifier for this inference request, used for logging and debugging",
+        ),
+        skip_cache: Optional[bool] = Field(
+            False, description="Force re-download of model package before inference"
+        ),
     ) -> Dict[str, np.ndarray]:
         """
         Execute inference on a bioimage.io model with provided input data.
@@ -972,22 +1001,6 @@ class ModelRunner:
         - Model execution with optimized framework backend
         - Output postprocessing and format standardization
         - Memory-efficient processing for large inputs using tiling if supported
-
-        Args:
-            model_id: Unique identifier of the published bioimage.io model
-            inputs: Input data as numpy array or dictionary of named arrays.
-                   Must match the model's input specification for shape and data type.
-                   For single input models, provide np.ndarray.
-                   For multi-input models, provide dict with input names as keys.
-            weights_format: Preferred model weights format ("pytorch_state_dict", "torchscript",
-                          "onnx", "tensorflow_saved_model"). If None, automatically selects best available.
-            device: Target computation device. "cuda" for GPU acceleration, "cpu" for CPU-only.
-                   If None, automatically selects based on availability and model compatibility.
-            default_blocksize_parameter: Override default tiling block size for memory management.
-                                        Larger values use more memory but may be faster.
-                                        Only applicable for models supporting tiled inference.
-            sample_id: Identifier for this inference request, used for logging and debugging
-            skip_cache: Force re-download of model package before inference
 
         Returns:
             Dictionary mapping output names to numpy arrays containing the inference results.
@@ -1006,7 +1019,7 @@ class ModelRunner:
 
         # Get model package with access tracking (only published models for inference)
         local_package = await self._get_local_package_from_cache(
-            model_id=model_id, published=True, skip_cache=skip_cache
+            model_id=model_id, stage=False, skip_cache=skip_cache
         )
 
         try:

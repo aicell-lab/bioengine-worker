@@ -717,10 +717,7 @@ class BioEngineProxyDeployment:
                 "name": self.application_name + " MCP Service",
                 "description": "MCP Service for " + self.application_description,
                 "type": "mcp",
-                "config": {
-                    "visibility": "public",
-                    "run_in_executor": True,
-                },
+                "config": {"visibility": "public", "require_context": True},
                 "tools": service_functions,
             })
             

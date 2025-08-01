@@ -486,7 +486,7 @@ class BioEngineWorker:
             "type": "mcp",
             "config": {
                 "visibility": "public",
-                "run_in_executor": True,
+                "require_context": True,
             },
             "tools": worker_services,
         })

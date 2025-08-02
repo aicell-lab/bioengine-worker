@@ -2,10 +2,10 @@ name: Enforce Version Update
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
     paths:
-      - '.github/workflows/docker-publish.yml'
       - 'bioengine_worker/**'
       - 'requirements*.txt'
       - 'pyproject.toml'

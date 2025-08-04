@@ -246,8 +246,8 @@ async def test_create_and_delete_artifacts(
             received_manifest["manifest"] == demo_manifest
         ), "Demo app manifest should match expected manifest"
         assert (
-            received_manifest["parent_id"] == f"{hypha_workspace}/bioengine-apps"
-        ), "Demo app manifest should be in bioengine-apps collection"
+            received_manifest["parent_id"] == f"{hypha_workspace}/applications"
+        ), "Demo app manifest should be in applications collection"
 
         # Verify all files in composition-app artifact
         assert all(
@@ -261,8 +261,8 @@ async def test_create_and_delete_artifacts(
             received_manifest["manifest"] == composition_manifest
         ), "Composition app manifest should match expected manifest"
         assert (
-            received_manifest["parent_id"] == f"{hypha_workspace}/bioengine-apps"
-        ), "Composition app manifest should be in bioengine-apps collection"
+            received_manifest["parent_id"] == f"{hypha_workspace}/applications"
+        ), "Composition app manifest should be in applications collection"
 
         # Delete both artifacts
         await bioengine_worker_service.delete_application(artifact_id=demo_artifact_id)
@@ -675,7 +675,7 @@ async def test_deploy_application_locally(
     demo_artifact_id = f"{hypha_workspace}/demo-app"
     demo_app_config = {
         "artifact_id": demo_artifact_id,
-        "enable_gpu": False,
+        "disable_gpu": True,
     }  # Test random application ID generation
 
     composition_artifact_id = f"{hypha_workspace}/composition-app"
@@ -687,7 +687,7 @@ async def test_deploy_application_locally(
             "CompositionDeployment": {"demo_input": "Hello World!"},
             "Deployment2": {"start_number": 10},
         },
-        "enable_gpu": False,
+        "disable_gpu": True,
     }  # Provide custom application id and deployment kwargs
 
     app_configs = [demo_app_config, composition_app_config]
@@ -804,7 +804,7 @@ async def test_deploy_application_from_artifact(
     demo_artifact_id = f"{hypha_workspace}/demo-app-{hyphen_test_id}"
     demo_app_config = {
         "artifact_id": demo_artifact_id,
-        "enable_gpu": False,
+        "disable_gpu": True,
     }  # Test random application ID generation
 
     composition_app_path = tests_dir / "composition_app"
@@ -816,7 +816,7 @@ async def test_deploy_application_from_artifact(
             "CompositionDeployment": {"demo_input": "Hello World!"},
             "Deployment2": {"start_number": 10},
         },
-        "enable_gpu": False,
+        "disable_gpu": True,
     }  # Provide custom application id and deployment kwargs
 
     app_paths = [demo_app_path, composition_app_path]
@@ -977,7 +977,7 @@ async def test_call_demo_app_functions(
     demo_artifact_id = f"{hypha_workspace}/demo-app"
 
     app_id = await bioengine_worker_service.deploy_application(
-        artifact_id=demo_artifact_id, enable_gpu=False
+        artifact_id=demo_artifact_id, disable_gpu=True
     )
 
     try:
@@ -1120,7 +1120,7 @@ async def test_call_composition_app_functions(
             "CompositionDeployment": {"demo_input": "Test Hello World!"},
             "Deployment2": {"start_number": 100},
         },
-        "enable_gpu": False,
+        "disable_gpu": True,
     }
 
     app_id = await bioengine_worker_service.deploy_application(**composition_app_config)
@@ -1255,3 +1255,6 @@ async def test_call_composition_app_functions(
             print(f"Undeployed application: {app_id}")
         except Exception as e:
             warnings.warn(f"Failed to undeploy application {app_id}: {e}")
+
+
+# TODO: test proxy deployment autoscaling and load balancing

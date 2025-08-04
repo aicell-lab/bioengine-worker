@@ -12,13 +12,20 @@ MULTI-DEPLOYMENT ARCHITECTURE:
 - The BioEngine Worker automatically wires deployment dependencies during startup
 - All deployments in an application share the same authorized users and lifecycle
 
+DEPLOYMENT PARAMETER NAMING CONVENTION:
+- In the manifest.yaml, deployments are defined as 'python_file:ClassName' format
+- DeploymentHandle parameters in the entry deployment's __init__ method MUST match
+    the python file name (without .py extension) from the manifest
+- Example: If manifest has 'deployment1:Deployment1', the parameter must be named 'deployment1'
+- This naming convention allows BioEngine to automatically wire dependencies between deployments
+
 MIXED RESOURCE ALLOCATION:
 - Different deployments within the same application can have different resource requirements
 - Some deployments can be GPU-enabled while others are CPU-only
 - This example demonstrates mixed allocation: CompositionDeployment (CPU-only) orchestrates
-  Deployment1 (CPU-only) and Deployment2 (potentially GPU-enabled)
+    Deployment1 (CPU-only) and Deployment2 (potentially GPU-enabled)
 - GPU allocation is managed by the AppBuilder which overwrites the num_gpus parameter
-  in the ray actor options based on the enable_gpu parameter (default: False)
+    in the ray actor options based on the disable_gpu parameter (default: False)
 - Resource allocation is validated per deployment against available cluster resources
 
 DEPLOYMENT REQUIREMENTS:
@@ -29,15 +36,15 @@ DEPLOYMENT REQUIREMENTS:
 
 IMPORT HANDLING:
 - Standard Python libraries and libraries that are part of the BioEngine can be
-  imported at the top of this file. Take a look at the requirements.txt file to see
-  which libraries are part of the BioEngine:
-  https://github.com/aicell-lab/bioengine-worker/blob/main/requirements.txt
+    imported at the top of this file. Take a look at the requirements.txt file to see
+    which libraries are part of the BioEngine:
+    https://github.com/aicell-lab/bioengine-worker/blob/main/requirements.txt
 - All libraries that are not part of the standard python library or the BioEngine
-  need to be specified in the runtime environment of the deployment and imported
-  in each method where they are used (see 'pandas' in the example below).
+    need to be specified in the runtime environment of the deployment and imported
+    in each method where they are used (see 'pandas' in the example below).
 
 GPU allocation is managed by the AppBuilder which overwrites the num_gpus parameter
-in the ray actor options based on the enable_gpu parameter (default: False) passed to
+in the ray actor options based on the disable_gpu parameter (default: False) passed to
 deploy_application().
 
 Resource allocation is validated against available cluster resources before deployment.

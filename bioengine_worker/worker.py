@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from hypha_rpc import connect_to_server
 from hypha_rpc.sync import login
 from hypha_rpc.utils.schema import schema_method
+from pydantic import Field
 
 from bioengine_worker import __version__
 from bioengine_worker.apps_manager import AppsManager
@@ -100,7 +101,7 @@ class BioEngineWorker:
             server_url="https://hypha.aicell.io",
             startup_applications=[
                 {"artifact_id": "<my-workspace>/<my_artifact>", "application_id": "my_custom_name"},
-                {"artifact_id": "<my-workspace>/<another_artifact>", "enable_gpu": False}
+                {"artifact_id": "<my-workspace>/<another_artifact>", "disable_gpu": True}
             ],
             ray_cluster_config={
                 "max_workers": 10,
@@ -474,22 +475,22 @@ class BioEngineWorker:
         )
         self.full_service_id = service_info.id
 
-        mcp_service = await self._server.register_service({
-            "id": self.service_id + "-mcp",
-            "name": "BioEngine Worker MCP Service",
-            "description": description,
-            "type": "mcp",
-            "config": {
-                "visibility": "public",
-                "require_context": True,
-            },
-            "tools": worker_services,
-        })
-
-        self.logger.info(f"Successfully registered MCP service for BioEngine Worker with ID: {mcp_service['id']}")
+        mcp_service = await self._server.register_service(
+            {
+                "id": self.service_id + "-mcp",
+                "name": "BioEngine Worker MCP Service",
+                "description": description,
+                "type": "mcp",
+                "config": {
+                    "visibility": "public",
+                    "require_context": True,
+                },
+                "tools": worker_services,
+            }
+        )
 
         self.logger.info(
-            f"Manage BioEngine worker at: {self.dashboard_url}/worker?service_id={self.full_service_id}"
+            f"Successfully registered MCP service for BioEngine Worker with ID: {mcp_service['id']}"
         )
 
     async def _cleanup(self) -> None:
@@ -749,6 +750,10 @@ class BioEngineWorker:
             # Wait for the monitoring task to signal readiness
             await self.is_ready.wait()
 
+            self.logger.info(
+                f"Manage BioEngine worker at: {self.dashboard_url}/worker?service_id={self.full_service_id}"
+            )
+
             if blocking is True:
                 # Keep the worker running until a shutdown signal is received
                 self.logger.info(
@@ -771,33 +776,53 @@ class BioEngineWorker:
 
     @schema_method
     async def stop(
-        self, blocking: bool = False, context: Dict[str, Any] = None
+        self,
+        blocking: bool = Field(
+            False,
+            description="Whether to wait for complete shutdown before returning. Set to True to ensure all resources are fully cleaned up before the method returns, or False to initiate shutdown and return immediately while cleanup continues in background. Recommended: True for production environments, False for quick shutdown.",
+        ),
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
     ) -> None:
         """
-        Gracefully shutdown the BioEngine worker and cleanup all resources.
+        Gracefully shutdown the BioEngine worker with comprehensive resource cleanup and service deregistration.
 
-        Performs comprehensive cleanup of all worker components including datasets,
-        deployments, Ray cluster, and monitoring tasks. Ensures proper resource
-        cleanup and service deregistration from the Hypha server.
+        This method performs an orderly shutdown of all worker components including active deployments, dataset services, Ray cluster resources, and monitoring tasks. It ensures proper cleanup to prevent resource leaks and maintains system stability during shutdown operations.
 
-        The shutdown process:
-        1. Validates admin permissions for shutdown operation
-        2. Cancels monitoring tasks and waits for completion
-        3. Cleanup applications and deployments through AppsManager
-        4. Cleanup datasets and HTTP services through DatasetsManager
-        5. Shutdown Ray cluster (if managed by this worker)
-        6. Disconnect from Hypha server
-        7. Clear worker state and mark as not ready
+        SECURITY: Requires admin-level permissions as this operation affects the entire worker instance and all active services.
 
-        Args:
-            timeout: Maximum time in seconds to wait for each cleanup operation
-            blocking: If True, waits for all cleanup operations to complete before returning
-            context: Request context containing user information for permission checking
+        SHUTDOWN PROCESS:
+        1. Permission validation for authorized shutdown access
+        2. Signal monitoring tasks to stop and wait for completion
+        3. Cleanup all active applications and deployments through AppsManager
+        4. Close dataset connections and stop HTTP services through DatasetsManager
+        5. Shutdown Ray cluster resources (if managed by this worker instance)
+        6. Deregister services from Hypha server and disconnect
+        7. Reset worker state and clear readiness indicators
 
-        Raises:
-            PermissionError: If user is not authorized for shutdown operations
-            TimeoutError: If cleanup operations exceed the specified timeout
-            Exception: If critical cleanup operations fail
+        BLOCKING BEHAVIOR:
+        - blocking=True: Method waits for all cleanup operations to complete before returning, ensuring complete shutdown
+        - blocking=False: Method initiates shutdown process and returns immediately while cleanup continues asynchronously
+
+        TIMEOUT HANDLING:
+        Shutdown operations are subject to graceful_shutdown_timeout (default 60 seconds). If cleanup exceeds this timeout, the worker will force-exit to prevent hanging processes.
+
+        ERROR HANDLING:
+        Individual component cleanup failures are logged but don't prevent shutdown of other components. Critical errors during shutdown may result in force-exit to ensure the worker doesn't remain in an inconsistent state.
+
+        TYPICAL USAGE:
+        Production shutdown: await worker.stop(blocking=True)
+        Development shutdown: await worker.stop(blocking=False)
+        Emergency shutdown: await worker.stop(blocking=True) with shorter timeout
+
+        SIDE EFFECTS:
+        - All active deployments will be stopped and become unavailable
+        - Dataset streaming services will be terminated
+        - Ray cluster will be shutdown (if managed by this worker)
+        - Worker service will be deregistered from Hypha server
+        - All background monitoring tasks will be cancelled
         """
         check_permissions(
             context=context,
@@ -808,39 +833,75 @@ class BioEngineWorker:
         await self._stop(blocking=blocking)
 
     @schema_method
-    async def get_status(self, context: Optional[Dict[str, Any]] = None) -> dict:
+    async def get_status(
+        self,
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
+    ) -> Dict[str, Any]:
         """
-        Retrieve comprehensive status information for the BioEngine worker and all components.
+        Retrieve comprehensive real-time status information for the BioEngine worker and all managed components.
 
-        Provides detailed status information including Ray cluster health, active
-        deployments, loaded datasets, resource utilization, and worker uptime.
-        This method is used for monitoring, debugging, and dashboard displays.
+        This method provides a complete overview of the worker's operational state including Ray cluster health, active deployments, loaded datasets, resource utilization, and service availability. Essential for monitoring, debugging, health checks, and dashboard displays.
 
-        The status report includes:
-        - Worker service information (start time, uptime, service ID)
-        - Ray cluster status (nodes, resources, health)
-        - Applications manager status (active deployments, resource usage)
-        - Datasets manager status (loaded datasets, service endpoints)
-        - System resource information and health metrics
+        SECURITY: This method is publicly accessible and does not require admin permissions, making it suitable for monitoring dashboards and health checks by any authenticated user.
 
-        Args:
-            context: Optional request context for permission checking and audit logging
+        STATUS INFORMATION CATEGORIES:
 
-        Returns:
-            Dict containing comprehensive status information:
-                - service_start_time: Timestamp when worker was started
-                - service_uptime: Duration since worker startup in seconds
-                - service_id: Full service identifier for Hypha registration
-                - worker_mode: Deployment mode (slurm/single-machine/external-cluster)
-                - ray_cluster: Ray cluster status including nodes and resources
-                - bioengine_apps: Applications manager status and active deployments
-                - bioengine_datasets: Datasets manager status and loaded datasets
-                - admin_users: List of users with administrative privileges
-                - is_ready: Boolean indicating if worker is fully initialized
+        SERVICE METADATA:
+        - service_start_time: Unix timestamp when the worker was initialized
+        - service_uptime: Duration in seconds since worker startup
+        - workspace: Hypha workspace name where worker is registered
+        - client_id: Unique client identifier for this worker instance
+        - admin_users: List of user identifiers with administrative privileges
+        - is_ready: Boolean indicating if worker is fully operational
 
-        Raises:
-            RuntimeError: If Ray cluster is not properly initialized
-            ConnectionError: If unable to retrieve status from components
+        RAY CLUSTER STATUS:
+        - worker_mode: Deployment mode (slurm/single-machine/external-cluster)
+        - ray_cluster: Complete Ray cluster state including:
+          * Available and total CPU/GPU/memory resources across all nodes
+          * Node health status and IP addresses
+          * Cluster connectivity and operational state
+          * Resource utilization metrics
+
+        BIOENGINE APPLICATIONS:
+        - bioengine_apps: Applications manager status including:
+          * List of active deployments with health status
+          * Resource allocation per deployment
+          * Deployment configuration and metadata
+          * Application scaling and performance metrics
+
+        BIOENGINE DATASETS:
+        - bioengine_datasets: Dataset manager status including:
+          * Currently loaded datasets with access URLs
+          * Dataset manifest information and permissions
+          * HTTP service endpoints and streaming status
+          * Dataset usage metrics and connection counts
+
+        RETURN VALUE STRUCTURE:
+        {
+            "service_start_time": 1234567890.123,
+            "service_uptime": 3600.456,
+            "worker_mode": "slurm",
+            "workspace": "my-workspace",
+            "client_id": "client-abc123",
+            "ray_cluster": {...},
+            "bioengine_apps": {...},
+            "bioengine_datasets": {...},
+            "admin_users": ["user@example.com"],
+            "is_ready": true
+        }
+
+        TYPICAL USAGE:
+        Health monitoring: status = await worker.get_status()
+        Dashboard display: Use all returned fields for comprehensive view
+        Resource planning: Focus on ray_cluster resource information
+        Deployment monitoring: Check bioengine_apps for deployment health
+        Dataset monitoring: Check bioengine_datasets for data access status
+
+        ERROR SCENARIOS:
+        Returns partial status if individual components fail to report, with error information included in the component's status section.
         """
         current_time = time.time()
         status = {

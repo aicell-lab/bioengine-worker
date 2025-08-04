@@ -27,7 +27,7 @@ def startup_applications() -> List[Dict]:
         {
             "artifact_id": "demo-app",
             "application_id": "demo-app",
-            "enable_gpu": False,
+            "disable_gpu": True,
         },
     ]
 

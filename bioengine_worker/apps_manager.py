@@ -9,6 +9,7 @@ import yaml
 from haikunator import Haikunator
 from hypha_rpc.rpc import RemoteService
 from hypha_rpc.utils.schema import schema_method
+from pydantic import Field
 from ray import serve
 
 from bioengine_worker import __version__
@@ -76,26 +77,33 @@ class AppsManager:
         debug: bool = False,
     ):
         """
-        Initialize the Ray Deployment Manager.
+        Initialize the AppsManager with configuration for managing BioEngine application deployments.
 
-        Sets up the deployment manager with the specified configuration and
-        initializes state variables for tracking deployments.
+        Sets up the deployment manager to handle BioEngine applications using Ray Serve and
+        Hypha artifact manager integration. Configures directory paths based on the Ray
+        cluster mode and initializes all necessary components.
+
+        Directory Configuration by Mode:
+        - SLURM mode: Uses fixed paths (/tmp/bioengine/apps, /data) for container compatibility
+        - Single-machine mode: Uses provided paths, converted to absolute paths
+        - External-cluster mode: Uses provided paths directly
 
         Args:
-            ray_cluster: RayCluster instance for managing compute resources
-            token: Authentication token for service access
-            apps_cache_dir: Caching directory used in Ray Serve deployments
-            apps_data_dir: Data directory accessible to deployments
-            startup_applications: List of application configurations to deploy on startup
-            log_file: Optional log file path for output
-            debug: Enable debug logging
+            ray_cluster: Ray cluster manager instance for compute resource management
+            token: Authentication token for Hypha server access
+            apps_cache_dir: Directory for caching application artifacts and build files
+            apps_data_dir: Directory that will be accessible to deployed applications
+            startup_applications: List of application configurations to deploy automatically
+                                 when the manager initializes
+            log_file: Optional path to log file for deployment operations
+            debug: Enable detailed debug logging for troubleshooting
 
         Raises:
-            Exception: If initialization of any component fails
+            ValueError: If the Ray cluster mode is not supported
+            Exception: If component initialization fails
 
         Note:
-            The admin_users parameter is passed during initialize() call,
-            not during construction.
+            Admin users are set later during the initialize() call, not during construction.
         """
         # Set up logging
         self.logger = create_logger(
@@ -147,7 +155,13 @@ class AppsManager:
 
     def _check_initialized(self) -> None:
         """
-        Check if the server and artifact manager are initialized.
+        Verify that the manager has been properly initialized with server connections.
+
+        Ensures both the Hypha server connection and artifact manager service are available
+        before attempting any operations that require them.
+
+        Raises:
+            RuntimeError: If server connection or artifact manager is not initialized
         """
         if not self.server:
             raise RuntimeError(
@@ -161,7 +175,15 @@ class AppsManager:
     async def _ensure_applications_collection(self) -> None:
         """
         Ensure the 'applications' collection exists in the Hypha artifact manager.
-        Creates the collection if it does not exist, allowing for organized storage of BioEngine applications.
+
+        Creates the applications collection if it doesn't exist, providing organized
+        storage for BioEngine application artifacts within the current workspace.
+        The collection acts as a container for grouping related applications.
+
+        Collection Structure:
+        - Name: "Applications"
+        - Description: Workspace-specific application collection
+        - Type: Collection artifact for organizational purposes
 
         Raises:
             RuntimeError: If the collection cannot be created or accessed
@@ -194,15 +216,24 @@ class AppsManager:
 
     def _get_full_artifact_id(self, artifact_id: str) -> str:
         """
-        Convert artifact ID to a full artifact ID.
+        Convert a potentially short artifact ID to its full workspace-qualified form.
 
-        Prepends workspace prefix if the artifact ID doesn't already contain one.
+        Hypha artifacts can be referenced either by their full ID (workspace/artifact-name)
+        or by just the artifact name if it belongs to the current workspace. This method
+        ensures we always have the full form for consistent handling.
 
         Args:
-            artifact_id: The artifact ID to convert
+            artifact_id: The artifact identifier to convert
 
         Returns:
-            str: The converted full artifact ID in format 'workspace/artifact_id'
+            Full artifact ID in the format 'workspace/artifact-name'
+
+        Raises:
+            TypeError: If artifact_id is not a string
+
+        Examples:
+            - "my-app" → "workspace123/my-app"
+            - "workspace123/my-app" → "workspace123/my-app" (unchanged)
         """
         if not isinstance(artifact_id, str):
             raise TypeError("Artifact ID must be a string.")
@@ -214,6 +245,24 @@ class AppsManager:
             return f"{self.server.config.workspace}/{artifact_id}"
 
     async def _generate_application_id(self) -> str:
+        """
+        Generate a unique identifier for a new application deployment.
+
+        Creates a human-readable, unique application ID using the Haikunator library
+        which generates names like "delighted-mouse-a4f2". Ensures the generated ID
+        is not already in use by checking both internal tracking and Ray Serve status.
+
+        ID Format:
+        - Two descriptive words separated by hyphens
+        - 4-character hexadecimal suffix for uniqueness
+        - Example: "ambitious-whale-f3c1"
+
+        Returns:
+            Unique application ID that can be used for deployment
+
+        Note:
+            This method will retry generation until a unique ID is found.
+        """
         while True:
             application_id = self.haikunator.haikunate(
                 delimiter="-",  # Use hyphen as delimiter
@@ -234,6 +283,30 @@ class AppsManager:
     async def _check_resources(
         self, application_id: str, required_resources: Dict[str, int]
     ) -> None:
+        """
+        Verify that sufficient resources are available for deploying an application.
+
+        Checks current Ray cluster resource availability against the application's
+        requirements for CPU, GPU, and memory. For SLURM clusters, also considers
+        the ability to scale up by adding additional worker nodes.
+
+        Resource Validation Process:
+        1. Waits for Ray cluster to be ready and connected
+        2. Checks each node for sufficient available resources
+        3. For SLURM mode: Evaluates if new workers can be spawned if needed
+        4. For external clusters: Issues warning but allows deployment
+
+        Args:
+            application_id: ID of the application being deployed (for logging)
+            required_resources: Dictionary containing 'num_cpus', 'num_gpus', and 'memory' requirements
+
+        Raises:
+            ValueError: If insufficient resources are available and cluster cannot scale
+
+        Note:
+            External clusters are assumed to have autoscaling capabilities, so only
+            warnings are issued rather than blocking deployment.
+        """
         # Check if the required resources are available
         insufficient_resources = True
 
@@ -284,31 +357,36 @@ class AppsManager:
         application_id: str,
     ) -> None:
         """
-        Execute deployment of a Ray Serve application with comprehensive lifecycle management.
+        Execute the deployment of a BioEngine application and manage its lifecycle.
 
-        This method runs the actual deployment process, monitors the deployment status,
-        executes initialization hooks, and maintains the deployment until cancellation.
-        It ensures proper cleanup of both Ray Serve resources and internal state tracking
-        regardless of how the deployment ends (success, failure, or cancellation).
+        This is the core deployment method that runs as a long-lived asyncio task to
+        manage an application's entire lifecycle from startup to cleanup. It handles
+        the actual deployment process, monitors health, and ensures proper resource
+        cleanup when the deployment ends.
 
-        The method runs indefinitely to keep the deployment active until explicitly
-        cancelled, at which point it performs automatic cleanup including:
-        - Removal from Ray Serve
-        - Deletion from internal deployment tracking
-        - Service registration updates
+        Deployment Lifecycle:
+        1. Reset deployment status and prepare for deployment
+        2. Build the application using the AppBuilder
+        3. Validate resource requirements and availability
+        4. Deploy to Ray Serve with unique routing
+        5. Update internal state with deployment metadata
+        6. Keep the deployment active until cancelled
+        7. Perform cleanup when task is cancelled or fails
+
+        The method runs indefinitely to maintain the deployment until explicitly
+        cancelled. All cleanup is handled in the finally block to ensure proper
+        resource management regardless of how the deployment ends.
 
         Args:
-            artifact_id: Full artifact ID being deployed
-            deployment_name: Ray Serve deployment name
-            app: Configured Ray Serve application
+            application_id: Unique identifier for the application deployment
 
         Raises:
             RuntimeError: If deployment validation fails
             Exception: If deployment startup or initialization fails
 
         Note:
-            This method is designed to run as a long-lived asyncio task and will
-            only exit when cancelled or on error. Cleanup is guaranteed via finally block.
+            This method is designed to run as a managed asyncio task and should
+            only exit when cancelled or on unrecoverable error.
         """
         try:
             # Reset deployment status (if already deployed)
@@ -325,7 +403,10 @@ class AppsManager:
                 deployment_kwargs=self._deployed_applications[application_id][
                     "deployment_kwargs"
                 ],
-                enable_gpu=self._deployed_applications[application_id]["enable_gpu"],
+                disable_gpu=self._deployed_applications[application_id]["disable_gpu"],
+                max_ongoing_requests=self._deployed_applications[application_id][
+                    "max_ongoing_requests"
+                ],
             )
 
             # Check if the required resources are available
@@ -425,17 +506,27 @@ class AppsManager:
 
     async def initialize(self, server: RemoteService, admin_users: List[str]) -> None:
         """
-        Initialize the deployment manager with a Hypha server connection.
+        Initialize the deployment manager with Hypha server connections and admin permissions.
 
-        Establishes connection to the Hypha server and artifact manager service
-        for deployment operations.
+        Sets up the complete infrastructure needed for application deployment management
+        including server connections, artifact manager access, and automatic startup
+        application deployment.
+
+        Initialization Process:
+        1. Establishes Hypha server connection and stores admin user list
+        2. Connects to the artifact manager service for application storage
+        3. Configures the AppBuilder with server connections
+        4. Deploys any configured startup applications automatically
+        5. Waits for all startup deployments to be ready
 
         Args:
-            server: Hypha server connection instance
-            admin_users: List of user IDs or emails with admin permissions
+            server: Active Hypha server connection instance with proper authentication
+            admin_users: List of user IDs or email addresses with administrative permissions
+                        for managing applications and deployments
 
         Raises:
-            Exception: If server connection or artifact manager initialization fails
+            Exception: If server connection fails, artifact manager is unavailable,
+                      or startup application deployment fails
         """
         # Store server connection and list of admin users
         self.server = server
@@ -483,29 +574,34 @@ class AppsManager:
 
     async def get_status(self) -> Dict[str, Union[str, list, dict]]:
         """
-        Get comprehensive status of all deployed artifacts with task state validation.
+        Retrieve comprehensive status information for all deployed applications.
 
-        Returns detailed status information for all currently tracked deployments,
-        including deployment metadata, resource usage, and service availability.
-        Validates deployment state against both internal tracking and Ray Serve status
-        to ensure consistency.
+        Provides detailed information about each currently tracked application deployment,
+        cross-referencing internal state with Ray Serve status to ensure accuracy.
+        Includes deployment metadata, resource usage, service endpoints, and health status.
 
-        The method cross-references _deployed_artifacts with Ray Serve status to
-        identify any inconsistencies and provides warnings for deployments that
-        may be in an unexpected state.
+        Status Information Includes:
+        - Application metadata (name, description, artifact details)
+        - Deployment status and health from Ray Serve
+        - Resource allocation and usage
+        - Service endpoint information for client connections
+        - Failure tracking and monitoring data
+        - Replica states and deployment details
+
+        Consistency Validation:
+        The method validates deployment state by comparing internal tracking with
+        Ray Serve status, providing warnings for any inconsistencies found.
 
         Returns:
-            Dict containing:
-                - service_id: Hypha service ID for deployments (if registered)
-                - Per artifact: deployment name, available methods, timing info,
-                  status, replica states, resource allocation, and task state
+            Dictionary mapping application IDs to their detailed status information.
+            Empty dictionary if no applications are currently deployed.
 
         Raises:
-            RuntimeError: If Ray cluster is not running
+            RuntimeError: If Ray cluster connection is unavailable
 
         Note:
-            Only deployments that exist in both internal tracking and Ray Serve
-            status are included in the output to ensure accuracy.
+            Only applications that exist in both internal tracking and are accessible
+            via Ray Serve are included to ensure data accuracy.
         """
         output = {}
 
@@ -606,7 +702,7 @@ class AppsManager:
                 "deployments": deployments,
                 "consecutive_failures": application_info["consecutive_failures"],
                 "deployment_kwargs": application_info["deployment_kwargs"],
-                "gpu_enabled": application_info["enable_gpu"],
+                "gpu_enabled": application_info["disable_gpu"],
                 "application_resources": application_info["application_resources"],
                 "authorized_users": application_info["authorized_users"],
                 "available_methods": application_info["available_methods"],
@@ -617,6 +713,30 @@ class AppsManager:
         return output
 
     async def monitor_applications(self) -> None:
+        """
+        Monitor the health of all deployed applications and handle failures automatically.
+
+        Continuously monitors application health by checking Ray Serve status against
+        internal deployment tracking. Handles failure recovery, redeployment, and
+        cleanup of consistently failing applications.
+
+        Monitoring Actions:
+        - Tracks consecutive failures for each application
+        - Triggers redeployment for applications experiencing issues
+        - Removes applications that fail repeatedly (>3 consecutive failures)
+        - Resets failure counters for healthy applications
+
+        Failure Handling:
+        - 1-3 failures: Attempts automatic redeployment
+        - >3 failures: Removes application and stops monitoring
+        - Logs warnings and status changes for debugging
+
+        This method is typically called periodically by the worker to ensure
+        application health and availability.
+
+        Raises:
+            Exception: If monitoring process encounters unrecoverable errors
+        """
         if not self._deployed_applications:
             return
 
@@ -679,16 +799,28 @@ class AppsManager:
 
     @schema_method
     async def list_applications(
-        self, context: Optional[Dict[str, Any]] = None
+        self,
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
     ) -> Dict[str, List[str]]:
         """
-        List all BioEngine application artifacts in the Hypha artifact manager.
+        Lists all available BioEngine application artifacts stored in the Hypha artifact manager.
 
-        Args:
-            context: User context information automatically injected by Hypha.
+        This method retrieves and returns information about all BioEngine applications that have been
+        uploaded to the current workspace, including their manifest data and associated files.
+        Each application artifact contains the necessary code, configuration, and dependencies
+        needed to deploy a BioEngine application.
 
         Returns:
-            Dict[str, List[str]]: Mapping of artifact IDs to their file names in the BioEngine Apps collection
+            Dictionary mapping artifact IDs to their metadata and files. Each entry contains:
+            - manifest: Application configuration and deployment specifications
+            - files: List of file names included in the artifact package
+
+        Raises:
+            PermissionError: If the user lacks admin permissions to list applications
+            RuntimeError: If the Hypha server connection is not initialized
         """
         self._check_initialized()
 
@@ -699,7 +831,7 @@ class AppsManager:
         )
 
         # Check if the 'applications' collection exists
-        await self._ensure_bioengine_apps_collection()
+        await self._ensure_applications_collection()
 
         bioengine_apps_artifacts = await self.artifact_manager.list(self.collection_id)
 
@@ -720,20 +852,47 @@ class AppsManager:
 
     @schema_method
     async def create_application(
-        self, files: List[dict], artifact_id: str = None, context: Optional[dict] = None
+        self,
+        files: List[dict] = Field(
+            ...,
+            description="List of application files to upload. Each file must be a dictionary with 'name' (string), 'content' (file content), and 'type' ('text' for text files or 'base64' for binary files). Must include a 'manifest.yaml' file with application configuration.",
+        ),
+        artifact_id: str = Field(
+            None,
+            description="Unique identifier for the artifact. If provided, updates an existing artifact. If not provided, creates a new artifact using the 'id' field from the manifest file. For new artifacts, use lowercase letters, numbers, and hyphens only.",
+        ),
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
     ) -> str:
         """
-        Create a BioEngine application artifact in the Hypha artifact manager.
+        Creates or updates a BioEngine application artifact in the Hypha artifact manager.
 
-        Args:
-            files: List of file dictionaries with 'name', 'content', and 'type' keys
-                   type can be 'text' or 'base64'
-            artifact_id: Optional artifact ID. If provided, will edit existing artifact.
-                        If not provided, will create new artifact using alias from manifest.
-            context: User context information automatically injected by Hypha.
+        This method allows you to upload a complete BioEngine application package including
+        all necessary files, code, and configuration. The application can then be deployed
+        to Ray Serve using the deploy_application method.
+
+        Application Structure:
+        - manifest.yaml: Required configuration file defining the application metadata,
+          deployment settings, and entry points
+        - Python files: Application code and dependencies
+        - Data files: Any additional resources needed by the application
+
+        The manifest.yaml file must contain:
+        - id: Application identifier (for new artifacts)
+        - type: Must be "ray-serve"
+        - name: Human-readable application name
+        - description: Application description
+        - Additional deployment configuration
 
         Returns:
-            str: The artifact ID of the created/updated artifact
+            The artifact ID of the created or updated application artifact
+
+        Raises:
+            ValueError: If manifest is missing, invalid, or artifact ID format is incorrect
+            PermissionError: If user lacks admin permissions to create/modify applications
+            RuntimeError: If artifact creation fails or Hypha connection is unavailable
         """
         self._check_initialized()
 
@@ -826,7 +985,7 @@ class AppsManager:
                 )
 
             # Ensure the 'applications' collection exists
-            await self._ensure_bioengine_apps_collection()
+            await self._ensure_applications_collection()
 
             try:
                 # Create new artifact using alias
@@ -898,20 +1057,33 @@ class AppsManager:
 
     @schema_method
     async def delete_application(
-        self, artifact_id: str, context: Optional[Dict[str, Any]] = None
+        self,
+        artifact_id: str = Field(
+            ...,
+            description="Unique identifier of the application artifact to delete. Can be either the full artifact ID (workspace/artifact-name) or just the artifact name if it belongs to the current workspace.",
+        ),
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
     ) -> None:
         """
-        Delete a BioEngine application artifact from the Hypha artifact manager.
+        Permanently deletes a BioEngine application artifact from the Hypha artifact manager.
+
+        This method removes the specified application artifact and all its associated files
+        from the artifact manager. Once deleted, the artifact cannot be recovered and any
+        running deployments using this artifact should be undeployed first.
+
+        Warning: This operation is irreversible. Ensure you have backups if needed before deletion.
 
         Args:
-            artifact_id: ID of the artifact to delete
-            context: User context information automatically injected by Hypha.
-
-        Returns:
-            str: The ID of the deleted artifact
+            artifact_id: The artifact to delete. Must belong to the current workspace.
 
         Raises:
-            ValueError: If the artifact does not exist or cannot be deleted
+            ValueError: If the artifact doesn't exist, doesn't belong to current workspace,
+                       or cannot be deleted
+            PermissionError: If user lacks admin permissions to delete applications
+            RuntimeError: If Hypha connection is not available
         """
         self._check_initialized()
 
@@ -948,44 +1120,67 @@ class AppsManager:
     @schema_method
     async def deploy_application(
         self,
-        artifact_id: str,
-        version: Optional[str] = None,
-        application_id: Optional[str] = None,
-        deployment_kwargs: Optional[Dict[str, Dict[str, Any]]] = None,
-        enable_gpu: bool = True,
-        context: Optional[Dict[str, Any]] = None,
+        artifact_id: str = Field(
+            ...,
+            description="Identifier of the application artifact to deploy. Can be either the full artifact ID (workspace/artifact-name) or just the artifact name if it belongs to the current workspace.",
+        ),
+        version: Optional[str] = Field(
+            None,
+            description="Specific version of the artifact to deploy. If not provided, deploys the latest available version of the artifact.",
+        ),
+        application_id: Optional[str] = Field(
+            None,
+            description="Unique identifier for this deployment instance. If not provided, a random unique ID will be automatically generated. Use this to manage multiple deployments of the same artifact.",
+        ),
+        deployment_kwargs: Optional[Dict[str, Dict[str, Any]]] = Field(
+            None,
+            description="Advanced deployment configuration parameters. Dictionary where keys are deployment class names and values are dictionaries of keyword arguments to pass to those classes during initialization.",
+        ),
+        disable_gpu: bool = Field(
+            False,
+            description="Set to true to disable GPU usage for this deployment, forcing it to run on CPU only. Useful for testing or when GPU resources are limited.",
+        ),
+        max_ongoing_requests: int = Field(
+            10,
+            description="Maximum number of concurrent requests this application instance can handle simultaneously. Higher values allow more parallelism but use more memory.",
+        ),
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
     ) -> str:
         """
-        Deploy a single artifact to Ray Serve with comprehensive state management.
+        Deploys a BioEngine application from an artifact to Ray Serve with comprehensive lifecycle management.
 
-        Downloads the artifact from Hypha, loads the deployment code, configures
-        the Ray Serve deployment with appropriate resources, creates a managed
-        deployment task, and registers it as a callable service. The deployment
-        is tracked in _deployed_artifacts for proper lifecycle management.
+        This method downloads the specified application artifact, configures it according to the
+        provided parameters, and creates a running deployment in the Ray Serve cluster. The
+        deployment will be automatically registered as a service and made available for use.
 
-        The method prevents duplicate deployments by checking existing state and
-        ensures proper task creation and tracking. Returns immediately after
-        starting the deployment task, which runs independently.
+        Deployment Process:
+        1. Downloads and validates the application artifact
+        2. Checks resource availability (CPU, GPU, memory)
+        3. Configures the Ray Serve deployment with specified parameters
+        4. Starts the deployment and monitors its health
+        5. Registers the application as a callable service
 
-        Args:
-            artifact_id: ID of the artifact to deploy
-            mode: Optional deployment mode for multi-mode artifacts
-            version: Optional version of the artifact to deploy
-            application_id: Optional unique ID for the application deployment.
-                        If not provided, a new ID will be generated.
-            deployment_kwargs: Optional dictionary of keyword arguments for deployment classes.
-            enable_gpu: Whether to enable GPU support for the deployment
-            context: User context information automatically injected by Hypha.
+        The deployment runs asynchronously - this method returns immediately after starting
+        the deployment process. Use get_status() to monitor deployment progress and health.
+
+        Resource Management:
+        - Automatically scales Ray cluster if needed (SLURM mode)
+        - Validates resource requirements before deployment
+        - Supports both CPU and GPU deployments
+        - Configurable request concurrency limits
+
+        Returns:
+            Unique application ID for the created deployment. Use this ID to monitor,
+            update, or undeploy the application.
 
         Raises:
-            RuntimeError: If server, artifact manager, or Ray is not initialized
-            PermissionError: If user lacks permission to deploy artifacts
-            ValueError: If artifact mode is invalid or deployment configuration is malformed
-            Exception: If artifact deployment initialization fails
-
-        Note:
-            The actual deployment runs asynchronously. Use get_status() to monitor
-            deployment progress and success.
+            ValueError: If artifact doesn't exist, deployment configuration is invalid,
+                       or insufficient resources are available
+            PermissionError: If user lacks admin permissions to deploy applications
+            RuntimeError: If Ray cluster is unavailable or deployment initialization fails
         """
         # Only allow one deployment task creation at a time
         # This ensures unique application_id and prevents race conditions
@@ -1065,7 +1260,8 @@ class AppsManager:
                 "artifact_id": artifact_id,
                 "version": version,
                 "deployment_kwargs": deployment_kwargs,
-                "enable_gpu": enable_gpu,
+                "disable_gpu": disable_gpu,
+                "max_ongoing_requests": max_ongoing_requests,
                 "application_resources": {},
                 "authorized_users": [],
                 "available_methods": [],
@@ -1088,23 +1284,57 @@ class AppsManager:
             return application_id
 
     @schema_method
-    async def deploy_applications(self, app_configs: List[dict], context: dict) -> None:
+    async def deploy_applications(
+        self,
+        app_configs: List[dict] = Field(
+            ...,
+            description="List of application deployment configurations. Each configuration must be a dictionary containing 'artifact_id' (required) and optionally 'version', 'application_id', 'deployment_kwargs', 'disable_gpu', and 'max_ongoing_requests'. Allows batch deployment of multiple applications with different settings.",
+        ),
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
+    ) -> List[str]:
         """
-        Deploy multiple BioEngine applications from a list of configurations.
+        Deploys multiple BioEngine applications simultaneously from a list of configurations.
 
-        Iterates through the provided app_configs, validates each configuration,
-        and deploys each application using the deploy_application method. Returns
-        a list of application IDs for successfully deployed applications.
+        This method allows you to deploy several applications at once, each with their own
+        configuration settings. It's useful for setting up complex environments or deploying
+        related applications together.
 
-        Args:
-            app_configs: List of dictionaries containing application configurations.
-                         Each dictionary must contain 'artifact_id' and may include
-                         'version', 'application_id', 'deployment_kwargs' and 'enable_gpu'.
-            context: User context information automatically injected by Hypha.
+        Configuration Format:
+        Each app_config dictionary supports the same parameters as deploy_application:
+        - artifact_id (required): The application artifact to deploy
+        - version (optional): Specific version to deploy
+        - application_id (optional): Custom deployment ID
+        - deployment_kwargs (optional): Advanced deployment parameters
+        - disable_gpu (optional): Force CPU-only deployment
+        - max_ongoing_requests (optional): Concurrency limit
+
+        Example Configuration:
+        ```
+        [
+            {
+                "artifact_id": "my-workspace/cell-segmentation",
+                "version": "v1.2.0",
+                "disable_gpu": false,
+                "max_ongoing_requests": 5
+            },
+            {
+                "artifact_id": "my-workspace/image-analysis",
+                "deployment_kwargs": {"ModelDeployment": {"batch_size": 16}}
+            }
+        ]
+        ```
+
+        Returns:
+            List of application IDs for all successfully started deployments.
+            Use these IDs to monitor, manage, or undeploy the applications.
 
         Raises:
-            RuntimeError: If server or artifact manager is not initialized
-            Exception: If deployment of any startup artifact fails
+            ValueError: If any configuration is invalid or missing required fields
+            PermissionError: If user lacks admin permissions to deploy applications
+            RuntimeError: If Ray cluster connection fails or any deployment cannot start
         """
         if not isinstance(app_configs, list) or not app_configs:
             raise ValueError("Provided app_configs must be a non-empty list.")
@@ -1122,7 +1352,8 @@ class AppsManager:
                 version=app_config.get("version"),
                 application_id=app_config.get("application_id"),
                 deployment_kwargs=app_config.get("deployment_kwargs"),
-                enable_gpu=app_config.get("enable_gpu", True),
+                disable_gpu=app_config.get("disable_gpu", False),
+                max_ongoing_requests=app_config.get("max_ongoing_requests", 10),
                 context=context,
             )
             application_ids.append(application_id)
@@ -1132,32 +1363,44 @@ class AppsManager:
     @schema_method
     async def undeploy_application(
         self,
-        application_id: str,
-        context: Dict[str, Any],
+        application_id: str = Field(
+            ...,
+            description="Unique identifier of the deployed application to remove. This is the application ID that was returned when the application was deployed using deploy_application().",
+        ),
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
     ) -> None:
         """
-        Remove a deployment from Ray Serve with proper task management.
+        Gracefully removes a deployed application from the Ray Serve cluster.
 
-        Gracefully undeploys an artifact by canceling the active deployment task,
-        which triggers automatic cleanup including removal from Ray Serve and
-        deletion from internal state tracking. Validates that the artifact is
-        currently deployed before attempting undeployment.
+        This method stops the specified application deployment, cleans up all associated
+        resources, and removes it from the internal tracking system. The application
+        will no longer be available for serving requests after undeployment.
 
-        The method cancels the deployment task, which causes the _deploy_application
-        method to exit and perform cleanup in its finally block. This ensures
-        consistent cleanup regardless of deployment state.
+        Undeployment Process:
+        1. Validates that the application is currently deployed
+        2. Cancels the deployment task to initiate graceful shutdown
+        3. Removes the application from Ray Serve
+        4. Cleans up internal state and resource tracking
+        5. Updates service registrations
+
+        The undeployment happens asynchronously - this method returns immediately
+        after initiating the shutdown process. The actual cleanup occurs in the
+        background and may take a few moments to complete.
 
         Args:
-            artifact_id: ID of the artifact to undeploy
-            context: User context information automatically injected by Hypha.
+            application_id: The deployment to remove. Must be currently deployed.
 
         Raises:
-            RuntimeError: If server, artifact manager, or Ray is not initialized
-            PermissionError: If user lacks permission to undeploy artifacts
+            RuntimeError: If the application is not currently deployed or if
+                         Ray cluster connection is unavailable
+            PermissionError: If user lacks admin permissions to undeploy applications
 
         Note:
-            The method returns immediately after canceling the deployment task.
-            Actual cleanup happens asynchronously in the deployment task's finally block.
+            Once undeployed, the application ID becomes available for reuse.
+            Any clients connecting to this application will receive errors.
         """
         self._check_initialized()
 
@@ -1186,30 +1429,43 @@ class AppsManager:
         self._deployed_applications[application_id]["deployment_task"].cancel()
 
     @schema_method
-    async def cleanup(self, context: Dict[str, Any]) -> None:
+    async def cleanup(
+        self,
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
+    ) -> None:
         """
-        Clean up all Ray Serve deployments and associated resources with robust task management.
+        Removes all currently deployed applications and cleans up associated resources.
 
-        Gracefully undeploys all artifacts by canceling deployment tasks and waiting
-        for cleanup completion. Handles timeout scenarios and provides comprehensive
-        logging of cleanup status. Ensures proper removal from both Ray Serve and
-        internal state tracking.
+        This method performs a complete cleanup of the deployment environment by
+        undeploying all currently running applications and removing them from both
+        the Ray Serve cluster and internal tracking systems.
 
-        The method creates a snapshot of current deployments to avoid modification
-        during iteration, cancels all deployment tasks, and waits for cleanup
-        completion with timeout handling for robust operation.
+        Cleanup Process:
+        1. Identifies all currently deployed applications
+        2. Initiates graceful shutdown for each deployment
+        3. Waits for all undeployment tasks to complete (with timeout)
+        4. Cleans up any remaining resources and state
+        5. Updates service registrations
 
-        Args:
-            context: User context information automatically injected by Hypha.
+        This operation is useful for:
+        - Preparing for system maintenance
+        - Clearing all deployments before shutdown
+        - Recovering from problematic deployment states
+        - Development and testing scenarios
+
+        The cleanup process handles timeout scenarios gracefully and provides
+        detailed logging of the cleanup status for each application.
 
         Raises:
-            RuntimeError: If Ray cluster is not running or connections unavailable
-            PermissionError: If user lacks admin permissions for cleanup
+            PermissionError: If user lacks admin permissions for cleanup operations
+            RuntimeError: If Ray cluster connection is unavailable
 
         Note:
-            Failed cleanup attempts are logged but don't prevent the method from
-            completing. Service registration is updated after cleanup regardless
-            of individual task failures.
+            This operation cannot be undone. All running applications will be stopped
+            and will need to be redeployed manually if needed again.
         """
         # Check if any deployments exist
         if not self._deployed_applications:

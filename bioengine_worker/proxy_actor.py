@@ -20,9 +20,38 @@ from ray.util.state.common import (
     max_restarts=-1,  # Allow unlimited restarts
 )
 class BioEngineProxyActor:
+    """
+    Ray actor for monitoring cluster resources and deployment state.
+
+    This actor provides a centralized way to query the Ray cluster for resource
+    availability, node information, and deployment status. It acts as a "cluster
+    dashboard" that other components can use to make informed decisions about
+    resource allocation and scaling.
+
+    Key Features:
+    • Real-time cluster resource monitoring (CPU, GPU, memory)
+    • Node-by-node resource breakdown with IP addresses
+    • Pending resource tracking (jobs, actors, tasks)
+    • Deployment replica status monitoring
+    • SLURM job integration for HPC environments
+
+    The actor runs on the head node with minimal resource requirements and
+    automatically restarts if it fails.
+    """
+
     def __init__(
         self, exclude_head_node: bool = False, check_pending_resources: bool = False
     ):
+        """
+        Initialize the proxy actor with Ray GCS connection and monitoring options.
+
+        Sets up connections to Ray's Global Control Service (GCS) for querying
+        cluster state and configures monitoring behavior.
+
+        Args:
+            exclude_head_node: Skip head node in resource calculations (useful for worker-only metrics)
+            check_pending_resources: Include pending jobs/actors/tasks in cluster state reports
+        """
         # Get the GCS address using ray._private.worker
         gcs_address = ray._private.worker.global_worker.gcs_client.address
 
@@ -49,7 +78,7 @@ class BioEngineProxyActor:
         print("ClusterState initialized with GCS address:", gcs_address)
 
     def _get_pending_jobs(self) -> int:
-        """Get the number of pending jobs in the cluster."""
+        """Get list of jobs waiting to start in the cluster."""
         pending_jobs = self.state_api_client.list(
             resource=StateResource.JOBS,
             options=ListApiOptions(
@@ -64,7 +93,7 @@ class BioEngineProxyActor:
         return [asdict(job) for job in pending_jobs]
 
     def _get_pending_actors(self) -> int:
-        """Get the number of pending actors in the cluster."""
+        """Get list of actors waiting to be created in the cluster."""
         pending_actors = self.state_api_client.list(
             resource=StateResource.ACTORS,
             options=ListApiOptions(
@@ -79,7 +108,7 @@ class BioEngineProxyActor:
         return [asdict(actor) for actor in pending_actors]
 
     def _get_pending_tasks(self) -> int:
-        """Get the number of pending tasks in the cluster."""
+        """Get list of tasks waiting for node assignment in the cluster."""
         pending_tasks = self.state_api_client.list(
             resource=StateResource.TASKS,
             options=ListApiOptions(
@@ -98,7 +127,7 @@ class BioEngineProxyActor:
         return [asdict(task) for task in pending_tasks]
 
     def _get_node_ip(self, resources: Dict[str, float]) -> Optional[str]:
-        """Get the node IP address from the resources dictionary."""
+        """Extract the IP address from a node's resource dictionary."""
         ip_pattern = r"^node:(\d+\.\d+\.\d+\.\d+)$"
         for resource_name in resources:
             if resource_name.startswith("node:"):
@@ -109,26 +138,32 @@ class BioEngineProxyActor:
                     return match.group(1)
 
     def _get_accelerator_type(self, resources: Dict[str, float]) -> str:
-        """Get the type of accelerator used in the cluster."""
+        """Extract the GPU/accelerator type from a node's resource dictionary."""
         for resource_name in resources:
             if resource_name.startswith("accelerator_type:"):
                 return resource_name.split(":")[-1]
 
     def _get_slurm_job_id(self, resources: Dict[str, float]) -> str:
-        """Get the SLURM job ID from the resources dictionary."""
+        """Extract the SLURM job ID from a node's resource dictionary."""
         for resource_name in resources:
             if resource_name.startswith("slurm_job_id:"):
                 return resource_name.split(":")[-1]
 
     def get_cluster_state(self) -> Dict[str, Union[float, int, str]]:
         """
-        Get comprehensive cluster state including total and available resources per node with state 'ALIVE'.
+        Get comprehensive cluster resource information including per-node breakdown.
+
+        Returns a detailed snapshot of cluster resources showing both total capacity
+        and currently available resources across all alive nodes. Useful for
+        capacity planning and resource allocation decisions.
 
         Returns:
-            Dict[str, Union[float, int, str]]: A dictionary containing the cluster state
-            with total and available resources per node, excluding the head node if specified.
-            The dictionary includes CPU, GPU, memory, object store memory, and accelerator type.
-            If `check_pending_resources` is True, it also includes the count of pending resources.
+            Dictionary with 'cluster' totals and 'nodes' breakdown containing:
+            - CPU/GPU cores and availability
+            - Memory and object store memory (in bytes)
+            - Node IP addresses and accelerator types
+            - SLURM job IDs (if applicable)
+            - Pending resources (if enabled)
         """
         total_resources_per_node = self.global_state.total_resources_per_node()
         available_resources_per_node = self.global_state.available_resources_per_node()
@@ -199,6 +234,18 @@ class BioEngineProxyActor:
         return cluster_state
 
     def get_deployment_replica(self, app_name: str, deployment_name: str) -> List[str]:
+        """
+        Get the list of active replica IDs for a specific Ray Serve deployment.
+
+        Useful for monitoring deployment health and scaling status.
+
+        Args:
+            app_name: Name of the Ray Serve application
+            deployment_name: Name of the specific deployment within the app
+
+        Returns:
+            List of replica ID strings for replicas currently in ALIVE state
+        """
         class_name = f"ServeReplica:{app_name}:{deployment_name}"
         replica_actors = self.state_api_client.list(
             resource=StateResource.ACTORS,

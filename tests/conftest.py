@@ -130,9 +130,7 @@ def cache_dir() -> Generator[Path, None, None]:
 def ray_address(worker_mode: str) -> Generator[str, None, None]:
     """Start a Ray cluster a BioEngine Worker can connect to."""
     if worker_mode == "external-cluster":
-        with tempfile.TemporaryDirectory(
-            prefix=f"bioengine_worker_ray_cluster_"
-        ) as temp_dir:
+        with tempfile.TemporaryDirectory(prefix=f"bioengine_test_ray_") as temp_dir:
 
             # Use RayCluster to start a local Ray cluster
             ray_cluster = RayCluster(

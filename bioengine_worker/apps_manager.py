@@ -919,7 +919,6 @@ class AppsManager:
                 files=files,
                 workspace=self.server.config.workspace,
                 artifact_id=artifact_id,
-                collection_id=self.collection_id,
                 manifest_updates=manifest_updates,
                 logger=self.logger,
             )

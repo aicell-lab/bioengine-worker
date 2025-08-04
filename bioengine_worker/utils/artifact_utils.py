@@ -181,7 +181,6 @@ async def create_artifact_from_files(
     files: List[Dict[str, Any]],
     workspace: str,
     artifact_id: Optional[str] = None,
-    collection_id: Optional[str] = None,
     manifest_updates: Optional[Dict[str, Any]] = None,
     logger: Optional[logging.Logger] = None,
 ) -> str:
@@ -200,7 +199,6 @@ async def create_artifact_from_files(
                - 'type': 'text' for text files, 'base64' for binary files
         workspace: Hypha workspace identifier
         artifact_id: Optional artifact ID for updates. If None, extracts from manifest
-        collection_id: Optional collection ID to place artifact in (should be '<workspace>/applications')
         manifest_updates: Optional dictionary of fields to add/update in the manifest
         logger: Optional logger instance for debugging
 
@@ -221,7 +219,6 @@ async def create_artifact_from_files(
             artifact_manager=am,
             files=files,
             workspace="my-workspace",
-            collection_id="my-workspace/applications",
             manifest_updates={"created_by": "user123"}
         )
     """
@@ -293,46 +290,61 @@ async def create_artifact_from_files(
                 f"Artifact ID '{full_artifact_id}' does not belong to workspace '{workspace}'"
             )
 
-    # Create or ensure collection exists if specified
-    if collection_id:
-        # Only support applications collections for now
-        if collection_id.endswith("/applications"):
-            collection_workspace = collection_id.split("/")[0]
-            await ensure_applications_collection(
-                artifact_manager=artifact_manager,
-                workspace=collection_workspace,
-                logger=logger,
-            )
-        else:
-            # For non-applications collections, just log a warning
-            logger.warning(
-                f"Non-applications collection specified: {collection_id}. Skipping collection creation."
-            )
+    # Ensure applications collection exists
+    await ensure_applications_collection(
+        artifact_manager=artifact_manager,
+        workspace=workspace,
+        logger=logger,
+    )
 
-    # Try to edit existing artifact first, then create if it doesn't exist
+    # Check if artifact exists and handle collection placement
     artifact = None
     try:
-        logger.debug(f"Attempting to edit existing artifact '{full_artifact_id}'...")
-        artifact = await artifact_manager.edit(
-            artifact_id=full_artifact_id,
-            manifest=deployment_manifest,
-            type=deployment_manifest.get("type", "application"),
-            stage=True,
+        # Check if artifact already exists
+        logger.debug(f"Checking if artifact '{full_artifact_id}' exists...")
+        existing_artifact = await artifact_manager.read(full_artifact_id)
+
+        # Check if artifact is in the correct collection
+        current_parent_id = getattr(existing_artifact, "parent_id", None)
+        if current_parent_id != f"{workspace}/applications":
+            logger.info(
+                f"Artifact '{full_artifact_id}' exists but is in wrong collection "
+                f"(current: {current_parent_id}, expected: {workspace}/applications). "
+                "Deleting and recreating..."
+            )
+            # Delete the existing artifact
+            await artifact_manager.delete(artifact_id=full_artifact_id)
+            # Will create new one below
+            existing_artifact = None
+
+        if existing_artifact:
+            # Edit existing artifact
+            logger.debug(f"Editing existing artifact '{full_artifact_id}'...")
+            artifact = await artifact_manager.edit(
+                artifact_id=full_artifact_id,
+                manifest=deployment_manifest,
+                type="application",
+                stage=True,
+            )
+            logger.debug(f"Successfully edited existing artifact '{full_artifact_id}'")
+    except Exception as e:
+        # Artifact doesn't exist or read failed
+        logger.debug(
+            f"Artifact '{full_artifact_id}' does not exist or read failed: {e}"
         )
-    except Exception:
-        # Artifact doesn't exist, create new one
+
+    # Create new artifact if it doesn't exist or was deleted
+    if artifact is None:
         try:
             logger.debug(f"Creating new artifact '{full_artifact_id}'...")
-            create_kwargs = {
-                "alias": full_artifact_id,
-                "manifest": deployment_manifest,
-                "type": deployment_manifest.get("type", "application"),
-                "stage": True,
-            }
-            if collection_id:
-                create_kwargs["parent_id"] = collection_id
-
-            artifact = await artifact_manager.create(**create_kwargs)
+            artifact = await artifact_manager.create(
+                parent_id=f"{workspace}/applications",
+                type="application",
+                alias=full_artifact_id,
+                manifest=deployment_manifest,
+                stage=True,
+            )
+            logger.debug(f"Successfully created new artifact '{full_artifact_id}'")
         except Exception as e:
             raise RuntimeError(f"Failed to create artifact '{full_artifact_id}': {e}")
 

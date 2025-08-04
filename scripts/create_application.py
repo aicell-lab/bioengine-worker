@@ -79,7 +79,6 @@ async def manage_artifact(
             artifact_manager=artifact_manager,
             files=files,
             workspace=workspace,
-            collection_id=f"{workspace}/applications",
             logger=logger,
         )
         return artifact_id

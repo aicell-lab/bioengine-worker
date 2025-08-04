@@ -164,7 +164,6 @@ async def ensure_applications_collection(
                     type="collection",
                     alias="applications",
                     manifest=collection_manifest,
-                    overwrite=True,
                 )
                 logger.info(f"Applications collection created with ID: {collection.id}")
             except Exception as e:

@@ -133,9 +133,6 @@ class DemoDeployment:
         """
         Ping the model to test connectivity.
 
-        Args:
-            None
-
         Returns:
             Dict[str, Union[str, float]]: A dictionary containing the 'status', 'message', 'timestamp', and 'uptime'.
         """
@@ -150,9 +147,6 @@ class DemoDeployment:
     async def ascii_art(self) -> List[str]:
         """
         Get an ASCII art representation of the word 'Bioengine'.
-
-        Args:
-            None
 
         Returns:
             List[str]: A list of strings representing the ASCII art.

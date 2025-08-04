@@ -60,6 +60,7 @@ import os
 from hypha_rpc.utils.schema import schema_method
 from ray import serve
 from ray.serve.handle import DeploymentHandle
+from pydantic import Field
 
 
 @serve.deployment(
@@ -139,12 +140,9 @@ class CompositionDeployment:
     # Note: Parameter type hints and docstrings will be used to generate the API documentation.
 
     @schema_method
-    async def calculate_result(self, number: int) -> str:
+    async def calculate_result(self, number: int = Field(..., description="The number to add to the start value of Deployment2.")) -> str:
         """
         Calculate the result by adding the given number to the start value of Deployment2.
-
-        Args:
-            number (int): The number to add to the start value of Deployment2.
 
         Returns:
             str: A string containing the uptime of Deployment1 and the result of the addition

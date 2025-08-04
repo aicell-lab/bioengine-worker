@@ -8,8 +8,8 @@ import httpx
 from aiortc import RTCPeerConnection
 from httpx import AsyncClient, HTTPStatusError, RequestError
 from hypha_rpc import connect_to_server, register_rtc_service
-from hypha_rpc.utils.schema import schema_function, schema_method
 from hypha_rpc.rpc import RemoteService
+from hypha_rpc.utils.schema import schema_function, schema_method
 from pydantic import Field
 from ray.exceptions import RayTaskError
 from ray.serve import deployment, get_replica_context
@@ -23,7 +23,9 @@ from bioengine_worker.utils import get_pip_requirements
     ray_actor_options={
         "num_cpus": 0,
         "runtime_env": {
-            "pip": get_pip_requirements(select=["aiortc", "httpx", "hypha-rpc"]),
+            "pip": get_pip_requirements(
+                select=["aiortc", "httpx", "hypha-rpc", "pydantic"]
+            ),
         },
     },
     max_ongoing_requests=10,  # Default limit concurrent requests to avoid overload

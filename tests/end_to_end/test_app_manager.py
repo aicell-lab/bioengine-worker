@@ -19,75 +19,7 @@ import yaml
 from hypha_rpc import get_rtc_service
 from hypha_rpc.rpc import ObjectProxy, RemoteService
 
-
-def _create_file_list_from_directory(
-    directory_path: Path, test_id: str, hypha_workspace: str
-) -> Tuple[List[dict], str]:
-    """
-    Convert a local directory to a list of file dictionaries for create_artifact,
-    automatically updating manifest files with unique test ID.
-
-    Args:
-        directory_path: Path to the directory containing app files
-        test_id: Unique test ID to append to manifest id
-        hypha_workspace: Hypha workspace identifier to prepend to artifact ID
-
-    Returns:
-        Tuple of (list of file dictionaries with 'name', 'content', and 'type' keys, artifact_id)
-    """
-    files = []
-    artifact_id = None
-
-    for file_path in directory_path.rglob("*"):
-        if file_path.is_file():
-            # Get relative path from the directory
-            relative_path = file_path.relative_to(directory_path)
-
-            # Read file content
-            try:
-                # Try to read as text first
-                content = file_path.read_text(encoding="utf-8")
-                file_type = "text"
-            except UnicodeDecodeError:
-                # If it fails, read as binary and encode as base64
-                try:
-                    content = base64.b64encode(file_path.read_bytes()).decode("ascii")
-                    file_type = "base64"
-                except Exception as e:
-                    pytest.fail(f"Failed to read file {relative_path}: {e}")
-            except Exception as e:
-                pytest.fail(f"Failed to read file {relative_path}: {e}")
-
-            # Update manifest files with test ID
-            if str(relative_path) == "manifest.yaml":
-                try:
-                    manifest = yaml.safe_load(content)
-                    if not isinstance(manifest, dict):
-                        pytest.fail(
-                            f"Invalid manifest structure: expected dict, got {type(manifest)}"
-                        )
-                    if "id" not in manifest:
-                        pytest.fail("Manifest missing required 'id' field")
-
-                    hyphen_test_id = test_id.replace("_", "-")
-                    artifact_id = f"{manifest['id']}-{hyphen_test_id}"
-                    manifest["id"] = artifact_id
-                    content = yaml.dump(manifest)
-                except yaml.YAMLError as e:
-                    pytest.fail(f"Failed to parse manifest YAML: {e}")
-                except Exception as e:
-                    pytest.fail(f"Failed to update manifest: {e}")
-
-            files.append(
-                {"name": str(relative_path), "content": content, "type": file_type}
-            )
-
-    if artifact_id is None:
-        pytest.fail("No manifest.yaml file found in directory")
-
-    artifact_id = f"{hypha_workspace}/{artifact_id}"
-
-    return files, artifact_id
+from bioengine_worker.utils import create_file_list_from_directory
 
 
 @pytest.mark.end_to_end
@@ -97,6 +29,7 @@ async def test_create_and_delete_artifacts(
     tests_dir: Path,
     test_id: str,
     hypha_workspace: str,
+    hypha_user_id: str,
 ):
     """
     Test creating and deleting artifacts from both demo-app and composition-app applications.
@@ -121,12 +54,15 @@ async def test_create_and_delete_artifacts(
     ), f"Composition app directory not found: {composition_app_path}"
 
     # Create file lists from both directories
-    demo_app_files, demo_artifact_id = _create_file_list_from_directory(
-        demo_app_path, test_id, hypha_workspace
+    demo_app_files, demo_artifact_alias = create_file_list_from_directory(
+        directory_path=demo_app_path, _artifact_id_suffix=test_id
     )
-    composition_app_files, composition_artifact_id = _create_file_list_from_directory(
-        composition_app_path, test_id, hypha_workspace
+    demo_artifact_id = f"{hypha_workspace}/{demo_artifact_alias}"
+
+    composition_app_files, composition_artifact_alias = create_file_list_from_directory(
+        directory_path=composition_app_path, _artifact_id_suffix=test_id
     )
+    composition_artifact_id = f"{hypha_workspace}/{composition_artifact_alias}"
 
     # Verify we have files to upload
     assert len(demo_app_files) > 0, "Demo app directory should contain files"
@@ -242,9 +178,14 @@ async def test_create_and_delete_artifacts(
             for f in demo_app_files
         ), "All demo app files should be listed in artifact files"
         received_manifest = available_artifacts[demo_artifact_id]["manifest"].toDict()
+        created_by = received_manifest["manifest"].pop("created_by")
         assert (
             received_manifest["manifest"] == demo_manifest
         ), "Demo app manifest should match expected manifest"
+        assert (
+            created_by == hypha_user_id,
+            "Created by user ID should match the test user ID",
+        )
         assert (
             received_manifest["parent_id"] == f"{hypha_workspace}/applications"
         ), "Demo app manifest should be in applications collection"
@@ -257,9 +198,14 @@ async def test_create_and_delete_artifacts(
         received_manifest = available_artifacts[composition_artifact_id][
             "manifest"
         ].toDict()
+        created_by = received_manifest["manifest"].pop("created_by")
         assert (
             received_manifest["manifest"] == composition_manifest
         ), "Composition app manifest should match expected manifest"
+        assert (
+            created_by == hypha_user_id,
+            "Created by user ID should match the test user ID",
+        )
         assert (
             received_manifest["parent_id"] == f"{hypha_workspace}/applications"
         ), "Composition app manifest should be in applications collection"
@@ -834,9 +780,10 @@ async def test_deploy_application_from_artifact(
         # Create artifacts first
         for app_path, artifact_id in zip(app_paths, artifact_ids):
             # Create file list from directory
-            files, created_artifact_id = _create_file_list_from_directory(
-                app_path, test_id, hypha_workspace
+            files, artifact_alias = create_file_list_from_directory(
+                directory_path=app_path, _artifact_id_suffix=test_id
             )
+            created_artifact_id = f"{hypha_workspace}/{artifact_alias}"
             assert (
                 created_artifact_id == artifact_id
             ), f"Artifact ID mismatch: expected {artifact_id}, got {created_artifact_id}"

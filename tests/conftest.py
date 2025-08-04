@@ -231,6 +231,12 @@ def hypha_client_id(hypha_client: RemoteService) -> str:
     return hypha_client.config.client_id
 
 
+@pytest.fixture(scope="function")
+def hypha_user_id(hypha_client: RemoteService) -> str:
+    """Extract unique user ID from connected Hypha client."""
+    return hypha_client.config.user["id"]
+
+
 @pytest_asyncio.fixture(scope="function")
 async def artifact_manager(hypha_client: RemoteService) -> ObjectProxy:
     """

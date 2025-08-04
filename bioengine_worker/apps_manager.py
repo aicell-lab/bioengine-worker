@@ -15,7 +15,13 @@ from ray import serve
 from bioengine_worker import __version__
 from bioengine_worker.app_builder import AppBuilder
 from bioengine_worker.ray_cluster import RayCluster
-from bioengine_worker.utils import check_permissions, create_context, create_logger
+from bioengine_worker.utils import (
+    check_permissions,
+    create_artifact_from_files,
+    create_context,
+    create_logger,
+    ensure_applications_collection,
+)
 
 
 class AppsManager:
@@ -171,48 +177,6 @@ class AppsManager:
             raise RuntimeError(
                 "Artifact manager not initialized. Call initialize() first."
             )
-
-    async def _ensure_applications_collection(self) -> None:
-        """
-        Ensure the 'applications' collection exists in the Hypha artifact manager.
-
-        Creates the applications collection if it doesn't exist, providing organized
-        storage for BioEngine application artifacts within the current workspace.
-        The collection acts as a container for grouping related applications.
-
-        Collection Structure:
-        - Name: "Applications"
-        - Description: Workspace-specific application collection
-        - Type: Collection artifact for organizational purposes
-
-        Raises:
-            RuntimeError: If the collection cannot be created or accessed
-        """
-        try:
-            await self.artifact_manager.read(self.collection_id)
-        except Exception as collection_error:
-            expected_error = (
-                f"KeyError: \"Artifact with ID '{self.collection_id}' does not exist.\""
-            )
-            if str(collection_error).strip().endswith(expected_error):
-                self.logger.info(
-                    f"Collection '{self.collection_id}' does not exist. Creating it."
-                )
-
-                workspace = self.server.config.workspace
-                collection_manifest = {
-                    "name": "Applications",
-                    "description": f"A collection of applications for workspace {workspace}",
-                }
-                collection = await self.artifact_manager.create(
-                    type="collection",
-                    alias="applications",
-                    manifest=collection_manifest,
-                    overwrite=True,
-                )
-                self.logger.info(
-                    f"Bioengine Apps collection created with ID: {collection.id}."
-                )
 
     def _get_full_artifact_id(self, artifact_id: str) -> str:
         """
@@ -830,8 +794,12 @@ class AppsManager:
             resource_name=f"listing applications",
         )
 
-        # Check if the 'applications' collection exists
-        await self._ensure_applications_collection()
+        # Ensure the 'applications' collection exists
+        await ensure_applications_collection(
+            artifact_manager=self.artifact_manager,
+            workspace=self.server.config.workspace,
+            logger=self.logger,
+        )
 
         bioengine_apps_artifacts = await self.artifact_manager.list(self.collection_id)
 
@@ -934,126 +902,42 @@ class AppsManager:
         if artifact_type != "ray-serve":
             raise ValueError(f"Type must be 'ray-serve', got '{artifact_type}'")
 
-        workspace = self.server.config.workspace
-        if artifact_id is not None:
-            # If artifact_id is provided, we expect an existing artifact and will edit it
-            artifact_id = self._get_full_artifact_id(artifact_id)
-
-            # Ensure the artifact is in the correct workspace
-            if not artifact_id.startswith(f"{workspace}/"):
-                raise ValueError(
-                    f"Artifact ID '{artifact_id}' does not belong to the current workspace '{workspace}'."
-                )
-
-            try:
-                # Try to edit existing artifact
-                self.logger.debug(f"Editing existing artifact '{artifact_id}'...")
-                artifact = await self.artifact_manager.edit(
-                    artifact_id=artifact_id,
-                    manifest=deployment_manifest,
-                    type="application",
-                    stage=True,
-                )
-            except Exception as e:
-                # If edit fails, throw an error since we expected an existing artifact
-                raise RuntimeError(f"Failed to edit artifact '{artifact_id}': {e}")
-        else:
-            # If artifact_id is not provided, create new artifact using alias from manifest
-            deployment_manifest["created_by"] = context["user"]["id"]
-
-            # Validate the artifact ID
-            if "id" not in deployment_manifest:
-                raise ValueError(
-                    "No artifact_id provided and no 'id' field found in manifest"
-                )
-
-            alias = deployment_manifest["id"]
-
-            # Validate alias format (can contain -, but not / or other special characters)
-            # Must be a valid Python identifier after replacing - with _
-            invalid = any(
-                [
-                    not alias.islower(),
-                    "_" in alias,
-                    "/" in alias,
-                    not alias.replace("-", "_").isidentifier(),
-                ]
-            )
-            if invalid:
-                raise ValueError(
-                    f"Invalid artifact alias: '{alias}'. Please use lowercase letters, numbers, and hyphens only."
-                )
-
-            # Ensure the 'applications' collection exists
-            await self._ensure_applications_collection()
-
-            try:
-                # Create new artifact using alias
-                self.logger.debug(f"Creating new artifact with alias '{alias}'...")
-                artifact = await self.artifact_manager.create(
-                    alias=alias,
-                    parent_id=self.collection_id,
-                    manifest=deployment_manifest,
-                    type="application",
-                    stage=True,
-                )
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to create artifact with alias '{alias}' in workspace '{workspace}': {e}"
-                )
-
-        # Upload all files
-        for file in files:
-            file_name = file["name"]
-            file_content = file["content"]
-            file_type = file["type"]
-
-            self.logger.debug(f"Uploading file '{file_name}' to artifact...")
-
-            # Get upload URL
-            upload_url = await self.artifact_manager.put_file(
-                artifact.id, file_path=file_name
-            )
-
-            # Prepare content for upload
-            if file_type == "text":
-                upload_data = file_content
-            elif file_type == "base64":
-                # Decode base64 content for binary files
-                upload_data = base64.b64decode(file_content)
-            else:
-                raise ValueError(
-                    f"Unsupported file type '{file_type}'. Expected 'text' or 'base64'"
-                )
-
-            # Upload the file with timeout (30s for all operations)
-            upload_timeout = httpx.Timeout(30.0)
-            async with httpx.AsyncClient(timeout=upload_timeout) as client:
-                if file_type == "text":
-                    response = await client.put(upload_url, data=upload_data)
-                else:
-                    response = await client.put(upload_url, content=upload_data)
-                response.raise_for_status()
-                self.logger.debug(f"Successfully uploaded '{file_name}' to artifact.")
-
-        # Commit the artifact
-        await self.artifact_manager.commit(
-            artifact_id=artifact.id,
+        # Ensure the 'applications' collection exists
+        await ensure_applications_collection(
+            artifact_manager=self.artifact_manager,
+            workspace=self.server.config.workspace,
+            logger=self.logger,
         )
-        self.logger.debug(f"Committed artifact with ID: {artifact.id}.")
+
+        # Prepare manifest updates to add created_by field
+        manifest_updates = {"created_by": context["user"]["id"]}
+
+        # Create or update the artifact using the utility function
+        try:
+            created_artifact_id = await create_artifact_from_files(
+                artifact_manager=self.artifact_manager,
+                files=files,
+                workspace=self.server.config.workspace,
+                artifact_id=artifact_id,
+                collection_id=self.collection_id,
+                manifest_updates=manifest_updates,
+                logger=self.logger,
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to create/update artifact: {e}")
 
         # Verify the artifact is in the collection
         available_artifacts = await self.list_applications(context=context)
-        if artifact.id not in available_artifacts:
+        if created_artifact_id not in available_artifacts:
             raise ValueError(
-                f"Artifact '{artifact.id}' could not be created or is not in the collection."
+                f"Artifact '{created_artifact_id}' could not be created or is not in the collection."
             )
 
         self.logger.info(
-            f"Successfully created/updated application artifact '{artifact.id}'."
+            f"Successfully created/updated application artifact '{created_artifact_id}'."
         )
 
-        return artifact.id
+        return created_artifact_id
 
     @schema_method
     async def delete_application(

@@ -91,11 +91,10 @@ class AppBuilder:
     def __init__(
         self,
         token: str,
-        apps_cache_dir: Path,
-        apps_data_dir: Path,
+        apps_cache_dir: Union[str, Path],
         log_file: Optional[str] = None,
         debug: bool = False,
-    ) -> None:
+    ) -> None:  
         """
         Set up a new AppBuilder instance with basic configuration.
 
@@ -136,8 +135,7 @@ class AppBuilder:
 
         # Store parameters
         self._token = token
-        self.apps_cache_dir = apps_cache_dir
-        self.apps_data_dir = apps_data_dir
+        self.apps_cache_dir = Path(apps_cache_dir)
         self.server: Optional[RemoteService] = None
         self.artifact_manager: Optional[ObjectProxy] = None
         self.serve_http_url: Optional[str] = None
@@ -371,12 +369,8 @@ class AppBuilder:
 
         # Set BioEngine environment variables
         app_work_dir = self.apps_cache_dir / application_id
-        env_vars["BIOENGINE_WORKDIR"] = str(app_work_dir)
         env_vars["HOME"] = str(app_work_dir)
         env_vars["TMPDIR"] = str(app_work_dir / "tmp")
-
-        # Pass the data directory to the deployment
-        env_vars["BIOENGINE_DATA_DIR"] = str(self.apps_data_dir)
 
         env_vars["HYPHA_SERVER_URL"] = self.server.config.public_base_url
         env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
@@ -437,21 +431,12 @@ class AppBuilder:
             except Exception:
                 self.replica_id = "unknown"
 
-            # Ensure the workdir is set to the BIOENGINE_WORKDIR environment variable
-            workdir = Path(os.environ["BIOENGINE_WORKDIR"]).resolve()
-            os.environ["BIOENGINE_WORKDIR"] = str(workdir)
+            # Ensure the current working directory is set to the application working directory
+            workdir = Path.home().resolve()  # Home directory is set to the apps_cache_dir
+            os.environ["HOME"] = str(workdir)  # Update the HOME environment variable with resolved path
             workdir.mkdir(parents=True, exist_ok=True)
             os.chdir(workdir)
             print(f"📁 [{self.replica_id}] Working directory: {workdir}/")
-
-            # Log data directory
-            data_dir = Path(os.environ["BIOENGINE_DATA_DIR"]).resolve()
-            if data_dir.exists() and data_dir.is_dir():
-                os.environ["BIOENGINE_DATA_DIR"] = str(data_dir)
-                print(f"📂 [{self.replica_id}] Data directory: {data_dir}/")
-            else:
-                del os.environ["BIOENGINE_DATA_DIR"]
-                print(f"📂 [{self.replica_id}] Data directory {data_dir}/ not found.")
 
             # Initialize deployment states
             self._deployment_initialized = False

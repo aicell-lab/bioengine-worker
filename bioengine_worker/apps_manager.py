@@ -61,7 +61,6 @@ class AppsManager:
         ray_cluster (RayCluster): Ray cluster manager instance
         admin_users (List[str]): List of user emails with admin permissions
         apps_cache_dir (Path): Cache directory for deployment artifacts
-        apps_data_dir (Path): Data directory for deployment access
         server: Hypha server connection
         artifact_manager: Hypha artifact manager service proxy
         app_builder (AppBuilder): Application builder instance
@@ -76,7 +75,6 @@ class AppsManager:
         ray_cluster: RayCluster,
         token: str,
         apps_cache_dir: str = "/tmp/bioengine/apps",
-        apps_data_dir: str = "/data",
         startup_applications: Optional[List[dict]] = None,
         # Logger
         log_file: Optional[str] = None,
@@ -98,7 +96,6 @@ class AppsManager:
             ray_cluster: Ray cluster manager instance for compute resource management
             token: Authentication token for Hypha server access
             apps_cache_dir: Directory for caching application artifacts and build files
-            apps_data_dir: Directory that will be accessible to deployed applications
             startup_applications: List of application configurations to deploy automatically
                                  when the manager initializes
             log_file: Optional path to log file for deployment operations
@@ -122,18 +119,9 @@ class AppsManager:
         self.ray_cluster = ray_cluster
 
         if self.ray_cluster.mode == "slurm":
-            # SLURM workers always mount to /tmp/bioengine and /data
-            apps_cache_dir = Path("/tmp/bioengine/apps")
-            apps_data_dir = Path("/data")
-        elif self.ray_cluster.mode == "single-machine":
-            # Resolve local paths to ensure they are absolute
-            apps_cache_dir = Path(apps_cache_dir)
-            apps_data_dir = Path(apps_data_dir)
-        elif self.ray_cluster.mode == "external-cluster":
-            # For external clusters, use the provided paths directly
-            apps_cache_dir = Path(apps_cache_dir)
-            apps_data_dir = Path(apps_data_dir)
-        else:
+            # SLURM workers always mount cache directory to /tmp/bioengine inside the container
+            apps_cache_dir = "/tmp/bioengine/apps"
+        elif self.ray_cluster.mode not in ["single-machine", "external-cluster"]:
             raise ValueError(
                 f"Unsupported Ray cluster mode: {self.ray_cluster.mode}. "
                 "Supported modes are 'slurm', 'single-machine', and 'external-cluster'."
@@ -142,7 +130,6 @@ class AppsManager:
         self.app_builder = AppBuilder(
             token=token,
             apps_cache_dir=apps_cache_dir,
-            apps_data_dir=apps_data_dir,
             log_file=log_file,
             debug=debug,
         )

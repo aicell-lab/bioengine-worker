@@ -211,7 +211,6 @@ class BioEngineWorker:
         # Store configuration parameters
         self.admin_users = admin_users or []
         self.cache_dir = Path(cache_dir)
-        self.data_dir = Path(data_dir)
         self.dashboard_url = dashboard_url.rstrip("/")
         self.monitoring_interval_seconds = monitoring_interval_seconds
 
@@ -295,14 +294,13 @@ class BioEngineWorker:
                 ray_cluster=self.ray_cluster,
                 token=self._token,
                 apps_cache_dir=self.cache_dir / "apps",
-                apps_data_dir=self.data_dir,
                 startup_applications=startup_applications,
                 log_file=log_file,
                 debug=debug,
             )
 
             self.dataset_manager = DatasetsManager(
-                data_dir=self.data_dir,
+                data_dir=data_dir,
                 log_file=log_file,
                 debug=debug,
             )

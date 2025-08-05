@@ -353,7 +353,10 @@ class AppBuilder:
         env_vars = runtime_env.setdefault("env_vars", {})
 
         # Add custom environment variables
-        for key, value in custom_env_vars.items():
+        env_vars.update(custom_env_vars)
+
+        # Validate environment variables
+        for key, value in env_vars.items():
             if not isinstance(key, str):
                 raise ValueError(
                     f"Environment variable key '{key}' must be a string, got '{type(key)}'."
@@ -362,7 +365,6 @@ class AppBuilder:
                 raise ValueError(
                     f"Environment variable '{key}' must be a string, got '{type(value)}'."
                 )
-        env_vars.update(custom_env_vars)
 
         # Update with BioEngine requirements
         pip_requirements = update_requirements(pip_requirements)

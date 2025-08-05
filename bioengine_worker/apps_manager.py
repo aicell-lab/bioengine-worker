@@ -367,6 +367,9 @@ class AppsManager:
                 deployment_kwargs=self._deployed_applications[application_id][
                     "deployment_kwargs"
                 ],
+                deployment_env_vars=self._deployed_applications[application_id][
+                    "deployment_env_vars"
+                ],
                 disable_gpu=self._deployed_applications[application_id]["disable_gpu"],
                 max_ongoing_requests=self._deployed_applications[application_id][
                     "max_ongoing_requests"
@@ -666,6 +669,7 @@ class AppsManager:
                 "deployments": deployments,
                 "consecutive_failures": application_info["consecutive_failures"],
                 "deployment_kwargs": application_info["deployment_kwargs"],
+                "deployment_env_vars": application_info["deployment_env_vars"],
                 "gpu_enabled": application_info["disable_gpu"],
                 "application_resources": application_info["application_resources"],
                 "authorized_users": application_info["authorized_users"],
@@ -1019,6 +1023,10 @@ class AppsManager:
             None,
             description="Advanced deployment configuration parameters. Dictionary where keys are deployment class names and values are dictionaries of keyword arguments to pass to those classes during initialization.",
         ),
+        deployment_env_vars: Optional[Dict[str, Dict[str, str]]] = Field(
+            None,
+            description="Environment variables to set for the deployment. Dictionary where keys are deployment class names and values are dictionaries of environment variable names and their values.",
+        ),
         disable_gpu: bool = Field(
             False,
             description="Set to true to disable GPU usage for this deployment, forcing it to run on CPU only. Useful for testing or when GPU resources are limited.",
@@ -1113,16 +1121,41 @@ class AppsManager:
                 deployment_kwargs = {}
                 kwargs_str = "None"
 
+            # Validate deployment_env_vars
+            if deployment_env_vars is not None:
+                if not isinstance(deployment_env_vars, dict):
+                    raise ValueError(
+                        "deployment_env_vars must be a dictionary of environment variables."
+                    )
+                # Ensure all values are dictionaries
+                for key, value in deployment_env_vars.items():
+                    if not isinstance(value, dict):
+                        raise ValueError(
+                            f"Value for '{key}' in deployment_env_vars must be a dictionary."
+                        )
+
+                env_vars_str = ", ".join(
+                    f"{deployment_class}("
+                    + ", ".join([f"{key}={value!r}" for key, value in env_vars.items()])
+                    + ")"
+                    for deployment_class, env_vars in deployment_env_vars.items()
+                )
+            else:
+                deployment_env_vars = {}
+                env_vars_str = "None"
+
             if application_id not in self._deployed_applications:
                 # Create a new application if application_id is not provided
                 self.logger.info(
-                    f"User '{user_id}' is deploying new application '{application_id}' from artifact '{artifact_id}', version '{version}' with kwargs: {kwargs_str}"
+                    f"User '{user_id}' is deploying new application '{application_id}' from artifact '{artifact_id}', "
+                    f"version '{version}'. kwargs: {kwargs_str}; env_vars: {env_vars_str}"
                 )
             else:
                 # If already deployed, cancel the existing deployment task to update deployment in a new task
                 application_info = self._deployed_applications[application_id]
                 self.logger.info(
-                    f"User '{user_id}' is updating existing application from artifact '{artifact_id}', version '{version}' with kwargs: {kwargs_str}"
+                    f"User '{user_id}' is updating existing application from artifact '{artifact_id}', version '{version}'. "
+                    f"kwargs: {kwargs_str}; env_vars: {env_vars_str}"
                 )
                 application_info["remove_on_exit"] = False
                 application_info["deployment_task"].cancel()
@@ -1143,6 +1176,7 @@ class AppsManager:
                 "artifact_id": artifact_id,
                 "version": version,
                 "deployment_kwargs": deployment_kwargs,
+                "deployment_env_vars": deployment_env_vars,
                 "disable_gpu": disable_gpu,
                 "max_ongoing_requests": max_ongoing_requests,
                 "application_resources": {},
@@ -1171,7 +1205,11 @@ class AppsManager:
         self,
         app_configs: List[dict] = Field(
             ...,
-            description="List of application deployment configurations. Each configuration must be a dictionary containing 'artifact_id' (required) and optionally 'version', 'application_id', 'deployment_kwargs', 'disable_gpu', and 'max_ongoing_requests'. Allows batch deployment of multiple applications with different settings.",
+            description=(
+                "List of application deployment configurations. Each configuration must be a dictionary containing "
+                "'artifact_id' (required) and optionally 'version', 'application_id', 'deployment_kwargs', 'deployment_env_vars', "
+                "'disable_gpu', and 'max_ongoing_requests'. Allows batch deployment of multiple applications with different settings."
+            ),
         ),
         context: Dict[str, Any] = Field(
             ...,
@@ -1190,7 +1228,8 @@ class AppsManager:
         - artifact_id (required): The application artifact to deploy
         - version (optional): Specific version to deploy
         - application_id (optional): Custom deployment ID
-        - deployment_kwargs (optional): Advanced deployment parameters
+        - deployment_kwargs (optional): Keyword arguments for deployment class(es)
+        - deployment_env_vars (optional): Environment variables for deployment class(es)
         - disable_gpu (optional): Force CPU-only deployment
         - max_ongoing_requests (optional): Concurrency limit
 
@@ -1235,6 +1274,7 @@ class AppsManager:
                 version=app_config.get("version"),
                 application_id=app_config.get("application_id"),
                 deployment_kwargs=app_config.get("deployment_kwargs"),
+                deployment_env_vars=app_config.get("deployment_env_vars"),
                 disable_gpu=app_config.get("disable_gpu", False),
                 max_ongoing_requests=app_config.get("max_ongoing_requests", 10),
                 context=context,

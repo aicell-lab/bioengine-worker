@@ -297,6 +297,7 @@ class AppBuilder:
         deployment: serve.Deployment,
         application_id: str,
         disable_gpu: bool,
+        custom_env_vars: Dict[str, str],
         token: str,
         max_ongoing_requests: int,
     ) -> serve.Deployment:
@@ -327,6 +328,7 @@ class AppBuilder:
             deployment: Base Ray deployment to enhance with BioEngine capabilities
             application_id: Unique ID for creating isolated workspace directory
             disable_gpu: Set to True to force CPU-only execution
+            custom_env_vars: Environment variables to set for the deployment
             token: Hypha authentication token for server access
             max_ongoing_requests: How many requests can run simultaneously
 
@@ -349,6 +351,9 @@ class AppBuilder:
         runtime_env = ray_actor_options.setdefault("runtime_env", {})
         pip_requirements = runtime_env.setdefault("pip", [])
         env_vars = runtime_env.setdefault("env_vars", {})
+
+        # Add custom environment variables
+        env_vars.update(custom_env_vars)
 
         # Update with BioEngine requirements
         pip_requirements = update_requirements(pip_requirements)
@@ -834,8 +839,10 @@ class AppBuilder:
         application_id: str,
         artifact_id: str,
         version: Optional[str],
-        import_path: str,
+        python_file: str,
+        class_name: str,
         disable_gpu: bool,
+        env_vars: Dict[str, str],
         token: str,
         max_ongoing_requests: int,
     ) -> serve.Deployment:
@@ -868,8 +875,10 @@ class AppBuilder:
             application_id: Unique ID for creating isolated workspace
             artifact_id: Where to find the deployment code (e.g., "workspace/app-name")
             version: Specific version to load (None = latest)
-            import_path: Which class to load (format: "filename:ClassName")
+            python_file: Which file to load (format: "filename.py")
+            class_name: Which class to load (format: "ClassName")
             disable_gpu: Force CPU-only execution regardless of class defaults
+            env_vars: Environment variables to set for the deployment
             token: Authentication token for Hypha server access
             max_ongoing_requests: Request concurrency limit for this deployment
 
@@ -887,15 +896,6 @@ class AppBuilder:
             import_path="model_server:ImageClassifier" loads the ImageClassifier
             class from model_server.py file in the artifact.
         """
-        try:
-            python_file, class_name = import_path.split(":")
-            python_file = f"{python_file}.py"  # Add .py extension
-        except ValueError:
-            raise ValueError(
-                f"Invalid import path format: {import_path}. "
-                "Expected format is 'filename:ClassName' (without .py extension)."
-            )
-
         if os.environ.get("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"):
             # Load the file content from local path
             artifact_folder = artifact_id.split("/")[1].replace("-", "_")
@@ -943,7 +943,7 @@ class AppBuilder:
         # Create a restricted globals dictionary for sandboxed execution - pass some deployment options
         try:
             # Execute the code in a sandboxed environment
-            safe_globals = {}
+            safe_globals = env_vars.copy()
             exec(code_content, safe_globals)
             if class_name not in safe_globals:
                 raise ValueError(f"{class_name} not found in {artifact_id}")
@@ -956,6 +956,7 @@ class AppBuilder:
                 deployment=deployment,
                 application_id=application_id,
                 disable_gpu=disable_gpu,
+                custom_env_vars=env_vars,
                 token=token,
                 max_ongoing_requests=max_ongoing_requests,
             )
@@ -1034,7 +1035,8 @@ class AppBuilder:
         application_id: str,
         artifact_id: str,
         version: str,
-        deployment_kwargs: Dict[str, Any],
+        deployment_kwargs: Dict[str, Dict[str, Any]],
+        deployment_env_vars: Dict[str, Dict[str, Any]],
         disable_gpu: bool,
         max_ongoing_requests: int,
     ) -> serve.Application:
@@ -1076,6 +1078,7 @@ class AppBuilder:
             artifact_id: Location of deployment code (format: "workspace/app-name")
             version: Specific artifact version to deploy
             deployment_kwargs: Initialization parameters for each deployment class
+            deployment_env_vars: Environment variables for each deployment class
             disable_gpu: Force CPU-only execution regardless of deployment defaults
             max_ongoing_requests: Request concurrency limit for the entire application
 
@@ -1099,6 +1102,9 @@ class AppBuilder:
                 version="1.2.0",
                 deployment_kwargs={
                     "ImageClassifier": {"model_path": "/data/models/resnet50.pt"}
+                },
+                deployment_env_vars={
+                    "ImageClassifier": {"BATCH_SIZE": "32"}
                 },
                 disable_gpu=False,
                 max_ongoing_requests=10
@@ -1130,19 +1136,32 @@ class AppBuilder:
                 "Expected a non-empty list of deployment import paths."
             )
 
-        deployments = [
-            await self._load_deployment(
+        deployment_kwargs = deployment_kwargs or {}
+        deployment_env_vars = deployment_env_vars or {}
+
+        deployments = []
+        for import_path in deployment_import_paths:
+            try:
+                filename, class_name = import_path.split(":")
+                python_file = f"{filename}.py"  # Add .py extension
+            except ValueError:
+                raise ValueError(
+                    f"Invalid import path format: {import_path}. "
+                    "Expected format is 'filename:ClassName' (without .py extension)."
+                )
+
+            deployment = await self._load_deployment(
                 application_id=application_id,
                 artifact_id=artifact_id,
                 version=version,
-                import_path=import_path,
+                python_file=python_file,
+                class_name=class_name,
                 disable_gpu=disable_gpu,
+                env_vars=deployment_env_vars.get(class_name, {}),
                 token=self._token,
                 max_ongoing_requests=max_ongoing_requests,
             )
-            for import_path in deployment_import_paths
-        ]
-        deployment_kwargs = deployment_kwargs or {}
+            deployments.append(deployment)
 
         # Calculate the total number of required resources
         rtc_proxy_deployment = BioEngineProxyDeployment

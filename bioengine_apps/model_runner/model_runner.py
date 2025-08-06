@@ -73,42 +73,12 @@ class ModelCache:
 
         self.timeout_threshold = self.per_file_download_timeout + 60.0  # 60s buffer
 
-    def __len__(self) -> int:
-        """Get the number of models currently in the cache."""
-        return len(list(self.cache_dir.glob("**/rdf.yaml")))
-
-    async def _check_model_published_status(self, model_id: str, stage: bool) -> bool:
-        """Check if a model is published by looking at its manifest status."""
-        stage_param = f"?stage={str(stage).lower()}"
-        artifact_url = (
-            f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}{stage_param}"
+        num_existing_models = len(list(self.cache_dir.glob("**/rdf.yaml")))
+        print(
+            f"🔄 [{self.replica_id}] Found {num_existing_models} existing models in cache at "
+            f"{self.cache_dir}/. {'Starting model validation in the background.' if num_existing_models > 0 else ''}"
         )
-
-        try:
-            response = await self.client.get(artifact_url)
-            if response.status_code == 404 and stage:
-                # If staged version doesn't exist, try with stage=false
-                print(
-                    f"⚠️ [{self.replica_id}] Staged version not found for model '{model_id}', trying published version..."
-                )
-                stage_param = "?stage=false"
-                artifact_url = f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}{stage_param}"
-                response = await self.client.get(artifact_url)
-
-            if response.status_code != 200:
-                raise RuntimeError(
-                    f"Failed to download manifest from {artifact_url}: "
-                    f"HTTP {response.status_code} - {response.text}"
-                )
-
-            manifest = await asyncio.to_thread(yaml.safe_load, response.text)
-            # Model is published if status is NOT "request-review"
-            return manifest["manifest"].get("status") != "request-review"
-        except Exception as e:
-            print(
-                f"❌ [{self.replica_id}] Error checking model '{model_id}' status: {e}"
-            )
-            return False
+        asyncio.create_task(self._scan_cache_dir())
 
     async def _remove_package(self, package_path: Path) -> None:
         """Safely remove package directory using atomic operations across replicas."""
@@ -147,33 +117,78 @@ class ModelCache:
                 f"❌ [{self.replica_id}] Unexpected error removing model '{package_path.name}': {e}"
             )
 
-    async def _validate_model_package(self, package_path: Path) -> None:
-        """Validate model RDF and return actual package path."""
-        from bioimageio.core import load_model_description
-        from bioimageio.spec import InvalidDescr
-
+    async def _scan_cache_dir(self) -> None:
+        """Scan the cache directory and validate existing models."""
         try:
-            # Find the RDF file in the package
-            rdf_path = package_path / "rdf.yaml"
-            if not await asyncio.to_thread(rdf_path.exists):
-                raise FileNotFoundError(f"No rdf.yaml found in {package_path}/")
+            all_dirs = await asyncio.to_thread(lambda: list(self.cache_dir.iterdir()))
+            local_dirs = []
+            for d in all_dirs:
+                if await asyncio.to_thread(d.is_dir) and not d.name.startswith("."):
+                    local_dirs.append(d)
+        except (OSError, IOError) as e:
+            print(f"⚠️ [{self.replica_id}] Error reading cache directory: {e}")
+            return
 
-            # Validate model source
-            model_description = await asyncio.to_thread(
-                load_model_description, rdf_path
-            )
-            if isinstance(model_description, InvalidDescr):
-                raise ValueError(
-                    f"Downloaded model at {package_path}/ is invalid: {model_description}"
+        for dir_path in local_dirs:
+            try:
+                await self._validate_package(dir_path)
+            except RuntimeError as e:
+                await self._remove_package(dir_path)
+
+        # Check for any stale temporary directories
+        all_temp_dirs = await asyncio.to_thread(
+            lambda: list(self.cache_dir.glob(".temp_*"))
+        )
+        temp_dirs = []
+        for d in all_temp_dirs:
+            if await asyncio.to_thread(d.is_dir) and d.name != ".temp_":
+                temp_dirs.append(d)
+        for temp_dir in temp_dirs:
+            # Remove stale temporary directories if timeout exceeded
+            try:
+                stat_result = await asyncio.to_thread(temp_dir.stat)
+                if time.time() - stat_result.st_ctime > self.timeout_threshold:
+                    await asyncio.to_thread(shutil.rmtree, temp_dir)
+                    print(
+                        f"🧹 [{self.replica_id}] Cleaned up stale temporary directory: {temp_dir}"
+                    )
+            except (OSError, IOError) as e:
+                print(
+                    f"⚠️ [{self.replica_id}] Failed to clean up stale temporary directory {temp_dir}: {e}"
                 )
 
-            model_id = package_path.name
-            print(f"✅ [{self.replica_id}] Model '{model_id}' validation successful")
+    async def _check_model_published_status(self, model_id: str, stage: bool) -> bool:
+        """Check if a model is published by looking at its manifest status."""
+        stage_param = f"?stage={str(stage).lower()}"
+        artifact_url = (
+            f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}{stage_param}"
+        )
 
+        try:
+            response = await self.client.get(artifact_url)
+            if response.status_code == 404 and stage:
+                # If staged version doesn't exist, try with stage=false
+                print(
+                    f"⚠️ [{self.replica_id}] Staged version not found for model '{model_id}', trying committed version..."
+                )
+                stage_param = "?stage=false"
+                artifact_url = f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}{stage_param}"
+                response = await self.client.get(artifact_url)
+
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"Failed to download manifest from {artifact_url}: "
+                    f"HTTP {response.status_code} - {response.text}"
+                )
+
+            manifest = await asyncio.to_thread(yaml.safe_load, response.text)
+            # Model is published if status is NOT "request-review"
+            return manifest["manifest"].get("status") != "request-review"
         except Exception as e:
-            print(f"❌ [{self.replica_id}] Model validation failed: {e}")
-            # Clean up invalid package using convenience method
-            await self._remove_package(package_path)
+            print(
+                f"❌ [{self.replica_id}] Error checking model '{model_id}' status: {e}"
+            )
+            return False
 
     async def _wait_for_download_completion(
         self, package_dir: Path, max_wait_time: int = 300
@@ -487,7 +502,7 @@ class ModelCache:
             if response.status_code == 404 and stage:
                 # If staged version doesn't exist, try with stage=false
                 print(
-                    f"⚠️ [{self.replica_id}] Staged file list not found for model '{model_id}', trying published version..."
+                    f"⚠️ [{self.replica_id}] Staged file list not found for model '{model_id}', trying committed version..."
                 )
                 stage_param = "?stage=false"
                 url = f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}/files/{stage_param}"
@@ -609,6 +624,37 @@ class ModelCache:
             "deleted": list(files_to_delete),
             "skipped": list(remote_file_names - {name for name, _ in results}),
         }
+
+    async def _validate_package(self, package_path: Path) -> bool:
+        """Validate model RDF and return actual package path."""
+        from bioimageio.core import load_model_description
+        from bioimageio.spec import InvalidDescr
+
+        try:
+            # Find the RDF file in the package
+            rdf_path = package_path / "rdf.yaml"
+            if not await asyncio.to_thread(rdf_path.exists):
+                raise FileNotFoundError(f"No rdf.yaml found in {package_path}/")
+
+            # Validate model source
+            model_description = await asyncio.to_thread(
+                load_model_description,
+                rdf_path,
+                perform_io_checks=False,
+            )
+            if isinstance(model_description, InvalidDescr):
+                raise ValueError(
+                    f"Downloaded model at {package_path}/ is invalid: {model_description}"
+                )
+
+            print(
+                f"✅ [{self.replica_id}] Model '{package_path.name}' validation successful"
+            )
+
+        except Exception as e:
+            raise RuntimeError(
+                f"Model validation failed for '{package_path.name}': {e}"
+            )
 
     async def _create_package(self, model_id: str, stage: bool) -> None:
         """
@@ -829,6 +875,9 @@ class ModelCache:
                 f"⚡ [{self.replica_id}] Download completed in {download_duration:.2f}s for model '{model_id}'."
             )
 
+            # Validate the downloaded package
+            await self._validate_package(temp_download_dir)
+
             # Atomically move to final location (handle existing directory)
             if await asyncio.to_thread(package_dir.exists):
                 # For updates: move existing dir away, move temp dir to final location, then remove old dir
@@ -895,43 +944,6 @@ class ModelCache:
                 metadata = await asyncio.to_thread(json.loads, content)
                 return max(metadata.values(), default=0.0)
         return 0.0
-
-    async def scan_cache_dir(self) -> None:
-        """Scan the cache directory and validate existing models."""
-        try:
-            all_dirs = await asyncio.to_thread(lambda: list(self.cache_dir.iterdir()))
-            local_dirs = []
-            for d in all_dirs:
-                if await asyncio.to_thread(d.is_dir) and not d.name.startswith("."):
-                    local_dirs.append(d)
-        except (OSError, IOError) as e:
-            print(f"⚠️ [{self.replica_id}] Error reading cache directory: {e}")
-            return
-
-        for dir_path in local_dirs:
-            await self._validate_model_package(dir_path)
-
-        # Check for any stale temporary directories
-        all_temp_dirs = await asyncio.to_thread(
-            lambda: list(self.cache_dir.glob(".temp_*"))
-        )
-        temp_dirs = []
-        for d in all_temp_dirs:
-            if await asyncio.to_thread(d.is_dir) and d.name != ".temp_":
-                temp_dirs.append(d)
-        for temp_dir in temp_dirs:
-            # Remove stale temporary directories if timeout exceeded
-            try:
-                stat_result = await asyncio.to_thread(temp_dir.stat)
-                if time.time() - stat_result.st_ctime > self.timeout_threshold:
-                    await asyncio.to_thread(shutil.rmtree, temp_dir)
-                    print(
-                        f"🧹 [{self.replica_id}] Cleaned up stale temporary directory: {temp_dir}"
-                    )
-            except (OSError, IOError) as e:
-                print(
-                    f"⚠️ [{self.replica_id}] Failed to clean up stale temporary directory {temp_dir}: {e}"
-                )
 
     async def get_model_package(
         self,
@@ -1041,20 +1053,7 @@ class ModelRunner:
             f"{self.model_cache.cache_dir} (cache_size={self.model_cache.cache_size_bytes / (1024*1024*1024):.1f} GB)"
         )
 
-    # === BioEngine App Methods - will be called when the deployment is started ===
-
-    async def async_init(self) -> None:
-        """Initialize the deployment and validate existing cached models."""
-        print(
-            f"🔄 [{self.replica_id}] Initializing ModelRunner deployment, scanning {self.model_cache.cache_dir}/ for existing models..."
-        )
-
-        # Scan existing models in the cache
-        await self.model_cache.scan_cache_dir()
-
-        print(
-            f"✅ [{self.replica_id}] Initialization complete. Found {len(self.model_cache)} existing models in cache."
-        )
+    # === BioEngine App Method - will be called when the deployment is started ===
 
     async def test_deployment(
         self,
@@ -1157,7 +1156,7 @@ class ModelRunner:
         if response.status_code == 404 and stage:
             # If staged version doesn't exist, try with stage=false
             print(
-                f"⚠️ [{self.replica_id}] Staged RDF not found for model '{model_id}', trying published version..."
+                f"⚠️ [{self.replica_id}] Staged RDF not found for model '{model_id}', trying committed version..."
             )
             stage_param = "?stage=false"
             download_url = f"{self.server_url}/{self.workspace}/artifacts/{model_id}/files/rdf.yaml{stage_param}"
@@ -1425,9 +1424,8 @@ if __name__ == "__main__":
         try:
             model_runner = ModelRunner.func_or_class(
                 runtime_deployment=MockHandle(),
-                cache_size_in_gb=0.2,
+                cache_size_in_gb=0.23,  # 230 MB cache for testing
             )
-            await model_runner.async_init()
 
             await model_runner.test_deployment(model_id="ambitious-ant")
 
@@ -1445,13 +1443,10 @@ if __name__ == "__main__":
                 json.dump(metadata, f, indent=2)
 
             # Run test again
-            await model_runner.test(model_id="ambitious-ant")
+            await model_runner.test(model_id="ambitious-ant")  # ~18 MB
 
-            # Test with other models
-            await model_runner.test(model_id="courteous-otter")
-
-            # This should exceed the cache limit of 2 and trigger eviction
-            await model_runner.test(model_id="charismatic-whale")
+            # This should exceed the cache size limit of 230 MB
+            await model_runner.test(model_id="charismatic-whale")  # ~225 MB
         finally:
             # Restore original function
             serve.get_replica_context = original_get_replica_context

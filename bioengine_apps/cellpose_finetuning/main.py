@@ -436,7 +436,7 @@ if __name__ == "__main__":
                 alias=model_artifact_alias,
                 parent_id=collection_id,
                 manifest=model_manifest,
-                type=model_manifest["type"],
+                type="application",
                 stage=True,
             )
             print(f"Artifact created with ID: {model_artifact.id}")

@@ -8,7 +8,7 @@ from ray import serve
         # Number of CPUs to allocate for the deployment
         "num_cpus": 1,
         # Number of GPUs to allocate for the deployment
-        # This will be overwritten by the AppBuilder based on enable_gpu parameter
+        # This can be set to 0 is the parameter `disable_gpu` is set to True when deploying
         "num_gpus": 1,
         # Memory limit for the deployment (0.5 GB)
         "memory": 0.5 * 1024 * 1024 * 1024,

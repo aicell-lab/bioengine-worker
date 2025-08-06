@@ -18,7 +18,33 @@ from bioengine_worker.utils import create_logger, update_requirements
 
 
 class AppManifest(TypedDict):
-    """Type definition for application manifest structure."""
+    """
+    Schema definition for BioEngine application manifest files.
+
+    The manifest acts as a "blueprint" that describes how to deploy your application.
+    It's a YAML file that tells the AppBuilder what Python code to run, who can
+    access it, and how the different components work together.
+
+    Required Fields:
+    • name: Human-readable application name (shows up in UI)
+    • id: Unique technical identifier for the application
+    • id_emoji: Visual emoji identifier for easy recognition
+    • description: What this application does (help text for users)
+    • type: Deployment type (must be "ray-serve" for Ray Serve apps)
+    • deployments: List of Python files to deploy (format: "file:ClassName")
+    • authorized_users: Who can access this app (user IDs or ["*"] for public)
+
+    Example YAML:
+    ```yaml
+    name: "Image Classifier"
+    id: "image-classifier-v1"
+    id_emoji: "🖼️"
+    description: "Classifies images using a pre-trained CNN model"
+    type: "ray-serve"
+    deployments: ["classifier:ImageClassifier"]
+    authorized_users: ["user123", "*"]
+    ```
+    """
 
     name: str
     id: str
@@ -31,44 +57,74 @@ class AppManifest(TypedDict):
 
 class AppBuilder:
     """
-    A builder class for creating and managing BioEngine applications from deployment artifacts.
+    Main orchestrator for building and deploying BioEngine applications.
 
-    The AppBuilder handles the complete lifecycle of application deployment including:
-    - Loading deployment artifacts and manifests
-    - Setting up Ray Serve deployments with proper environment configuration
-    - Managing resource allocation and dependencies
-    - Creating proxy deployments for RTC communication
-    - Validating and testing deployments during initialization
+    The AppBuilder transforms deployment artifacts (Python code + configuration) into
+    fully functional distributed applications running on Ray Serve. Think of it as a
+    sophisticated factory that takes your AI model code and turns it into a scalable,
+    production-ready service.
 
-    Attributes:
-        logger: Logger instance for the AppBuilder
-        apps_cache_dir: Directory for caching deployment artifacts
-        apps_data_dir: Directory accessible to deployments for data storage
-        server: Remote service connection to Hypha server
-        artifact_manager: Service for managing deployment artifacts
-        serve_http_url: HTTP URL for Ray Serve endpoints
+    Key Responsibilities:
+    • Artifact Management: Downloads and parses deployment code from remote artifacts
+    • Environment Setup: Configures Python environments with proper dependencies
+    • Ray Integration: Creates Ray Serve deployments with resource allocation
+    • Health Monitoring: Adds initialization, testing, and health check capabilities
+    • Security: Enforces authentication and authorization for deployed services
+    • Communication: Sets up RTC proxy for real-time WebSocket/WebRTC connections
+
+    Workflow Overview:
+    1. Load artifact manifest to understand what needs to be deployed
+    2. Download Python deployment code and execute it safely
+    3. Configure Ray actor options (CPU/GPU/memory requirements)
+    4. Wrap deployment classes with BioEngine-specific initialization
+    5. Create composition deployments for multi-service applications
+    6. Build final application with proxy for external communication
+
+    Configuration:
+        apps_cache_dir: Where to store downloaded artifacts and working directories
+        apps_data_dir: Shared data directory accessible to all deployments
+        server: Hypha RPC server connection for authentication and artifact access
+        artifact_manager: Service for downloading deployment code and manifests
+        serve_http_url: Base URL where Ray Serve exposes HTTP endpoints
     """
 
     def __init__(
         self,
         token: str,
-        apps_cache_dir: Path,
-        apps_data_dir: Path,
+        apps_cache_dir: Union[str, Path],
         log_file: Optional[str] = None,
         debug: bool = False,
-    ) -> None:
+    ) -> None:  
         """
-        Initialize the AppBuilder with configuration parameters.
+        Set up a new AppBuilder instance with basic configuration.
+
+        This constructor prepares the AppBuilder but doesn't connect to external services yet.
+        Call initialize() after construction to establish connections to Hypha and artifact services.
+
+        Directory Setup:
+        • apps_cache_dir: Creates isolated workspaces for each deployed application
+        • apps_data_dir: Provides shared storage that all deployments can access
+
+        Logging Configuration:
+        • debug=True: Enables verbose output for troubleshooting deployment issues
+        • log_file: Redirects output to file instead of console (useful for production)
 
         Args:
-            token: Authentication token for Hypha server access
-            apps_cache_dir: Cache directory for deployment artifacts and workspaces
-            apps_data_dir: Data directory accessible to all deployments
-            log_file: Optional path to log file for output (defaults to console logging)
-            debug: Enable debug-level logging for detailed output
+            token: Hypha authentication token (get from environment or web interface)
+            apps_cache_dir: Directory for storing downloaded code and temporary files
+            apps_data_dir: Shared directory where deployments can read/write data
+            log_file: Optional file path for logging output (None = console only)
+            debug: Whether to enable detailed debug logging for troubleshooting
 
-        Raises:
-            ValueError: If required directories cannot be created or accessed
+        Example:
+            ```python
+            builder = AppBuilder(
+                token=os.environ["HYPHA_TOKEN"],
+                apps_cache_dir=Path("/tmp/bioengine/apps"),
+                apps_data_dir=Path("/data/shared"),
+                debug=True
+            )
+            ```
         """
         # Set up logging
         self.logger = create_logger(
@@ -79,8 +135,7 @@ class AppBuilder:
 
         # Store parameters
         self._token = token
-        self.apps_cache_dir = apps_cache_dir
-        self.apps_data_dir = apps_data_dir
+        self.apps_cache_dir = Path(apps_cache_dir)
         self.server: Optional[RemoteService] = None
         self.artifact_manager: Optional[ObjectProxy] = None
         self.serve_http_url: Optional[str] = None
@@ -89,18 +144,40 @@ class AppBuilder:
         self, server: RemoteService, artifact_manager: ObjectProxy, serve_http_url: str
     ) -> None:
         """
-        Initialize the AppBuilder with required external services.
+        Connect the AppBuilder to external services required for operation.
 
-        This method must be called after construction to set up the connection
-        to the Hypha server and artifact manager service.
+        This is the "second phase" of setup that connects to live services. Must be called
+        after __init__ but before building any applications. Think of this as "plugging in"
+        the AppBuilder to the distributed system infrastructure.
+
+        Service Connections:
+        • server: Your authenticated connection to the Hypha workspace
+        • artifact_manager: Service that stores and retrieves deployment code
+        • serve_http_url: Where Ray Serve will expose your deployed applications
+
+        Validation:
+        This method validates that all provided services are properly connected and
+        accessible before storing them for use in application building.
 
         Args:
-            server: Connected RemoteService instance to Hypha server
-            artifact_manager: ObjectProxy to the artifact management service
-            serve_http_url: Base HTTP URL for Ray Serve deployment endpoints
+            server: Live connection to Hypha server (from connect_to_server())
+            artifact_manager: Proxy to artifact management service (from server.get_service())
+            serve_http_url: Base URL where applications will be accessible via HTTP
 
         Raises:
-            ValueError: If any of the provided services are invalid or not properly connected
+            ValueError: If any service is None, wrong type, or not properly connected
+
+        Example:
+            ```python
+            server = await connect_to_server({"server_url": url, "token": token})
+            artifact_mgr = await server.get_service("public/artifact-manager")
+
+            builder.initialize(
+                server=server,
+                artifact_manager=artifact_mgr,
+                serve_http_url="http://localhost:8000"
+            )
+            ```
         """
         # Store server connection and artifact manager
         if not server or not isinstance(server, RemoteService):
@@ -121,19 +198,47 @@ class AppBuilder:
         self, artifact_id: str, version: Optional[str] = None
     ) -> AppManifest:
         """
-        Load and validate the artifact manifest from the artifact manager or local filesystem.
+        Download and parse the application manifest that describes what to deploy.
+
+        The manifest is a YAML file that acts like a "recipe card" for your application,
+        telling the AppBuilder what Python files to run, who can access the app, and
+        how the different pieces fit together.
+
+        Loading Sources:
+        • Remote: Downloads from artifact manager (normal production mode)
+        • Local: Reads from local filesystem (development/testing mode)
+
+        Manifest Structure:
+        The manifest must contain these required fields:
+        • name: Human-readable application name
+        • description: What the application does
+        • deployments: List of Python files and classes to deploy
+        • authorized_users: Who can access the deployed application
+        • type: Must be "ray-serve" for Ray Serve deployments
+
+        Validation:
+        Checks that all required fields are present and have the correct format.
+        Ensures deployments list contains valid Python import paths.
 
         Args:
-            artifact_id: The ID of the artifact to load (format: 'workspace/artifact_alias')
-            version: The version of the artifact to load (defaults to latest)
+            artifact_id: Artifact identifier like "my-workspace/my-app"
+            version: Specific version to load (None = latest version)
 
         Returns:
-            The loaded and validated manifest dictionary containing deployment configuration
+            Parsed and validated manifest as a typed dictionary
 
         Raises:
-            FileNotFoundError: If local manifest file is not found when using local artifact path
-            ValueError: If the manifest is invalid, missing required fields, or has incorrect format
-            Exception: If there is an error loading the manifest from the artifact manager
+            FileNotFoundError: Manifest file missing in local development mode
+            ValueError: Manifest is malformed, missing fields, or wrong type
+            Exception: Network/permission error downloading from artifact manager
+
+        Example Manifest:
+            ```yaml
+            name: "Image Classifier"
+            type: "ray-serve"
+            deployments: ["classifier:ImageClassifier"]
+            authorized_users: ["user123", "admin@example.com"]
+            ```
         """
         if os.environ.get("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"):
             # Load the file content from local path
@@ -165,9 +270,9 @@ class AppBuilder:
             if field not in manifest:
                 raise ValueError(f"Manifest is missing required field: {field}")
 
-        if manifest["type"] != "application":
+        if manifest["type"] != "ray-serve":
             raise ValueError(
-                f"Invalid manifest type: {manifest['type']}. Expected 'application'."
+                f"Invalid manifest type: {manifest['type']}. Expected 'ray-serve'."
             )
 
         deployments = manifest["deployments"]
@@ -189,35 +294,55 @@ class AppBuilder:
         self,
         deployment: serve.Deployment,
         application_id: str,
-        enable_gpu: bool,
+        disable_gpu: bool,
+        custom_env_vars: Dict[str, str],
         token: str,
+        max_ongoing_requests: int,
     ) -> serve.Deployment:
         """
-        Update Ray actor options for a deployment with BioEngine-specific configuration.
+        Configure the Ray runtime environment for BioEngine deployments.
 
-        Adds required dependencies, environment variables, and directory structure
-        needed for BioEngine deployments to function properly.
+        This method transforms a basic Ray deployment into a BioEngine-aware one by
+        setting up the proper environment, dependencies, and directory structure.
+        Think of it as "installing the BioEngine runtime" into your deployment.
+
+        Environment Setup:
+        • Creates isolated working directory for this specific application
+        • Sets up temporary directories and home directory paths
+        • Configures access to shared data directory
+        • Injects BioEngine Python package requirements
+
+        Hypha Integration:
+        • Provides authentication token for server communication
+        • Sets server URL and workspace for RPC connections
+        • Enables deployments to register services and communicate
+
+        Resource Management:
+        • Optionally disables GPU allocation if not needed
+        • Sets request concurrency limits for the deployment
+        • Configures memory and CPU allocation
 
         Args:
-            deployment: The Ray Serve deployment to update
-            application_id: Unique identifier for the application instance
-            enable_gpu: Flag indicating whether GPU support is enabled
-            token: Authentication token for Hypha server access
+            deployment: Base Ray deployment to enhance with BioEngine capabilities
+            application_id: Unique ID for creating isolated workspace directory
+            disable_gpu: Set to True to force CPU-only execution
+            custom_env_vars: Environment variables to set for the deployment
+            token: Hypha authentication token for server access
+            max_ongoing_requests: How many requests can run simultaneously
 
         Returns:
-            Updated deployment with configured actor options
+            Enhanced deployment with BioEngine runtime environment configured
 
-        Note:
-            This method modifies the deployment's runtime environment to include:
-            - BioEngine pip requirements
-            - Working directory setup
-            - Hypha server connection parameters
-            - Data directory access paths
+        Technical Details:
+        The working directory structure created is:
+        - apps_cache_dir/application_id/ (main workspace)
+        - apps_cache_dir/application_id/tmp/ (temporary files)
+        - Access to apps_data_dir/ (shared data across all apps)
         """
         ray_actor_options = deployment.ray_actor_options.copy()
 
         # Disable GPU if not enabled
-        if not enable_gpu:
+        if disable_gpu:
             ray_actor_options["num_gpus"] = 0
 
         # Update runtime environment with BioEngine requirements
@@ -225,37 +350,71 @@ class AppBuilder:
         pip_requirements = runtime_env.setdefault("pip", [])
         env_vars = runtime_env.setdefault("env_vars", {})
 
+        # Add custom environment variables
+        env_vars.update(custom_env_vars)
+
+        # Validate environment variables
+        for key, value in env_vars.items():
+            if not isinstance(key, str):
+                raise ValueError(
+                    f"Environment variable key '{key}' must be a string, got '{type(key)}'."
+                )
+            if not isinstance(value, str):
+                raise ValueError(
+                    f"Environment variable '{key}' must be a string, got '{type(value)}'."
+                )
+
         # Update with BioEngine requirements
         pip_requirements = update_requirements(pip_requirements)
 
         # Set BioEngine environment variables
         app_work_dir = self.apps_cache_dir / application_id
-        env_vars["BIOENGINE_WORKDIR"] = str(app_work_dir)
         env_vars["HOME"] = str(app_work_dir)
         env_vars["TMPDIR"] = str(app_work_dir / "tmp")
-
-        # Pass the data directory to the deployment
-        env_vars["BIOENGINE_DATA_DIR"] = str(self.apps_data_dir)
 
         env_vars["HYPHA_SERVER_URL"] = self.server.config.public_base_url
         env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
         env_vars["HYPHA_TOKEN"] = token
 
-        updated_deployment = deployment.options(ray_actor_options=ray_actor_options)
+        updated_deployment = deployment.options(
+            ray_actor_options=ray_actor_options,
+            max_ongoing_requests=max_ongoing_requests,
+        )
         return updated_deployment
 
     def _update_init(self, deployment: serve.Deployment) -> serve.Deployment:
         """
-        Update the __init__ method of the deployment class to set up BioEngine environment.
+        Wrap the deployment's __init__ method to set up the BioEngine execution environment.
 
-        Wraps the original __init__ method to ensure proper working directory setup
-        and deployment state initialization.
+        This method intercepts the deployment class initialization to perform essential
+        setup tasks before the user's __init__ code runs. It's like adding a "pre-flight
+        checklist" that ensures everything is properly configured.
+
+        Environment Preparation:
+        • Creates and switches to isolated working directory
+        • Sets up access to shared data directory
+        • Assigns unique replica ID for logging and identification
+        • Initializes deployment state tracking variables
+
+        State Management:
+        The wrapper adds these internal state variables:
+        • _deployment_initialized: Tracks async initialization completion
+        • _deployment_tested: Tracks deployment testing completion
+        • _health_check_lock: Prevents concurrent health check execution
+
+        Directory Structure:
+        Each deployment gets its own workspace based on the application ID,
+        completely isolated from other deployments for security and stability.
 
         Args:
-            deployment: The Ray Serve deployment to update
+            deployment: Ray deployment to enhance with BioEngine initialization
 
         Returns:
-            Updated deployment with wrapped __init__ method
+            Deployment with wrapped __init__ method that sets up BioEngine environment
+
+        Note:
+        This wrapping is transparent to the user's deployment code - their __init__
+        method runs normally after the BioEngine setup is complete.
         """
 
         orig_init = getattr(deployment.func_or_class, "__init__")
@@ -272,15 +431,12 @@ class AppBuilder:
             except Exception:
                 self.replica_id = "unknown"
 
-            # Ensure the workdir is set to the BIOENGINE_WORKDIR environment variable
-            workdir = Path(os.environ["BIOENGINE_WORKDIR"])
+            # Ensure the current working directory is set to the application working directory
+            workdir = Path.home().resolve()  # Home directory is set to the apps_cache_dir
+            os.environ["HOME"] = str(workdir)  # Update the HOME environment variable with resolved path
             workdir.mkdir(parents=True, exist_ok=True)
             os.chdir(workdir)
-            print(f"📁 [{self.replica_id}] Working directory: {workdir}")
-
-            # Log data directory
-            data_dir = os.environ["BIOENGINE_DATA_DIR"]
-            print(f"📂 [{self.replica_id}] Data directory: {data_dir}")
+            print(f"📁 [{self.replica_id}] Working directory: {workdir}/")
 
             # Initialize deployment states
             self._deployment_initialized = False
@@ -297,16 +453,40 @@ class AppBuilder:
 
     def _update_async_init(self, deployment: serve.Deployment) -> serve.Deployment:
         """
-        Update the async_init method of the deployment class for post-initialization setup.
+        Wrap the deployment's async_init method to handle initialization with proper tracking.
 
-        Wraps the original async_init method to handle both sync and async implementations
-        and track initialization state.
+        Many deployments need to do expensive setup work after basic initialization -
+        loading models, connecting to databases, downloading files, etc. This wrapper
+        ensures that work is properly tracked and timed for monitoring purposes.
+
+        Flexibility Support:
+        • Handles deployments with no async_init method (creates default no-op)
+        • Supports both async and sync async_init implementations
+        • Automatically converts sync methods to async using thread execution
+
+        Progress Tracking:
+        • Logs initialization start/completion with timing information
+        • Sets _deployment_initialized flag when complete
+        • Provides detailed error reporting if initialization fails
+
+        Monitoring Integration:
+        Uses the replica_id for clear logging so you can track which specific
+        deployment instances are initializing in a multi-replica deployment.
 
         Args:
-            deployment: The Ray Serve deployment to update
+            deployment: Ray deployment to enhance with async initialization tracking
 
         Returns:
-            Updated deployment with wrapped async_init method
+            Deployment with wrapped async_init method that provides progress tracking
+
+        Example User Code:
+            ```python
+            class MyDeployment:
+                async def async_init(self):
+                    # This will be wrapped and tracked automatically
+                    self.model = await load_large_model()
+                    print("Model loaded successfully")
+            ```
         """
         orig_async_init = getattr(
             deployment.func_or_class, "async_init", lambda self: None
@@ -346,16 +526,42 @@ class AppBuilder:
 
     def _update_test_deployment(self, deployment: serve.Deployment) -> serve.Deployment:
         """
-        Update the test_deployment method of the deployment class for testing functionality.
+        Wrap the deployment's test_deployment method to validate functionality before going live.
 
-        Wraps the original test_deployment method to handle both sync and async implementations
-        and track testing state.
+        This wrapper ensures that deployments can prove they're working correctly before
+        they start serving real requests. Think of it as a "smoke test" that runs
+        automatically during deployment startup to catch problems early.
+
+        Testing Philosophy:
+        • Tests run after initialization but before the deployment accepts traffic
+        • Failed tests prevent the deployment from becoming "healthy"
+        • Tests should be lightweight but validate core functionality
+
+        Implementation Support:
+        • Creates default no-op test if deployment doesn't define one
+        • Supports both async and sync test_deployment methods
+        • Converts sync tests to async using thread execution for consistency
+
+        State Management:
+        • Sets _deployment_tested flag when tests pass
+        • Provides detailed timing and error reporting
+        • Tracks test status for health check validation
 
         Args:
-            deployment: The Ray Serve deployment to update
+            deployment: Ray deployment to enhance with test execution tracking
 
         Returns:
-            Updated deployment with wrapped test_deployment method
+            Deployment with wrapped test_deployment method that validates functionality
+
+        Example User Code:
+            ```python
+            class MyDeployment:
+                def test_deployment(self):
+                    # This will be wrapped and tracked automatically
+                    result = self.predict_sample_input()
+                    assert result is not None, "Model prediction failed"
+                    print("Deployment test passed!")
+            ```
         """
         orig_test_deployment = getattr(
             deployment.func_or_class, "test_deployment", lambda self: None
@@ -399,20 +605,36 @@ class AppBuilder:
 
     def _update_health_check(self, deployment: serve.Deployment) -> serve.Deployment:
         """
-        Add a comprehensive health check method to the deployment class.
+        Add a comprehensive health check system to control deployment readiness.
 
-        This method is called by Ray Serve during actor initialization and keeps the
-        deployment in "DEPLOYING" state until all initialization and testing passes.
+        This wrapper creates a sophisticated health check that ensures deployments
+        don't start accepting requests until they're fully ready. It's like having
+        a "traffic light" that stays red until everything is properly set up.
+
+        Health Check Orchestration:
+        • Runs async_init if not already completed
+        • Executes test_deployment to validate functionality
+        • Calls original health check method if it exists
+        • Uses a lock to prevent concurrent health check execution
+
+        Ray Serve Integration:
+        Ray Serve calls check_health() repeatedly during deployment startup.
+        The deployment remains in "DEPLOYING" state until health checks pass,
+        ensuring users only see fully functional deployments.
+
+        Concurrency Safety:
+        Uses an async lock to ensure only one health check runs at a time,
+        preventing race conditions during the initialization phase.
 
         Args:
-            deployment: The Ray Serve deployment to update
+            deployment: Ray deployment to enhance with comprehensive health checking
 
         Returns:
-            Updated deployment with health check method
+            Deployment with integrated health check that validates readiness
 
         Note:
-            The health check ensures both async_init and test_deployment complete
-            successfully before marking the deployment as healthy.
+        The health check ensures both async_init and test_deployment complete
+        successfully before marking the deployment as healthy and ready for traffic.
         """
         orig_health_check = getattr(
             deployment.func_or_class, "check_health", lambda self: None
@@ -455,16 +677,46 @@ class AppBuilder:
         self, deployment: serve.Deployment
     ) -> Dict[str, Dict[str, Any]]:
         """
-        Extract parameter information from a deployment class's __init__ method.
+        Analyze a deployment class to understand what parameters it expects.
+
+        This method uses Python's introspection capabilities to examine the __init__
+        method signature and extract information about what parameters the deployment
+        class needs for initialization. It's like reading the "ingredient list" before
+        cooking a recipe.
+
+        Parameter Analysis:
+        • Extracts parameter names, types (if annotated), and default values
+        • Identifies which parameters are required vs optional
+        • Handles special parameter types like *args and **kwargs
+        • Excludes 'self' parameter (not relevant for external callers)
+
+        Type Information:
+        • Captures type hints if provided (e.g., str, int, DeploymentHandle)
+        • Records default values for optional parameters
+        • Identifies parameters that accept variable arguments
+
+        Special Handling:
+        • DeploymentHandle parameters are flagged for composition support
+        • *args and **kwargs are tracked but not included in main parameter list
+        • Unknown types are recorded as None rather than failing
 
         Args:
-            deployment: The Ray Serve deployment to inspect
+            deployment: Ray deployment to analyze for parameter requirements
 
         Returns:
-            Dictionary mapping parameter names to their type and default value information
+            Dictionary with parameter info structure:
+            {
+                "param_name": {"type": param_type, "default": default_value},
+                "__has_var_positional__": {"type": None, "default": True/False},
+                "__has_var_keyword__": {"type": None, "default": True/False}
+            }
 
-        Note:
-            Excludes 'self', '*args', and '**kwargs' parameters from the returned dictionary
+        Example:
+            For a class with `__init__(self, model_path: str, batch_size: int = 32)`:
+            Returns: {
+                "model_path": {"type": str, "default": None},
+                "batch_size": {"type": int, "default": 32}
+            }
         """
         sig = inspect.signature(deployment.func_or_class.__init__)
         params = {}
@@ -504,15 +756,42 @@ class AppBuilder:
         self, init_params: Dict[str, Dict[str, Any]], kwargs: Dict[str, Any]
     ) -> None:
         """
-        Validate that provided kwargs match the expected init parameters.
+        Validate that user-provided parameters match what the deployment expects.
+
+        This method acts like a "compatibility checker" that ensures the parameters
+        you want to pass to a deployment class are actually accepted by that class.
+        It prevents runtime errors by catching parameter mismatches early.
+
+        Validation Rules:
+        • All provided parameters must be expected by the __init__ method
+        • Required parameters (no default value) must be provided
+        • Parameter types must match if type hints are available
+        • DeploymentHandle parameters are handled specially for composition
+
+        Flexibility Support:
+        • Classes with **kwargs accept any additional parameters
+        • Classes without **kwargs reject unexpected parameters
+        • *args parameters are not supported (would complicate composition)
+
+        Error Prevention:
+        • Catches typos in parameter names before deployment
+        • Validates type compatibility where possible
+        • Ensures required parameters aren't missing
 
         Args:
-            init_params: Parameter information from _get_init_param_info
-            kwargs: Keyword arguments to validate
+            init_params: Parameter structure from _get_init_param_info()
+            kwargs: Dictionary of parameters to validate
 
         Raises:
-            ValueError: If there are unexpected parameters, missing required parameters,
-                       type mismatches, or *args parameters are detected
+            ValueError: Parameter name not expected, required parameter missing,
+                       type mismatch, or *args detected (not supported)
+
+        Example Validation:
+            For a deployment expecting (model_path: str, batch_size: int = 32):
+            ✓ {"model_path": "/path/to/model"} - Valid (uses default batch_size)
+            ✓ {"model_path": "/path", "batch_size": 64} - Valid
+            ✗ {"model_file": "/path"} - Invalid (typo in parameter name)
+            ✗ {"batch_size": 64} - Invalid (missing required model_path)
         """
         # Extract special flags for **kwargs handling (*args is not supported)
         has_var_keyword = init_params.get("__has_var_keyword__", {}).get(
@@ -556,42 +835,63 @@ class AppBuilder:
         application_id: str,
         artifact_id: str,
         version: Optional[str],
-        import_path: str,
-        enable_gpu: bool,
+        python_file: str,
+        class_name: str,
+        disable_gpu: bool,
+        env_vars: Dict[str, str],
         token: str,
+        max_ongoing_requests: int,
     ) -> serve.Deployment:
         """
-        Load and execute deployment code from an artifact directly in memory.
+        Download and transform Python code into a Ray Serve deployment.
 
-        Downloads and executes Python code from an artifact to create deployable classes.
-        Supports both remote artifact loading and local file loading for development.
+        This method performs the "magic" of converting stored Python code into a
+        running deployment. It downloads the code, executes it safely, and wraps
+        it with all the BioEngine functionality needed for production deployment.
+
+        Code Loading Process:
+        • Downloads Python file from artifact storage (or loads from local path)
+        • Executes code in controlled environment to extract deployment class
+        • Validates that the specified class exists and is properly defined
+        • Handles both remote artifacts and local development files
+
+        BioEngine Enhancement:
+        After loading the base class, it enhances it with:
+        • Resource allocation (CPU/GPU/memory configuration)
+        • Environment setup (working directories, data access)
+        • Lifecycle management (__init__, async_init, test_deployment, health_check)
+        • Authentication and workspace isolation
+
+        Security Considerations:
+        • Code execution happens in a restricted globals environment
+        • Each deployment gets isolated working directory
+        • Authentication tokens are properly scoped
 
         Args:
-            application_id: Unique identifier for the application instance
-            artifact_id: ID of the artifact containing the deployment code
-            version: Version of the artifact to load (defaults to latest)
-            import_path: Import path in format 'python_file:class_name'
-            enable_gpu: Whether to enable GPU support for the deployment
+            application_id: Unique ID for creating isolated workspace
+            artifact_id: Where to find the deployment code (e.g., "workspace/app-name")
+            version: Specific version to load (None = latest)
+            python_file: Which file to load (format: "filename.py")
+            class_name: Which class to load (format: "ClassName")
+            disable_gpu: Force CPU-only execution regardless of class defaults
+            env_vars: Environment variables to set for the deployment
             token: Authentication token for Hypha server access
+            max_ongoing_requests: Request concurrency limit for this deployment
 
         Returns:
-            Configured Ray Serve deployment ready for use
+            Fully configured Ray Serve deployment ready for use in applications
 
         Raises:
-            FileNotFoundError: If local deployment file is not found
-            ValueError: If import path format is invalid or class name is not found
-            RuntimeError: If class loading or configuration fails
-            Exception: If code execution or download fails
-        """
-        try:
-            python_file, class_name = import_path.split(":")
-            python_file = f"{python_file}.py"  # Add .py extension
-        except ValueError:
-            raise ValueError(
-                f"Invalid import path format: {import_path}. "
-                "Expected format is 'python_file:class_name'."
-            )
+            FileNotFoundError: Local file not found in development mode
+            ValueError: Invalid import_path format or class not found in code
+            RuntimeError: Code execution failed or deployment configuration failed
+            Exception: Network error downloading code or permission issues
 
+        Example:
+            Loading a model deployment:
+            import_path="model_server:ImageClassifier" loads the ImageClassifier
+            class from model_server.py file in the artifact.
+        """
         if os.environ.get("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"):
             # Load the file content from local path
             artifact_folder = artifact_id.split("/")[1].replace("-", "_")
@@ -639,7 +939,7 @@ class AppBuilder:
         # Create a restricted globals dictionary for sandboxed execution - pass some deployment options
         try:
             # Execute the code in a sandboxed environment
-            safe_globals = {}
+            safe_globals = env_vars.copy()
             exec(code_content, safe_globals)
             if class_name not in safe_globals:
                 raise ValueError(f"{class_name} not found in {artifact_id}")
@@ -649,7 +949,12 @@ class AppBuilder:
 
             # Update environment variables and requirements
             deployment = self._update_actor_options(
-                deployment, application_id, enable_gpu, token
+                deployment=deployment,
+                application_id=application_id,
+                disable_gpu=disable_gpu,
+                custom_env_vars=env_vars,
+                token=token,
+                max_ongoing_requests=max_ongoing_requests,
             )
 
             # Update the deployment class methods
@@ -677,13 +982,36 @@ class AppBuilder:
         self, deployments: List[serve.Deployment]
     ) -> Dict[str, Union[int, float]]:
         """
-        Calculate the total resource requirements for all deployments.
+        Calculate total resource requirements across all deployment components.
+
+        Before deploying an application, it's helpful to know what computational
+        resources will be needed. This method sums up the CPU, GPU, and memory
+        requirements from all deployment classes to give you the total "bill."
+
+        Resource Aggregation:
+        • CPU cores: Sums num_cpus from all deployments
+        • GPU devices: Sums num_gpus from all deployments
+        • Memory: Sums memory requirements from all deployments
+
+        Use Cases:
+        • Capacity planning: Ensure cluster has enough resources
+        • Cost estimation: Understand resource costs before deployment
+        • Scheduling: Help Ray Serve schedule deployments efficiently
+        • Monitoring: Track actual vs expected resource usage
 
         Args:
-            deployments: List of Ray Serve deployments to analyze
+            deployments: List of configured Ray deployments to analyze
 
         Returns:
-            Dictionary containing total CPU, GPU, and memory requirements
+            Resource summary with keys "num_cpus", "num_gpus", "memory"
+            containing the total requirements across all deployments
+
+        Example:
+            If you have 2 deployments:
+            - Deployment A: 2 CPUs, 1 GPU, 4GB memory
+            - Deployment B: 1 CPU, 0 GPU, 2GB memory
+
+            Result: {"num_cpus": 3, "num_gpus": 1, "memory": 6442450944}
         """
         required_resources = {
             "num_cpus": 0,
@@ -702,34 +1030,82 @@ class AppBuilder:
         self,
         application_id: str,
         artifact_id: str,
-        version: Optional[str] = None,
-        deployment_kwargs: Optional[Dict[str, Any]] = None,
-        enable_gpu: bool = True,
+        version: str,
+        deployment_kwargs: Dict[str, Dict[str, Any]],
+        deployment_env_vars: Dict[str, Dict[str, Any]],
+        disable_gpu: bool,
+        max_ongoing_requests: int,
     ) -> serve.Application:
         """
-        Build a complete BioEngine application from a deployment artifact.
+        Transform a deployment artifact into a fully functional BioEngine application.
 
-        This method orchestrates the entire application building process including:
-        - Loading and validating the artifact manifest
-        - Creating and configuring all deployments
-        - Setting up the RTC proxy for communication
-        - Validating deployment parameters and dependencies
+        This is the main "assembly line" method that takes your stored Python code
+        and configuration, then builds it into a complete, production-ready application
+        running on Ray Serve. Think of it as a sophisticated build system that handles
+        all the complexity of distributed deployment.
+
+        Complete Build Process:
+        1. Download and parse the application manifest (the "recipe")
+        2. Load all Python deployment classes from the artifact
+        3. Configure each deployment with proper resources and environment
+        4. Set up deployment composition for multi-service applications
+        5. Create RTC proxy for WebSocket/WebRTC communication
+        6. Validate all parameters and dependencies
+        7. Package everything into a deployable Ray Serve application
+
+        Resource Management:
+        • Calculates total CPU/GPU/memory requirements
+        • Configures isolated working directories for each deployment
+        • Sets up shared data directory access
+        • Handles GPU allocation and CPU-only fallbacks
+
+        Security & Authentication:
+        • Enforces user authorization rules from manifest
+        • Provides secure token-based authentication
+        • Isolates deployments in separate workspaces
+
+        Communication Setup:
+        • Creates RTC proxy for real-time WebSocket connections
+        • Exposes schema methods for remote procedure calls
+        • Integrates with Hypha server for service registration
 
         Args:
-            application_id: Unique identifier for the application instance
-            artifact_id: ID of the artifact containing deployment code (format: 'workspace/artifact_alias')
-            version: Version of the artifact to load (defaults to latest)
-            deployment_options: Resource allocation options for deployments
+            application_id: Unique identifier for this deployment instance
+            artifact_id: Location of deployment code (format: "workspace/app-name")
+            version: Specific artifact version to deploy
             deployment_kwargs: Initialization parameters for each deployment class
+            deployment_env_vars: Environment variables for each deployment class
+            disable_gpu: Force CPU-only execution regardless of deployment defaults
+            max_ongoing_requests: Request concurrency limit for the entire application
 
         Returns:
-            Fully configured Ray Serve application ready for deployment
+            Complete Ray Serve application ready for deployment with metadata including:
+            - Available RPC methods exposed by the application
+            - Resource requirements for capacity planning
+            - Authorization rules and user access controls
+            - Service health and status information
 
         Raises:
-            ValueError: If application_id is empty, artifact_id format is invalid,
-                       or deployment configuration is incorrect
-            FileNotFoundError: If local artifact files are not found
-            Exception: If manifest loading, deployment creation, or configuration fails
+            ValueError: Invalid application_id, artifact_id format, or deployment config
+            FileNotFoundError: Artifact files not found (in local development mode)
+            Exception: Manifest parsing, code loading, or configuration errors
+
+        Example:
+            ```python
+            app = await builder.build(
+                application_id="my-classifier-v1",
+                artifact_id="my-workspace/image-classifier",
+                version="1.2.0",
+                deployment_kwargs={
+                    "ImageClassifier": {"model_path": "/data/models/resnet50.pt"}
+                },
+                deployment_env_vars={
+                    "ImageClassifier": {"BATCH_SIZE": "32"}
+                },
+                disable_gpu=False,
+                max_ongoing_requests=10
+            )
+            ```
         """
         # Validate application_id and artifact_id
         if not application_id:
@@ -742,25 +1118,46 @@ class AppBuilder:
             )
 
         self.logger.info(
-            f"Building application '{application_id}' from artifact {artifact_id} (version: {version or 'latest'})"
+            f"Building application '{application_id}' from artifact '{artifact_id}' (version: {version})"
         )
 
         # Load the artifact manifest
         manifest = await self._load_manifest(artifact_id, version)
 
         # Load all deployments defined in the manifest
-        deployments = [
-            await self._load_deployment(
+        deployment_import_paths = manifest["deployments"]
+        if not isinstance(deployment_import_paths, list) or not deployment_import_paths:
+            raise ValueError(
+                f"Invalid deployments format in artifact {artifact_id}. "
+                "Expected a non-empty list of deployment import paths."
+            )
+
+        deployment_kwargs = deployment_kwargs or {}
+        deployment_env_vars = deployment_env_vars or {}
+
+        deployments = []
+        for import_path in deployment_import_paths:
+            try:
+                filename, class_name = import_path.split(":")
+                python_file = f"{filename}.py"  # Add .py extension
+            except ValueError:
+                raise ValueError(
+                    f"Invalid import path format: {import_path}. "
+                    "Expected format is 'filename:ClassName' (without .py extension)."
+                )
+
+            deployment = await self._load_deployment(
                 application_id=application_id,
                 artifact_id=artifact_id,
                 version=version,
-                import_path=import_path,
-                enable_gpu=enable_gpu,
+                python_file=python_file,
+                class_name=class_name,
+                disable_gpu=disable_gpu,
+                env_vars=deployment_env_vars.get(class_name, {}),
                 token=self._token,
+                max_ongoing_requests=max_ongoing_requests,
             )
-            for import_path in manifest["deployments"]
-        ]
-        deployment_kwargs = deployment_kwargs or {}
+            deployments.append(deployment)
 
         # Calculate the total number of required resources
         rtc_proxy_deployment = BioEngineProxyDeployment
@@ -794,26 +1191,32 @@ class AppBuilder:
             )
 
             # Add the composition deployment class(es) to the entry deployment kwargs
-            # TODO: use kwargs instead of args to pass deployment handles
-            deployment_handle_params = [
-                param_name
-                for param_name, param_info in entry_init_params.items()
-                if param_info["type"] == DeploymentHandle
-            ]
-            if len(deployment_handle_params) != len(deployments) - 1:
-                raise ValueError(
-                    f"Mismatch between number of deployment handle parameters "
-                    f"({len(deployment_handle_params)}) and number of deployment "
-                    f"classes defined in artifact manifest ({len(deployments) - 1})."
-                )
-            for handle_name, deployment in zip(
-                deployment_handle_params, deployments[1:]
+            # Use the parameter name from import_path (first part before ':') as the kwarg name
+            for import_path, deployment in zip(
+                deployment_import_paths[1:], deployments[1:]
             ):
-                class_name = deployment.func_or_class.__name__
+                parameter_name, class_name = import_path.split(":")
+
+                # Check that the parameter exists and is of type DeploymentHandle
+                if parameter_name not in entry_init_params:
+                    raise ValueError(
+                        f"Parameter '{parameter_name}' not found in entry deployment "
+                        f"'{entry_deployment.func_or_class.__name__}' init method. "
+                        f"Available parameters: {list(entry_init_params.keys())}"
+                    )
+
+                param_info = entry_init_params[parameter_name]
+                if param_info["type"] != DeploymentHandle:
+                    raise ValueError(
+                        f"Parameter '{parameter_name}' in entry deployment "
+                        f"'{entry_deployment.func_or_class.__name__}' must be of type "
+                        f"DeploymentHandle, but got {param_info['type']}"
+                    )
+
                 init_params = self._get_init_param_info(deployment)
                 kwargs = deployment_kwargs.get(class_name, {})
                 self._check_params(init_params, kwargs)
-                entry_deployment_kwargs[handle_name] = deployment.bind(**kwargs)
+                entry_deployment_kwargs[parameter_name] = deployment.bind(**kwargs)
 
         # Create the entry deployment handle
         entry_deployment_handle = entry_deployment.bind(**entry_deployment_kwargs)
@@ -825,6 +1228,7 @@ class AppBuilder:
             application_description=manifest["description"],
             entry_deployment_handle=entry_deployment_handle,
             method_schemas=method_schemas,
+            max_ongoing_requests=max_ongoing_requests,
             server_url=self.server.config.public_base_url,
             workspace=self.server.config.workspace,
             token=self._token,

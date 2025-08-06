@@ -88,11 +88,11 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
     core_group = parser.add_argument_group("Core Options", "Basic worker configuration")
     core_group.add_argument(
         "--mode",
-        default="slurm",
+        default="single-machine",
         type=str,
-        choices=["slurm", "single-machine", "external-cluster"],
-        help="Deployment mode: 'slurm' for HPC clusters with SLURM job scheduling, "
-        "'single-machine' for local Ray cluster, 'external-cluster' for connecting "
+        choices=["single-machine", "slurm", "external-cluster"],
+        help="Deployment mode: 'single-machine' for local Ray cluster, "
+        "'slurm' for HPC clusters with SLURM job scheduling, 'external-cluster' for connecting "
         "to an existing Ray cluster",
     )
     core_group.add_argument(

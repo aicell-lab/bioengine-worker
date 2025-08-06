@@ -1,7 +1,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import yaml
 from fastapi import FastAPI, HTTPException, Request
@@ -68,9 +68,9 @@ class DatasetsManager:
 
     def __init__(
         self,
-        data_dir: str,
+        data_dir: Union[str, Path],
         # Logger
-        log_file: Optional[str] = None,
+        log_file: Optional[Union[str, Path]] = None,
         debug: bool = False,
     ):
         """

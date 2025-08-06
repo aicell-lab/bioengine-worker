@@ -130,9 +130,7 @@ def cache_dir() -> Generator[Path, None, None]:
 def ray_address(worker_mode: str) -> Generator[str, None, None]:
     """Start a Ray cluster a BioEngine Worker can connect to."""
     if worker_mode == "external-cluster":
-        with tempfile.TemporaryDirectory(
-            prefix=f"bioengine_worker_ray_cluster_"
-        ) as temp_dir:
+        with tempfile.TemporaryDirectory(prefix=f"bioengine_test_ray_") as temp_dir:
 
             # Use RayCluster to start a local Ray cluster
             ray_cluster = RayCluster(
@@ -231,6 +229,12 @@ def hypha_workspace(hypha_client: RemoteService) -> str:
 def hypha_client_id(hypha_client: RemoteService) -> str:
     """Extract unique client ID from connected Hypha client."""
     return hypha_client.config.client_id
+
+
+@pytest.fixture(scope="function")
+def hypha_user_id(hypha_client: RemoteService) -> str:
+    """Extract unique user ID from connected Hypha client."""
+    return hypha_client.config.user["id"]
 
 
 @pytest_asyncio.fixture(scope="function")

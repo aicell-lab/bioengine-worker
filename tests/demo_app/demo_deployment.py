@@ -11,15 +11,15 @@ All deployments must follow these conventions:
 
 IMPORT HANDLING:
 - Standard Python libraries and libraries that are part of the BioEngine can be
-  imported at the top of this file. Take a look at the requirements.txt file to see
-  which libraries are part of the BioEngine:
-  https://github.com/aicell-lab/bioengine-worker/blob/main/requirements.txt
+    imported at the top of this file. Take a look at the requirements.txt file to see
+    which libraries are part of the BioEngine:
+    https://github.com/aicell-lab/bioengine-worker/blob/main/requirements.txt
 - All libraries that are not part of the standard python library or the BioEngine
-  need to be specified in the runtime environment of the deployment and imported
-  in each method where they are used (see 'pandas' in the example below).
+    need to be specified in the runtime environment of the deployment and imported
+    in each method where they are used (see 'pandas' in the example below).
 
 GPU allocation is managed by the AppBuilder which overwrites the num_gpus parameter
-in the ray actor options based on the enable_gpu parameter (default: False) passed to
+in the ray actor options based on the disable_gpu parameter (default: False) passed to
 deploy_application().
 
 Resource allocation is validated against available cluster resources before deployment.
@@ -44,7 +44,7 @@ from ray import serve
         # Number of CPUs to allocate for the deployment
         "num_cpus": 1,
         # Number of GPUs to allocate for the deployment
-        # This will be overwritten by the AppBuilder based on enable_gpu parameter
+        # This can be set to 0 is the parameter `disable_gpu` is set to True when deploying
         "num_gpus": 1,
         # Memory limit for the deployment (0.5 GB)
         "memory": 0.5 * 1024**3,
@@ -133,9 +133,6 @@ class DemoDeployment:
         """
         Ping the model to test connectivity.
 
-        Args:
-            None
-
         Returns:
             Dict[str, Union[str, float]]: A dictionary containing the 'status', 'message', 'timestamp', and 'uptime'.
         """
@@ -150,9 +147,6 @@ class DemoDeployment:
     async def ascii_art(self) -> List[str]:
         """
         Get an ASCII art representation of the word 'Bioengine'.
-
-        Args:
-            None
 
         Returns:
             List[str]: A list of strings representing the ASCII art.

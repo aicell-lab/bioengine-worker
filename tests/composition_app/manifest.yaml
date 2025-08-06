@@ -10,10 +10,10 @@ authors:
 maintainers: [nilsmechtel]
 license: MIT
 format_version: 0.5.0
-git_repo: https://github.com/bioimage-io/bioengine
+git_repo: https://github.com/aicell-lab/bioengine-worker
 links: []
 tags: [test, bioengine]
-type: application
+type: ray-serve
 deployments:
   - composition_deployment:CompositionDeployment
   - deployment1:Deployment1

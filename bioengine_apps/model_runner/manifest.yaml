@@ -16,8 +16,8 @@ tags: []
 type: ray-serve
 version: 0.0.1
 deployments:
-  - model_downloader:ModelDownloader
   - model_runner:ModelRunner
+  - runtime_deployment:RuntimeDeployment
 authorized_users:
   - "*" # Allow all users to access the application
 

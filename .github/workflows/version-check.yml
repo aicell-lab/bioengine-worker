@@ -2,7 +2,6 @@ name: Enforce Version Update
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
     paths:
@@ -14,6 +13,7 @@ on:
 
 jobs:
   check-version:
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
 
     steps:

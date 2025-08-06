@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Iterable
 from urllib.parse import urljoin
 
-import aiohttp
+import httpx
 from zarr.abc.store import (
     ByteRequest,
     OffsetByteRequest,
@@ -18,6 +18,7 @@ from zarr.core.buffer import Buffer, BufferPrototype
 class HttpZarrStore(Store):
     base_url: str
     headers: dict
+    httpx_client_kwargs: dict
     _read_only: bool = True
 
     supports_writes: bool = False
@@ -29,6 +30,10 @@ class HttpZarrStore(Store):
         super().__init__(read_only=read_only)
         self.base_url = base_url.rstrip("/") + "/"
         self.headers = headers or {}
+        self.httpx_client_kwargs = {
+            "timeout": httpx.Timeout(120.0),
+            "follow_redirects": True,
+        }
 
     def _full_url(self, key: str) -> str:
         return urljoin(self.base_url, key)
@@ -50,13 +55,13 @@ class HttpZarrStore(Store):
             elif isinstance(byte_range, SuffixByteRequest):
                 headers["Range"] = f"bytes=-{byte_range.suffix}"
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as response:
-                if response.status == 404:
-                    return None
-                response.raise_for_status()
-                content = await response.read()
-                return prototype.buffer.from_bytes(content)
+        async with httpx.AsyncClient(**self.httpx_client_kwargs) as client:
+            response = await client.get(url, headers=headers)
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            content = response.content
+            return prototype.buffer.from_bytes(content)
 
     async def get_partial_values(
         self,
@@ -67,9 +72,9 @@ class HttpZarrStore(Store):
 
     async def exists(self, key: str) -> bool:
         url = self._full_url(key)
-        async with aiohttp.ClientSession() as session:
-            async with session.head(url, headers=self.headers) as response:
-                return response.status == 200
+        async with httpx.AsyncClient(**self.httpx_client_kwargs) as client:
+            response = await client.head(url, headers=self.headers)
+            return response.status_code == 200
 
     async def set(self, key: str, value: Buffer) -> None:
         raise NotImplementedError("Write not supported")
@@ -96,38 +101,31 @@ if __name__ == "__main__":
     import os
 
     from anndata.experimental import read_lazy
-    from hypha_rpc import login
+    from hypha_rpc import connect_to_server, login
 
-    server_url = "https://hypha.aicell.io"
-    workspace = "chiron-platform"
-    service_id = "bioengine-worker"
-    dataset_id = "blood"
-
-    service_url = f"{server_url}/{workspace}/services/{service_id}/load_dataset?dataset_id={dataset_id}"
-
-    async def test_http_zarr_store():
+    async def test_http_zarr_store(server_url="https://hypha.aicell.io"):
         token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
-        header = {}  # {"Authorization": f"Bearer {token}"}
 
-        # Load dataset
-        async with aiohttp.ClientSession() as session:
-            async with session.get(service_url, headers=header) as response:
-                response.raise_for_status()
-                dataset_url = await response.json()
-        print("Dataset url:", dataset_url)
+        hypha_client = await connect_to_server(
+            {"server_url": server_url, "token": token}
+        )
+        artifact_manager = await hypha_client.get_service("public/artifact-manager")
 
-        # Get dataset info
-        async with aiohttp.ClientSession() as session:
-            async with session.get(dataset_url, headers=header) as response:
-                response.raise_for_status()
-                dataset_info = await response.json()
-        print("Dataset info:", dataset_info)
+        workspace = hypha_client.config.workspace
+        collection_id = f"{workspace}/bioengine-datasets"
+        available_datasets = await artifact_manager.list(collection_id)
+
+        if not available_datasets:
+            print("No datasets available.")
+            return
+
+        dataset_id = available_datasets[0].id.split("/")[-1]
+        base_url = f"{server_url}/{workspace}/artifacts/{dataset_id}/files/"
 
         # Access a file from the dataset
-        file_name = list(dataset_info["blood"]["files"].keys())[0]
         store = HttpZarrStore(
-            base_url=f"{dataset_url}/files/{file_name}/",
-            headers=header,
+            base_url=base_url,
+            # headers={"Authorization": f"Bearer {token}"},
         )
 
         # # `read_lazy` or `zarr.open_group` depending on your use

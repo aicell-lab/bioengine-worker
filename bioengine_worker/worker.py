@@ -444,9 +444,7 @@ class BioEngineWorker:
 
         worker_services = {
             "get_status": self.get_status,
-            "load_dataset": self.dataset_manager.load_dataset,
-            "close_dataset": self.dataset_manager.close_dataset,
-            "cleanup_datasets": self.dataset_manager.cleanup,
+            "view_dataset": self.dataset_manager.view_dataset,
             "execute_python_code": self.code_executor.execute_python_code,
             "list_applications": self.apps_manager.list_applications,
             "create_application": self.apps_manager.create_application,
@@ -901,7 +899,6 @@ class BioEngineWorker:
         ERROR SCENARIOS:
         Returns partial status if individual components fail to report, with error information included in the component's status section.
         """
-        # Does not require admin permissions
         current_time = time.time()
         status = {
             "service_start_time": self.start_time,
@@ -917,44 +914,6 @@ class BioEngineWorker:
         }
 
         return status
-
-    @schema_method
-    async def stop(
-        self, blocking: bool = False, context: Dict[str, Any] = None
-    ) -> None:
-        """
-        Gracefully shutdown the BioEngine worker and cleanup all resources.
-
-        Performs comprehensive cleanup of all worker components including datasets,
-        deployments, Ray cluster, and monitoring tasks. Ensures proper resource
-        cleanup and service deregistration from the Hypha server.
-
-        The shutdown process:
-        1. Validates admin permissions for shutdown operation
-        2. Cancels monitoring tasks and waits for completion
-        3. Cleanup applications and deployments through AppsManager
-        4. Cleanup datasets and HTTP services through DatasetsManager
-        5. Shutdown Ray cluster (if managed by this worker)
-        6. Disconnect from Hypha server
-        7. Clear worker state and mark as not ready
-
-        Args:
-            timeout: Maximum time in seconds to wait for each cleanup operation
-            blocking: If True, waits for all cleanup operations to complete before returning
-            context: User context information automatically injected by Hypha.
-
-        Raises:
-            PermissionError: If user is not authorized for shutdown operations
-            TimeoutError: If cleanup operations exceed the specified timeout
-            Exception: If critical cleanup operations fail
-        """
-        check_permissions(
-            context=context,
-            authorized_users=self.admin_users,
-            resource_name="shutdown the BioEngine worker",
-        )
-
-        await self._stop(blocking=blocking)
 
 
 if __name__ == "__main__":

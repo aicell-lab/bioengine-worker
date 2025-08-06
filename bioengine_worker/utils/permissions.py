@@ -28,7 +28,7 @@ def create_context(
 
 
 def check_permissions(
-    context: Dict[str, any],
+    context: Optional[Dict[str, any]],
     authorized_users: Union[List[str], str, None],
     resource_name: str,
 ) -> None:

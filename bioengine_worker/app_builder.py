@@ -94,7 +94,7 @@ class AppBuilder:
         apps_cache_dir: Union[str, Path],
         log_file: Optional[str] = None,
         debug: bool = False,
-    ) -> None:  
+    ) -> None:
         """
         Set up a new AppBuilder instance with basic configuration.
 
@@ -432,8 +432,12 @@ class AppBuilder:
                 self.replica_id = "unknown"
 
             # Ensure the current working directory is set to the application working directory
-            workdir = Path.home().resolve()  # Home directory is set to the apps_cache_dir
-            os.environ["HOME"] = str(workdir)  # Update the HOME environment variable with resolved path
+            workdir = (
+                Path.home().resolve()
+            )  # Home directory is set to the apps_cache_dir
+            os.environ["HOME"] = str(
+                workdir
+            )  # Update the HOME environment variable with resolved path
             workdir.mkdir(parents=True, exist_ok=True)
             os.chdir(workdir)
             print(f"📁 [{self.replica_id}] Working directory: {workdir}/")

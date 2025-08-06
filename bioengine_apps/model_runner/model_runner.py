@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union
 
-import aiofiles
 import httpx
 import numpy as np
 import yaml
@@ -180,6 +179,8 @@ class ModelCache:
         self, package_dir: Path, max_wait_time: int = 300
     ) -> bool:
         """Wait for another replica to finish downloading. Returns True if successful."""
+        import aiofiles
+
         start_time = time.time()
         downloading_marker = (
             package_dir.parent / f".downloading_{package_dir.name}.lock"
@@ -268,6 +269,8 @@ class ModelCache:
 
     async def _get_cached_models_info(self) -> List[Dict[str, Union[str, float, bool]]]:
         """Get information about all cached models including access times and locks."""
+        import aiofiles
+
         models_info = []
 
         try:
@@ -510,6 +513,8 @@ class ModelCache:
         stage: bool = False,
     ):
         """Download a single file for a model."""
+        import aiofiles
+
         stage_param = f"?stage={str(stage).lower()}"
         file_url = f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}/files/{file_meta['name']}{stage_param}"
         file_path = model_dir / file_meta["name"]
@@ -541,6 +546,8 @@ class ModelCache:
         file_list: Optional[List[dict]] = None,
     ):
         """Download all files for a model using concurrent downloads."""
+        import aiofiles
+
         await asyncio.to_thread(model_dir.mkdir, parents=True, exist_ok=True)
 
         meta_path = model_dir / ".file_metadata.json"
@@ -611,6 +618,8 @@ class ModelCache:
         If files already exist, they are updated only if newer versions are available.
         Uses atomic operations to prevent conflicts between replicas.
         """
+        import aiofiles
+
         package_dir = self.cache_dir / model_id
         downloading_marker = self.cache_dir / f".downloading_{model_id}.lock"
 
@@ -877,6 +886,8 @@ class ModelCache:
 
     async def _get_latest_download_time(self, package_path: Path) -> float:
         """Get the latest download time from the .file_metadata.json file."""
+        import aiofiles
+
         meta_path = package_path / ".file_metadata.json"
         if await asyncio.to_thread(meta_path.exists):
             async with aiofiles.open(meta_path, "r") as f:

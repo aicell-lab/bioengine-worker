@@ -31,9 +31,19 @@ async def ensure_collection(
         "name": "BioEngine Datasets",
         "description": f"A collection of Zarr-file datasets for workspace {workspace}",
     }
+    collection_config = {
+        "permissions": {
+            "@": "*"
+        },  # Allow all users of the same workspace to access the collection
+    }
 
     try:
-        await artifact_manager.read(collection_id)
+        collection = await artifact_manager.edit(
+            artifact_id=collection_id,
+            manifest=collection_manifest,
+            type="collection",
+            config=collection_config,
+        )
         logger.info(f"Collection '{collection_id}' already exists")
     except Exception as collection_error:
         expected_error = (
@@ -47,6 +57,7 @@ async def ensure_collection(
                     type="collection",
                     alias=collection_alias,
                     manifest=collection_manifest,
+                    collection_config=collection_config,
                 )
                 logger.info(
                     f"{collection_manifest['name']} collection created with ID: {collection.id}"
@@ -61,11 +72,10 @@ async def ensure_collection(
             )
 
 
-async def create_staged_artifact(
+async def stage_artifact(
     artifact_manager,
     workspace: str,
     dataset_name: str,
-    config: Optional[Dict[str, Any]] = None,
 ):
     """Create a staged artifact in the artifact manager."""
     collection_id = f"{workspace}/bioengine-datasets"
@@ -74,14 +84,18 @@ async def create_staged_artifact(
         "description": f"A streamable BioEngine dataset",
         "type": "zarr",
     }
-    config = config or {}
+    dataset_config = {
+        "permissions": {
+            "@": "*"
+        },  # Allow all users of the same workspace to access the dataset
+    }
     try:
         # Edit the dataset artifact if it exists
         artifact = await artifact_manager.edit(
-            f"{workspace}/{dataset_name}",
+            artifact_id=f"{workspace}/{dataset_name}",
             manifest=dataset_manifest,
             type="dataset",  # Fixed from "application"
-            config=config,
+            config=dataset_config,
             stage=True,
         )
         logger.info(f"Dataset '{dataset_name}' already exists, editing it.")
@@ -225,19 +239,15 @@ async def main(
     # Create BioEngine Datasets collection
     await ensure_collection(artifact_manager, workspace)
 
-    user_id = hypha_client.config.user["id"]
-    artifact_config = {"permissions": {"@": "*"}}
-
     # Upload Zarr files to the collection with improved batching
     upload_timeout = httpx.Timeout(120.0)  # Increased timeout
     async with httpx.AsyncClient(timeout=upload_timeout) as httpx_client:
         for dataset_name, zarr_file_path in zarr_files.items():
             # Create a staged artifact
-            artifact = await create_staged_artifact(
+            artifact = await stage_artifact(
                 artifact_manager=artifact_manager,
                 workspace=workspace,
                 dataset_name=dataset_name,
-                config=artifact_config,
             )
 
             # Create a list of relative paths in the Zarr file

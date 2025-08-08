@@ -444,9 +444,7 @@ class BioEngineWorker:
 
         worker_services = {
             "get_status": self.get_status,
-            "load_dataset": self.dataset_manager.load_dataset,
-            "close_dataset": self.dataset_manager.close_dataset,
-            "cleanup_datasets": self.dataset_manager.cleanup,
+            "view_dataset": self.dataset_manager.view_dataset,
             "execute_python_code": self.code_executor.execute_python_code,
             "list_applications": self.apps_manager.list_applications,
             "create_application": self.apps_manager.create_application,

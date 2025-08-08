@@ -1,9 +1,8 @@
 import asyncio
 from dataclasses import dataclass
-from typing import AsyncIterator, Iterable
-from urllib.parse import urljoin
+from typing import AsyncIterator, Dict, Iterable
 
-import aiohttp
+import httpx
 from zarr.abc.store import (
     ByteRequest,
     OffsetByteRequest,
@@ -17,7 +16,8 @@ from zarr.core.buffer import Buffer, BufferPrototype
 @dataclass
 class HttpZarrStore(Store):
     base_url: str
-    headers: dict
+    headers: Dict[str, str]
+    download_timeout: float = 120.0  # seconds
     _read_only: bool = True
 
     supports_writes: bool = False
@@ -25,13 +25,13 @@ class HttpZarrStore(Store):
     supports_partial_writes: bool = False
     supports_listing: bool = False
 
-    def __init__(self, base_url: str, headers=None, read_only=True):
-        super().__init__(read_only=read_only)
-        self.base_url = base_url.rstrip("/") + "/"
-        self.headers = headers or {}
+    def __init__(self, base_url: str, headers: Dict[str, str]):
+        super().__init__(read_only=True)
+        self.base_url = base_url.rstrip("/")
+        self.headers = headers
 
     def _full_url(self, key: str) -> str:
-        return urljoin(self.base_url, key)
+        return f"{self.base_url}/{key}?use_proxy=true"
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, HttpZarrStore) and self.base_url == other.base_url
@@ -50,13 +50,13 @@ class HttpZarrStore(Store):
             elif isinstance(byte_range, SuffixByteRequest):
                 headers["Range"] = f"bytes=-{byte_range.suffix}"
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as response:
-                if response.status == 404:
-                    return None
-                response.raise_for_status()
-                content = await response.read()
-                return prototype.buffer.from_bytes(content)
+        async with httpx.AsyncClient(timeout=self.download_timeout) as client:
+            response = await client.get(url, headers=headers)
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            content = response.content
+            return prototype.buffer.from_bytes(content)
 
     async def get_partial_values(
         self,
@@ -67,9 +67,9 @@ class HttpZarrStore(Store):
 
     async def exists(self, key: str) -> bool:
         url = self._full_url(key)
-        async with aiohttp.ClientSession() as session:
-            async with session.head(url, headers=self.headers) as response:
-                return response.status == 200
+        async with httpx.AsyncClient(timeout=self.download_timeout) as client:
+            response = await client.head(url, headers=self.headers)
+            return response.status_code == 200
 
     async def set(self, key: str, value: Buffer) -> None:
         raise NotImplementedError("Write not supported")
@@ -90,48 +90,3 @@ class HttpZarrStore(Store):
 
     def list_dir(self, prefix: str) -> AsyncIterator[str]:
         raise NotImplementedError("Dir listing not supported")
-
-
-if __name__ == "__main__":
-    import os
-
-    from anndata.experimental import read_lazy
-    from hypha_rpc import login
-
-    server_url = "https://hypha.aicell.io"
-    workspace = "chiron-platform"
-    service_id = "bioengine-worker"
-    dataset_id = "blood"
-
-    service_url = f"{server_url}/{workspace}/services/{service_id}/load_dataset?dataset_id={dataset_id}"
-
-    async def test_http_zarr_store():
-        token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
-        header = {}  # {"Authorization": f"Bearer {token}"}
-
-        # Load dataset
-        async with aiohttp.ClientSession() as session:
-            async with session.get(service_url, headers=header) as response:
-                response.raise_for_status()
-                dataset_url = await response.json()
-        print("Dataset url:", dataset_url)
-
-        # Get dataset info
-        async with aiohttp.ClientSession() as session:
-            async with session.get(dataset_url, headers=header) as response:
-                response.raise_for_status()
-                dataset_info = await response.json()
-        print("Dataset info:", dataset_info)
-
-        # Access a file from the dataset
-        file_name = list(dataset_info["blood"]["files"].keys())[0]
-        store = HttpZarrStore(
-            base_url=f"{dataset_url}/files/{file_name}/",
-            headers=header,
-        )
-
-        # # `read_lazy` or `zarr.open_group` depending on your use
-        adata = read_lazy(store, load_annotation_index=True)
-        print(adata)
-
-    asyncio.run(test_http_zarr_store())

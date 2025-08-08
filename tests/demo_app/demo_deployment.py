@@ -102,6 +102,14 @@ class DemoDeployment:
 
         ascii_art_response = await self.ascii_art()
 
+        # Test BioEngine datasets
+        available_datasets = await self.bioengine_datasets.list()
+        print(f"Available datasets: {available_datasets}")
+
+        if available_datasets:
+            dataset = await self.bioengine_datasets.get(available_datasets[0])
+            print(f"Selected dataset: {dataset}")
+
     # === Internal Methods ===
 
     @serve.multiplexed(max_num_models_per_replica=3)

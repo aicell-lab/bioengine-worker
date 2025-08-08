@@ -352,7 +352,7 @@ class BioEngineProxyDeployment:
         """
         method_name = method_schema["name"]
 
-        async def deployment_function(*args, context, **kwargs) -> Any:
+        async def deployment_function(*args, context: Dict[str, Any], **kwargs) -> Any:
             async with self.service_semaphore:
                 request_id = str(uuid.uuid4())
                 try:
@@ -882,8 +882,6 @@ class BioEngineProxyDeployment:
 
 
 if __name__ == "__main__":
-    import os
-
     class MockMethod:
         def __init__(self, name: str):
             self.name = name
@@ -899,7 +897,7 @@ if __name__ == "__main__":
             return MockMethod(name)
 
     # Example usage of BioEngineProxyDeployment
-    async def main():
+    async def test_proxy_deployment():
         rtc_deployment_class = BioEngineProxyDeployment.func_or_class
         entry_deployment_handle = MockHandle()
         method_schema = {

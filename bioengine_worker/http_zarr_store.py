@@ -4,6 +4,7 @@ from typing import AsyncIterator, Iterable
 from urllib.parse import urljoin
 
 import httpx
+import zarr
 from zarr.abc.store import (
     ByteRequest,
     OffsetByteRequest,
@@ -18,7 +19,7 @@ from zarr.core.buffer import Buffer, BufferPrototype
 class HttpZarrStore(Store):
     base_url: str
     headers: dict
-    httpx_client_kwargs: dict
+    download_timeout: float = 120.0  # seconds
     _read_only: bool = True
 
     supports_writes: bool = False
@@ -30,13 +31,9 @@ class HttpZarrStore(Store):
         super().__init__(read_only=read_only)
         self.base_url = base_url.rstrip("/") + "/"
         self.headers = headers or {}
-        self.httpx_client_kwargs = {
-            "timeout": httpx.Timeout(120.0),
-            "follow_redirects": True,
-        }
 
     def _full_url(self, key: str) -> str:
-        return urljoin(self.base_url, key)
+        return urljoin(self.base_url, f"{key}?use_proxy=true")
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, HttpZarrStore) and self.base_url == other.base_url
@@ -55,7 +52,7 @@ class HttpZarrStore(Store):
             elif isinstance(byte_range, SuffixByteRequest):
                 headers["Range"] = f"bytes=-{byte_range.suffix}"
 
-        async with httpx.AsyncClient(**self.httpx_client_kwargs) as client:
+        async with httpx.AsyncClient(timeout=self.download_timeout) as client:
             response = await client.get(url, headers=headers)
             if response.status_code == 404:
                 return None
@@ -72,7 +69,7 @@ class HttpZarrStore(Store):
 
     async def exists(self, key: str) -> bool:
         url = self._full_url(key)
-        async with httpx.AsyncClient(**self.httpx_client_kwargs) as client:
+        async with httpx.AsyncClient(timeout=self.download_timeout) as client:
             response = await client.head(url, headers=self.headers)
             return response.status_code == 200
 
@@ -125,11 +122,12 @@ if __name__ == "__main__":
         # Access a file from the dataset
         store = HttpZarrStore(
             base_url=base_url,
-            # headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}"},
         )
+        group = zarr.open_group(store, mode="r")
 
-        # # `read_lazy` or `zarr.open_group` depending on your use
-        adata = read_lazy(store, load_annotation_index=True)
+        # `read_lazy` or `zarr.open_group` depending on your use
+        adata = read_lazy(group, load_annotation_index=True)
         print(adata)
 
     asyncio.run(test_http_zarr_store())

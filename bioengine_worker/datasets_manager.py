@@ -13,10 +13,11 @@ from hypha_rpc.utils.schema import schema_method
 from bioengine_worker.utils import check_permissions, create_logger
 
 
-# TODO: Move all dataset interaction to Ray actors (or ray serve?)
-# TODO: for each loaded dataset, register a Hypha ASGI service in a separate Ray actor
+# TODO: Move all datasets to hypha artifact manager
+# TODO: datasets don't need to be loaded anymore, artifact manager is always available
 # TODO: Update status, only return loaded datasets and their status
 # TODO: Update list datasets, return available datasets and some information about them
+
 
 class DatasetsManager:
     """
@@ -464,6 +465,13 @@ class DatasetsManager:
             RuntimeError: If server connection is not initialized
         """
         return self.datasets
+    
+    @schema_method
+    async def view_dataset(self, dataset_id: str, context: Dict[str, Any]) -> str:
+        """
+        Return a summary of the dataset and its files.
+        """
+        pass
 
     @schema_method
     async def load_dataset(self, dataset_id: str, context: Dict[str, Any]) -> str:

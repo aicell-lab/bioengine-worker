@@ -226,7 +226,7 @@ async def main(
     await ensure_collection(artifact_manager, workspace)
 
     user_id = hypha_client.config.user["id"]
-    artifact_config = {"permissions": {user_id: "*"}}
+    artifact_config = {"permissions": {"@": "*"}}
 
     # Upload Zarr files to the collection with improved batching
     upload_timeout = httpx.Timeout(120.0)  # Increased timeout

@@ -1,10 +1,8 @@
 import asyncio
 from dataclasses import dataclass
-from typing import AsyncIterator, Iterable
-from urllib.parse import urljoin
+from typing import AsyncIterator, Dict, Iterable
 
 import httpx
-import zarr
 from zarr.abc.store import (
     ByteRequest,
     OffsetByteRequest,
@@ -18,7 +16,7 @@ from zarr.core.buffer import Buffer, BufferPrototype
 @dataclass
 class HttpZarrStore(Store):
     base_url: str
-    headers: dict
+    headers: Dict[str, str]
     download_timeout: float = 120.0  # seconds
     _read_only: bool = True
 
@@ -27,13 +25,13 @@ class HttpZarrStore(Store):
     supports_partial_writes: bool = False
     supports_listing: bool = False
 
-    def __init__(self, base_url: str, headers=None, read_only=True):
-        super().__init__(read_only=read_only)
-        self.base_url = base_url.rstrip("/") + "/"
-        self.headers = headers or {}
+    def __init__(self, base_url: str, headers: Dict[str, str]):
+        super().__init__(read_only=True)
+        self.base_url = base_url.rstrip("/")
+        self.headers = headers
 
     def _full_url(self, key: str) -> str:
-        return urljoin(self.base_url, f"{key}?use_proxy=true")
+        return f"{self.base_url}/{key}?use_proxy=true"
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, HttpZarrStore) and self.base_url == other.base_url
@@ -92,42 +90,3 @@ class HttpZarrStore(Store):
 
     def list_dir(self, prefix: str) -> AsyncIterator[str]:
         raise NotImplementedError("Dir listing not supported")
-
-
-if __name__ == "__main__":
-    import os
-
-    from anndata.experimental import read_lazy
-    from hypha_rpc import connect_to_server, login
-
-    async def test_http_zarr_store(server_url="https://hypha.aicell.io"):
-        token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
-
-        hypha_client = await connect_to_server(
-            {"server_url": server_url, "token": token}
-        )
-        artifact_manager = await hypha_client.get_service("public/artifact-manager")
-
-        workspace = hypha_client.config.workspace
-        collection_id = f"{workspace}/bioengine-datasets"
-        available_datasets = await artifact_manager.list(collection_id)
-
-        if not available_datasets:
-            print("No datasets available.")
-            return
-
-        dataset_id = available_datasets[0].id.split("/")[-1]
-        base_url = f"{server_url}/{workspace}/artifacts/{dataset_id}/files/"
-
-        # Access a file from the dataset
-        store = HttpZarrStore(
-            base_url=base_url,
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        group = zarr.open_group(store, mode="r")
-
-        # `read_lazy` or `zarr.open_group` depending on your use
-        adata = read_lazy(group, load_annotation_index=True)
-        print(adata)
-
-    asyncio.run(test_http_zarr_store())

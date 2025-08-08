@@ -867,8 +867,6 @@ class BioEngineProxyDeployment:
 
 
 if __name__ == "__main__":
-    import os
-
     class MockMethod:
         def __init__(self, name: str):
             self.name = name
@@ -884,7 +882,7 @@ if __name__ == "__main__":
             return MockMethod(name)
 
     # Example usage of BioEngineProxyDeployment
-    async def main():
+    async def test_proxy_deployment():
         rtc_deployment_class = BioEngineProxyDeployment.func_or_class
         entry_deployment_handle = MockHandle()
         method_schema = {

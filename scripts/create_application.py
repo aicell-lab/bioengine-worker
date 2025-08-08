@@ -13,7 +13,7 @@ from bioengine_worker.utils import (
 )
 
 
-async def manage_artifact(
+async def create_application(
     directory: str,
     server_url: str,
     workspace: str = None,
@@ -120,7 +120,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     asyncio.run(
-        manage_artifact(
+        create_application(
             directory=args.directory,
             server_url=args.server_url,
             workspace=args.workspace,

@@ -9,5 +9,6 @@ from .logger import (
     file_logging_format,
     stream_logging_format,
 )
+from .network import acquire_free_port, get_internal_ip
 from .permissions import check_permissions, create_context
 from .requirements import get_pip_requirements, update_requirements

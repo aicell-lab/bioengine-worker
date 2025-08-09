@@ -145,7 +145,7 @@ def ray_address(worker_mode: str) -> Generator[str, None, None]:
             ray_cluster._set_head_node_address()
             ray_cluster.is_ready.set()
 
-            yield ray_cluster.head_node_address
+            yield ray_cluster.address
 
             # Stop the Ray cluster after tests complete
             asyncio.run(ray_cluster.stop())

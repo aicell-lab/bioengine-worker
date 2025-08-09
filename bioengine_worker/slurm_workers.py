@@ -44,7 +44,6 @@ class SlurmWorkers:
         # Slurm job configuration parameters
         worker_cache_dir: str,
         image: str = f"ghcr.io/aicell-lab/bioengine-worker:{__version__}",
-        worker_data_dir: Optional[str] = None,
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
         default_mem_in_gb_per_cpu: int = 16,
@@ -68,7 +67,6 @@ class SlurmWorkers:
             ray_cluster: Ray cluster manager instance
             worker_cache_dir: Cache directory mounted to the container when starting a worker
             image: BioEngine remote docker image or path to the image file
-            worker_data_dir: Optional data directory mounted to the container when starting a worker
             default_num_gpus: Default number of GPUs to allocate per worker
             default_num_cpus: Default number of CPUs to allocate per worker
             default_mem_in_gb_per_cpu: Default memory (GB) to allocate per CPU
@@ -108,7 +106,6 @@ class SlurmWorkers:
         )
         self.job_name = "ray_worker"
         self.worker_cache_dir = str(worker_cache_dir)
-        self.worker_data_dir = str(worker_data_dir) if worker_data_dir else None
         self.default_num_gpus = default_num_gpus
         self.default_num_cpus = default_num_cpus
         self.default_mem_in_gb_per_cpu = default_mem_in_gb_per_cpu
@@ -170,17 +167,10 @@ class SlurmWorkers:
                 f"Binding cache directory '{self.worker_cache_dir}' to container directory '/tmp/bioengine'"
             )
 
-            # Add data directory binding if specified
-            if self.worker_data_dir:
-                self.logger.info(
-                    f"Binding data directory '{self.worker_data_dir}' to container directory '/data'"
-                )
-                apptainer_cmd += f" --bind {self.worker_data_dir}:/data"
-
             # Define the Ray worker command that will run inside the container and add it to the command
             ray_worker_cmd = (
                 "ray start "
-                f"--address={self.ray_cluster.head_node_address} "
+                f"--address={self.ray_cluster.address} "
                 f"--num-cpus={num_cpus} "
                 f"--num-gpus={num_gpus} "
                 "--resources='{\"slurm_job_id:'${SLURM_JOB_ID}'\": 1}' "

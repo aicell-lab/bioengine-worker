@@ -337,13 +337,6 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "Must be accessible from compute nodes. Required for SLURM mode.",
     )
     slurm_job_group.add_argument(
-        "--worker_data_dir",
-        type=str,
-        metavar="PATH",
-        help="Data directory path mounted to worker containers in SLURM jobs. "
-        "Must be shared storage accessible from all compute nodes. Required for SLURM mode.",
-    )
-    slurm_job_group.add_argument(
         "--default_num_gpus",
         default=1,
         type=int,

@@ -17,8 +17,7 @@ from ray.serve.handle import DeploymentHandle
 from bioengine.applications.proxy_deployment import BioEngineProxyDeployment
 from bioengine.utils import create_logger, update_requirements
 
-# Use relative import to not require the 'bioengine' package in the deployment
-from ..datasets.datasets import BioEngineDatasets
+from bioengine.datasets import BioEngineDatasets
 
 
 class AppManifest(TypedDict):

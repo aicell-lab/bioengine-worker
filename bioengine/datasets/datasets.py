@@ -3,8 +3,7 @@ import asyncio
 import httpx
 from zarr import open_group
 
-# Use relative import to not require the 'bioengine' package in the deployment
-from .datasets.http_zarr_store import HttpZarrStore
+from bioengine.datasets.http_zarr_store import HttpZarrStore
 
 
 class BioEngineDatasets:

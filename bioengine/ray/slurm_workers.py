@@ -161,10 +161,10 @@ class SlurmWorkers:
                 "--cleanenv "
                 "--env=SLURM_JOB_ID='${SLURM_JOB_ID}' "
                 "--pwd /app "
-                f"--bind {self.worker_cache_dir}:/tmp/bioengine"
+                f"--bind {self.worker_cache_dir}:${{HOME}}/.bioengine"
             )
             self.logger.info(
-                f"Binding cache directory '{self.worker_cache_dir}' to container directory '/tmp/bioengine'"
+                f"Binding cache directory '{self.worker_cache_dir}' to container directory '{os.environ['HOME']}/.bioengine'"
             )
 
             # Define the Ray worker command that will run inside the container and add it to the command

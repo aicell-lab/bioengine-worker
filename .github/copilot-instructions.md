@@ -128,7 +128,7 @@ async def admin_operation(self, context=None):
 Ray auto-allocates ports starting from defaults (6379, 8000, etc.). Check `ray_cluster.py/_set_cluster_ports()` for logic.
 
 ### SLURM Issues  
-Worker containers mount `/tmp/bioengine` and `/data`. Check `slurm_workers.py` for job submission patterns.
+Worker containers mount `${HOME}/bioengine`. Check `slurm_workers.py` for job submission patterns.
 
 ### Hypha Connection
 Authentication via `HYPHA_TOKEN` env var or interactive login. Service discovery uses workspace-scoped IDs.

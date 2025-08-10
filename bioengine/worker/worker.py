@@ -73,7 +73,6 @@ class BioEngineWorker:
     Attributes:
         admin_users (List[str]): List of user IDs/emails authorized for admin operations
         cache_dir (Path): Directory for temporary files, Ray data, and worker state
-        data_dir (Path): Root directory for dataset storage and access
         dashboard_url (str): URL of the BioEngine dashboard for worker management
         monitoring_interval_seconds (int): Interval for status monitoring and health checks
         log_file (Optional[str]): Path to log file for structured logging output
@@ -96,8 +95,7 @@ class BioEngineWorker:
         worker = BioEngineWorker(
             mode="slurm",
             admin_users=["admin@institution.edu"],
-            cache_dir="/tmp/bioengine",
-            data_dir="/shared/datasets",
+            cache_dir=f"{os.environ['HOME']}/.bioengine",
             server_url="https://hypha.aicell.io",
             startup_applications=[
                 {"artifact_id": "<my-workspace>/<my_artifact>", "application_id": "my_custom_name"},
@@ -127,8 +125,7 @@ class BioEngineWorker:
         self,
         mode: Literal["slurm", "single-machine", "external-cluster"] = "slurm",
         admin_users: Optional[List[str]] = None,
-        cache_dir: Union[str, Path] = "/tmp/bioengine",
-        data_dir: Union[str, Path] = "/data",
+        cache_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine",
         startup_applications: Optional[List[dict]] = None,
         monitoring_interval_seconds: int = 10,
         # Hypha server connection configuration
@@ -173,8 +170,6 @@ class BioEngineWorker:
                         Auto-includes the authenticated user from Hypha connection.
             cache_dir: Directory path for temporary files, Ray data storage, and worker state.
                       Must be accessible and have sufficient space for Ray operations.
-            data_dir: Root directory path for dataset storage and access. Should be mounted
-                     storage accessible across worker nodes in distributed deployments.
             startup_applications: List of application configuration dictionaries to deploy
                                  automatically during worker startup. Each dictionary should contain
                                  deployment parameters including 'artifact_id' and optionally
@@ -915,100 +910,3 @@ class BioEngineWorker:
 
         return status
 
-
-if __name__ == "__main__":
-    """Test the BioEngineWorker class functionality"""
-    import aiohttp
-
-    async def test_bioengine_worker(keep_running=True):
-        try:
-            # Create BioEngine worker instance
-            server_url = "https://hypha.aicell.io"
-            token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
-            bioengine_worker = BioEngineWorker(
-                workspace="chiron-platform",
-                server_url=server_url,
-                token=token,
-                service_id="bioengine-worker",
-                dataset_config={
-                    "data_dir": str(Path(__file__).parent.parent / "data"),
-                    "service_id": "bioengine-dataset",
-                },
-                ray_cluster_config={
-                    "head_num_cpus": 4,
-                    "ray_temp_dir": str(
-                        Path(__file__).parent.parent / ".bioengine" / "ray"
-                    ),
-                    "image": str(
-                        Path(__file__).parent.parent
-                        / "apptainer_images"
-                        / f"bioengine-worker_{__version__}.sif"
-                    ),
-                },
-                ray_autoscaling_config={
-                    "metrics_interval_seconds": 10,
-                },
-                ray_deployment_config={
-                    "service_id": "bioengine-apps",
-                },
-                debug=True,
-            )
-
-            # Initialize worker
-            sid = await bioengine_worker.start()
-
-            # Test registered service
-            server = await connect_to_server(
-                {
-                    "server_url": server_url,
-                    "token": token,
-                    "workspace": bioengine_worker.workspace,
-                }
-            )
-            worker_service = await server.get_service(sid)
-
-            # Get initial status
-            status = await worker_service.get_status()
-            print("\nInitial status:", status)
-
-            # Try accessing the dataset manager
-            dataset_url = await worker_service.load_dataset(dataset_id="blood")
-            print("Dataset URL:", dataset_url)
-
-            # Get dataset info
-            headers = {"Authorization": f"Bearer {token}"}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(dataset_url, headers=headers) as response:
-                    response.raise_for_status()
-                    dataset_info = await response.json()
-            print("Dataset info:", dataset_info)
-
-            # Test deploying an artifact
-            artifact_id = "example-deployment"
-            deployment_name = await worker_service.deploy_artifact(
-                artifact_id=artifact_id,
-            )
-            worker_status = await worker_service.get_status()
-            assert deployment_name in worker_status["deployments"]
-
-            # Test registered deployment service
-            deployment_service_id = worker_status["deployments"]["service_id"]
-            deployment_service = await server.get_service(deployment_service_id)
-
-            result = await deployment_service[deployment_name]()
-            print(result)
-
-            # Keep server running if requested
-            if keep_running:
-                print("Server running. Press Ctrl+C to stop.")
-                await server.serve()
-
-        except Exception as e:
-            print(f"Test error: {e}")
-            raise e
-        finally:
-            # Cleanup
-            await bioengine_worker.cleanup(context=bioengine_worker._admin_context)
-
-    # Run the test
-    asyncio.run(test_bioengine_worker())

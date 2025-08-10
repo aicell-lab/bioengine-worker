@@ -1,6 +1,8 @@
 import asyncio
 import base64
 import logging
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import yaml
@@ -72,7 +74,7 @@ class AppsManager:
         self,
         ray_cluster: RayCluster,
         token: str,
-        apps_cache_dir: str = "/tmp/bioengine/apps",
+        apps_cache_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine/apps",
         startup_applications: Optional[List[dict]] = None,
         # Logger
         log_file: Optional[str] = None,
@@ -86,7 +88,7 @@ class AppsManager:
         cluster mode and initializes all necessary components.
 
         Directory Configuration by Mode:
-        - SLURM mode: Uses fixed paths (/tmp/bioengine/apps, /data) for container compatibility
+        - SLURM mode: Uses fixed paths (/home/<user>/.bioengine/apps) for container compatibility
         - Single-machine mode: Uses provided paths, converted to absolute paths
         - External-cluster mode: Uses provided paths directly
 
@@ -117,8 +119,8 @@ class AppsManager:
         self.ray_cluster = ray_cluster
 
         if self.ray_cluster.mode == "slurm":
-            # SLURM workers always mount cache directory to /tmp/bioengine inside the container
-            apps_cache_dir = "/tmp/bioengine/apps"
+            # SLURM workers always mount cache directory to /home/<user>/.bioengine inside the container
+            apps_cache_dir = f"{os.environ['HOME']}/.bioengine/apps"
         elif self.ray_cluster.mode not in ["single-machine", "external-cluster"]:
             raise ValueError(
                 f"Unsupported Ray cluster mode: {self.ray_cluster.mode}. "

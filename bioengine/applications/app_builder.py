@@ -120,7 +120,7 @@ class AppBuilder:
             ```python
             builder = AppBuilder(
                 token=os.environ["HYPHA_TOKEN"],
-                apps_cache_dir=Path("/tmp/bioengine/apps"),
+                apps_cache_dir=f"{os.environ['HOME']}/apps",
                 debug=True
             )
             ```

@@ -73,7 +73,7 @@ class RayCluster:
         dashboard_port: int = 8265,
         client_server_port: int = 10001,
         redis_password: Optional[str] = None,
-        ray_temp_dir: str = "/tmp/bioengine/ray",
+        ray_temp_dir: str = f"{os.environ['HOME']}/.bioengine/ray",
         head_num_cpus: int = 0,
         head_num_gpus: int = 0,
         head_memory_in_gb: Optional[int] = None,
@@ -113,7 +113,7 @@ class RayCluster:
             dashboard_port: Port for Ray dashboard. Default 8265.
             client_server_port: Base port for Ray client services. Default 10001.
             redis_password: Password for Redis server. Generated randomly if None.
-            ray_temp_dir: Temporary directory for Ray. Default '/tmp/bioengine/ray'.
+            ray_temp_dir: Temporary directory for Ray. Default '/home/<user>/.bioengine/ray'.
             head_num_cpus: Number of CPUs for head node (single-machine mode). Default 0.
             head_num_gpus: Number of GPUs for head node (single-machine mode). Default 0.
             head_memory_in_gb: Memory limit for head node in GB. If not set, Ray will auto-detect available memory.

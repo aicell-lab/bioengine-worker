@@ -48,7 +48,7 @@ in the ray actor options based on the disable_gpu parameter (default: False) pas
 deploy_application().
 
 Resource allocation is validated against available cluster resources before deployment.
-See bioengine_worker/apps_manager.py for the deployment orchestration logic.
+See bioengine/applications/apps_manager.py for the deployment orchestration logic.
 
 Ray Serve deployment parameters: https://docs.ray.io/en/latest/serve/api/doc/ray.serve.deployment_decorator.html
 BioEngine app deployment guide: See project README for artifact structure requirements.

@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "bioengine_worker"
+name = "bioengine"
 version = "0.3.21"
 description = "BioEngine Worker for managing Ray clusters and datasets"
 requires-python = ">=3.10"
@@ -20,6 +20,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+datasets = [
+    "hypha>=0.20.94"
+]
 dev = [
     "black",
     "pytest",
@@ -28,11 +31,11 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 artifacts = [
-    "bioengine_worker/*.py",
+    "bioengine/*.py",
 ]
 
 [tool.hatch.build.targets.wheel.sources]
-"bioengine_worker" = "bioengine_worker"
+"bioengine" = "bioengine"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

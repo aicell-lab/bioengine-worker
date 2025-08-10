@@ -102,8 +102,8 @@ async def bioengine_worker_service_id(
     """
 
     # Set environment variables for startup application deployment from local path
-    monkeypatch.setenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH", str(tests_dir))
-    assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") == str(tests_dir)
+    monkeypatch.setenv("BIOENGINE_LOCAL_ARTIFACT_PATH", str(tests_dir))
+    assert os.getenv("BIOENGINE_LOCAL_ARTIFACT_PATH") == str(tests_dir)
 
     # Initialize the BioEngine worker with startup applications
     bioengine_worker = BioEngineWorker(

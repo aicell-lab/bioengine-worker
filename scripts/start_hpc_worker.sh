@@ -316,4 +316,4 @@ $CONTAINER_CMD exec \
     "${ENV_VARS[@]}" \
     "${BIND_OPTS[@]}" \
     "$IMAGE" \
-    python -m bioengine_worker "${BIOENGINE_WORKER_ARGS[@]}"
+    python -m bioengine.worker "${BIOENGINE_WORKER_ARGS[@]}"

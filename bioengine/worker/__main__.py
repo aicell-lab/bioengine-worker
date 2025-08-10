@@ -19,13 +19,13 @@ Key Features:
 - Hypha server integration with authentication management
 
 Usage:
-    python -m bioengine_worker --mode slurm --admin_users admin@institution.edu
-    python -m bioengine_worker --mode single-machine --debug
-    python -m bioengine_worker --mode external-cluster --server_url https://custom.hypha.io
+    python -m bioengine.worker --mode slurm --admin_users admin@institution.edu
+    python -m bioengine.worker --mode single-machine --debug
+    python -m bioengine.worker --mode external-cluster --server_url https://custom.hypha.io
 
 Example Deployment:
     # SLURM HPC environment with custom configuration
-    python -m bioengine_worker \\
+    python -m bioengine.worker \\
         --mode slurm \\
         --admin_users admin@institution.edu researcher@institution.edu \\
         --cache_dir /shared/bioengine/cache \\

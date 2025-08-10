@@ -17,7 +17,7 @@ from ray.serve.handle import DeploymentHandle
 from bioengine.applications.proxy_deployment import BioEngineProxyDeployment
 from bioengine.utils import create_logger, update_requirements
 
-# Use relative import to not require the 'bioengine_worker' package in the deployment
+# Use relative import to not require the 'bioengine' package in the deployment
 from ..datasets.datasets import BioEngineDatasets
 
 
@@ -240,11 +240,11 @@ class AppBuilder:
             authorized_users: ["user123", "admin@example.com"]
             ```
         """
-        if os.environ.get("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"):
+        if os.environ.get("BIOENGINE_LOCAL_ARTIFACT_PATH"):
             # Load the file content from local path
             artifact_folder = artifact_id.split("/")[1].replace("-", "_")
             local_deployments_dir = Path(
-                os.environ["BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"]
+                os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"]
             )
             local_path = local_deployments_dir / artifact_folder / "manifest.yaml"
             if not local_path.exists():
@@ -365,6 +365,8 @@ class AppBuilder:
 
         # Update with BioEngine requirements
         pip_requirements = update_requirements(pip_requirements)
+
+        # TODO: add bioengine as module
 
         # Set BioEngine environment variables
         app_work_dir = self.apps_cache_dir / application_id
@@ -901,14 +903,14 @@ class AppBuilder:
             import_path="model_server:ImageClassifier" loads the ImageClassifier
             class from model_server.py file in the artifact.
         """
-        if os.environ.get("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"):
+        if os.environ.get("BIOENGINE_LOCAL_ARTIFACT_PATH"):
             # Load the file content from local path
             artifact_folder = artifact_id.split("/")[1].replace("-", "_")
             self.logger.debug(
                 f"Loading deployment code from local path: {python_file} in folder {artifact_folder}/"
             )
             local_deployments_dir = Path(
-                os.environ["BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"]
+                os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"]
             )
             local_path = local_deployments_dir / artifact_folder / python_file
             if not local_path.exists():
@@ -1272,7 +1274,7 @@ if __name__ == "__main__":
 
     base_dir = Path(__file__).parent.parent
     apps_cache_dir = base_dir / ".bioengine" / "apps"
-    os.environ["BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"] = str(base_dir / "tests")
+    os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"] = str(base_dir / "tests")
 
     async def test_app_builder():
         server = await connect_to_server({"server_url": server_url, "token": token})

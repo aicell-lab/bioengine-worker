@@ -6,7 +6,7 @@ on:
     branches:
       - main
     paths:
-      - 'bioengine_worker/**'
+      - 'bioengine/**'
       - 'requirements*.txt'
       - 'pyproject.toml'
       - 'Dockerfile'

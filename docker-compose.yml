@@ -1,24 +1,23 @@
 version: '3.8'
 
 services:
-  bioengine_worker:
+  bioengine-worker:
     build:
       context: .
       dockerfile: Dockerfile
     # Run `BIOENGINE_VERSION=$(python scripts/get_version.py) docker compose up` to use a specific version
     image: ghcr.io/aicell-lab/bioengine-worker:${BIOENGINE_VERSION:-latest}
-    container_name: bioengine_worker
+    container_name: bioengine-worker
     user: "${UID}:${GID}"  # add UID and GID to .env file if not found
     # user: "nobody:nogroup"
     volumes:
       - ./.bioengine:/tmp/bioengine
-      - ./data:/data
     shm_size: 10.24gb
     env_file:
       - .env
-    restart: "no"
+    restart: "no"  # TODO: add health checks and restarts
     command: [
-      "python", "-m", "bioengine_worker",
+      "python", "-m", "bioengine.worker",
       "--mode", "single-machine",
       "--head_num_gpus", "1",
       "--head_num_cpus", "4",
@@ -32,3 +31,17 @@ services:
               # device_ids: ['GPU-xxxxxxx']  # replace with your GPU ID
               capabilities: [gpu]
     runtime: nvidia
+
+  bioengine-datasets:
+    image: ghcr.io/aicell-lab/bioengine-worker:${BIOENGINE_VERSION:-latest}
+    container_name: bioengine-datasets
+    user: "${UID}:${GID}"  # add UID and GID to .env file if not found
+    # user: "nobody:nogroup"
+    volumes:
+      - ./data:/data
+    env_file:
+      - .env
+    restart: "no"  # TODO: add health checks and restarts
+    command: [
+      "python", "-m", "bioengine.datasets"
+    ]

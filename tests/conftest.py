@@ -64,7 +64,7 @@ def worker_mode(request) -> str:
 @pytest.fixture(scope="session")
 def workspace_folder() -> Path:
     """
-    Return project root directory and set BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH.
+    Return project root directory and set BIOENGINE_LOCAL_ARTIFACT_PATH.
 
     Configures environment for local test artifact discovery.
     """

@@ -38,7 +38,7 @@ pytest tests/end_to_end/ -v
 pytest tests/ --maxfail=1
 
 # Generate coverage report
-pytest tests/ --cov=bioengine_worker --cov-report=html
+pytest tests/ --cov=bioengine --cov-report=html
 ```
 
 ## Test Structure

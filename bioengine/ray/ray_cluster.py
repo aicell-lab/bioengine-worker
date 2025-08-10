@@ -13,10 +13,10 @@ from typing import Dict, List, Literal, Optional, Union
 import ray
 from ray import serve
 
-from bioengine_worker import __version__
-from bioengine_worker.proxy_actor import BioEngineProxyActor
-from bioengine_worker.slurm_workers import SlurmWorkers
-from bioengine_worker.utils import (
+from bioengine import __version__
+from bioengine.ray.proxy_actor import BioEngineProxyActor
+from bioengine.ray.slurm_workers import SlurmWorkers
+from bioengine.utils import (
     acquire_free_port,
     create_logger,
     get_internal_ip,

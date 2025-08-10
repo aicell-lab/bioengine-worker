@@ -44,8 +44,8 @@ import json
 import sys
 from typing import Dict
 
-from bioengine_worker import __version__
-from bioengine_worker.worker import BioEngineWorker
+from bioengine import __version__
+from bioengine.worker import BioEngineWorker
 
 
 def create_parser() -> argparse.ArgumentParser:

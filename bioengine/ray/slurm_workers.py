@@ -9,8 +9,8 @@ from typing import Dict, List, Optional, Set
 
 import ray
 
-from bioengine_worker import __version__
-from bioengine_worker.utils import create_logger
+from bioengine import __version__
+from bioengine.utils import create_logger
 
 
 class SlurmWorkers:

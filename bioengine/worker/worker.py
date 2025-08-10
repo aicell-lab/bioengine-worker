@@ -10,12 +10,12 @@ from hypha_rpc.sync import login
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 
-from bioengine_worker import __version__
-from bioengine_worker.apps_manager import AppsManager
-from bioengine_worker.code_executor import CodeExecutor
-from bioengine_worker.datasets_manager import DatasetsManager
-from bioengine_worker.ray_cluster import RayCluster
-from bioengine_worker.utils import check_permissions, create_context, create_logger
+from bioengine import __version__
+from bioengine.applications import AppsManager
+from bioengine.worker.code_executor import CodeExecutor
+from bioengine.datasets import DatasetsManager
+from bioengine.ray import RayCluster
+from bioengine.utils import check_permissions, create_context, create_logger
 
 
 class BioEngineWorker:
@@ -245,7 +245,7 @@ class BioEngineWorker:
         # Worker state management
         self.start_time = None
         self._last_monitoring = 0
-        self._server = None
+        self.server = None
         self.is_ready = asyncio.Event()
         self._shutdown_event = asyncio.Event()
         self._shutdown_event.set()
@@ -299,11 +299,11 @@ class BioEngineWorker:
                 debug=debug,
             )
 
-            self.dataset_manager = DatasetsManager(
-                data_dir=data_dir,
-                log_file=log_file,
-                debug=debug,
-            )
+            # self.dataset_manager = DatasetsManager(
+            #     data_dir=data_dir,
+            #     log_file=log_file,
+            #     debug=debug,
+            # )
 
             self.code_executor = CodeExecutor(
                 ray_cluster=self.ray_cluster,
@@ -372,15 +372,15 @@ class BioEngineWorker:
             AuthenticationError: If token authentication fails
             ValueError: If server configuration is invalid
         """
-        if self._server:
+        if self.server:
             self.logger.debug("Closing existing Hypha server connection")
             try:
-                await self._server.disconnect()
+                await self.server.disconnect()
             except Exception as e:
                 self.logger.error(f"Error closing Hypha server connection: {e}")
 
         self.logger.info(f"Connecting to Hypha server at '{self.server_url}'...")
-        self._server = await connect_to_server(
+        self.server = await connect_to_server(
             {
                 "server_url": self.server_url,
                 "token": self._token,
@@ -390,14 +390,14 @@ class BioEngineWorker:
         )
 
         # Extract authenticated user information
-        user_id = self._server.config.user["id"]
-        user_email = self._server.config.user["email"]
+        user_id = self.server.config.user["id"]
+        user_email = self.server.config.user["email"]
 
         # Update connection configuration from server response (if not set)
         if self.workspace is None:
-            self.workspace = self._server.config.workspace
+            self.workspace = self.server.config.workspace
         if self.client_id is None:
-            self.client_id = self._server.config.client_id
+            self.client_id = self.server.config.client_id
 
         self.logger.info(
             f"User '{user_id}' ({user_email}) connected as client "
@@ -415,13 +415,22 @@ class BioEngineWorker:
         # Create admin context for internal operations
         self._admin_context = create_context(user_id, user_email)
 
+        # Pass server connection and admin users to component managers
+        await self.apps_manager.initialize(
+            server=self.server, admin_users=self.admin_users
+        )
+        await self.dataset_manager.initialize(
+            server=self.server, admin_users=self.admin_users
+        )
+        await self.code_executor.initialize(admin_users=self.admin_users)
+
         self.logger.info(
             f"Admin users for this BioEngine worker: {', '.join(self.admin_users)}"
         )
 
     async def _check_hypha_connection(self, reconnect: bool = True) -> None:
         try:
-            await asyncio.wait_for(self._server.echo("ping"), timeout=10)
+            await asyncio.wait_for(self.server.echo("ping"), timeout=10)
         except Exception as e:
             if reconnect:
                 self.logger.warning(
@@ -444,7 +453,7 @@ class BioEngineWorker:
 
         worker_services = {
             "get_status": self.get_status,
-            "view_dataset": self.dataset_manager.view_dataset,
+            # "view_dataset": self.dataset_manager.view_dataset,
             "execute_python_code": self.code_executor.execute_python_code,
             "list_applications": self.apps_manager.list_applications,
             "create_application": self.apps_manager.create_application,
@@ -456,7 +465,7 @@ class BioEngineWorker:
             "stop_worker": self.stop,
         }
         # TODO: return more informative error messages, e.g. by returning error instead of raising it
-        service_info = await self._server.register_service(
+        service_info = await self.server.register_service(
             {
                 "id": self.service_id,
                 "name": "BioEngine Worker",
@@ -471,7 +480,7 @@ class BioEngineWorker:
         )
         self.full_service_id = service_info.id
 
-        mcp_service = await self._server.register_service(
+        mcp_service = await self.server.register_service(
             {
                 "id": self.service_id + "-mcp",
                 "name": "BioEngine Worker MCP Service",
@@ -545,10 +554,10 @@ class BioEngineWorker:
                 self.logger.error(f"Error stopping Ray cluster: {e}")
 
         # Disconnect from the Hypha server
-        if hasattr(self, "_server") and self._server:
+        if hasattr(self, "_server") and self.server:
             try:
                 self.logger.info("Disconnecting from Hypha server...")
-                await self._server.disconnect()
+                await self.server.disconnect()
             except Exception as e:
                 self.logger.error(f"Error disconnecting from Hypha server: {e}")
 
@@ -724,15 +733,6 @@ class BioEngineWorker:
             # Register the BioEngine worker service with the Hypha server
             await self._connect_to_server()
             await self._check_hypha_connection(reconnect=False)
-
-            # Initialize component managers with the server connection
-            await self.apps_manager.initialize(
-                server=self._server, admin_users=self.admin_users
-            )
-            await self.dataset_manager.initialize(
-                server=self._server, admin_users=self.admin_users
-            )
-            await self.code_executor.initialize(admin_users=self.admin_users)
 
             # Register the BioEngine worker service interface
             await self._register_bioengine_worker_service()

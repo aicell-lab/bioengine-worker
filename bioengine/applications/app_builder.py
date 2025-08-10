@@ -14,11 +14,11 @@ from hypha_rpc.utils import ObjectProxy
 from ray import serve
 from ray.serve.handle import DeploymentHandle
 
-from bioengine_worker.proxy_deployment import BioEngineProxyDeployment
-from bioengine_worker.utils import create_logger, update_requirements
+from bioengine.applications.proxy_deployment import BioEngineProxyDeployment
+from bioengine.utils import create_logger, update_requirements
 
 # Use relative import to not require the 'bioengine_worker' package in the deployment
-from .datasets import BioEngineDatasets
+from ..datasets.datasets import BioEngineDatasets
 
 
 class AppManifest(TypedDict):

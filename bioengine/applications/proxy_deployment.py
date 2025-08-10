@@ -16,7 +16,7 @@ from ray.serve import deployment, get_replica_context
 from ray.serve.handle import DeploymentHandle
 from starlette.requests import Request
 
-from bioengine_worker.utils import get_pip_requirements
+from bioengine.utils import get_pip_requirements
 
 
 @deployment(

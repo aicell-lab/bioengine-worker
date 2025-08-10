@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -10,8 +11,12 @@ from fastapi.responses import StreamingResponse
 from hypha_rpc.rpc import RemoteService
 from hypha_rpc.utils.schema import schema_method
 
-from bioengine_worker.utils import check_permissions, create_logger
-
+from bioengine.utils import (
+    acquire_free_port,
+    check_permissions,
+    create_logger,
+    get_internal_ip,
+)
 
 # TODO: Move all datasets to hypha artifact manager
 # TODO: datasets don't need to be loaded anymore, artifact manager is always available
@@ -103,7 +108,7 @@ class DatasetsManager:
         )
 
         # Load dataset info
-        self._datasets = self._load_dataset_info(data_dir)
+        # self._datasets = self._load_dataset_info(data_dir)
 
         # Initialize state variables
         self.service_id_base = "bioengine-dataset"
@@ -111,17 +116,11 @@ class DatasetsManager:
         self.server = None
         self.admin_users = None
 
-    def _check_initialized(self) -> None:
-        """
-        Check if the server connection is initialized.
-
-        Raises:
-            RuntimeError: If server connection is not available
-        """
-        if not self.server:
-            raise RuntimeError(
-                "Hypha server connection not available. Call initialize() first."
-            )
+        # Start proxy hypha server
+        ip = get_internal_ip()
+        port = find_free_port(port=9527)
+        self.server_url = f"http://{ip}:{port}"
+        self._proxy_server = asyncio.create_task(self._start_proxy_server(ip, port))
 
     @property
     def datasets(self) -> Dict[str, Dict]:
@@ -139,6 +138,28 @@ class DatasetsManager:
             }
             for dataset_id, dataset_info in self._datasets.items()
         }
+
+    async def _start_proxy_server(self, ip: str, port: int):
+        args = [
+            "python3",
+            "-m",
+            "hypha.server",
+            f"--host={ip}",
+            f"--port={port}",
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            output = stdout.decode() if stdout else "Unknown output"
+            error_msg = stderr.decode() if stderr else "Unknown error"
+            self.logger.error(
+                f"Failed to start Hypha server:\n----------\n{output}\n----------\n{error_msg}"
+            )
 
     def _load_dataset_info(self, data_dir: str) -> Dict[str, Dict]:
         """
@@ -256,6 +277,18 @@ class DatasetsManager:
         except Exception as e:
             self.logger.error(f"Error loading dataset info: {e}")
             raise e
+
+    def _check_initialized(self) -> None:
+        """
+        Check if the server connection is initialized.
+
+        Raises:
+            RuntimeError: If server connection is not available
+        """
+        if not self.server:
+            raise RuntimeError(
+                "Hypha server connection not available. Call initialize() first."
+            )
 
     def _define_app(self, dataset_id: str) -> FastAPI:
         """
@@ -453,7 +486,7 @@ class DatasetsManager:
         except Exception as e:
             self.logger.error(f"Error monitoring datasets: {e}")
             raise e
-        
+
     async def list_datasets(self, context: Dict[str, Any]) -> Dict[str, Dict]:
         """
         List all available datasets with their metadata.
@@ -465,7 +498,7 @@ class DatasetsManager:
             RuntimeError: If server connection is not initialized
         """
         return self.datasets
-    
+
     @schema_method
     async def view_dataset(self, dataset_id: str, context: Dict[str, Any]) -> str:
         """
@@ -613,3 +646,7 @@ class DatasetsManager:
         except Exception as e:
             self.logger.error(f"Error closing all datasets: {e}")
             raise e
+
+
+if __name__ == "__main__":
+    pass

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from hypha_rpc import connect_to_server, login
 
-from bioengine_worker.utils import (
+from bioengine.utils import (
     create_artifact_from_files,
     create_file_list_from_directory,
     create_logger,

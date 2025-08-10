@@ -4,7 +4,7 @@ import httpx
 from zarr import open_group
 
 # Use relative import to not require the 'bioengine_worker' package in the deployment
-from .http_zarr_store import HttpZarrStore
+from .datasets.http_zarr_store import HttpZarrStore
 
 
 class BioEngineDatasets:

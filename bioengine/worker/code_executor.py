@@ -11,9 +11,9 @@ import ray
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 
-from bioengine_worker import __version__
-from bioengine_worker.ray_cluster import RayCluster
-from bioengine_worker.utils import check_permissions, create_logger
+from bioengine import __version__
+from bioengine.ray import RayCluster
+from bioengine.utils import check_permissions, create_logger
 
 
 @ray.remote

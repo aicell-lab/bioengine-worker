@@ -1,10 +1,8 @@
 import asyncio
 import base64
 import logging
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-import httpx
 import yaml
 from haikunator import Haikunator
 from hypha_rpc.rpc import RemoteService
@@ -12,10 +10,10 @@ from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 from ray import serve
 
-from bioengine_worker import __version__
-from bioengine_worker.app_builder import AppBuilder
-from bioengine_worker.ray_cluster import RayCluster
-from bioengine_worker.utils import (
+from bioengine import __version__
+from bioengine.applications.app_builder import AppBuilder
+from bioengine.ray import RayCluster
+from bioengine.utils import (
     check_permissions,
     create_artifact_from_files,
     create_context,

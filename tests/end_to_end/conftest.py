@@ -16,7 +16,7 @@ import pytest_asyncio
 from anyio import Path
 from hypha_rpc.rpc import ObjectProxy, RemoteService
 
-from bioengine_worker.worker import BioEngineWorker
+from bioengine.worker import BioEngineWorker
 
 
 # Test application configurations for automatic startup deployment

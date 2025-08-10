@@ -19,7 +19,7 @@ import yaml
 from hypha_rpc import get_rtc_service
 from hypha_rpc.rpc import ObjectProxy, RemoteService
 
-from bioengine_worker.utils import create_file_list_from_directory
+from bioengine.utils import create_file_list_from_directory
 
 
 @pytest.mark.end_to_end

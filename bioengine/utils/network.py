@@ -1,6 +1,7 @@
 import socket
 import subprocess
 from copy import copy
+from typing import Optional, Tuple
 
 
 def get_internal_ip() -> str:
@@ -16,7 +17,9 @@ def get_internal_ip() -> str:
     return result.stdout.strip().split()[0]  # Take the first IP
 
 
-def acquire_free_port(port: int, step: int = 1) -> socket.socket:
+def acquire_free_port(
+    port: int, step: int = 1, ip: Optional[str] = "localhost", keep_open: bool = False
+) -> Tuple[int, socket.socket]:
     """
     Find next free port starting from given port number.
 
@@ -27,17 +30,23 @@ def acquire_free_port(port: int, step: int = 1) -> socket.socket:
     Args:
         port: Starting port number to check
         step: Increment between port numbers to check
+        ip: IP address to bind the socket to
+        keep_open: Whether to keep the socket open after finding a free port.
+            Useful when searching for multiple free ports.
 
     Returns:
-        First free port number found
+        Tuple[int, socket.socket]: The free port number and socket object.
     """
     port = copy(port)
     while True:
         s = None
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.bind(("localhost", port))
-            return s
+            s.bind((ip, port))
+            _, port = s.getsockname()
+            if not keep_open:
+                s.close()
+            return port, s
         except OSError:
             port += step
             if s:
@@ -46,7 +55,5 @@ def acquire_free_port(port: int, step: int = 1) -> socket.socket:
 
 if __name__ == "__main__":
     print("Internal IP:", get_internal_ip())
-    s = acquire_free_port(8000)
-    ip, port = s.getsockname()
+    ip, port, s = acquire_free_port(8000)
     print("Free port:", port)
-    s.close()

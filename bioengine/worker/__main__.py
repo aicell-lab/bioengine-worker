@@ -87,9 +87,9 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
     core_group = parser.add_argument_group("Core Options", "Basic worker configuration")
     core_group.add_argument(
         "--mode",
-        default="single-machine",
         type=str,
         choices=["single-machine", "slurm", "external-cluster"],
+        required=True,
         metavar="MODE",
         help="Deployment mode: 'single-machine' for local Ray cluster, "
         "'slurm' for HPC clusters with SLURM job scheduling, 'external-cluster' for connecting "
@@ -135,7 +135,6 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
     core_group.add_argument(
         "--log_file",
         type=str,
-        default=None,
         metavar="PATH",
         help="Path to the log file. If set to 'off', logging will only go to console. "
         "If not specified (None), a log file will be created in '<cache_dir>/logs'. ",

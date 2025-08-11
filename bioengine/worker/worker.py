@@ -13,7 +13,6 @@ from pydantic import Field
 from bioengine import __version__
 from bioengine.applications import AppsManager
 from bioengine.worker.code_executor import CodeExecutor
-from bioengine.datasets import DatasetsManager
 from bioengine.ray import RayCluster
 from bioengine.utils import check_permissions, create_context, create_logger
 
@@ -123,7 +122,7 @@ class BioEngineWorker:
 
     def __init__(
         self,
-        mode: Literal["slurm", "single-machine", "external-cluster"] = "slurm",
+        mode: Literal["single-machine", "slurm", "external-cluster"],
         admin_users: Optional[List[str]] = None,
         cache_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine",
         startup_applications: Optional[List[dict]] = None,
@@ -274,10 +273,6 @@ class BioEngineWorker:
             self._set_parameter(
                 ray_cluster_config, "ray_temp_dir", self.cache_dir / "ray"
             )
-            force_ray_clean_up = not ray_cluster_config.pop("skip_ray_cleanup", False)
-            self._set_parameter(
-                ray_cluster_config, "force_clean_up", force_ray_clean_up
-            )
             self._set_parameter(ray_cluster_config, "log_file", log_file)
             self._set_parameter(ray_cluster_config, "debug", debug)
 
@@ -293,12 +288,6 @@ class BioEngineWorker:
                 log_file=log_file,
                 debug=debug,
             )
-
-            # self.dataset_manager = DatasetsManager(
-            #     data_dir=data_dir,
-            #     log_file=log_file,
-            #     debug=debug,
-            # )
 
             self.code_executor = CodeExecutor(
                 ray_cluster=self.ray_cluster,
@@ -909,4 +898,3 @@ class BioEngineWorker:
         }
 
         return status
-

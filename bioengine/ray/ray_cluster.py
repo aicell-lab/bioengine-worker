@@ -62,7 +62,7 @@ class RayCluster:
 
     def __init__(
         self,
-        mode: Literal["single-machine", "slurm", "external-cluster"] = "single-machine",
+        mode: Literal["single-machine", "slurm", "external-cluster"],
         # Ray Head Node Configuration parameters
         head_node_address: Optional[str] = None,
         head_node_port: int = 6379,
@@ -73,7 +73,7 @@ class RayCluster:
         dashboard_port: int = 8265,
         client_server_port: int = 10001,
         redis_password: Optional[str] = None,
-        ray_temp_dir: str = f"{os.environ['HOME']}/.bioengine/ray",
+        ray_temp_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine/ray",
         head_num_cpus: int = 0,
         head_num_gpus: int = 0,
         head_memory_in_gb: Optional[int] = None,
@@ -184,6 +184,7 @@ class RayCluster:
             self.serve_exec_path = self._find_serve_executable()
 
             # Check if Ray temp dir does not exceed length of 107 bytes
+            ray_temp_dir = Path(ray_temp_dir).resolve()
             self._check_ray_temp_dir_length(ray_temp_dir)
 
             # Check number of CPUs if in single-machine mode
@@ -195,7 +196,7 @@ class RayCluster:
             # Set cluster configuration
             self.ray_cluster_config.update(
                 {
-                    "ray_temp_dir": str(ray_temp_dir),
+                    "ray_temp_dir": ray_temp_dir,
                     "head_num_cpus": int(head_num_cpus),
                     "head_num_gpus": int(head_num_gpus),
                     "head_memory_in_gb": (
@@ -357,14 +358,12 @@ class RayCluster:
             )
             raise RuntimeError("SLURM is not available")
 
-    def _check_ray_temp_dir_length(self, ray_temp_dir: str) -> None:
+    def _check_ray_temp_dir_length(self, ray_temp_dir: Path) -> None:
         # Simulate the longest possible session directory name
         session_name = datetime.now().strftime(
             "session_%Y-%m-%d_%H-%M-%S_999999_9999999"
         )
-        full_path = str(
-            Path(ray_temp_dir).resolve() / session_name / "sockets" / "plasma_store"
-        )
+        full_path = str(ray_temp_dir / session_name / "sockets" / "plasma_store")
         path_length = len(full_path.encode("utf-8"))
 
         if path_length > 107:
@@ -476,9 +475,13 @@ class RayCluster:
         sockets = []
         for port_name, step in search_steps.items():
             desired_port = self.ray_cluster_config["ports"][port_name]
-            s = acquire_free_port(desired_port, step)
+            free_port, s = acquire_free_port(
+                port=desired_port,
+                step=step,
+                ip=self.ray_cluster_config["head_node_address"],
+                keep_open=True,
+            )
             sockets.append(s)
-            _, free_port = s.getsockname()
 
             if free_port != desired_port:
                 self.logger.warning(
@@ -540,7 +543,7 @@ class RayCluster:
             self.logger.info("Starting Ray cluster...")
 
             # Make sure the temporary directory exists (triggers better error message than Ray)
-            ray_temp_dir = Path(self.ray_cluster_config["ray_temp_dir"])
+            ray_temp_dir = self.ray_cluster_config["ray_temp_dir"]
             await asyncio.to_thread(ray_temp_dir.mkdir, parents=True, exist_ok=True)
 
             # Check if a Ray cluster is already running using this temporary directory

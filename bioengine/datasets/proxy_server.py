@@ -440,6 +440,12 @@ def start_proxy_server(
             except Exception as e:
                 logger.warning(f"Failed to clean up current server file: {e}")
 
+        if ACCESS_TOKEN_FILE.exists():
+            try:
+                ACCESS_TOKEN_FILE.unlink()
+            except Exception as e:
+                logger.warning(f"Failed to clean up access token file: {e}")
+
 
 if __name__ == "__main__":
     start_proxy_server(

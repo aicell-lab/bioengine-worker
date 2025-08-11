@@ -43,7 +43,6 @@ import json
 import sys
 from typing import Dict
 
-from bioengine import __version__
 from bioengine.worker import BioEngineWorker
 
 

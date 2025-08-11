@@ -1,2 +1,2 @@
-from .datasets_manager import DatasetsManager
+from .proxy_server import start_proxy_server
 from .datasets import BioEngineDatasets

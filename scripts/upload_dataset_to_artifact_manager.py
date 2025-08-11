@@ -106,7 +106,7 @@ async def stage_artifact(
             parent_id=collection_id,
             alias=dataset_name,
             manifest=dataset_manifest,
-            config=config,
+            config=dataset_config,
             stage=True,
         )
         logger.info(

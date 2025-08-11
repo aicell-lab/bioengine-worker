@@ -1272,8 +1272,9 @@ if __name__ == "__main__":
     token = os.environ["HYPHA_TOKEN"]
 
     base_dir = Path(__file__).parent.parent
-    apps_cache_dir = base_dir / ".bioengine" / "apps"
     os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"] = str(base_dir / "tests")
+
+    apps_cache_dir = Path.home() / ".bioengine" / "apps"
 
     async def test_app_builder():
         server = await connect_to_server({"server_url": server_url, "token": token})

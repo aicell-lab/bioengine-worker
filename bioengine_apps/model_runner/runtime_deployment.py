@@ -227,12 +227,7 @@ if __name__ == "__main__":
     import yaml
 
     # Set up the environment variables like in the real deployment
-    deployment_workdir = (
-        Path(__file__).resolve().parent.parent.parent
-        / ".bioengine"
-        / "apps"
-        / "model-runner"
-    )
+    deployment_workdir = Path.home() / ".bioengine" / "apps" / "model-runner"
     deployment_workdir.mkdir(parents=True, exist_ok=True)
     os.environ["TMPDIR"] = str(deployment_workdir)
     os.environ["HOME"] = str(deployment_workdir)

@@ -102,7 +102,6 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
     parser.add_argument(
         "--log-file",
         type=str,
-        default=None,
         metavar="PATH",
         help="Path to the log file. If set to 'off', logging will only go to console. "
         "If not specified (None), a log file will be created in '<cache_dir>/logs'. ",

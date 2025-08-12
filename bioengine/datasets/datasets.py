@@ -101,8 +101,10 @@ if __name__ == "__main__":
         dataset = await bioengine_datasets.get(dataset_name)
         print(dataset)
 
-        # `read_lazy` or `zarr.open_group` depending on your use
+        # `read_lazy` from anndata==0.12.0rc1
         adata = read_lazy(dataset, load_annotation_index=True)
         print(adata)
+        print(adata.obs)
+        print(adata.X)
 
     asyncio.run(test_bioengine_datasets())

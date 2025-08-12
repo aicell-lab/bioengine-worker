@@ -7,26 +7,35 @@ name = "bioengine"
 version = "0.3.21"
 description = "BioEngine Worker for managing Ray clusters and datasets"
 requires-python = ">=3.10"
+authors = [
+    {name = "Nils Mechtel", github = "nilsmechtel", affiliation = "KTH"}
+]
+readme = "README.md"
+license = {file = "LICENSE"}
 dependencies = [
-    "aiortc",
-    "cloudpickle",
-    "haikunator",
-    "httpx",
+    "aiortc>=1.13.0",
+    "cloudpickle>=3.1.1",
+    "haikunator>=2.1.0",
+    "httpx>=0.28.1",
     "hypha-rpc>=0.20.75",
     "numpy==1.26.4",
-    "pydantic",
-    "pyyaml",
+    "pydantic>=2.9.2",
+    "pyyaml>=6.0.2",
     "ray[client,serve]==2.33.0",
 ]
 
 [project.optional-dependencies]
 datasets = [
-    "hypha>=0.20.94"
+    "hypha[s3]>=0.20.94",
+    "zarr>=3.0.0",
 ]
 dev = [
-    "black",
-    "pytest",
-    "pytest-asyncio"
+    "black>=25.1.0",
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-mock>=3.10.0",
+    "pytest-cov>=4.0.0",
+    "pytest-xdist>=3.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -37,6 +46,18 @@ artifacts = [
 [tool.hatch.build.targets.wheel.sources]
 "bioengine" = "bioengine"
 
+[project.urls]
+"Repository" = "https://github.com/aicell-lab/bioengine-worker"
+"Documentation" = "https://github.com/aicell-lab/bioengine-worker/README.md"
+"Bug Tracker" = "https://github.com/aicell-lab/bioengine-worker/issues"
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = "test_*.py"
+
+[tool.black]
+line-length = 88
+target-version = ["py310", "py311"]
+include = '\.pyi?$'

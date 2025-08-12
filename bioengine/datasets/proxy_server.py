@@ -318,8 +318,10 @@ def start_proxy_server(
     datasets_cache_dir = bioengine_cache_dir / "datasets"
     current_server_file = datasets_cache_dir / "bioengine_current_server"
     ACCESS_TOKEN_FILE = datasets_cache_dir / ".access_token"
-    executable_path = datasets_cache_dir / "bin"
+    executable_path = Path(os.getenv("MINIO_EXECUTABLE_PATH") or datasets_cache_dir / "bin")
     minio_workdir = datasets_cache_dir / "s3"
+    minio_config_dir = datasets_cache_dir / "config" / "minio"
+    mc_config_dir = datasets_cache_dir / "config" / "mc"
 
     # Initialize logging
     if log_file != "off":
@@ -344,17 +346,6 @@ def start_proxy_server(
         # Create the datasets cache directory
         datasets_cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # Get the Hypha server configuration
-        hypha_parser = get_argparser()
-        hypha_args = hypha_parser.parse_args(
-            []
-        )  # Pass empty list to use default values
-
-        # Pass startup function (available at http://<ip>:<port>/public/services/bioengine-datasets)
-        hypha_args.startup_functions = [
-            "bioengine.datasets.proxy_server:create_bioengine_datasets"
-        ]
-
         # Set internal IP and ports
         server_ip = server_ip or get_internal_ip()
         free_server_port, server_s = acquire_free_port(
@@ -367,11 +358,11 @@ def start_proxy_server(
 
         free_minio_port = copy(minio_port)
         while True:
-            free_minio_port, _ = acquire_free_port(
-                port=free_minio_port, step=1, ip=server_ip, keep_open=False
+            free_minio_port, minio_s = acquire_free_port(
+                port=free_minio_port, step=1, ip=server_ip, keep_open=True
             )
-            free_console_port, _ = acquire_free_port(
-                port=free_minio_port + 1, step=1, ip=server_ip, keep_open=False
+            free_console_port, console_s = acquire_free_port(
+                port=free_minio_port + 1, step=1, ip=server_ip, keep_open=True
             )
             if free_console_port == free_minio_port + 1:
                 break
@@ -383,13 +374,17 @@ def start_proxy_server(
             )
 
         # Close the sockets after acquiring ports
-        server_s.close()
+        for s in (server_s, minio_s, console_s):
+            s.close()
 
         # Save the server URL to the bioengine cache
-        server_url = f"http://{server_ip}:{server_port}"
+        server_url = f"http://{server_ip}:{free_server_port}"
         current_server_file.write_text(server_url)
 
-        # Add minio server args
+        # Set Hypha server configuration
+        hypha_parser = get_argparser()
+        hypha_args = hypha_parser.parse_args([])  # use default values
+
         hypha_args.start_minio_server = True
         hypha_args.executable_path = executable_path
         hypha_args.minio_workdir = minio_workdir
@@ -410,16 +405,27 @@ def start_proxy_server(
             "minio_password": hypha_args.minio_root_password,
         }
 
+        minio_config_dir.mkdir(parents=True, exist_ok=True)
+        mc_config_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["MINIO_CONFIG_DIR"] = str(minio_config_dir)
+        os.environ["MC_CONFIG_DIR"] = str(mc_config_dir)
+
+        # Pass startup function (available at http://<ip>:<port>/public/services/bioengine-datasets)
+        hypha_args.startup_functions = [
+            "bioengine.datasets.proxy_server:create_bioengine_datasets"
+        ]
+
+        # Create the Hypha application
+        hypha_app = create_application(hypha_args)
+
         # Create a log config for uvicorn
         log_config = get_log_config(log_file=log_file)
 
         # Start the server
-        hypha_app = create_application(hypha_args)
-
         uvicorn.run(
             hypha_app,
             host=server_ip,
-            port=server_port,
+            port=free_server_port,
             log_config=log_config,
             log_level="info",
         )

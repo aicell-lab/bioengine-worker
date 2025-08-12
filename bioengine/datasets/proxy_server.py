@@ -318,7 +318,9 @@ def start_proxy_server(
     datasets_cache_dir = bioengine_cache_dir / "datasets"
     current_server_file = datasets_cache_dir / "bioengine_current_server"
     ACCESS_TOKEN_FILE = datasets_cache_dir / ".access_token"
-    executable_path = Path(os.getenv("MINIO_EXECUTABLE_PATH") or datasets_cache_dir / "bin")
+    executable_path = Path(
+        os.getenv("MINIO_EXECUTABLE_PATH") or datasets_cache_dir / "bin"
+    )
     minio_workdir = datasets_cache_dir / "s3"
     minio_config_dir = datasets_cache_dir / "config" / "minio"
     mc_config_dir = datasets_cache_dir / "config" / "mc"

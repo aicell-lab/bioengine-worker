@@ -394,7 +394,7 @@ def get_args_by_group(parser: argparse.ArgumentParser) -> Dict[str, Dict[str, an
     Parses all command-line arguments and organizes them into dictionaries
     based on their argument group membership. This organization facilitates
     passing configuration to different components of the BioEngine worker.
-    
+
     Arguments with None values are filtered out to allow component managers
     to use their default parameter values instead of overriding them with None.
 
@@ -408,7 +408,7 @@ def get_args_by_group(parser: argparse.ArgumentParser) -> Dict[str, Dict[str, an
             - "Ray Cluster Options": Cluster networking configuration
             - "SLURM Job Options": HPC job parameters
             - "Ray Autoscaler Options": Autoscaling configuration
-        
+
         Only arguments with non-None values are included to preserve component
         manager defaults.
 

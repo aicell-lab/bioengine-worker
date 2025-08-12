@@ -867,6 +867,7 @@ class BioEngineProxyDeployment:
 
 
 if __name__ == "__main__":
+
     class MockMethod:
         def __init__(self, name: str):
             self.name = name

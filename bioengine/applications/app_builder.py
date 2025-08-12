@@ -242,9 +242,7 @@ class AppBuilder:
         if os.environ.get("BIOENGINE_LOCAL_ARTIFACT_PATH"):
             # Load the file content from local path
             artifact_folder = artifact_id.split("/")[1].replace("-", "_")
-            local_deployments_dir = Path(
-                os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"]
-            )
+            local_deployments_dir = Path(os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"])
             local_path = local_deployments_dir / artifact_folder / "manifest.yaml"
             if not local_path.exists():
                 raise FileNotFoundError(f"Local manifest file not found: {local_path}")
@@ -908,9 +906,7 @@ class AppBuilder:
             self.logger.debug(
                 f"Loading deployment code from local path: {python_file} in folder {artifact_folder}/"
             )
-            local_deployments_dir = Path(
-                os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"]
-            )
+            local_deployments_dir = Path(os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"])
             local_path = local_deployments_dir / artifact_folder / python_file
             if not local_path.exists():
                 raise FileNotFoundError(

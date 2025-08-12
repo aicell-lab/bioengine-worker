@@ -140,7 +140,12 @@ class CompositionDeployment:
     # Note: Parameter type hints and docstrings will be used to generate the API documentation.
 
     @schema_method
-    async def calculate_result(self, number: int = Field(..., description="The number to add to the start value of Deployment2.")) -> str:
+    async def calculate_result(
+        self,
+        number: int = Field(
+            ..., description="The number to add to the start value of Deployment2."
+        ),
+    ) -> str:
         """
         Calculate the result by adding the given number to the start value of Deployment2.
 

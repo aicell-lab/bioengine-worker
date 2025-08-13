@@ -5,6 +5,7 @@ from pathlib import Path
 def _get_version():
     """Get version from pyproject.toml"""
     try:
+        # TODO: this will not work as python package
         # Try to read from pyproject.toml
         pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
         content = pyproject_path.read_text()

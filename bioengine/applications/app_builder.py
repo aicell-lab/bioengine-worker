@@ -14,6 +14,7 @@ from hypha_rpc.utils import ObjectProxy
 from ray import serve
 from ray.serve.handle import DeploymentHandle
 
+import bioengine
 from bioengine.applications.proxy_deployment import BioEngineProxyDeployment
 from bioengine.utils import create_logger, update_requirements
 
@@ -344,6 +345,7 @@ class AppBuilder:
         # Update runtime environment with BioEngine requirements
         runtime_env = ray_actor_options.setdefault("runtime_env", {})
         pip_requirements = runtime_env.setdefault("pip", [])
+        py_modules = runtime_env.setdefault("py_modules", [])
         env_vars = runtime_env.setdefault("env_vars", {})
 
         # Add custom environment variables
@@ -362,8 +364,11 @@ class AppBuilder:
 
         # Update with BioEngine requirements
         pip_requirements = update_requirements(pip_requirements)
+        runtime_env["pip"] = pip_requirements
 
-        # TODO: add bioengine as module
+        # Add bioengine as module
+        py_modules.append(os.path.dirname(bioengine.__file__))
+        runtime_env["py_modules"] = py_modules
 
         # Set BioEngine environment variables
         app_work_dir = self.apps_cache_dir / application_id
@@ -374,6 +379,10 @@ class AppBuilder:
         env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
         env_vars["HYPHA_TOKEN"] = token
 
+        runtime_env["env_vars"] = env_vars
+
+        # Update deployment options
+        ray_actor_options["runtime_env"] = runtime_env
         updated_deployment = deployment.options(
             ray_actor_options=ray_actor_options,
             max_ongoing_requests=max_ongoing_requests,
@@ -1267,7 +1276,7 @@ if __name__ == "__main__":
     server_url = "https://hypha.aicell.io"
     token = os.environ["HYPHA_TOKEN"]
 
-    base_dir = Path(__file__).parent.parent
+    base_dir = Path(__file__).parent.parent.parent
     os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"] = str(base_dir / "tests")
 
     apps_cache_dir = Path.home() / ".bioengine" / "apps"

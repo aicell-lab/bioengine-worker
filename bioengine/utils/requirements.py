@@ -6,6 +6,7 @@ split_re = re.compile(r"(==|>=|<=|~=|>|<)")
 
 
 def get_pip_requirements(select: Optional[List[str]] = None) -> List[str]:
+    # TODO: this will not work as python package
     requirements_path = Path(__file__).parent.parent.parent / "requirements.txt"
     requirements = requirements_path.read_text().splitlines()
 

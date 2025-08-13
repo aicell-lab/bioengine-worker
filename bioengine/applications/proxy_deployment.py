@@ -818,7 +818,7 @@ class BioEngineProxyDeployment:
 
         except Exception as e:
             print(
-                f"⚠️  [{self.replica_id}] Warning: Failed to register WebRTC service for '{self.application_id}': {e}"
+                f"⚠️ [{self.replica_id}] Warning: Failed to register WebRTC service for '{self.application_id}': {e}"
             )
             # Don't fail the entire deployment if WebRTC registration fails
 

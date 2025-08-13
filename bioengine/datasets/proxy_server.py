@@ -5,8 +5,9 @@ import shutil
 import subprocess
 import time
 from copy import copy
+from functools import partial
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import uvicorn
 import yaml
@@ -20,9 +21,9 @@ from bioengine.utils import (
     date_format,
     get_internal_ip,
 )
+from bioengine.utils.permissions import check_permissions
 
 BIOENGINE_DATA_DIR: Path
-ACCESS_TOKEN_FILE: Path
 MINIO_CONFIG = {
     "mc_exe": str,
     "minio_port": int,
@@ -114,18 +115,13 @@ async def create_datasets_collection(
         logger.info(f"Creating collection '{collection_id}'")
         collection_manifest = {
             "name": "BioEngine Datasets",
-            "description": f"A collection of Zarr-file datasets for workspace 'public'",
+            "description": "A collection of Zarr-file datasets",
         }
-        # Allow all users access to the collection
-        collection_config = {"permissions": {"*": "*"}}
-
-        collection = await artifact_manager.create(
+        await artifact_manager.create(
             type="collection",
             alias=collection_alias,
             manifest=collection_manifest,
-            config=collection_config,
         )
-        logger.info(f"Applications collection created with ID: {collection.id}")
     except Exception as e:
         logger.error(f"Failed to create applications collection: {e}")
         raise e
@@ -156,8 +152,13 @@ async def mirror_dataset_to_artifact(
         # Filesystem path to Zarr files
         zarr_files = await asyncio.to_thread(dataset_dir.glob, "*.zarr")
         for zarr_file in zarr_files:
+
             # Path to the artifact directory in MinIO
             s3_dest = f"local/hypha-workspaces/public/artifacts/{artifact_s3_id}/v0/{zarr_file.name}"
+
+            logger.info(
+                f"Copying {dataset_dir}/{zarr_file.name} to artifact '{artifact_id}'"
+            )
 
             args = [str(mc_exe), "mirror", str(zarr_file), s3_dest]
             proc = await asyncio.create_subprocess_exec(
@@ -174,12 +175,8 @@ async def mirror_dataset_to_artifact(
                     proc.returncode, " ".join(args), stderr=error_msg
                 )
 
-            logger.info(
-                f"Mirrored {dataset_dir.name}/{zarr_file.name} to artifact '{artifact_id}'"
-            )
-
     except Exception as e:
-        logger.info(
+        logger.error(
             f"Error mirroring dataset '{dataset_dir.name}' to artifact '{artifact_id}': {e}"
         )
         raise e
@@ -194,31 +191,23 @@ async def create_dataset_artifact(
 ) -> None:
     try:
         artifact = None
-        logger.info(f"Creating artifact for dataset '{dataset_dir.name}'")
+        logger.info(f"Creating dataset from folder '{dataset_dir}/'")
 
         dataset_manifest_content = (dataset_dir / "manifest.yml").read_text()
         dataset_manifest = await asyncio.to_thread(
             yaml.safe_load, dataset_manifest_content
         )
-        authorized_users = dataset_manifest["authorized_users"]
-        logger.info(
-            f"Setting permissions for authorized users: {', '.join(authorized_users)}"
-        )
-        dataset_config = {
-            "permissions": {
-                user_id: "r" for user_id in authorized_users
-            },  # Only allow authorized users to access the dataset
-        }
+        authorized_users = dataset_manifest.get("authorized_users")
+        if not authorized_users or not any(len(user) > 0 for user in authorized_users):
+            raise ValueError("Manifest does not have any authorized users specified.")
 
         artifact = await artifact_manager.create(
             type="dataset",
             parent_id=parent_id,
             alias=dataset_manifest["id"],
             manifest=dataset_manifest_content,
-            config=dataset_config,
             stage=True,
         )
-        logger.info(f"Creating new artifact with id '{artifact.id}'")
 
         await mirror_dataset_to_artifact(
             artifact_s3_id=artifact._id,
@@ -229,29 +218,106 @@ async def create_dataset_artifact(
         )
 
         await artifact_manager.commit(artifact.id)
-        logger.info(f"Committed artifact with id '{artifact.id}'")
+        logger.info(f"Created artifact with id '{artifact.id}'")
+
+        return dataset_manifest["id"], authorized_users
 
     except Exception as e:
         # Delete the artifact if creation failed; don't raise exception to not affect other datasets
-        logger.error(f"Failed to create artifact for dataset {dataset_dir.name}: {e}")
+        logger.error(f"Failed to create dataset from folder '{dataset_dir}/': {e}")
         if artifact:
             await artifact_manager.delete(artifact.id)
+        return None, None
 
 
-async def create_bioengine_datasets(
-    server: RemoteService,
-    service_id: str = "bioengine-datasets",
-):
+async def list_datasets(
+    artifact_manager: ObjectProxy,
+    collection_id: str,
+) -> List[str]:
+    """List all datasets in the artifact manager."""
+    # No checks for user authentication for listing datasets
+
+    datasets = await artifact_manager.list(collection_id)
+    return [artifact.alias for artifact in datasets]
+
+
+async def list_files(
+    dataset_name: str,
+    token: str,
+    authentication_server: RemoteService,
+    authorized_users_collection: Dict[str, List[str]],
+    artifact_manager: ObjectProxy,
+) -> List[str]:
+    """List all zarr files in a dataset."""
+    if dataset_name not in authorized_users_collection:
+        raise ValueError(f"Dataset '{dataset_name}' does not exist")
+
+    authorized_users = authorized_users_collection[dataset_name]
+    if "*" not in authorized_users:
+        raise NotImplementedError("Server side authentication is not supported yet")
+        user_info = await authentication_server.parse_token(token)
+        check_permissions(
+            context={"user": user_info},
+            authorized_users=authorized_users,
+            resource_name=f"list files in the dataset '{dataset_name}'",
+        )
+
+    files = await artifact_manager.list_files(f"public/{dataset_name}")
+    return [
+        file.name
+        for file in files
+        if file.name.endswith(".zarr") and file.type == "directory"
+    ]
+
+
+async def get_presigned_url(
+    dataset_name: str,
+    file_path: str,
+    token: str,
+    authentication_server: RemoteService,
+    authorized_users_collection: Dict[str, List[str]],
+    artifact_manager: ObjectProxy,
+    logger: logging.Logger,
+) -> Union[str, None]:
+    """Get a pre-signed URL for a dataset artifact."""
+    if dataset_name not in authorized_users_collection:
+        raise ValueError(f"Dataset '{dataset_name}' does not exist")
+
+    authorized_users = authorized_users_collection[dataset_name]
+    if "*" not in authorized_users:
+        raise NotImplementedError("Server side authentication is not supported yet")
+        user_info = await authentication_server.parse_token(token)
+        check_permissions(
+            context={"user": user_info},
+            authorized_users=authorized_users,
+            resource_name=f"access '{file_path}' in the dataset '{dataset_name}'",
+        )
+
+    start_time = asyncio.get_event_loop().time()
+    try:
+        url = await artifact_manager.get_file(
+            artifact_id=f"public/{dataset_name}",
+            file_path=file_path,
+        )
+        time_taken = asyncio.get_event_loop().time() - start_time
+        logger.info(f"Generated pre-signed URL in {time_taken:.2f} seconds")
+        return url
+    except Exception as e:
+        time_taken = asyncio.get_event_loop().time() - start_time
+        logger.info(f"Failed to generate pre-signed URL after {time_taken:.2f} seconds")
+        raise e
+
+
+async def create_bioengine_datasets(server: RemoteService):
     """Register BioEngine datasets service to Hypha.
 
     Args:
         server (RemoteService): The server instance to register the tools with.
     """
     global BIOENGINE_DATA_DIR
-    global ACCESS_TOKEN_FILE
     global MINIO_CONFIG
 
-    logger = logging.getLogger("BioEngineDatasets")
+    logger = logging.getLogger("ProxyServer")
 
     try:
         server_url = server["config"]["public_base_url"]
@@ -260,19 +326,13 @@ async def create_bioengine_datasets(
             raise ValueError(
                 f"Expected workspace to be 'public', but got '{workspace}'"
             )
+
+        # * Note: server_url does not match the specified <ip>:<port>
         logger.info(
             f"Creating BioEngine datasets artifacts at '{server_url}' in workspace 'public'"
         )
 
         artifact_manager = await server.get_service("public/artifact-manager")
-
-        # Generate access token
-        access_token = await server.generate_token()
-        ACCESS_TOKEN_FILE.write_text(access_token)
-
-        # Restrict access to the token file to only the user
-        ACCESS_TOKEN_FILE.chmod(0o600)
-        # TODO: This is not enough if the Ray cluster in BioEngine worker runs as the same user
 
         # Create bioengine-datasets collection
         collection_id = await create_datasets_collection(
@@ -286,14 +346,57 @@ async def create_bioengine_datasets(
             for d in BIOENGINE_DATA_DIR.iterdir()
             if d.is_dir() and (d / "manifest.yml").exists()
         ]
+        authorized_users_collection = {}
         for dataset_dir in datasets:
-            await create_dataset_artifact(
+            dataset_name, authorized_users = await create_dataset_artifact(
                 artifact_manager=artifact_manager,
                 parent_id=collection_id,
                 dataset_dir=dataset_dir,
                 minio_config=MINIO_CONFIG,
                 logger=logger,
             )
+            if dataset_name is not None:
+                authorized_users_collection[dataset_name] = authorized_users
+
+        logger.info(f"Available datasets: {list(authorized_users_collection.keys())}")
+
+        # TODO: add server once server side authentication is implemented
+        authentication_server = None
+
+        # Register service to hand out pre-signed urls
+        service_info = await server.register_service(
+            {
+                "id": "bioengine-datasets",
+                "name": "BioEngine Datasets",
+                "description": (
+                    "Service for verifying users access and handing out "
+                    "pre-signed URLs for BioEngine datasets"
+                ),
+                "type": "bioengine-datasets",
+                # Authentication happens via user tokens at the central hypha server
+                "config": {"visibility": "public", "require_context": False},
+                "ping": lambda: "pong",
+                "list_datasets": partial(
+                    list_datasets,
+                    artifact_manager=artifact_manager,
+                    collection_id=collection_id,
+                ),
+                "list_files": partial(
+                    list_files,
+                    authentication_server=authentication_server,
+                    authorized_users_collection=authorized_users_collection,
+                    artifact_manager=artifact_manager,
+                ),
+                "get_presigned_url": partial(
+                    get_presigned_url,
+                    authentication_server=authentication_server,
+                    authorized_users_collection=authorized_users_collection,
+                    artifact_manager=artifact_manager,
+                    logger=logger,
+                ),
+            }
+        )
+        logger.info(f"Registered BioEngine datasets service: {service_info['id']}")
 
     except Exception as e:
         logger.error(f"Failed to create BioEngine datasets: {e}")
@@ -310,20 +413,17 @@ def start_proxy_server(
 ) -> None:
     # Set paths
     global BIOENGINE_DATA_DIR
-    global ACCESS_TOKEN_FILE
     global MINIO_CONFIG
 
     BIOENGINE_DATA_DIR = Path(data_dir).resolve()
     bioengine_cache_dir = Path(bioengine_cache_dir).resolve()
     datasets_cache_dir = bioengine_cache_dir / "datasets"
     current_server_file = datasets_cache_dir / "bioengine_current_server"
-    ACCESS_TOKEN_FILE = datasets_cache_dir / ".access_token"
     executable_path = Path(
         os.getenv("MINIO_EXECUTABLE_PATH") or datasets_cache_dir / "bin"
     )
     minio_workdir = datasets_cache_dir / "s3"
-    minio_config_dir = datasets_cache_dir / "config" / "minio"
-    mc_config_dir = datasets_cache_dir / "config" / "mc"
+    minio_config_dir = datasets_cache_dir / "config"
 
     # Initialize logging
     if log_file != "off":
@@ -340,10 +440,10 @@ def start_proxy_server(
     else:
         log_file = None
 
-    logger = create_logger("BioEngineDatasets", log_file=log_file)
+    logger = create_logger("ProxyServer", log_file=log_file)
 
     try:
-        logger.info(f"Starting BioEngineDatasets v{__version__}")
+        logger.info(f"Starting BioEngine Datasets proxy server v{__version__}")
 
         # Create the datasets cache directory
         datasets_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -407,10 +507,8 @@ def start_proxy_server(
             "minio_password": hypha_args.minio_root_password,
         }
 
-        minio_config_dir.mkdir(parents=True, exist_ok=True)
-        mc_config_dir.mkdir(parents=True, exist_ok=True)
-        os.environ["MINIO_CONFIG_DIR"] = str(minio_config_dir)
-        os.environ["MC_CONFIG_DIR"] = str(mc_config_dir)
+        os.environ["MINIO_CONFIG_DIR"] = str(minio_config_dir / "minio")
+        os.environ["MC_CONFIG_DIR"] = str(minio_config_dir / "mc")
 
         # Pass startup function (available at http://<ip>:<port>/public/services/bioengine-datasets)
         hypha_args.startup_functions = [
@@ -448,16 +546,16 @@ def start_proxy_server(
             except Exception as e:
                 logger.warning(f"Failed to clean up current server file: {e}")
 
-        if ACCESS_TOKEN_FILE.exists():
+        if minio_config_dir.exists():
             try:
-                ACCESS_TOKEN_FILE.unlink()
+                shutil.rmtree(minio_config_dir)
             except Exception as e:
-                logger.warning(f"Failed to clean up access token file: {e}")
+                logger.warning(f"Failed to clean up MinIO config dir: {e}")
 
 
 if __name__ == "__main__":
     start_proxy_server(
         data_dir="/data/nmechtel/bioengine-worker/data",
         bioengine_cache_dir="/data/nmechtel/bioengine-worker/.bioengine",
-        # log_file="off",
+        log_file="off",
     )

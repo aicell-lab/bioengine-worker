@@ -1,6 +1,6 @@
 import asyncio
 from dataclasses import dataclass
-from typing import AsyncIterator, Dict, Iterable
+from typing import AsyncIterator, Iterable
 
 import httpx
 from zarr.abc.store import (
@@ -15,9 +15,7 @@ from zarr.core.buffer import Buffer, BufferPrototype
 
 @dataclass
 class HttpZarrStore(Store):
-    base_url: str
-    headers: Dict[str, str]
-    download_timeout: float = 120.0  # seconds
+    dataset_name: str
     _read_only: bool = True
 
     supports_writes: bool = False
@@ -25,23 +23,42 @@ class HttpZarrStore(Store):
     supports_partial_writes: bool = False
     supports_listing: bool = False
 
-    def __init__(self, base_url: str, headers: Dict[str, str]):
+    def __init__(self, service_url: str, dataset_name: str, token: str):
         super().__init__(read_only=True)
-        self.base_url = base_url.rstrip("/")
-        self.headers = headers
+        self.service_url = service_url.rstrip("/")
+        self.dataset_name = dataset_name
+        self.token = token
+        self.http_client = httpx.AsyncClient(timeout=120)  # seconds
 
-    def _full_url(self, key: str) -> str:
-        return f"{self.base_url}/{key}?use_proxy=true"
+    async def _get_presigned_url(self, key: str) -> str | None:
+        query_url = (
+            f"{self.service_url}/get_presigned_url?dataset_name={self.dataset_name}&"
+            f"file_path={key}&token={self.token}"
+        )
+        response = await self.http_client.get(query_url)
+        if response.status_code == 400 and "FileNotFoundError" in response.text:
+            return None
+        response.raise_for_status()
+        presigned_url = response.json()
+
+        return presigned_url
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, HttpZarrStore) and self.base_url == other.base_url
+        return all(
+            isinstance(other, HttpZarrStore)
+            and self.service_url == other.service_url
+            and self.dataset_name == other.dataset_name
+            and self.token == other.token
+        )
 
     async def get(
         self, key: str, prototype: BufferPrototype, byte_range: ByteRequest = None
     ) -> Buffer | None:
-        url = self._full_url(key)
-        headers = self.headers.copy()
+        url = await self._get_presigned_url(key)
+        if url is None:
+            return None
 
+        headers = {}
         if byte_range:
             if isinstance(byte_range, RangeByteRequest):
                 headers["Range"] = f"bytes={byte_range.start}-{byte_range.end - 1}"
@@ -50,13 +67,10 @@ class HttpZarrStore(Store):
             elif isinstance(byte_range, SuffixByteRequest):
                 headers["Range"] = f"bytes=-{byte_range.suffix}"
 
-        async with httpx.AsyncClient(timeout=self.download_timeout) as client:
-            response = await client.get(url, headers=headers)
-            if response.status_code == 404:
-                return None
-            response.raise_for_status()
-            content = response.content
-            return prototype.buffer.from_bytes(content)
+        response = await self.http_client.get(url, headers=headers)
+        response.raise_for_status()
+        content = response.content
+        return prototype.buffer.from_bytes(content)
 
     async def get_partial_values(
         self,
@@ -66,10 +80,8 @@ class HttpZarrStore(Store):
         return await asyncio.gather(*(self.get(k, prototype, r) for k, r in key_ranges))
 
     async def exists(self, key: str) -> bool:
-        url = self._full_url(key)
-        async with httpx.AsyncClient(timeout=self.download_timeout) as client:
-            response = await client.head(url, headers=self.headers)
-            return response.status_code == 200
+        url = await self._get_presigned_url(key)
+        return url is not None
 
     async def set(self, key: str, value: Buffer) -> None:
         raise NotImplementedError("Write not supported")

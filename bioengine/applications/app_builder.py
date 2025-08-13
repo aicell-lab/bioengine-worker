@@ -428,14 +428,8 @@ class AppBuilder:
 
         # Stream zarr dataset either from public or locally started server
         # Example for a local hypha server: "http://localhost:9527"
-        server_url = (
-            os.getenv("BIOENGINE_DATASETS_SERVER_URL")
-            or self.server.config.public_base_url
-        )
-        workspace = (
-            os.getenv("BIOENGINE_DATASETS_WORKSPACE") or self.server.config.workspace
-        )
-        token = os.getenv("BIOENGINE_DATASETS_TOKEN") or self._token
+        data_server_url = os.getenv("BIOENGINE_DATA_SERVER_URL")
+        workspace = os.getenv("BIOENGINE_DATA_WORKSPACE", "public")
 
         @wraps(orig_init)
         def wrapped_init(self, *args, **kwargs):
@@ -465,7 +459,9 @@ class AppBuilder:
 
             # Initialize BioEngine datasets
             self.bioengine_datasets = BioEngineDatasets(
-                server_url=server_url, workspace=workspace, token=token
+                data_server_url=data_server_url,
+                deployment_name=self.__class__.__name__,
+                workspace=workspace,
             )
 
             # Call the original __init__ method
@@ -671,14 +667,15 @@ class AppBuilder:
                     await self.test_deployment()
 
                 try:
+                    # Ensure data server can be reached
+                    await self.bioengine_datasets.ping_data_server()
+
                     # Check if the original health check method is async
                     if inspect.iscoroutinefunction(orig_health_check):
-                        result = await orig_health_check(self)
+                        await orig_health_check(self)
                     else:
                         # If it's a regular function, call it directly
-                        result = await asyncio.to_thread(orig_health_check, self)
-
-                    return result
+                        await asyncio.to_thread(orig_health_check, self)
 
                 except Exception as e:
                     print(

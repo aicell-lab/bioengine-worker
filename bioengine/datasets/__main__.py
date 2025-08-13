@@ -31,7 +31,6 @@ License: MIT
 import argparse
 import sys
 
-from bioengine import __version__
 from bioengine.datasets.proxy_server import start_proxy_server
 
 
@@ -129,7 +128,6 @@ if __name__ == "__main__":
         args = {k: v for k, v in vars(args).items() if v is not None}
 
         # Start the BioEngine Datasets proxy server with proper exception handling
-        print(f"Starting BioEngine Datasets proxy server v{__version__}")
         start_proxy_server(**args)
 
     except Exception as e:

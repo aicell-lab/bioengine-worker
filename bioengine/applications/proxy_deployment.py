@@ -161,6 +161,9 @@ class BioEngineProxyDeployment:
         self.token = token
         self.client_id = f"{worker_client_id}-{self.replica_id}"
 
+        # Store entry deployment readiness
+        self.entry_deployment_ready = False
+
         # Service state
         self.server: RemoteService = None
         self.websocket_service_id: str = None
@@ -848,7 +851,9 @@ class BioEngineProxyDeployment:
             RuntimeError: If any health check fails, indicating the deployment is unhealthy
         """
         # Wait for the entry deployment to be ready and healthy
-        await self.entry_deployment_handle.check_health.remote()
+        if not self.entry_deployment_ready:
+            await self.entry_deployment_handle.check_health.remote()
+            self.entry_deployment_ready = True
 
         # Register WebRTC service if not already done
         if not self.server or not self.websocket_service_id:
@@ -925,4 +930,4 @@ if __name__ == "__main__":
 
         print("Deployment is healthy and services are registered")
 
-    asyncio.run(main())
+    asyncio.run(test_proxy_deployment())

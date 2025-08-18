@@ -6,7 +6,7 @@ from pathlib import Path
 from hypha_rpc import connect_to_server, login
 
 from bioengine.utils import (
-    create_artifact_from_files,
+    create_application_from_files,
     create_file_list_from_directory,
     create_logger,
     ensure_applications_collection,
@@ -75,7 +75,7 @@ async def create_application(
 
     # Create or update the artifact using the utility function
     try:
-        artifact_id = await create_artifact_from_files(
+        artifact_id = await create_application_from_files(
             artifact_manager=artifact_manager,
             files=files,
             workspace=workspace,

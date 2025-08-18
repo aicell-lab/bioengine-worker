@@ -17,7 +17,7 @@ from bioengine.applications.app_builder import AppBuilder
 from bioengine.ray import RayCluster
 from bioengine.utils import (
     check_permissions,
-    create_artifact_from_files,
+    create_application_from_files,
     create_context,
     create_logger,
     ensure_applications_collection,
@@ -139,7 +139,6 @@ class AppsManager:
         # Initialize state variables
         self.server = None
         self.artifact_manager = None
-        self.collection_id = None
         self.admin_users = None
         self.startup_applications = startup_applications
         self._deployment_lock = asyncio.Lock()
@@ -498,12 +497,9 @@ class AppsManager:
             self.artifact_manager = None
             raise
 
-        # Set the collection ID for BioEngine applications
-        workspace = self.server.config.workspace
-        self.collection_id = f"{workspace}/applications"
-
         # Initialize the AppBuilder with the server and artifact manager
-        self.app_builder.initialize(
+        # AppBuilder will ensure that the applications collection exists
+        await self.app_builder.initialize(
             server=self.server,
             artifact_manager=self.artifact_manager,
             serve_http_url=self.ray_cluster.serve_http_url,
@@ -785,15 +781,8 @@ class AppsManager:
             resource_name=f"listing applications",
         )
 
-        # Ensure the 'applications' collection exists
-        await ensure_applications_collection(
-            artifact_manager=self.artifact_manager,
-            workspace=self.server.config.workspace,
-            logger=self.logger,
-        )
-
-        bioengine_apps_artifacts = await self.artifact_manager.list(self.collection_id)
-
+        collection_id = f"{self.server.config.workspace}/applications"
+        bioengine_apps_artifacts = await self.artifact_manager.list(collection_id)
         bioengine_apps = {}
         for artifact in bioengine_apps_artifacts:
             try:
@@ -905,7 +894,7 @@ class AppsManager:
 
         # Create or update the artifact using the utility function
         try:
-            created_artifact_id = await create_artifact_from_files(
+            created_artifact_id = await create_application_from_files(
                 artifact_manager=self.artifact_manager,
                 files=files,
                 workspace=self.server.config.workspace,

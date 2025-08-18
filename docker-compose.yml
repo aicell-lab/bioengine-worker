@@ -2,7 +2,7 @@ version: '3.8'
 
 # Define common configuration
 x-common-config: &common-config
-  # Run `BIOENGINE_VERSION=$(python scripts/get_version.py) docker compose up` to use a specific version
+  # Run `BIOENGINE_VERSION=$(grep -E '^version\s*=' "pyproject.toml" | sed -E 's/version\s*=\s*"(.*)"/\1/' | head -1) docker compose up` to use a specific version
   image: ghcr.io/aicell-lab/bioengine-worker:${BIOENGINE_VERSION:-latest}
   # Add UID (`UID=$(id -u)`) and GID (`GID=$(id -g)`) to .env file if not found
   user: "${UID}:${GID}"

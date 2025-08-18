@@ -1,14 +1,40 @@
+import importlib.metadata as md
 import re
-from pathlib import Path
 from typing import List, Optional
 
 split_re = re.compile(r"(==|>=|<=|~=|>|<)")
 
 
-def get_pip_requirements(select: Optional[List[str]] = None) -> List[str]:
-    # TODO: this will not work as python package
-    requirements_path = Path(__file__).parent.parent.parent / "requirements.txt"
-    requirements = requirements_path.read_text().splitlines()
+def get_pip_requirements(
+    select: Optional[List[str]] = None, extras: Optional[List[str]] = None
+) -> List[str]:
+    """
+    Get pip requirements from the bioengine package metadata.
+
+    Args:
+        select: Optional list of requirement names to filter by
+        extras: Optional list of extras to include (e.g. ['datasets', 'dev'])
+
+    Returns:
+        List of pip requirements
+    """
+    if extras is None:
+        extras = []
+
+    metadata = md.metadata("bioengine")
+    requirements = []
+
+    # Process main requirements
+    for req in metadata.get_all("Requires-Dist", []):
+        # Skip requirements that are only for specific extras
+        if "; extra ==" in req:
+            extra_name = req.split("; extra ==")[1].strip().strip("'\"")
+            if extra_name not in extras:
+                continue
+
+        # Extract the requirement name and version
+        req_name = req.split(";")[0].strip()
+        requirements.append(req_name)
 
     if select is None:
         # If select is None, return all requirements except those starting with "ray"
@@ -31,14 +57,25 @@ def get_pip_requirements(select: Optional[List[str]] = None) -> List[str]:
 
 
 def update_requirements(
-    requirements: List[str], select: Optional[List[str]] = None
+    requirements: List[str],
+    select: Optional[List[str]] = None,
+    extras: Optional[List[str]] = None,
 ) -> List[str]:
     """
     Update the provided list of pip requirements with the missing BioEngine requirements.
     If a requirement is already present, it will not be overwritten.
     If `select` is provided, only the requirements that match the names in `select` will be added.
+    If `extras` is provided, requirements from those extras will also be included.
+
+    Args:
+        requirements: List of requirements to update
+        select: Optional list of requirement names to filter by
+        extras: Optional list of extras to include (e.g. ['datasets', 'dev'])
+
+    Returns:
+        Updated list of requirements
     """
-    bioengine_requirements = get_pip_requirements(select)
+    bioengine_requirements = get_pip_requirements(select, extras)
 
     for bioengine_requirement in bioengine_requirements:
         exists = False
@@ -54,3 +91,14 @@ def update_requirements(
             requirements.append(bioengine_requirement)
 
     return requirements
+
+
+if __name__ == "__main__":
+    # Example usage
+    print(get_pip_requirements())
+
+    print(get_pip_requirements(select=["aiortc", "httpx", "hypha-rpc", "pydantic"]))
+
+    print(get_pip_requirements(select=["zarr"], extras=["datasets"]))
+
+    print(update_requirements(["numpy==1.21.0"]))

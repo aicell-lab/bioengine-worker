@@ -147,7 +147,7 @@ async def test_create_and_delete_artifacts(
 
         # Update demo-app artifact
         updated_demo_artifact_id = await bioengine_worker_service.create_application(
-            artifact_id=demo_artifact_id, files=demo_app_files
+            files=demo_app_files
         )
         assert (
             updated_demo_artifact_id == demo_artifact_id
@@ -156,7 +156,7 @@ async def test_create_and_delete_artifacts(
         # Update composition-app artifact
         updated_composition_artifact_id = (
             await bioengine_worker_service.create_application(
-                artifact_id=composition_artifact_id, files=composition_app_files
+                files=composition_app_files
             )
         )
         assert (

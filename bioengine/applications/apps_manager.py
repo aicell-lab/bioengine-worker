@@ -497,8 +497,15 @@ class AppsManager:
             self.artifact_manager = None
             raise
 
+        # Ensure applications collection exists
+        workspace = self.server.config.workspace
+        await ensure_applications_collection(
+            artifact_manager=self.artifact_manager,
+            workspace=workspace,
+            logger=self.logger,
+        )
+
         # Initialize the AppBuilder with the server and artifact manager
-        # AppBuilder will ensure that the applications collection exists
         await self.app_builder.initialize(
             server=self.server,
             artifact_manager=self.artifact_manager,
@@ -805,10 +812,6 @@ class AppsManager:
             ...,
             description="List of application files to upload. Each file must be a dictionary with 'name' (string), 'content' (file content), and 'type' ('text' for text files or 'base64' for binary files). Must include a 'manifest.yaml' file with application configuration.",
         ),
-        artifact_id: str = Field(
-            None,
-            description="Unique identifier for the artifact. If provided, updates an existing artifact. If not provided, creates a new artifact using the 'id' field from the manifest file. For new artifacts, use lowercase letters, numbers, and hyphens only.",
-        ),
         context: Dict[str, Any] = Field(
             ...,
             description="Authentication context containing user information, automatically provided by Hypha during service calls.",
@@ -828,7 +831,7 @@ class AppsManager:
         - Data files: Any additional resources needed by the application
 
         The manifest.yaml file must contain:
-        - id: Application identifier (for new artifacts)
+        - id: Application identifier
         - type: Must be "ray-serve"
         - name: Human-readable application name
         - description: Application description
@@ -898,7 +901,6 @@ class AppsManager:
                 artifact_manager=self.artifact_manager,
                 files=files,
                 workspace=self.server.config.workspace,
-                artifact_id=artifact_id,
                 manifest_updates=manifest_updates,
                 logger=self.logger,
             )

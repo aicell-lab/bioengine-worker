@@ -146,14 +146,12 @@ async def ensure_applications_collection(
 
     try:
         await artifact_manager.read(collection_id)
-        logger.debug(f"Collection '{collection_id}' already exists")
+        logger.info(f"Collection '{collection_id}' already exists")
     except Exception as collection_error:
         expected_error = (
             f"KeyError: \"Artifact with ID '{collection_id}' does not exist.\""
         )
         if str(collection_error).strip().endswith(expected_error):
-            logger.info(f"Collection '{collection_id}' does not exist. Creating it.")
-
             collection_manifest = {
                 "name": "Applications",
                 "description": f"A collection of applications for workspace {workspace}",
@@ -226,7 +224,7 @@ async def extract_and_validate_manifest(
 
 
 def validate_artifact_id(
-    deployment_manifest: Dict[str, Any],
+    manifest: Dict[str, Any],
     workspace: str,
     artifact_id: Optional[str] = None,
 ) -> str:
@@ -245,11 +243,11 @@ def validate_artifact_id(
         ValueError: If artifact ID format is incorrect
     """
     if artifact_id is None:
-        if "id" not in deployment_manifest:
+        if "id" not in manifest:
             raise ValueError(
-                "No artifact_id provided and no 'id' field found in manifest"
+                "No 'artifact_id' provided and no 'id' field found in manifest"
             )
-        alias = deployment_manifest["id"]
+        alias = manifest["id"]
 
         # Validate alias format
         invalid = any(
@@ -282,23 +280,23 @@ def validate_artifact_id(
     return full_artifact_id
 
 
-async def get_or_create_artifact(
+async def edit_artifact(
     artifact_manager: ObjectProxy,
-    full_artifact_id: str,
     workspace: str,
-    deployment_manifest: Dict[str, Any],
+    manifest: Dict[str, Any],
     artifact_type: str = "application",
+    collection: str = "applications",
     logger: Optional[logging.Logger] = None,
 ) -> ObjectProxy:
     """
-    Get an existing artifact or create a new one.
+    Put an artifact into stage mode. Creates a new artifact if it doesn't exist.
 
     Args:
         artifact_manager: Hypha artifact manager service instance
-        full_artifact_id: Full normalized artifact ID (format: workspace/name)
         workspace: Hypha workspace identifier
-        deployment_manifest: The deployment manifest
+        manifest: The updated artifact manifest
         artifact_type: The type of artifact to create
+        collection: The collection to place the artifact in
         logger: Optional logger instance for debugging
 
     Returns:
@@ -306,75 +304,67 @@ async def get_or_create_artifact(
 
     Raises:
         RuntimeError: If artifact creation fails
-        ValueError: If the full_artifact_id doesn't match the workspace
     """
     if logger is None:
         logger = create_logger("ArtifactUtils")
 
-    # Extract workspace from full_artifact_id
-    if "/" not in full_artifact_id:
-        raise ValueError(f"Invalid artifact ID format: {full_artifact_id}, expected 'workspace/name'")
-
-    artifact_workspace = full_artifact_id.split("/")[0]
-    if workspace != artifact_workspace:
-        logger.warning(
-            f"Workspace mismatch: provided workspace '{workspace}' doesn't match "
-            f"artifact ID workspace '{artifact_workspace}'"
-        )
+    # Get full artifact ID
+    artifact_id = validate_artifact_id(manifest, workspace)
 
     # Use workspace from full_artifact_id for consistency
-    collection_id = f"{artifact_workspace}/applications"
+    if collection is not None:
+        collection_id = f"{workspace}/{collection}"
+    else:
+        collection_id = None
 
     # Check if artifact exists and handle collection placement
     artifact = None
     try:
         # Check if artifact already exists
-        logger.debug(f"Checking if artifact '{full_artifact_id}' exists...")
-        existing_artifact = await artifact_manager.read(full_artifact_id)
+        existing_artifact = await artifact_manager.read(artifact_id)
 
         # Check if artifact is in the correct collection
         current_parent_id = getattr(existing_artifact, "parent_id", None)
         if current_parent_id != collection_id:
             logger.info(
-                f"Artifact '{full_artifact_id}' exists but is in wrong collection "
+                f"Artifact '{artifact_id}' exists but is in wrong collection "
                 f"(current: {current_parent_id}, expected: {collection_id}). "
                 "Deleting and recreating..."
             )
             # Delete the existing artifact
-            await artifact_manager.delete(artifact_id=full_artifact_id)
+            await artifact_manager.delete(artifact_id=artifact_id)
             # Will create new one below
             existing_artifact = None
 
         if existing_artifact:
             # Edit existing artifact
-            logger.debug(f"Editing existing artifact '{full_artifact_id}'...")
             artifact = await artifact_manager.edit(
-                artifact_id=full_artifact_id,
-                manifest=deployment_manifest,
+                artifact_id=artifact_id,
+                manifest=manifest,
                 type=artifact_type,
                 stage=True,
             )
-            logger.debug(f"Successfully edited existing artifact '{full_artifact_id}'")
+            logger.info(f"Editing existing artifact '{artifact_id}'")
     except Exception as e:
-        # Artifact doesn't exist or read failed
-        logger.debug(
-            f"Artifact '{full_artifact_id}' does not exist or read failed: {e}"
+        expected_error = (
+            f"KeyError: \"Artifact with ID '{artifact_id}' does not exist.\""
         )
-
+        if not str(e).strip().endswith(expected_error):
+            raise e
+        
     # Create new artifact if it doesn't exist or was deleted
     if artifact is None:
         try:
-            logger.debug(f"Creating new artifact '{full_artifact_id}'...")
             artifact = await artifact_manager.create(
                 parent_id=collection_id,
                 type=artifact_type,
-                alias=full_artifact_id,
-                manifest=deployment_manifest,
+                alias=artifact_id.split("/")[1],
+                manifest=manifest,
                 stage=True,
             )
-            logger.debug(f"Successfully created new artifact '{full_artifact_id}'")
+            logger.info(f"Created new artifact '{artifact.id}'")
         except Exception as e:
-            raise RuntimeError(f"Failed to create artifact '{full_artifact_id}': {e}")
+            raise RuntimeError(f"Failed to create artifact '{artifact_id}': {e}")
 
     return artifact
 
@@ -405,7 +395,7 @@ async def upload_file_to_artifact(
     if logger is None:
         logger = create_logger("ArtifactUtils")
 
-    logger.debug(f"Uploading file '{file_name}' to artifact...")
+    logger.info(f"Uploading file '{file_name}' to artifact...")
 
     # Get upload URL
     try:
@@ -482,7 +472,6 @@ async def create_application_from_files(
     artifact_manager: ObjectProxy,
     files: List[Dict[str, Any]],
     workspace: str,
-    artifact_id: Optional[str] = None,
     manifest_updates: Optional[Dict[str, Any]] = None,
     logger: Optional[logging.Logger] = None,
 ) -> str:
@@ -500,7 +489,6 @@ async def create_application_from_files(
                - 'content': file content (str or bytes)
                - 'type': 'text' for text files, 'base64' for binary files
         workspace: Hypha workspace identifier
-        artifact_id: Optional artifact ID for updates. If None, extracts from manifest
         manifest_updates: Optional dictionary of fields to add/update in the manifest
         logger: Optional logger instance for debugging
 
@@ -527,18 +515,6 @@ async def create_application_from_files(
     if logger is None:
         logger = create_logger("ArtifactUtils")
 
-    # Extract and validate manifest
-    deployment_manifest = await extract_and_validate_manifest(
-        files=files, manifest_updates=manifest_updates
-    )
-
-    # Validate and normalize artifact ID
-    full_artifact_id = validate_artifact_id(
-        deployment_manifest=deployment_manifest,
-        workspace=workspace,
-        artifact_id=artifact_id,
-    )
-
     # Ensure applications collection exists
     await ensure_applications_collection(
         artifact_manager=artifact_manager,
@@ -546,12 +522,16 @@ async def create_application_from_files(
         logger=logger,
     )
 
-    # Get or create artifact
-    artifact = await get_or_create_artifact(
+    # Extract and validate manifest
+    application_manifest = await extract_and_validate_manifest(
+        files=files, manifest_updates=manifest_updates
+    )
+
+    # Edit or create artifact, put in stage mode
+    artifact = await edit_artifact(
         artifact_manager=artifact_manager,
-        full_artifact_id=full_artifact_id,
         workspace=workspace,
-        deployment_manifest=deployment_manifest,
+        manifest=application_manifest,
         logger=logger,
     )
 

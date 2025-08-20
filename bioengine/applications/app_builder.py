@@ -14,19 +14,13 @@ import yaml
 from hypha_rpc.rpc import RemoteService
 from hypha_rpc.utils import ObjectProxy
 from ray import serve
+from ray._private.runtime_env.packaging import get_uri_for_directory
 from ray.serve.handle import DeploymentHandle
 
 import bioengine
 from bioengine.applications.proxy_deployment import BioEngineProxyDeployment
 from bioengine.datasets import BioEngineDatasets
-from bioengine.utils import (
-    commit_artifact,
-    create_logger,
-    ensure_applications_collection,
-    get_or_create_artifact,
-    update_requirements,
-    upload_file_to_artifact,
-)
+from bioengine.utils import create_logger, update_requirements
 
 
 class AppManifest(TypedDict):
@@ -150,7 +144,10 @@ class AppBuilder:
         self.serve_http_url: Optional[str] = None
 
     async def initialize(
-        self, server: RemoteService, artifact_manager: ObjectProxy, serve_http_url: str
+        self,
+        server: RemoteService,
+        artifact_manager: ObjectProxy,
+        serve_http_url: str,
     ) -> None:
         """
         Connect the AppBuilder to external services required for operation.
@@ -202,86 +199,6 @@ class AppBuilder:
         self.server = server
         self.artifact_manager = artifact_manager
         self.serve_http_url = serve_http_url
-
-        # Upload zipped BioEngine package to artifact manager
-        await self._upload_bioengine_package()
-
-    def _get_zipped_package_content(self) -> bytes:
-        """
-        Return the zipped content of the bioengine package axs bytes.
-        """
-        package_path = Path(bioengine.__file__).parent
-
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for path in package_path.rglob("*"):
-                if path.is_file():
-                    # store relative to package parent so it unzips into "bioengine/"
-                    arcname = path.relative_to(package_path.parent)
-                    zf.write(path, arcname)
-        buffer.seek(0)
-        return buffer.getvalue()
-
-    async def _upload_bioengine_package(self) -> None:
-        """
-        Upload the zipped BioEngine package to the artifact manager in the applications collection with version bioengine.__version__
-
-        This method packages the bioengine module as a zip file and uploads it to the Hypha artifact manager.
-        If an artifact with this version already exists, it will be updated.
-        """
-        # Get the zipped package content
-        package_content = self._get_zipped_package_content()
-
-        # Create the artifact ID with version
-        workspace = self.server.config.workspace
-        full_artifact_id = f"{workspace}/{self.bioengine_package_alias}"
-
-        # Create a manifest for the package
-        deployment_manifest = {
-            "name": "BioEngine Package",
-            "id": self.bioengine_package_alias,
-            "version": bioengine.__version__,
-            "description": f"BioEngine package version {bioengine.__version__}",
-            "type": "package",
-        }
-
-        # Ensure applications collection exists
-        await ensure_applications_collection(
-            artifact_manager=self.artifact_manager,
-            workspace=workspace,
-            logger=self.logger,
-        )
-
-        # Get or create the artifact
-        artifact = await get_or_create_artifact(
-            artifact_manager=self.artifact_manager,
-            full_artifact_id=full_artifact_id,
-            workspace=workspace,
-            deployment_manifest=deployment_manifest,
-            artifact_type="package",
-            logger=self.logger,
-        )
-
-        # Upload the zip file
-        artifact_id = f""
-        await upload_file_to_artifact(
-            artifact_manager=self.artifact_manager,
-            artifact_id=artifact.id,
-            file_name="bioengine.zip",
-            file_content=package_content,
-            logger=self.logger,
-        )
-
-        # Commit the artifact
-        await commit_artifact(
-            artifact_manager=self.artifact_manager,
-            artifact_id=artifact.id,
-            logger=self.logger,
-        )
-
-        self.logger.info(
-            f"Successfully uploaded BioEngine package v{bioengine.__version__}"
-        )
 
     async def _load_manifest(
         self, artifact_id: str, version: Optional[str] = None
@@ -455,14 +372,8 @@ class AppBuilder:
         pip_requirements = update_requirements(pip_requirements)
         runtime_env["pip"] = pip_requirements
 
-        # Add bioengine as module - use a fresh download URL for the bioengine package as remote URI
-        artifact_id = f"{self.server.config.workspace}/{self.bioengine_package_alias}"
-        bioengine_remote_uri = await self.artifact_manager.get_file(
-            artifact_id=artifact_id,
-            version=bioengine.__version__,
-            file_path="bioengine.zip",
-        )
-
+        # Add bioengine as module
+        bioengine_remote_uri = get_uri_for_directory(os.path.dirname(bioengine.__file__))
         py_modules.append(bioengine_remote_uri)
         runtime_env["py_modules"] = py_modules
 
@@ -557,7 +468,7 @@ class AppBuilder:
             self.bioengine_datasets = BioEngineDatasets(
                 data_server_url=data_server_url,
                 deployment_name=self.__class__.__name__,
-                workspace=workspace,
+                data_server_workspace=workspace,
             )
 
             # Call the original __init__ method

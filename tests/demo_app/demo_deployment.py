@@ -103,12 +103,12 @@ class DemoDeployment:
         ascii_art_response = await self.ascii_art()
 
         # Test BioEngine datasets
-        available_datasets = await self.bioengine_datasets.list()
+        available_datasets = await self.bioengine_datasets.list_datasets()
         print(f"Available datasets: {available_datasets}")
 
-        if available_datasets:
-            dataset = await self.bioengine_datasets.get(available_datasets[0])
-            print(f"Selected dataset: {dataset}")
+        for dataset_name in available_datasets:
+            dataset = await self.bioengine_datasets.get_dataset(dataset_name)
+            print(f"Successfully loaded dataset {dataset}")
 
     # === Internal Methods ===
 

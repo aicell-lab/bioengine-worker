@@ -13,7 +13,7 @@ from typing import Dict, List, Literal, Optional, Union
 import ray
 from ray import serve
 
-from bioengine import __version__
+import bioengine
 from bioengine.ray.proxy_actor import BioEngineProxyActor
 from bioengine.ray.slurm_workers import SlurmWorkers
 from bioengine.utils import (
@@ -80,7 +80,7 @@ class RayCluster:
         runtime_env_pip_cache_size_gb: int = 30,  # Ray default is 10 GB
         force_clean_up: bool = True,
         # SLURM Worker Configuration parameters
-        image: str = f"ghcr.io/aicell-lab/bioengine-worker:{__version__}",
+        image: str = f"ghcr.io/aicell-lab/bioengine-worker:{bioengine.__version__}",
         worker_cache_dir: Optional[str] = None,
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
@@ -691,6 +691,10 @@ class RayCluster:
                 ray.init,
                 address=self.address,
                 logging_format=stream_logging_format,
+                # Upload bioengine package to GCS storage
+                runtime_env={
+                    "py_modules": [os.path.dirname(bioengine.__file__)],
+                },
             )
 
             # Create BioEngineProxy to access cluster state

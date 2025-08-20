@@ -418,15 +418,16 @@ class AppsManager:
             self.logger.error(
                 f"Failed to deploy application '{application_id}' with error: {e}"
             )
-            # TODO: Get the error message from the Ray Serve application
             try:
                 serve_status = await asyncio.to_thread(serve.status)
                 application = serve_status.applications.get(application_id)
                 if application:
-                    error_message = application.status.error_message
-                    self.logger.error(
-                        f"Ray Serve application '{application_id}' reported error: {error_message}"
-                    )
+                    for deployment_name, deployment in application.deployments.items():
+                        if deployment.status.value == "UNHEALTHY":
+                            self.logger.error(
+                                f"Ray Serve application '{application_id}' deployment "
+                                f"'{deployment_name}' reported error:\n{deployment.message}",
+                            )
             except Exception as status_error:
                 self.logger.error(
                     f"Failed to get Ray Serve status for application '{application_id}': {status_error}"

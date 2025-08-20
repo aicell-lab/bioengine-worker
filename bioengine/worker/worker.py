@@ -403,9 +403,9 @@ class BioEngineWorker:
         await self.apps_manager.initialize(
             server=self.server, admin_users=self.admin_users
         )
-        await self.dataset_manager.initialize(
-            server=self.server, admin_users=self.admin_users
-        )
+        # await self.dataset_manager.initialize(
+        #     server=self.server, admin_users=self.admin_users
+        # )
         await self.code_executor.initialize(admin_users=self.admin_users)
 
         self.logger.info(
@@ -621,7 +621,7 @@ class BioEngineWorker:
                     await self.apps_manager.monitor_applications()
 
                     # Run BioEngine Datasets monitoring
-                    await self.dataset_manager.monitor_datasets()
+                    # await self.dataset_manager.monitor_datasets()
 
                     # Reset error counter on success
                     consecutive_errors = 0
@@ -892,7 +892,7 @@ class BioEngineWorker:
             "client_id": self.client_id,
             "ray_cluster": self.ray_cluster.status,
             "bioengine_apps": await self.apps_manager.get_status(),
-            "bioengine_datasets": await self.dataset_manager.get_status(),
+            # "bioengine_datasets": await self.dataset_manager.get_status(),
             "admin_users": self.admin_users,
             "is_ready": self.is_ready.is_set(),
         }

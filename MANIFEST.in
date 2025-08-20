@@ -1,3 +1,5 @@
-include scripts/*.sh
+include LICENSE
 include README.md
+include scripts/*.sh
 include requirements.txt
+include requirements-test.txt

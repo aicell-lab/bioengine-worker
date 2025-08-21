@@ -1,3 +1,33 @@
+"""
+BioEngine Datasets Proxy Server - Privacy-preserved dataset management service.
+
+This module implements a comprehensive dataset management service with privacy
+preservation, access control, and efficient data streaming capabilities. It provides
+both the server-side implementation of the datasets API and the infrastructure for
+deploying standalone dataset services.
+
+The proxy server integrates with Hypha for authentication and service registration,
+MinIO for secure object storage, and implements a custom HTTP-based protocol for
+efficient streaming of large scientific datasets in Zarr format.
+
+Key Components:
+- Hypha server integration for authentication and service discovery
+- MinIO S3 backend for secure, scalable data storage
+- Manifest-driven dataset configuration with access controls
+- Presigned URL generation for secure, efficient data access
+- Comprehensive logging and monitoring for production deployments
+
+Service Architecture:
+The proxy server implements a multi-tier architecture with Hypha for front-end
+authentication, MinIO for backend storage, and custom middleware for access control
+and presigned URL generation. It supports both local filesystem access and remote
+S3-compatible storage backends.
+
+Usage:
+The start_proxy_server function is the main entry point for deploying the service,
+either programmatically or through the command-line interface in __main__.py.
+"""
+
 import asyncio
 import logging
 import os
@@ -411,6 +441,42 @@ def start_proxy_server(
     minio_port: int = 10000,
     log_file: Optional[Union[str, Path]] = None,
 ) -> None:
+    """
+    Start the BioEngine Datasets proxy server with comprehensive data management.
+
+    Deploys a complete dataset management service including Hypha server for authentication,
+    MinIO for secure object storage, and custom middleware for access control and data
+    streaming. The service provides a secure API for accessing scientific datasets with
+    privacy preservation and fine-grained access control.
+
+    Service Components:
+    - Hypha server with authentication and service registration
+    - MinIO S3-compatible object storage for data files
+    - Dataset discovery and manifest-based configuration
+    - Access control with user-specific permissions
+    - Presigned URL generation for secure data access
+    - HTTP API for efficient data streaming and metadata access
+
+    Deployment Process:
+    1. Sets up cache directories and logging infrastructure
+    2. Initializes MinIO server for secure object storage
+    3. Registers datasets as artifacts in Hypha for discovery
+    4. Starts Hypha server with dataset service and authentication
+    5. Monitors service status and handles graceful shutdown
+
+    Args:
+        data_dir: Root directory containing dataset folders with manifest.yml files
+                Each dataset folder should have a manifest.yml with metadata and
+                access control configuration.
+        bioengine_cache_dir: Directory for cache files, logs, and temporary storage
+                           Must be writable by the service process.
+        server_ip: IP address for the service to listen on. If None, automatically
+                 determined based on network configuration.
+        server_port: Port for the Hypha server (default: 9527)
+        minio_port: Port for the MinIO S3 service (default: 10000)
+        log_file: Path to log file for service logging. If None, logs are created
+                in the cache directory with timestamp-based filenames.
+    """
     # Set paths
     global BIOENGINE_DATA_DIR
     global MINIO_CONFIG

@@ -287,40 +287,7 @@ class BioEngineWorker:
             self.ray_cluster = RayCluster(**ray_cluster_config)
 
             # Check for running data server
-            current_data_server_file = (
-                self.cache_dir / "datasets" / "bioengine_current_server"
-            )
-            if current_data_server_file.exists():
-                try:
-                    self.data_server_url = current_data_server_file.read_text().strip()
-                    self.logger.info(
-                        f"Detected dataset server at: {self.data_server_url}"
-                    )
-
-                    ping_url = (
-                        f"{self.data_server_url}/{self.data_server_workspace}"
-                        "/services/bioengine-datasets/ping"
-                    )
-
-                    try:
-                        with httpx.Client(timeout=10) as client:
-                            response = client.get(ping_url)
-                            if response.status_code == 200:
-                                self.logger.info(
-                                    f"Successfully reached dataset server in workspace '{self.data_server_workspace}'."
-                                )
-                            else:
-                                self.logger.warning(
-                                    f"Failed to reached dataset server in workspace "
-                                    f"'{self.data_server_workspace}': HTTP {response.status_code} {response.text}"
-                                )
-                    except Exception as e:
-                        self.logger.error(
-                            f"Error occurred while pinging dataset server: {e}"
-                        )
-
-                except Exception as e:
-                    self.logger.error(f"Failed to read current data server URL: {e}")
+            self._check_data_server()
 
             # Initialize component managers with enhanced configuration
             self.apps_manager = AppsManager(
@@ -380,6 +347,42 @@ class BioEngineWorker:
         else:
             if key not in kwargs or kwargs[key] is None:
                 kwargs[key] = value
+
+    def _check_data_server(self) -> None:
+        current_data_server_file = (
+            self.cache_dir / "datasets" / "bioengine_current_server"
+        )
+        if current_data_server_file.exists():
+            try:
+                self.data_server_url = current_data_server_file.read_text().strip()
+                self.logger.info(f"Detected dataset server at: {self.data_server_url}")
+
+                ping_url = (
+                    f"{self.data_server_url}/{self.data_server_workspace}"
+                    "/services/bioengine-datasets/ping"
+                )
+
+                try:
+                    with httpx.Client(timeout=10) as client:
+                        response = client.get(ping_url)
+                        if response.status_code == 200:
+                            self.logger.info(
+                                f"Successfully reached dataset server in workspace '{self.data_server_workspace}'."
+                            )
+                        else:
+                            self.logger.warning(
+                                f"Failed to reached dataset server in workspace "
+                                f"'{self.data_server_workspace}': HTTP {response.status_code} {response.text}"
+                            )
+                except Exception as e:
+                    self.logger.error(
+                        f"Error occurred while pinging dataset server: {e}"
+                    )
+
+            except Exception as e:
+                self.logger.error(f"Failed to read current data server URL: {e}")
+        else:
+            self.logger.info("No current data server found.")
 
     async def _connect_to_server(self) -> None:
         """

@@ -1,15 +1,27 @@
 #!/usr/bin/env python3
 """
-BioEngine Datasets Command-Line Interface
+BioEngine Datasets - Privacy-preserved scientific data management system.
 
 Enterprise-grade command-line interface for deploying and managing BioEngine Datasets,
 providing privacy-preserved data streaming with per-user file access control. Integrates
 with BioEngine Worker to enable secure access to large scientific datasets through a
 local Hypha server with MinIO S3 backend.
 
-This module provides comprehensive dataset management, authentication, and streaming
-capabilities for large scientific data files in Zarr format. It serves as the primary
-entry point for BioEngine Datasets service in both development and production environments.
+This module provides a comprehensive system for secure, efficient access to large
+scientific datasets with privacy preservation and fine-grained access control. It
+implements both client and server components for a complete data management solution
+that integrates with the BioEngine distributed AI infrastructure.
+
+Key Components:
+- BioEngineDatasets: Client interface for dataset access from applications
+- HttpZarrStore: Efficient streaming store for partial data access
+- start_proxy_server: Server deployment for dataset management and access control
+- Command-line interface for standalone dataset service deployment
+
+Dataset Architecture:
+The system uses a manifest-driven architecture where each dataset includes a manifest.yml
+file defining metadata and access permissions. Data is stored in Zarr format for efficient
+partial access, with an HTTP-based streaming protocol that minimizes data transfer.
 
 Key Features:
 - Privacy-preserved data streaming with fine-grained access control
@@ -19,10 +31,19 @@ Key Features:
 - Authentication and authorization management for secure multi-user environments
 - Structured logging with file output and debug modes
 
+Integration Points:
+- Ray Serve for model deployment integration
+- Hypha for service registration and authentication
+- MinIO S3 for secure object storage backend
+- AnnData for scientific data format compatibility
+
 Usage:
     python -m bioengine.datasets --data-dir /shared/data
     python -m bioengine.datasets --data-dir /shared/data --server-ip 0.0.0.0 --server-port 8080
     python -m bioengine.datasets --data-dir /shared/data --cache-dir /shared/bioengine/cache
+
+The module can be used both as a library for accessing datasets from within BioEngine
+applications and as a standalone service for dataset management and distribution.
 
 Author: BioEngine Development Team
 License: MIT
@@ -69,8 +90,7 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         type=str,
         required=True,
         metavar="PATH",
-        help="Root directory for dataset storage and access by the dataset manager. "
-        "Should be mounted shared storage in distributed environments. Default: /data",
+        help="Root directory for dataset storage and access by the dataset manager."
     )
     parser.add_argument(
         "--cache-dir",

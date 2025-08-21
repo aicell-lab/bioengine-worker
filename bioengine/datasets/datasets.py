@@ -10,12 +10,77 @@ from bioengine.datasets.http_zarr_store import HttpZarrStore
 
 
 class BioEngineDatasets:
+    """
+    Client interface for accessing distributed scientific datasets in BioEngine.
+
+    This class provides a comprehensive client interface for accessing and streaming
+    scientific datasets managed by the BioEngine Datasets service. It handles the
+    complete lifecycle from discovery through connection to data access, with robust
+    error handling and efficient streaming for large scientific data.
+
+    The client implementation follows an asynchronous pattern for non-blocking I/O
+    operations, making it suitable for use in interactive computing environments and
+    high-performance applications where responsiveness is critical. It handles secure
+    authentication, efficient streaming, and integration with scientific data formats
+    through the Zarr protocol.
+
+    The BioEngineDatasets client integrates with:
+    - HTTP Zarr store for efficient partial data access
+    - Ray Serve deployments for model-data integration
+    - Remote dataset services with authentication
+    - Asynchronous operation for high-performance data access
+
+    Key Features:
+    - Efficient partial data access through HttpZarrStore
+    - Service discovery and connection management
+    - Secure dataset access with authentication tokens
+    - Rich metadata access through manifest files
+    - Asynchronous API for non-blocking data operations
+    - Integration with AnnData and other scientific data formats
+    - Robust error handling with meaningful error messages
+
+    Implementation Details:
+    The client uses HTTP as the transport protocol and implements the Zarr store API
+    for partial data access, allowing efficient operations on large datasets without
+    loading entire files into memory.
+
+    Dataset Access Workflow:
+    The class implements a list → access → close pattern for dataset interaction,
+    where datasets are first discovered through listing, then accessed through
+    the get_dataset method which returns a Zarr group, and finally connections
+    are managed automatically.
+
+    Attributes:
+        service_url (str): URL for the BioEngine Datasets service
+        deployment_name (str): Name of the deployment using this client
+        http_client (httpx.AsyncClient): HTTP client for service communication
+        replica_id (str): Unique identifier for this client instance
+    """
+
     def __init__(
         self,
         data_server_url: Union[str, None],  # set to None for no data server
         deployment_name: str,
         data_server_workspace: str = "public",
     ):
+        """
+        Initialize the BioEngineDatasets client for dataset access.
+
+        Sets up a client connection to the BioEngine Datasets service for
+        accessing scientific datasets. Configures the connection with proper
+        authentication and logging for tracking access patterns.
+
+        Args:
+            data_server_url: URL of the datasets server, or None to disable remote access
+            deployment_name: Identifier for the deployment using this client,
+                           used for access logging and monitoring
+            data_server_workspace: Hypha workspace name containing the datasets service,
+                                 defaults to "public" for shared datasets
+
+        Note:
+            When data_server_url is None, only local dataset access will be available.
+            The client uses a unique replica_id for tracking access patterns in logs.
+        """
         # Get replica identifier for logging
         try:
             self.replica_id = get_replica_context().replica_tag
@@ -42,6 +107,16 @@ class BioEngineDatasets:
         self.deployment_name = deployment_name
 
     async def ping_data_server(self):
+        """
+        Verify connectivity to the dataset service.
+
+        Tests the connection to the dataset service by sending a simple ping request.
+        This method should be called before attempting to access datasets to ensure
+        that the service is available and responsive.
+
+        Raises:
+            RuntimeError: If the connection to the data server fails for any reason
+        """
         if self.service_url is not None:
             try:
                 # Try to ping dataset service
@@ -54,6 +129,20 @@ class BioEngineDatasets:
                 raise RuntimeError("Connection to data server failed")
 
     async def list_datasets(self) -> List[str]:
+        """
+        Retrieve a list of available datasets from the service.
+
+        Queries the dataset service for all datasets that are available to the current
+        user. This is typically the first step in the dataset access workflow and
+        provides the names needed for subsequent operations.
+
+        Returns:
+            List of dataset names available to the current user. Empty list if
+            service_url is None.
+
+        Raises:
+            httpx.HTTPStatusError: If the request fails due to HTTP error
+        """
         if self.service_url is None:
             return []
 
@@ -71,6 +160,25 @@ class BioEngineDatasets:
     async def list_files(
         self, dataset_name: str, token: Optional[str] = None
     ) -> List[str]:
+        """
+        Retrieve a list of available files within a specific dataset.
+
+        Queries the dataset service for all files available within the specified dataset.
+        This is typically the second step in the dataset access workflow, after listing
+        available datasets. The method handles authentication and access control through
+        the optional token parameter.
+
+        Args:
+            dataset_name: Name of the dataset to list files from
+            token: Optional authentication token for accessing protected datasets
+
+        Returns:
+            List of file paths available within the specified dataset
+
+        Raises:
+            ValueError: If the service_url is None or dataset does not exist
+            httpx.HTTPStatusError: If the request fails due to HTTP error
+        """
         if self.service_url is None:
             raise ValueError(f"Dataset '{dataset_name}' does not exist")
 
@@ -91,6 +199,34 @@ class BioEngineDatasets:
     async def get_dataset(
         self, dataset_name: str, file: Optional[str] = None, token: Optional[str] = None
     ) -> zarr.Group:
+        """
+        Access a dataset as a Zarr group for efficient data operations.
+
+        This is the primary method for accessing dataset content, providing access to
+        the data through Zarr's efficient partial data access mechanisms. The method
+        validates dataset and file existence, handles authentication, and returns a
+        connected Zarr group for immediate data access.
+
+        Dataset Access Process:
+        1. Validates dataset existence through list_datasets
+        2. Checks file availability through list_files
+        3. Auto-selects the file if only one is available
+        4. Creates an HttpZarrStore for efficient streaming access
+        5. Opens and returns a Zarr group for data operations
+
+        Args:
+            dataset_name: Name of the dataset to access
+            file: Optional specific file within the dataset to access.
+                 If None and only one file exists, that file is automatically selected.
+            token: Optional authentication token for accessing protected datasets
+
+        Returns:
+            Connected Zarr group for data access operations
+
+        Raises:
+            ValueError: If dataset/file doesn't exist or ambiguous file selection
+            RuntimeError: If connection to data server fails
+        """
         start_time = asyncio.get_event_loop().time()
 
         available_datasets = await self.list_datasets()

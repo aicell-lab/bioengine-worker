@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
 
+import httpx
 from hypha_rpc import connect_to_server
 from hypha_rpc.sync import login
 from hypha_rpc.utils.schema import schema_method
@@ -12,9 +13,9 @@ from pydantic import Field
 
 from bioengine import __version__
 from bioengine.applications import AppsManager
-from bioengine.worker.code_executor import CodeExecutor
 from bioengine.ray import RayCluster
 from bioengine.utils import check_permissions, create_context, create_logger
+from bioengine.worker.code_executor import CodeExecutor
 
 
 class BioEngineWorker:
@@ -248,6 +249,12 @@ class BioEngineWorker:
         self.full_service_id = None
         self._admin_context = None
 
+        # Dataset server configuration
+        self.data_server_url = None
+        self.data_server_workspace = os.getenv(
+            "BIOENGINE_DATA_SERVER_WORKSPACE", "public"
+        )
+
         try:
             # Attempt interactive login if no token provided
             if not self._token:
@@ -279,11 +286,49 @@ class BioEngineWorker:
             # Initialize Ray cluster manager
             self.ray_cluster = RayCluster(**ray_cluster_config)
 
+            # Check for running data server
+            current_data_server_file = (
+                self.cache_dir / "datasets" / "bioengine_current_server"
+            )
+            if current_data_server_file.exists():
+                try:
+                    self.data_server_url = current_data_server_file.read_text().strip()
+                    self.logger.info(
+                        f"Detected dataset server at: {self.data_server_url}"
+                    )
+
+                    ping_url = (
+                        f"{self.data_server_url}/{self.data_server_workspace}"
+                        "/services/bioengine-datasets/ping"
+                    )
+
+                    try:
+                        with httpx.Client(timeout=10) as client:
+                            response = client.get(ping_url)
+                            if response.status_code == 200:
+                                self.logger.info(
+                                    f"Successfully reached dataset server in workspace '{self.data_server_workspace}'."
+                                )
+                            else:
+                                self.logger.warning(
+                                    f"Failed to reached dataset server in workspace "
+                                    f"'{self.data_server_workspace}': HTTP {response.status_code} {response.text}"
+                                )
+                    except Exception as e:
+                        self.logger.error(
+                            f"Error occurred while pinging dataset server: {e}"
+                        )
+
+                except Exception as e:
+                    self.logger.error(f"Failed to read current data server URL: {e}")
+
             # Initialize component managers with enhanced configuration
             self.apps_manager = AppsManager(
                 ray_cluster=self.ray_cluster,
                 token=self._token,
                 apps_cache_dir=self.cache_dir / "apps",
+                data_server_url=self.data_server_url,
+                data_server_workspace="public",
                 startup_applications=startup_applications,
                 log_file=log_file,
                 debug=debug,

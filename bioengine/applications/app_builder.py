@@ -1,10 +1,8 @@
 import asyncio
 import inspect
-import io
 import logging
 import os
 import time
-import zipfile
 from functools import wraps
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict, Union
@@ -97,6 +95,8 @@ class AppBuilder:
         self,
         token: str,
         apps_cache_dir: Union[str, Path],
+        data_server_url: Optional[str] = None,
+        data_server_workspace: str = "public",
         log_file: Optional[str] = None,
         debug: bool = False,
     ) -> None:
@@ -116,6 +116,8 @@ class AppBuilder:
         Args:
             token: Hypha authentication token (get from environment or web interface)
             apps_cache_dir: Directory for storing downloaded code and temporary files
+            data_server_url: URL for the data server (None = no data server)
+            data_server_workspace: Workspace on the data server (default: "public")
             log_file: Optional file path for logging output (None = console only)
             debug: Whether to enable detailed debug logging for troubleshooting
 
@@ -124,6 +126,8 @@ class AppBuilder:
             builder = AppBuilder(
                 token=os.environ["HYPHA_TOKEN"],
                 apps_cache_dir=f"{os.environ['HOME']}/apps",
+                data_server_url="http://127.0.0.1:9527",
+                data_server_workspace="public",
                 debug=True
             )
             ```
@@ -138,6 +142,8 @@ class AppBuilder:
         # Store parameters
         self._token = token
         self.apps_cache_dir = Path(apps_cache_dir)
+        self.data_server_url = data_server_url
+        self.data_server_workspace = data_server_workspace
         self.bioengine_package_alias = "bioengine-package"
         self.server: Optional[RemoteService] = None
         self.artifact_manager: Optional[ObjectProxy] = None
@@ -373,7 +379,9 @@ class AppBuilder:
         runtime_env["pip"] = pip_requirements
 
         # Add bioengine as module
-        bioengine_remote_uri = get_uri_for_directory(os.path.dirname(bioengine.__file__))
+        bioengine_remote_uri = get_uri_for_directory(
+            os.path.dirname(bioengine.__file__)
+        )
         py_modules.append(bioengine_remote_uri)
         runtime_env["py_modules"] = py_modules
 
@@ -435,8 +443,8 @@ class AppBuilder:
 
         # Stream zarr dataset either from public or locally started server
         # Example for a local hypha server: "http://localhost:9527"
-        data_server_url = os.getenv("BIOENGINE_DATA_SERVER_URL")
-        workspace = os.getenv("BIOENGINE_DATA_WORKSPACE", "public")
+        data_server_url = self.data_server_url
+        data_server_workspace = self.data_server_workspace
 
         @wraps(orig_init)
         def wrapped_init(self, *args, **kwargs):
@@ -468,7 +476,7 @@ class AppBuilder:
             self.bioengine_datasets = BioEngineDatasets(
                 data_server_url=data_server_url,
                 deployment_name=self.__class__.__name__,
-                data_server_workspace=workspace,
+                data_server_workspace=data_server_workspace,
             )
 
             # Call the original __init__ method

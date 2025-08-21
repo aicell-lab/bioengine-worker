@@ -75,6 +75,8 @@ class AppsManager:
         ray_cluster: RayCluster,
         token: str,
         apps_cache_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine/apps",
+        data_server_url: Optional[str] = None,
+        data_server_workspace: str = "public",
         startup_applications: Optional[List[dict]] = None,
         # Logger
         log_file: Optional[str] = None,
@@ -96,6 +98,8 @@ class AppsManager:
             ray_cluster: Ray cluster manager instance for compute resource management
             token: Authentication token for Hypha server access
             apps_cache_dir: Directory for caching application artifacts and build files
+            data_server_url: URL for the data server
+            data_server_workspace: Workspace on the data server (default: "public")
             startup_applications: List of application configurations to deploy automatically
                                  when the manager initializes
             log_file: Optional path to log file for deployment operations
@@ -130,6 +134,8 @@ class AppsManager:
         self.app_builder = AppBuilder(
             token=token,
             apps_cache_dir=apps_cache_dir,
+            data_server_url=data_server_url,
+            data_server_workspace=data_server_workspace,
             log_file=log_file,
             debug=debug,
         )

@@ -351,7 +351,7 @@ async def edit_artifact(
         )
         if not str(e).strip().endswith(expected_error):
             raise e
-        
+
     # Create new artifact if it doesn't exist or was deleted
     if artifact is None:
         try:
@@ -399,9 +399,7 @@ async def upload_file_to_artifact(
 
     # Get upload URL
     try:
-        upload_url = await artifact_manager.put_file(
-            artifact_id, file_path=file_name
-        )
+        upload_url = await artifact_manager.put_file(artifact_id, file_path=file_name)
     except Exception as e:
         raise RuntimeError(f"Failed to get upload URL for '{file_name}': {e}")
 

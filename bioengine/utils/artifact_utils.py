@@ -18,7 +18,7 @@ def create_file_list_from_directory(
     Convert a local directory to a list of file dictionaries for artifact creation.
 
     This utility function reads all files from a directory and converts them to the
-    format expected by create_artifact_from_files. It automatically handles text
+    format expected by create_application_from_files. It automatically handles text
     and binary files, and can modify the manifest ID with a suffix for testing.
 
     Args:
@@ -146,14 +146,12 @@ async def ensure_applications_collection(
 
     try:
         await artifact_manager.read(collection_id)
-        logger.debug(f"Collection '{collection_id}' already exists")
+        logger.info(f"Collection '{collection_id}' already exists")
     except Exception as collection_error:
         expected_error = (
             f"KeyError: \"Artifact with ID '{collection_id}' does not exist.\""
         )
         if str(collection_error).strip().endswith(expected_error):
-            logger.info(f"Collection '{collection_id}' does not exist. Creating it.")
-
             collection_manifest = {
                 "name": "Applications",
                 "description": f"A collection of applications for workspace {workspace}",
@@ -176,55 +174,23 @@ async def ensure_applications_collection(
     return collection_id
 
 
-async def create_artifact_from_files(
-    artifact_manager: ObjectProxy,
+async def extract_and_validate_manifest(
     files: List[Dict[str, Any]],
-    workspace: str,
-    artifact_id: Optional[str] = None,
     manifest_updates: Optional[Dict[str, Any]] = None,
-    logger: Optional[logging.Logger] = None,
-) -> str:
+) -> Dict[str, Any]:
     """
-    Create or update a Hypha artifact from a list of files.
-
-    This utility function handles the common pattern of creating artifacts in Hypha
-    from a list of files, including manifest validation, collection management,
-    file uploads, and artifact commitment.
+    Extract and validate the manifest from a list of files.
 
     Args:
-        artifact_manager: Hypha artifact manager service instance
-        files: List of file dictionaries with keys:
-               - 'name': relative file path (str)
-               - 'content': file content (str or bytes)
-               - 'type': 'text' for text files, 'base64' for binary files
-        workspace: Hypha workspace identifier
-        artifact_id: Optional artifact ID for updates. If None, extracts from manifest
+        files: List of file dictionaries
         manifest_updates: Optional dictionary of fields to add/update in the manifest
-        logger: Optional logger instance for debugging
 
     Returns:
-        The artifact ID of the created or updated artifact
+        Validated deployment manifest
 
     Raises:
-        ValueError: If manifest is missing, invalid, or artifact ID format is incorrect
-        RuntimeError: If artifact creation, file upload, or commit fails
-
-    Example:
-        files = [
-            {'name': 'manifest.yaml', 'content': manifest_yaml, 'type': 'text'},
-            {'name': 'app.py', 'content': app_code, 'type': 'text'},
-            {'name': 'data.bin', 'content': base64_data, 'type': 'base64'}
-        ]
-        artifact_id = await create_artifact_from_files(
-            artifact_manager=am,
-            files=files,
-            workspace="my-workspace",
-            manifest_updates={"created_by": "user123"}
-        )
+        ValueError: If manifest is missing or invalid
     """
-    if logger is None:
-        logger = create_logger("ArtifactUtils")
-
     # Find and validate manifest file
     manifest_file = None
     for file in files:
@@ -254,13 +220,34 @@ async def create_artifact_from_files(
     if manifest_updates:
         deployment_manifest.update(manifest_updates)
 
-    # Determine artifact ID
+    return deployment_manifest
+
+
+def validate_artifact_id(
+    manifest: Dict[str, Any],
+    workspace: str,
+    artifact_id: Optional[str] = None,
+) -> str:
+    """
+    Validate and normalize the artifact ID.
+
+    Args:
+        deployment_manifest: The deployment manifest
+        workspace: Hypha workspace identifier
+        artifact_id: Optional artifact ID for updates
+
+    Returns:
+        Full normalized artifact ID
+
+    Raises:
+        ValueError: If artifact ID format is incorrect
+    """
     if artifact_id is None:
-        if "id" not in deployment_manifest:
+        if "id" not in manifest:
             raise ValueError(
-                "No artifact_id provided and no 'id' field found in manifest"
+                "No 'artifact_id' provided and no 'id' field found in manifest"
             )
-        alias = deployment_manifest["id"]
+        alias = manifest["id"]
 
         # Validate alias format
         invalid = any(
@@ -290,6 +277,242 @@ async def create_artifact_from_files(
                 f"Artifact ID '{full_artifact_id}' does not belong to workspace '{workspace}'"
             )
 
+    return full_artifact_id
+
+
+async def edit_artifact(
+    artifact_manager: ObjectProxy,
+    workspace: str,
+    manifest: Dict[str, Any],
+    artifact_type: str = "application",
+    collection: str = "applications",
+    logger: Optional[logging.Logger] = None,
+) -> ObjectProxy:
+    """
+    Put an artifact into stage mode. Creates a new artifact if it doesn't exist.
+
+    Args:
+        artifact_manager: Hypha artifact manager service instance
+        workspace: Hypha workspace identifier
+        manifest: The updated artifact manifest
+        artifact_type: The type of artifact to create
+        collection: The collection to place the artifact in
+        logger: Optional logger instance for debugging
+
+    Returns:
+        The artifact object
+
+    Raises:
+        RuntimeError: If artifact creation fails
+    """
+    if logger is None:
+        logger = create_logger("ArtifactUtils")
+
+    # Get full artifact ID
+    artifact_id = validate_artifact_id(manifest, workspace)
+
+    # Use workspace from full_artifact_id for consistency
+    if collection is not None:
+        collection_id = f"{workspace}/{collection}"
+    else:
+        collection_id = None
+
+    # Check if artifact exists and handle collection placement
+    artifact = None
+    try:
+        # Check if artifact already exists
+        existing_artifact = await artifact_manager.read(artifact_id)
+
+        # Check if artifact is in the correct collection
+        current_parent_id = getattr(existing_artifact, "parent_id", None)
+        if current_parent_id != collection_id:
+            logger.info(
+                f"Artifact '{artifact_id}' exists but is in wrong collection "
+                f"(current: {current_parent_id}, expected: {collection_id}). "
+                "Deleting and recreating..."
+            )
+            # Delete the existing artifact
+            await artifact_manager.delete(artifact_id=artifact_id)
+            # Will create new one below
+            existing_artifact = None
+
+        if existing_artifact:
+            # Edit existing artifact
+            artifact = await artifact_manager.edit(
+                artifact_id=artifact_id,
+                manifest=manifest,
+                type=artifact_type,
+                stage=True,
+            )
+            logger.info(f"Editing existing artifact '{artifact_id}'")
+    except Exception as e:
+        expected_error = (
+            f"KeyError: \"Artifact with ID '{artifact_id}' does not exist.\""
+        )
+        if not str(e).strip().endswith(expected_error):
+            raise e
+
+    # Create new artifact if it doesn't exist or was deleted
+    if artifact is None:
+        try:
+            artifact = await artifact_manager.create(
+                parent_id=collection_id,
+                type=artifact_type,
+                alias=artifact_id.split("/")[1],
+                manifest=manifest,
+                stage=True,
+            )
+            logger.info(f"Created new artifact '{artifact.id}'")
+        except Exception as e:
+            raise RuntimeError(f"Failed to create artifact '{artifact_id}': {e}")
+
+    return artifact
+
+
+async def upload_file_to_artifact(
+    artifact_manager: ObjectProxy,
+    artifact_id: str,
+    file_name: str,
+    file_content: Union[str, bytes],
+    file_type: str = None,
+    logger: Optional[logging.Logger] = None,
+) -> None:
+    """
+    Upload a file to an artifact.
+
+    Args:
+        artifact_manager: Hypha artifact manager service instance
+        artifact_id: The artifact ID
+        file_name: The file name/path
+        file_content: The file content (str for text, str for base64, or raw bytes)
+        file_type: The file type ('text', 'base64', or None for raw binary)
+        logger: Optional logger instance for debugging
+
+    Raises:
+        ValueError: If file type is unsupported
+        RuntimeError: If file upload fails
+    """
+    if logger is None:
+        logger = create_logger("ArtifactUtils")
+
+    logger.info(f"Uploading file '{file_name}' to artifact...")
+
+    # Get upload URL
+    try:
+        upload_url = await artifact_manager.put_file(artifact_id, file_path=file_name)
+    except Exception as e:
+        raise RuntimeError(f"Failed to get upload URL for '{file_name}': {e}")
+
+    # Prepare content for upload
+    if isinstance(file_content, bytes):
+        # Direct binary content
+        upload_data = file_content
+        content_type = "binary"
+    elif file_type == "text" or (file_type is None and isinstance(file_content, str)):
+        # Text content
+        upload_data = file_content
+        content_type = "text"
+    elif file_type == "base64":
+        # Decode base64 content for binary files
+        if isinstance(file_content, str):
+            if file_content.startswith("data:"):
+                file_content = file_content.split(",")[1]
+            upload_data = base64.b64decode(file_content)
+            content_type = "binary"
+        else:
+            raise ValueError("Base64 content must be a string")
+    else:
+        raise ValueError(
+            f"Unsupported file type '{file_type}'. Expected 'text', 'base64', or None for raw binary"
+        )
+
+    # Upload the file with timeout
+    upload_timeout = httpx.Timeout(30.0)
+    try:
+        async with httpx.AsyncClient(timeout=upload_timeout) as client:
+            if content_type == "text":
+                response = await client.put(upload_url, data=upload_data)
+            else:
+                response = await client.put(upload_url, content=upload_data)
+            response.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(f"Failed to upload file '{file_name}': {e}")
+
+
+async def commit_artifact(
+    artifact_manager: ObjectProxy,
+    artifact_id: str,
+    logger: Optional[logging.Logger] = None,
+) -> None:
+    """
+    Commit an artifact.
+
+    Args:
+        artifact_manager: Hypha artifact manager service instance
+        artifact_id: The artifact ID
+        logger: Optional logger instance for debugging
+
+    Raises:
+        RuntimeError: If artifact commit fails
+    """
+    if logger is None:
+        logger = create_logger("ArtifactUtils")
+
+    try:
+        await artifact_manager.commit(artifact_id=artifact_id)
+    except Exception as e:
+        raise RuntimeError(f"Failed to commit artifact '{artifact_id}': {e}")
+
+    logger.info(f"Successfully committed artifact '{artifact_id}'")
+
+
+async def create_application_from_files(
+    artifact_manager: ObjectProxy,
+    files: List[Dict[str, Any]],
+    workspace: str,
+    manifest_updates: Optional[Dict[str, Any]] = None,
+    logger: Optional[logging.Logger] = None,
+) -> str:
+    """
+    Create or update a Hypha artifact from a list of files.
+
+    This utility function handles the common pattern of creating artifacts in Hypha
+    from a list of files, including manifest validation, collection management,
+    file uploads, and artifact commitment.
+
+    Args:
+        artifact_manager: Hypha artifact manager service instance
+        files: List of file dictionaries with keys:
+               - 'name': relative file path (str)
+               - 'content': file content (str or bytes)
+               - 'type': 'text' for text files, 'base64' for binary files
+        workspace: Hypha workspace identifier
+        manifest_updates: Optional dictionary of fields to add/update in the manifest
+        logger: Optional logger instance for debugging
+
+    Returns:
+        The artifact ID of the created or updated artifact
+
+    Raises:
+        ValueError: If manifest is missing, invalid, or artifact ID format is incorrect
+        RuntimeError: If artifact creation, file upload, or commit fails
+
+    Example:
+        files = [
+            {'name': 'manifest.yaml', 'content': manifest_yaml, 'type': 'text'},
+            {'name': 'app.py', 'content': app_code, 'type': 'text'},
+            {'name': 'data.bin', 'content': base64_data, 'type': 'base64'}
+        ]
+        artifact_id = await create_application_from_files(
+            artifact_manager=am,
+            files=files,
+            workspace="my-workspace",
+            manifest_updates={"created_by": "user123"}
+        )
+    """
+    if logger is None:
+        logger = create_logger("ArtifactUtils")
+
     # Ensure applications collection exists
     await ensure_applications_collection(
         artifact_manager=artifact_manager,
@@ -297,56 +520,18 @@ async def create_artifact_from_files(
         logger=logger,
     )
 
-    # Check if artifact exists and handle collection placement
-    artifact = None
-    try:
-        # Check if artifact already exists
-        logger.debug(f"Checking if artifact '{full_artifact_id}' exists...")
-        existing_artifact = await artifact_manager.read(full_artifact_id)
+    # Extract and validate manifest
+    application_manifest = await extract_and_validate_manifest(
+        files=files, manifest_updates=manifest_updates
+    )
 
-        # Check if artifact is in the correct collection
-        current_parent_id = getattr(existing_artifact, "parent_id", None)
-        if current_parent_id != f"{workspace}/applications":
-            logger.info(
-                f"Artifact '{full_artifact_id}' exists but is in wrong collection "
-                f"(current: {current_parent_id}, expected: {workspace}/applications). "
-                "Deleting and recreating..."
-            )
-            # Delete the existing artifact
-            await artifact_manager.delete(artifact_id=full_artifact_id)
-            # Will create new one below
-            existing_artifact = None
-
-        if existing_artifact:
-            # Edit existing artifact
-            logger.debug(f"Editing existing artifact '{full_artifact_id}'...")
-            artifact = await artifact_manager.edit(
-                artifact_id=full_artifact_id,
-                manifest=deployment_manifest,
-                type="application",
-                stage=True,
-            )
-            logger.debug(f"Successfully edited existing artifact '{full_artifact_id}'")
-    except Exception as e:
-        # Artifact doesn't exist or read failed
-        logger.debug(
-            f"Artifact '{full_artifact_id}' does not exist or read failed: {e}"
-        )
-
-    # Create new artifact if it doesn't exist or was deleted
-    if artifact is None:
-        try:
-            logger.debug(f"Creating new artifact '{full_artifact_id}'...")
-            artifact = await artifact_manager.create(
-                parent_id=f"{workspace}/applications",
-                type="application",
-                alias=full_artifact_id,
-                manifest=deployment_manifest,
-                stage=True,
-            )
-            logger.debug(f"Successfully created new artifact '{full_artifact_id}'")
-        except Exception as e:
-            raise RuntimeError(f"Failed to create artifact '{full_artifact_id}': {e}")
+    # Edit or create artifact, put in stage mode
+    artifact = await edit_artifact(
+        artifact_manager=artifact_manager,
+        workspace=workspace,
+        manifest=application_manifest,
+        logger=logger,
+    )
 
     # Upload all files
     for file in files:
@@ -354,48 +539,20 @@ async def create_artifact_from_files(
         file_content = file["content"]
         file_type = file["type"]
 
-        logger.debug(f"Uploading file '{file_name}' to artifact...")
-
-        # Get upload URL
-        try:
-            upload_url = await artifact_manager.put_file(
-                artifact.id, file_path=file_name
-            )
-        except Exception as e:
-            raise RuntimeError(f"Failed to get upload URL for '{file_name}': {e}")
-
-        # Prepare content for upload
-        if file_type == "text":
-            upload_data = file_content
-            content_type = "text"
-        elif file_type == "base64":
-            # Decode base64 content for binary files
-            if file_content.startswith("data:"):
-                file_content = file_content.split(",")[1]
-            upload_data = base64.b64decode(file_content)
-            content_type = "binary"
-        else:
-            raise ValueError(
-                f"Unsupported file type '{file_type}'. Expected 'text' or 'base64'"
-            )
-
-        # Upload the file with timeout
-        upload_timeout = httpx.Timeout(30.0)
-        try:
-            async with httpx.AsyncClient(timeout=upload_timeout) as client:
-                if content_type == "text":
-                    response = await client.put(upload_url, data=upload_data)
-                else:
-                    response = await client.put(upload_url, content=upload_data)
-                response.raise_for_status()
-        except Exception as e:
-            raise RuntimeError(f"Failed to upload file '{file_name}': {e}")
+        await upload_file_to_artifact(
+            artifact_manager=artifact_manager,
+            artifact_id=artifact.id,
+            file_name=file_name,
+            file_content=file_content,
+            file_type=file_type,
+            logger=logger,
+        )
 
     # Commit the artifact
-    try:
-        await artifact_manager.commit(artifact_id=artifact.id)
-    except Exception as e:
-        raise RuntimeError(f"Failed to commit artifact '{artifact.id}': {e}")
+    await commit_artifact(
+        artifact_manager=artifact_manager,
+        artifact_id=artifact.id,
+        logger=logger,
+    )
 
-    logger.info(f"Successfully created/updated artifact '{artifact.id}'")
     return artifact.id

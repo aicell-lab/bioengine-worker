@@ -19,7 +19,7 @@ import yaml
 from hypha_rpc import get_rtc_service
 from hypha_rpc.rpc import ObjectProxy, RemoteService
 
-from bioengine_worker.utils import create_file_list_from_directory
+from bioengine.utils import create_file_list_from_directory
 
 
 @pytest.mark.end_to_end
@@ -147,7 +147,7 @@ async def test_create_and_delete_artifacts(
 
         # Update demo-app artifact
         updated_demo_artifact_id = await bioengine_worker_service.create_application(
-            artifact_id=demo_artifact_id, files=demo_app_files
+            files=demo_app_files
         )
         assert (
             updated_demo_artifact_id == demo_artifact_id
@@ -156,7 +156,7 @@ async def test_create_and_delete_artifacts(
         # Update composition-app artifact
         updated_composition_artifact_id = (
             await bioengine_worker_service.create_application(
-                artifact_id=composition_artifact_id, files=composition_app_files
+                files=composition_app_files
             )
         )
         assert (
@@ -612,8 +612,8 @@ async def test_deploy_application_locally(
     Test deploying the 'demo-app' and 'composition-app' applications from local artifact path.
     """
     # Set environment variables for startup application deployment from local path
-    monkeypatch.setenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH", str(tests_dir))
-    assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") == str(tests_dir)
+    monkeypatch.setenv("BIOENGINE_LOCAL_ARTIFACT_PATH", str(tests_dir))
+    assert os.getenv("BIOENGINE_LOCAL_ARTIFACT_PATH") == str(tests_dir)
 
     # iterate over demo_app and composition_app directories
     # Note: the demo app is already deployed by startup_applications, but the deployment below will use a different application ID
@@ -740,9 +740,9 @@ async def test_deploy_application_from_artifact(
 
     Note: The demo app is already deployed by startup_applications, deploying again will update the app
     """
-    # Ensure BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH is not set to avoid local deployment
-    monkeypatch.delenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH", raising=False)
-    assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") is None
+    # Ensure BIOENGINE_LOCAL_ARTIFACT_PATH is not set to avoid local deployment
+    monkeypatch.delenv("BIOENGINE_LOCAL_ARTIFACT_PATH", raising=False)
+    assert os.getenv("BIOENGINE_LOCAL_ARTIFACT_PATH") is None
 
     hyphen_test_id = test_id.replace("_", "-")
 
@@ -917,8 +917,8 @@ async def test_call_demo_app_functions(
     - `ascii_art`
     """
     # Set environment variables for startup application deployment from local path
-    monkeypatch.setenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH", str(tests_dir))
-    assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") == str(tests_dir)
+    monkeypatch.setenv("BIOENGINE_LOCAL_ARTIFACT_PATH", str(tests_dir))
+    assert os.getenv("BIOENGINE_LOCAL_ARTIFACT_PATH") == str(tests_dir)
 
     # Deploy the demo-app with apps_manager.deploy_application from local path
     demo_artifact_id = f"{hypha_workspace}/demo-app"
@@ -1057,8 +1057,8 @@ async def test_call_composition_app_functions(
     - `calculate_result`
     """
     # Set environment variables for startup application deployment from local path
-    monkeypatch.setenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH", str(tests_dir))
-    assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") == str(tests_dir)
+    monkeypatch.setenv("BIOENGINE_LOCAL_ARTIFACT_PATH", str(tests_dir))
+    assert os.getenv("BIOENGINE_LOCAL_ARTIFACT_PATH") == str(tests_dir)
 
     # Deploy the composition-app with apps_manager.deploy_application from local path
     composition_app_config = {

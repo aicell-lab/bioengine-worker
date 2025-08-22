@@ -5,17 +5,17 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
 
+import httpx
 from hypha_rpc import connect_to_server
 from hypha_rpc.sync import login
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 
-from bioengine_worker import __version__
-from bioengine_worker.apps_manager import AppsManager
-from bioengine_worker.code_executor import CodeExecutor
-from bioengine_worker.datasets_manager import DatasetsManager
-from bioengine_worker.ray_cluster import RayCluster
-from bioengine_worker.utils import check_permissions, create_context, create_logger
+from bioengine import __version__
+from bioengine.applications import AppsManager
+from bioengine.ray import RayCluster
+from bioengine.utils import check_permissions, create_context, create_logger
+from bioengine.worker.code_executor import CodeExecutor
 
 
 class BioEngineWorker:
@@ -28,15 +28,18 @@ class BioEngineWorker:
     as the central orchestration layer for the BioEngine ecosystem.
 
     Architecture Overview:
-    The worker orchestrates three primary component managers, each handling specialized
+    The worker orchestrates two primary component managers, each handling specialized
     functionality while maintaining enterprise-grade security, monitoring, and lifecycle management:
 
     • RayCluster: Manages distributed Ray cluster lifecycle including SLURM-based autoscaling,
       resource allocation, and worker node management across HPC environments
     • AppsManager: Handles AI model deployment lifecycle through Ray Serve, including artifact
       management, deployment orchestration, and application scaling
-    • DatasetsManager: Provides secure dataset access through HTTP streaming services with
-      permission-based file access and manifest-driven configuration
+
+    For datasets, the worker connects to an external data server service via HTTP:
+    • Detects running data servers in the BioEngine cache directory
+    • Provides data server URL to deployed applications
+    • Each deployment uses BioEngineDatasets client to stream data via HTTPZarrStore
 
     Core Capabilities:
     - Multi-environment deployment support (SLURM HPC, single-machine, external clusters)
@@ -44,7 +47,8 @@ class BioEngineWorker:
     - Hypha server integration for remote management and service discovery
     - Automatic Ray cluster lifecycle management with intelligent autoscaling
     - AI model deployment and serving through Ray Serve with health monitoring
-    - Secure dataset management with streaming access and authorization controls
+    - Automatic data server detection and connection for dataset access
+    - Integration with deployed applications for HTTP-based dataset streaming
     - Python code execution in distributed Ray tasks with resource allocation
     - Comprehensive monitoring, logging, and status reporting
     - Graceful shutdown and resource cleanup with signal handling
@@ -68,12 +72,12 @@ class BioEngineWorker:
     - Hypha Server: Service registration, remote access, and workspace integration
     - Ray Ecosystem: Distributed computing, model serving, and resource management
     - SLURM: HPC job scheduling, resource allocation, and cluster management
-    - File Systems: Dataset access, artifact storage, and temporary file management
+    - BioEngine Datasets: HTTP-based dataset streaming service with access control
+    - File Systems: Artifact storage, dataset discovery, and temporary file management
 
     Attributes:
         admin_users (List[str]): List of user IDs/emails authorized for admin operations
         cache_dir (Path): Directory for temporary files, Ray data, and worker state
-        data_dir (Path): Root directory for dataset storage and access
         dashboard_url (str): URL of the BioEngine dashboard for worker management
         monitoring_interval_seconds (int): Interval for status monitoring and health checks
         log_file (Optional[str]): Path to log file for structured logging output
@@ -85,7 +89,9 @@ class BioEngineWorker:
         full_service_id (str): Complete service ID including workspace and user context
         ray_cluster (RayCluster): Ray cluster management component
         apps_manager (AppsManager): Application deployment management component
-        dataset_manager (DatasetsManager): Dataset access management component
+        data_server_url (Optional[str]): URL of the detected dataset server
+        data_service_url (Optional[str]): Full URL to the dataset service endpoint
+        data_server_workspace (str): Workspace name for dataset service
         start_time (float): Timestamp when worker was started
         is_ready (asyncio.Event): Event signaling worker initialization completion
         logger (logging.Logger): Structured logger for worker operations
@@ -96,8 +102,7 @@ class BioEngineWorker:
         worker = BioEngineWorker(
             mode="slurm",
             admin_users=["admin@institution.edu"],
-            cache_dir="/tmp/bioengine",
-            data_dir="/shared/datasets",
+            cache_dir=f"{os.environ['HOME']}/.bioengine",  # Will check for data server here
             server_url="https://hypha.aicell.io",
             startup_applications=[
                 {"artifact_id": "<my-workspace>/<my_artifact>", "application_id": "my_custom_name"},
@@ -113,8 +118,9 @@ class BioEngineWorker:
         # Start all services
         service_id = await worker.start()
 
-        # Worker is now ready for model deployments and dataset access
+        # Worker is now ready for model deployments with auto-detected datasets
         status = await worker.get_status()
+        print(f"Data server detected: {worker.data_server_url is not None}")
         ```
 
     Note:
@@ -125,10 +131,9 @@ class BioEngineWorker:
 
     def __init__(
         self,
-        mode: Literal["slurm", "single-machine", "external-cluster"] = "slurm",
+        mode: Literal["single-machine", "slurm", "external-cluster"],
         admin_users: Optional[List[str]] = None,
-        cache_dir: Union[str, Path] = "/tmp/bioengine",
-        data_dir: Union[str, Path] = "/data",
+        cache_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine",
         startup_applications: Optional[List[dict]] = None,
         monitoring_interval_seconds: int = 10,
         # Hypha server connection configuration
@@ -149,8 +154,8 @@ class BioEngineWorker:
         """
         Initialize BioEngine worker with enterprise-grade configuration and component managers.
 
-        Sets up the worker with comprehensive configuration management, initializes all
-        component managers (RayCluster, AppsManager, DatasetsManager), configures security
+        Sets up the worker with comprehensive configuration management, initializes component
+        managers (RayCluster, AppsManager), checks for running data servers, configures security
         settings, and establishes logging infrastructure. Handles authentication with the
         Hypha server and prepares the worker for service registration.
 
@@ -159,8 +164,9 @@ class BioEngineWorker:
         2. Sets up secure logging infrastructure with optional file output
         3. Performs interactive login if no token provided (for token acquisition only)
         4. Initializes RayCluster with environment-specific configuration
-        5. Prepares AppsManager and DatasetsManager for later initialization
-        6. Configures monitoring and health check systems
+        5. Checks for and connects to running data server in the cache directory
+        6. Prepares AppsManager with data server configuration for model-data integration
+        7. Configures monitoring and health check systems
 
         Note: Server connection and service registration occurs later during start().
 
@@ -173,8 +179,6 @@ class BioEngineWorker:
                         Auto-includes the authenticated user from Hypha connection.
             cache_dir: Directory path for temporary files, Ray data storage, and worker state.
                       Must be accessible and have sufficient space for Ray operations.
-            data_dir: Root directory path for dataset storage and access. Should be mounted
-                     storage accessible across worker nodes in distributed deployments.
             startup_applications: List of application configuration dictionaries to deploy
                                  automatically during worker startup. Each dictionary should contain
                                  deployment parameters including 'artifact_id' and optionally
@@ -245,7 +249,7 @@ class BioEngineWorker:
         # Worker state management
         self.start_time = None
         self._last_monitoring = 0
-        self._server = None
+        self.server = None
         self.is_ready = asyncio.Event()
         self._shutdown_event = asyncio.Event()
         self._shutdown_event.set()
@@ -253,6 +257,14 @@ class BioEngineWorker:
         self.graceful_shutdown_timeout = graceful_shutdown_timeout
         self.full_service_id = None
         self._admin_context = None
+
+        # Dataset server configuration
+        self.data_server_url = None
+        self.data_server_workspace = os.getenv(
+            "BIOENGINE_DATA_SERVER_WORKSPACE", "public"
+        )
+        self.data_service_url = None
+        self.available_datasets = {}
 
         try:
             # Attempt interactive login if no token provided
@@ -279,28 +291,23 @@ class BioEngineWorker:
             self._set_parameter(
                 ray_cluster_config, "ray_temp_dir", self.cache_dir / "ray"
             )
-            force_ray_clean_up = not ray_cluster_config.pop("skip_ray_cleanup", False)
-            self._set_parameter(
-                ray_cluster_config, "force_clean_up", force_ray_clean_up
-            )
             self._set_parameter(ray_cluster_config, "log_file", log_file)
             self._set_parameter(ray_cluster_config, "debug", debug)
 
             # Initialize Ray cluster manager
             self.ray_cluster = RayCluster(**ray_cluster_config)
 
+            # Check for running data server
+            self._check_data_server()
+
             # Initialize component managers with enhanced configuration
             self.apps_manager = AppsManager(
                 ray_cluster=self.ray_cluster,
                 token=self._token,
                 apps_cache_dir=self.cache_dir / "apps",
+                data_server_url=self.data_server_url,
+                data_server_workspace="public",
                 startup_applications=startup_applications,
-                log_file=log_file,
-                debug=debug,
-            )
-
-            self.dataset_manager = DatasetsManager(
-                data_dir=data_dir,
                 log_file=log_file,
                 debug=debug,
             )
@@ -352,6 +359,61 @@ class BioEngineWorker:
             if key not in kwargs or kwargs[key] is None:
                 kwargs[key] = value
 
+    def _check_data_server(self) -> None:
+        """
+        Check for a running data server and configure connection details.
+
+        Detects the presence of a running dataset server by checking for a server URL file
+        in the BioEngine cache directory. If found, establishes connection parameters and
+        verifies server accessibility through a ping request. This enables deployed
+        applications to access datasets via HTTP streaming.
+
+        Data Server Detection Process:
+        1. Checks for existence of server URL file in cache directory
+        2. Reads and validates server URL
+        3. Constructs service URL with workspace information
+        4. Verifies server connection with ping request
+
+        Note:
+            This method is called during initialization and periodically during monitoring
+            to ensure continuous data server availability for deployed applications.
+        """
+        # Check for the presence of the current data server file
+        current_data_server_file = (
+            self.cache_dir / "datasets" / "bioengine_current_server"
+        )
+        if not current_data_server_file.exists():
+            self.logger.info("No current data server found.")
+            return
+
+        # Read the server URL from the file
+        try:
+            data_server_url = current_data_server_file.read_text().strip()
+        except Exception as e:
+            self.logger.error(f"Failed to read current data server URL: {e}")
+            return
+
+        if not data_server_url:
+            self.logger.info("No current data server found.")
+            return
+
+        # Update server and service url
+        if self.data_server_url != data_server_url:
+            self.data_server_url = data_server_url
+            self.data_service_url = f"{self.data_server_url}/{self.data_server_workspace}/services/bioengine-datasets"
+            self.logger.info(f"Detected dataset server at: {self.data_server_url}")
+
+        # Try to ping the dataset server
+        try:
+            with httpx.Client(timeout=10) as client:
+                response = client.get(f"{self.data_service_url}/ping")
+                response.raise_for_status()
+                self.logger.info(
+                    f"Successfully reached dataset server in workspace '{self.data_server_workspace}'."
+                )
+        except Exception as e:
+            self.logger.error(f"Error occurred while pinging dataset server: {e}")
+
     async def _connect_to_server(self) -> None:
         """
         Establish connection to Hypha server and configure admin user permissions.
@@ -372,15 +434,15 @@ class BioEngineWorker:
             AuthenticationError: If token authentication fails
             ValueError: If server configuration is invalid
         """
-        if self._server:
+        if self.server:
             self.logger.debug("Closing existing Hypha server connection")
             try:
-                await self._server.disconnect()
+                await self.server.disconnect()
             except Exception as e:
                 self.logger.error(f"Error closing Hypha server connection: {e}")
 
         self.logger.info(f"Connecting to Hypha server at '{self.server_url}'...")
-        self._server = await connect_to_server(
+        self.server = await connect_to_server(
             {
                 "server_url": self.server_url,
                 "token": self._token,
@@ -390,14 +452,14 @@ class BioEngineWorker:
         )
 
         # Extract authenticated user information
-        user_id = self._server.config.user["id"]
-        user_email = self._server.config.user["email"]
+        user_id = self.server.config.user["id"]
+        user_email = self.server.config.user["email"]
 
         # Update connection configuration from server response (if not set)
         if self.workspace is None:
-            self.workspace = self._server.config.workspace
+            self.workspace = self.server.config.workspace
         if self.client_id is None:
-            self.client_id = self._server.config.client_id
+            self.client_id = self.server.config.client_id
 
         self.logger.info(
             f"User '{user_id}' ({user_email}) connected as client "
@@ -415,13 +477,19 @@ class BioEngineWorker:
         # Create admin context for internal operations
         self._admin_context = create_context(user_id, user_email)
 
+        # Pass server connection and admin users to component managers
+        await self.apps_manager.initialize(
+            server=self.server, admin_users=self.admin_users
+        )
+        await self.code_executor.initialize(admin_users=self.admin_users)
+
         self.logger.info(
             f"Admin users for this BioEngine worker: {', '.join(self.admin_users)}"
         )
 
     async def _check_hypha_connection(self, reconnect: bool = True) -> None:
         try:
-            await asyncio.wait_for(self._server.echo("ping"), timeout=10)
+            await asyncio.wait_for(self.server.echo("ping"), timeout=10)
         except Exception as e:
             if reconnect:
                 self.logger.warning(
@@ -444,9 +512,7 @@ class BioEngineWorker:
 
         worker_services = {
             "get_status": self.get_status,
-            "load_dataset": self.dataset_manager.load_dataset,
-            "close_dataset": self.dataset_manager.close_dataset,
-            "cleanup_datasets": self.dataset_manager.cleanup,
+            "update_datasets": self.update_datasets,
             "execute_python_code": self.code_executor.execute_python_code,
             "list_applications": self.apps_manager.list_applications,
             "create_application": self.apps_manager.create_application,
@@ -458,7 +524,7 @@ class BioEngineWorker:
             "stop_worker": self.stop,
         }
         # TODO: return more informative error messages, e.g. by returning error instead of raising it
-        service_info = await self._server.register_service(
+        service_info = await self.server.register_service(
             {
                 "id": self.service_id,
                 "name": "BioEngine Worker",
@@ -473,7 +539,7 @@ class BioEngineWorker:
         )
         self.full_service_id = service_info.id
 
-        mcp_service = await self._server.register_service(
+        mcp_service = await self.server.register_service(
             {
                 "id": self.service_id + "-mcp",
                 "name": "BioEngine Worker MCP Service",
@@ -518,14 +584,6 @@ class BioEngineWorker:
         if hasattr(self, "is_ready"):
             self.is_ready.clear()
 
-        # Clean up dataset manager
-        if hasattr(self, "dataset_manager") and self.dataset_manager:
-            try:
-                admin_context = getattr(self, "_admin_context", None)
-                await self.dataset_manager.cleanup(admin_context)
-            except Exception as e:
-                self.logger.error(f"Error cleaning up dataset manager: {e}")
-
         # Clean up apps manager
         if hasattr(self, "apps_manager") and self.apps_manager:
             try:
@@ -547,10 +605,10 @@ class BioEngineWorker:
                 self.logger.error(f"Error stopping Ray cluster: {e}")
 
         # Disconnect from the Hypha server
-        if hasattr(self, "_server") and self._server:
+        if hasattr(self, "_server") and self.server:
             try:
                 self.logger.info("Disconnecting from Hypha server...")
-                await self._server.disconnect()
+                await self.server.disconnect()
             except Exception as e:
                 self.logger.error(f"Error disconnecting from Hypha server: {e}")
 
@@ -630,7 +688,7 @@ class BioEngineWorker:
                     await self.apps_manager.monitor_applications()
 
                     # Run BioEngine Datasets monitoring
-                    await self.dataset_manager.monitor_datasets()
+                    # await self.dataset_manager.monitor_datasets()
 
                     # Reset error counter on success
                     consecutive_errors = 0
@@ -727,15 +785,6 @@ class BioEngineWorker:
             await self._connect_to_server()
             await self._check_hypha_connection(reconnect=False)
 
-            # Initialize component managers with the server connection
-            await self.apps_manager.initialize(
-                server=self._server, admin_users=self.admin_users
-            )
-            await self.dataset_manager.initialize(
-                server=self._server, admin_users=self.admin_users
-            )
-            await self.code_executor.initialize(admin_users=self.admin_users)
-
             # Register the BioEngine worker service interface
             await self._register_bioengine_worker_service()
 
@@ -773,62 +822,33 @@ class BioEngineWorker:
         return self.full_service_id
 
     @schema_method
-    async def stop(
+    async def update_datasets(
         self,
-        blocking: bool = Field(
-            False,
-            description="Whether to wait for complete shutdown before returning. Set to True to ensure all resources are fully cleaned up before the method returns, or False to initiate shutdown and return immediately while cleanup continues in background. Recommended: True for production environments, False for quick shutdown.",
-        ),
         context: Dict[str, Any] = Field(
             ...,
             description="Authentication context containing user information, automatically provided by Hypha during service calls.",
         ),
     ) -> None:
-        """
-        Gracefully shutdown the BioEngine worker with comprehensive resource cleanup and service deregistration.
-
-        This method performs an orderly shutdown of all worker components including active deployments, dataset services, Ray cluster resources, and monitoring tasks. It ensures proper cleanup to prevent resource leaks and maintains system stability during shutdown operations.
-
-        SECURITY: Requires admin-level permissions as this operation affects the entire worker instance and all active services.
-
-        SHUTDOWN PROCESS:
-        1. Permission validation for authorized shutdown access
-        2. Signal monitoring tasks to stop and wait for completion
-        3. Cleanup all active applications and deployments through AppsManager
-        4. Close dataset connections and stop HTTP services through DatasetsManager
-        5. Shutdown Ray cluster resources (if managed by this worker instance)
-        6. Deregister services from Hypha server and disconnect
-        7. Reset worker state and clear readiness indicators
-
-        BLOCKING BEHAVIOR:
-        - blocking=True: Method waits for all cleanup operations to complete before returning, ensuring complete shutdown
-        - blocking=False: Method initiates shutdown process and returns immediately while cleanup continues asynchronously
-
-        TIMEOUT HANDLING:
-        Shutdown operations are subject to graceful_shutdown_timeout (default 60 seconds). If cleanup exceeds this timeout, the worker will force-exit to prevent hanging processes.
-
-        ERROR HANDLING:
-        Individual component cleanup failures are logged but don't prevent shutdown of other components. Critical errors during shutdown may result in force-exit to ensure the worker doesn't remain in an inconsistent state.
-
-        TYPICAL USAGE:
-        Production shutdown: await worker.stop(blocking=True)
-        Development shutdown: await worker.stop(blocking=False)
-        Emergency shutdown: await worker.stop(blocking=True) with shorter timeout
-
-        SIDE EFFECTS:
-        - All active deployments will be stopped and become unavailable
-        - Dataset streaming services will be terminated
-        - Ray cluster will be shutdown (if managed by this worker)
-        - Worker service will be deregistered from Hypha server
-        - All background monitoring tasks will be cancelled
-        """
+        """Update connected BioEngine data server, then fetch and store available datasets from connected data server."""
         check_permissions(
             context=context,
             authorized_users=self.admin_users,
-            resource_name="shutdown the BioEngine worker",
+            resource_name="updating BioEngine Datasets",
         )
 
-        await self._stop(blocking=blocking)
+        # Check if a new data server is available
+        await asyncio.to_thread(self._check_data_server)
+
+        if not self.data_server_url:
+            raise RuntimeError("No data server available")
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(f"{self.data_service_url}/list_datasets")
+            response.raise_for_status()
+            self.available_datasets = response.json()
+            self.logger.info(
+                f"Updated available datasets from data server: {list(self.available_datasets.keys())}"
+            )
 
     @schema_method
     async def get_status(
@@ -910,107 +930,67 @@ class BioEngineWorker:
             "client_id": self.client_id,
             "ray_cluster": self.ray_cluster.status,
             "bioengine_apps": await self.apps_manager.get_status(),
-            "bioengine_datasets": await self.dataset_manager.get_status(),
+            "bioengine_datasets": self.available_datasets,
             "admin_users": self.admin_users,
             "is_ready": self.is_ready.is_set(),
         }
 
         return status
 
+    @schema_method
+    async def stop(
+        self,
+        blocking: bool = Field(
+            False,
+            description="Whether to wait for complete shutdown before returning. Set to True to ensure all resources are fully cleaned up before the method returns, or False to initiate shutdown and return immediately while cleanup continues in background. Recommended: True for production environments, False for quick shutdown.",
+        ),
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
+    ) -> None:
+        """
+        Gracefully shutdown the BioEngine worker with comprehensive resource cleanup and service deregistration.
 
-if __name__ == "__main__":
-    """Test the BioEngineWorker class functionality"""
-    import aiohttp
+        This method performs an orderly shutdown of all worker components including active deployments, dataset services, Ray cluster resources, and monitoring tasks. It ensures proper cleanup to prevent resource leaks and maintains system stability during shutdown operations.
 
-    async def test_bioengine_worker(keep_running=True):
-        try:
-            # Create BioEngine worker instance
-            server_url = "https://hypha.aicell.io"
-            token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
-            bioengine_worker = BioEngineWorker(
-                workspace="chiron-platform",
-                server_url=server_url,
-                token=token,
-                service_id="bioengine-worker",
-                dataset_config={
-                    "data_dir": str(Path(__file__).parent.parent / "data"),
-                    "service_id": "bioengine-dataset",
-                },
-                ray_cluster_config={
-                    "head_num_cpus": 4,
-                    "ray_temp_dir": str(
-                        Path(__file__).parent.parent / ".bioengine" / "ray"
-                    ),
-                    "image": str(
-                        Path(__file__).parent.parent
-                        / "apptainer_images"
-                        / f"bioengine-worker_{__version__}.sif"
-                    ),
-                },
-                ray_autoscaling_config={
-                    "metrics_interval_seconds": 10,
-                },
-                ray_deployment_config={
-                    "service_id": "bioengine-apps",
-                },
-                debug=True,
-            )
+        SECURITY: Requires admin-level permissions as this operation affects the entire worker instance and all active services.
 
-            # Initialize worker
-            sid = await bioengine_worker.start()
+        SHUTDOWN PROCESS:
+        1. Permission validation for authorized shutdown access
+        2. Signal monitoring tasks to stop and wait for completion
+        3. Cleanup all active applications and deployments through AppsManager
+        4. Close dataset connections and stop HTTP services through DatasetsManager
+        5. Shutdown Ray cluster resources (if managed by this worker instance)
+        6. Deregister services from Hypha server and disconnect
+        7. Reset worker state and clear readiness indicators
 
-            # Test registered service
-            server = await connect_to_server(
-                {
-                    "server_url": server_url,
-                    "token": token,
-                    "workspace": bioengine_worker.workspace,
-                }
-            )
-            worker_service = await server.get_service(sid)
+        BLOCKING BEHAVIOR:
+        - blocking=True: Method waits for all cleanup operations to complete before returning, ensuring complete shutdown
+        - blocking=False: Method initiates shutdown process and returns immediately while cleanup continues asynchronously
 
-            # Get initial status
-            status = await worker_service.get_status()
-            print("\nInitial status:", status)
+        TIMEOUT HANDLING:
+        Shutdown operations are subject to graceful_shutdown_timeout (default 60 seconds). If cleanup exceeds this timeout, the worker will force-exit to prevent hanging processes.
 
-            # Try accessing the dataset manager
-            dataset_url = await worker_service.load_dataset(dataset_id="blood")
-            print("Dataset URL:", dataset_url)
+        ERROR HANDLING:
+        Individual component cleanup failures are logged but don't prevent shutdown of other components. Critical errors during shutdown may result in force-exit to ensure the worker doesn't remain in an inconsistent state.
 
-            # Get dataset info
-            headers = {"Authorization": f"Bearer {token}"}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(dataset_url, headers=headers) as response:
-                    response.raise_for_status()
-                    dataset_info = await response.json()
-            print("Dataset info:", dataset_info)
+        TYPICAL USAGE:
+        Production shutdown: await worker.stop(blocking=True)
+        Development shutdown: await worker.stop(blocking=False)
+        Emergency shutdown: await worker.stop(blocking=True) with shorter timeout
 
-            # Test deploying an artifact
-            artifact_id = "example-deployment"
-            deployment_name = await worker_service.deploy_artifact(
-                artifact_id=artifact_id,
-            )
-            worker_status = await worker_service.get_status()
-            assert deployment_name in worker_status["deployments"]
+        SIDE EFFECTS:
+        - All active deployments will be stopped and become unavailable
+        - Dataset streaming services will be terminated
+        - Ray cluster will be shutdown (if managed by this worker)
+        - Worker service will be deregistered from Hypha server
+        - All background monitoring tasks will be cancelled
+        """
+        check_permissions(
+            context=context,
+            authorized_users=self.admin_users,
+            resource_name="shutdown the BioEngine worker",
+        )
 
-            # Test registered deployment service
-            deployment_service_id = worker_status["deployments"]["service_id"]
-            deployment_service = await server.get_service(deployment_service_id)
-
-            result = await deployment_service[deployment_name]()
-            print(result)
-
-            # Keep server running if requested
-            if keep_running:
-                print("Server running. Press Ctrl+C to stop.")
-                await server.serve()
-
-        except Exception as e:
-            print(f"Test error: {e}")
-            raise e
-        finally:
-            # Cleanup
-            await bioengine_worker.cleanup(context=bioengine_worker._admin_context)
-
-    # Run the test
-    asyncio.run(test_bioengine_worker())
+        await self._stop(blocking=blocking)

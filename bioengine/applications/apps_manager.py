@@ -1,10 +1,10 @@
 import asyncio
 import base64
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-import httpx
 import yaml
 from haikunator import Haikunator
 from hypha_rpc.rpc import RemoteService
@@ -12,12 +12,12 @@ from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 from ray import serve
 
-from bioengine_worker import __version__
-from bioengine_worker.app_builder import AppBuilder
-from bioengine_worker.ray_cluster import RayCluster
-from bioengine_worker.utils import (
+from bioengine import __version__
+from bioengine.applications.app_builder import AppBuilder
+from bioengine.ray import RayCluster
+from bioengine.utils import (
     check_permissions,
-    create_artifact_from_files,
+    create_application_from_files,
     create_context,
     create_logger,
     ensure_applications_collection,
@@ -74,7 +74,9 @@ class AppsManager:
         self,
         ray_cluster: RayCluster,
         token: str,
-        apps_cache_dir: str = "/tmp/bioengine/apps",
+        apps_cache_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine/apps",
+        data_server_url: Optional[str] = None,
+        data_server_workspace: str = "public",
         startup_applications: Optional[List[dict]] = None,
         # Logger
         log_file: Optional[str] = None,
@@ -88,7 +90,7 @@ class AppsManager:
         cluster mode and initializes all necessary components.
 
         Directory Configuration by Mode:
-        - SLURM mode: Uses fixed paths (/tmp/bioengine/apps, /data) for container compatibility
+        - SLURM mode: Uses fixed paths (/home/<user>/.bioengine/apps) for container compatibility
         - Single-machine mode: Uses provided paths, converted to absolute paths
         - External-cluster mode: Uses provided paths directly
 
@@ -96,6 +98,8 @@ class AppsManager:
             ray_cluster: Ray cluster manager instance for compute resource management
             token: Authentication token for Hypha server access
             apps_cache_dir: Directory for caching application artifacts and build files
+            data_server_url: URL for the data server
+            data_server_workspace: Workspace on the data server (default: "public")
             startup_applications: List of application configurations to deploy automatically
                                  when the manager initializes
             log_file: Optional path to log file for deployment operations
@@ -119,8 +123,8 @@ class AppsManager:
         self.ray_cluster = ray_cluster
 
         if self.ray_cluster.mode == "slurm":
-            # SLURM workers always mount cache directory to /tmp/bioengine inside the container
-            apps_cache_dir = "/tmp/bioengine/apps"
+            # SLURM workers always mount cache directory to /home/<user>/.bioengine inside the container
+            apps_cache_dir = Path.home() / ".bioengine" / "apps"
         elif self.ray_cluster.mode not in ["single-machine", "external-cluster"]:
             raise ValueError(
                 f"Unsupported Ray cluster mode: {self.ray_cluster.mode}. "
@@ -130,6 +134,8 @@ class AppsManager:
         self.app_builder = AppBuilder(
             token=token,
             apps_cache_dir=apps_cache_dir,
+            data_server_url=data_server_url,
+            data_server_workspace=data_server_workspace,
             log_file=log_file,
             debug=debug,
         )
@@ -139,7 +145,6 @@ class AppsManager:
         # Initialize state variables
         self.server = None
         self.artifact_manager = None
-        self.collection_id = None
         self.admin_users = None
         self.startup_applications = startup_applications
         self._deployment_lock = asyncio.Lock()
@@ -419,15 +424,16 @@ class AppsManager:
             self.logger.error(
                 f"Failed to deploy application '{application_id}' with error: {e}"
             )
-            # TODO: Get the error message from the Ray Serve application
             try:
                 serve_status = await asyncio.to_thread(serve.status)
                 application = serve_status.applications.get(application_id)
                 if application:
-                    error_message = application.status.error_message
-                    self.logger.error(
-                        f"Ray Serve application '{application_id}' reported error: {error_message}"
-                    )
+                    for deployment_name, deployment in application.deployments.items():
+                        if deployment.status.value == "UNHEALTHY":
+                            self.logger.error(
+                                f"Ray Serve application '{application_id}' deployment "
+                                f"'{deployment_name}' reported error:\n{deployment.message}",
+                            )
             except Exception as status_error:
                 self.logger.error(
                     f"Failed to get Ray Serve status for application '{application_id}': {status_error}"
@@ -498,12 +504,16 @@ class AppsManager:
             self.artifact_manager = None
             raise
 
-        # Set the collection ID for BioEngine applications
+        # Ensure applications collection exists
         workspace = self.server.config.workspace
-        self.collection_id = f"{workspace}/applications"
+        await ensure_applications_collection(
+            artifact_manager=self.artifact_manager,
+            workspace=workspace,
+            logger=self.logger,
+        )
 
         # Initialize the AppBuilder with the server and artifact manager
-        self.app_builder.initialize(
+        await self.app_builder.initialize(
             server=self.server,
             artifact_manager=self.artifact_manager,
             serve_http_url=self.ray_cluster.serve_http_url,
@@ -785,15 +795,8 @@ class AppsManager:
             resource_name=f"listing applications",
         )
 
-        # Ensure the 'applications' collection exists
-        await ensure_applications_collection(
-            artifact_manager=self.artifact_manager,
-            workspace=self.server.config.workspace,
-            logger=self.logger,
-        )
-
-        bioengine_apps_artifacts = await self.artifact_manager.list(self.collection_id)
-
+        collection_id = f"{self.server.config.workspace}/applications"
+        bioengine_apps_artifacts = await self.artifact_manager.list(collection_id)
         bioengine_apps = {}
         for artifact in bioengine_apps_artifacts:
             try:
@@ -816,10 +819,6 @@ class AppsManager:
             ...,
             description="List of application files to upload. Each file must be a dictionary with 'name' (string), 'content' (file content), and 'type' ('text' for text files or 'base64' for binary files). Must include a 'manifest.yaml' file with application configuration.",
         ),
-        artifact_id: str = Field(
-            None,
-            description="Unique identifier for the artifact. If provided, updates an existing artifact. If not provided, creates a new artifact using the 'id' field from the manifest file. For new artifacts, use lowercase letters, numbers, and hyphens only.",
-        ),
         context: Dict[str, Any] = Field(
             ...,
             description="Authentication context containing user information, automatically provided by Hypha during service calls.",
@@ -839,7 +838,7 @@ class AppsManager:
         - Data files: Any additional resources needed by the application
 
         The manifest.yaml file must contain:
-        - id: Application identifier (for new artifacts)
+        - id: Application identifier
         - type: Must be "ray-serve"
         - name: Human-readable application name
         - description: Application description
@@ -905,11 +904,10 @@ class AppsManager:
 
         # Create or update the artifact using the utility function
         try:
-            created_artifact_id = await create_artifact_from_files(
+            created_artifact_id = await create_application_from_files(
                 artifact_manager=self.artifact_manager,
                 files=files,
                 workspace=self.server.config.workspace,
-                artifact_id=artifact_id,
                 manifest_updates=manifest_updates,
                 logger=self.logger,
             )

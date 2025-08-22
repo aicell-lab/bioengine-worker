@@ -48,7 +48,7 @@ in the ray actor options based on the disable_gpu parameter (default: False) pas
 deploy_application().
 
 Resource allocation is validated against available cluster resources before deployment.
-See bioengine_worker/apps_manager.py for the deployment orchestration logic.
+See bioengine/applications/apps_manager.py for the deployment orchestration logic.
 
 Ray Serve deployment parameters: https://docs.ray.io/en/latest/serve/api/doc/ray.serve.deployment_decorator.html
 BioEngine app deployment guide: See project README for artifact structure requirements.
@@ -140,7 +140,12 @@ class CompositionDeployment:
     # Note: Parameter type hints and docstrings will be used to generate the API documentation.
 
     @schema_method
-    async def calculate_result(self, number: int = Field(..., description="The number to add to the start value of Deployment2.")) -> str:
+    async def calculate_result(
+        self,
+        number: int = Field(
+            ..., description="The number to add to the start value of Deployment2."
+        ),
+    ) -> str:
         """
         Calculate the result by adding the given number to the start value of Deployment2.
 

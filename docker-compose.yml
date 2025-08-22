@@ -1,24 +1,37 @@
 version: '3.8'
 
+# Define common configuration
+x-common-config: &common-config
+  # Run `BIOENGINE_VERSION=$(grep -E '^version\s*=' "pyproject.toml" | sed -E 's/version\s*=\s*"(.*)"/\1/' | head -1) docker compose up` to use a specific version
+  image: ghcr.io/aicell-lab/bioengine-worker:${BIOENGINE_VERSION:-latest}
+  # Add UID (`UID=$(id -u)`) and GID (`GID=$(id -g)`) to .env file if not found
+  user: "${UID}:${GID}"
+  # Existing non-root user: "nobody:nogroup"
+  env_file:
+    - .env
+
 services:
-  bioengine_worker:
+  # Base service with build instructions (not meant to be run directly)
+  bioengine-builder:
+    <<: *common-config
     build:
       context: .
       dockerfile: Dockerfile
-    # Run `BIOENGINE_VERSION=$(python scripts/get_version.py) docker compose up` to use a specific version
-    image: ghcr.io/aicell-lab/bioengine-worker:${BIOENGINE_VERSION:-latest}
-    container_name: bioengine_worker
-    user: "${UID}:${GID}"  # add UID and GID to .env file if not found
-    # user: "nobody:nogroup"
+    # We want this service to be built but not started
+    # Setting entrypoint to false prevents it from starting when using 'docker compose up'
+    entrypoint: ["echo", "This service is for building the image only"]
+  
+  bioengine-worker:
+    <<: *common-config
+    container_name: bioengine-worker
     volumes:
-      - ./.bioengine:/tmp/bioengine
-      - ./data:/data
+      - ${HOME}/.bioengine:${HOME}/.bioengine
     shm_size: 10.24gb
-    env_file:
-      - .env
-    restart: "no"
+    environment:
+      - HOME=${HOME}
+    restart: "no"  # TODO: add health checks and restarts
     command: [
-      "python", "-m", "bioengine_worker",
+      "python", "-m", "bioengine.worker",
       "--mode", "single-machine",
       "--head_num_gpus", "1",
       "--head_num_cpus", "4",
@@ -32,3 +45,25 @@ services:
               # device_ids: ['GPU-xxxxxxx']  # replace with your GPU ID
               capabilities: [gpu]
     runtime: nvidia
+
+  bioengine-datasets:
+    <<: *common-config
+    container_name: bioengine-datasets
+    volumes:
+      - ${HOME}/.bioengine:${HOME}/.bioengine
+      - ./data:/data
+    environment:
+      - HOME=${HOME}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9527/health/liveness"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    command: [
+      "python", "-m", "bioengine.datasets",
+      "--data-dir", "/data",
+      "--cache-dir", "${HOME}/.bioengine",
+      "--server-port", "9527",
+    ]

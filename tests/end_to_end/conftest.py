@@ -16,7 +16,7 @@ import pytest_asyncio
 from anyio import Path
 from hypha_rpc.rpc import ObjectProxy, RemoteService
 
-from bioengine_worker.worker import BioEngineWorker
+from bioengine.worker import BioEngineWorker
 
 
 # Test application configurations for automatic startup deployment
@@ -79,7 +79,6 @@ async def bioengine_worker_service_id(
     monkeypatch: pytest.MonkeyPatch,
     worker_mode: str,
     cache_dir: Path,
-    data_dir: Path,
     startup_applications: List[Dict],
     monitoring_interval_seconds: int,
     server_url: str,
@@ -102,15 +101,14 @@ async def bioengine_worker_service_id(
     """
 
     # Set environment variables for startup application deployment from local path
-    monkeypatch.setenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH", str(tests_dir))
-    assert os.getenv("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH") == str(tests_dir)
+    monkeypatch.setenv("BIOENGINE_LOCAL_ARTIFACT_PATH", str(tests_dir))
+    assert os.getenv("BIOENGINE_LOCAL_ARTIFACT_PATH") == str(tests_dir)
 
     # Initialize the BioEngine worker with startup applications
     bioengine_worker = BioEngineWorker(
         mode=worker_mode,
         admin_users=None,
         cache_dir=cache_dir,
-        data_dir=data_dir,
         startup_applications=startup_applications,
         monitoring_interval_seconds=monitoring_interval_seconds,
         server_url=server_url,

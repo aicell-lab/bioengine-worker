@@ -5,15 +5,15 @@ from pathlib import Path
 
 from hypha_rpc import connect_to_server, login
 
-from bioengine_worker.utils import (
-    create_artifact_from_files,
+from bioengine.utils import (
+    create_application_from_files,
     create_file_list_from_directory,
     create_logger,
     ensure_applications_collection,
 )
 
 
-async def manage_artifact(
+async def create_application(
     directory: str,
     server_url: str,
     workspace: str = None,
@@ -75,7 +75,7 @@ async def manage_artifact(
 
     # Create or update the artifact using the utility function
     try:
-        artifact_id = await create_artifact_from_files(
+        artifact_id = await create_application_from_files(
             artifact_manager=artifact_manager,
             files=files,
             workspace=workspace,
@@ -120,7 +120,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     asyncio.run(
-        manage_artifact(
+        create_application(
             directory=args.directory,
             server_url=args.server_url,
             workspace=args.workspace,

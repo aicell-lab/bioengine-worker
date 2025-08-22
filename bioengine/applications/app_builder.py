@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import logging
 import os
@@ -11,10 +12,13 @@ import yaml
 from hypha_rpc.rpc import RemoteService
 from hypha_rpc.utils import ObjectProxy
 from ray import serve
+from ray._private.runtime_env.packaging import get_uri_for_directory
 from ray.serve.handle import DeploymentHandle
 
-from bioengine_worker.proxy_deployment import BioEngineProxyDeployment
-from bioengine_worker.utils import create_logger, update_requirements
+import bioengine
+from bioengine.applications.proxy_deployment import BioEngineProxyDeployment
+from bioengine.datasets import BioEngineDatasets
+from bioengine.utils import create_logger, update_requirements
 
 
 class AppManifest(TypedDict):
@@ -82,7 +86,6 @@ class AppBuilder:
 
     Configuration:
         apps_cache_dir: Where to store downloaded artifacts and working directories
-        apps_data_dir: Shared data directory accessible to all deployments
         server: Hypha RPC server connection for authentication and artifact access
         artifact_manager: Service for downloading deployment code and manifests
         serve_http_url: Base URL where Ray Serve exposes HTTP endpoints
@@ -92,9 +95,11 @@ class AppBuilder:
         self,
         token: str,
         apps_cache_dir: Union[str, Path],
+        data_server_url: Optional[str] = None,
+        data_server_workspace: str = "public",
         log_file: Optional[str] = None,
         debug: bool = False,
-    ) -> None:  
+    ) -> None:
         """
         Set up a new AppBuilder instance with basic configuration.
 
@@ -103,7 +108,6 @@ class AppBuilder:
 
         Directory Setup:
         • apps_cache_dir: Creates isolated workspaces for each deployed application
-        • apps_data_dir: Provides shared storage that all deployments can access
 
         Logging Configuration:
         • debug=True: Enables verbose output for troubleshooting deployment issues
@@ -112,7 +116,8 @@ class AppBuilder:
         Args:
             token: Hypha authentication token (get from environment or web interface)
             apps_cache_dir: Directory for storing downloaded code and temporary files
-            apps_data_dir: Shared directory where deployments can read/write data
+            data_server_url: URL for the data server (None = no data server)
+            data_server_workspace: Workspace on the data server (default: "public")
             log_file: Optional file path for logging output (None = console only)
             debug: Whether to enable detailed debug logging for troubleshooting
 
@@ -120,8 +125,9 @@ class AppBuilder:
             ```python
             builder = AppBuilder(
                 token=os.environ["HYPHA_TOKEN"],
-                apps_cache_dir=Path("/tmp/bioengine/apps"),
-                apps_data_dir=Path("/data/shared"),
+                apps_cache_dir=f"{os.environ['HOME']}/apps",
+                data_server_url="http://127.0.0.1:9527",
+                data_server_workspace="public",
                 debug=True
             )
             ```
@@ -136,12 +142,18 @@ class AppBuilder:
         # Store parameters
         self._token = token
         self.apps_cache_dir = Path(apps_cache_dir)
+        self.data_server_url = data_server_url
+        self.data_server_workspace = data_server_workspace
+        self.bioengine_package_alias = "bioengine-package"
         self.server: Optional[RemoteService] = None
         self.artifact_manager: Optional[ObjectProxy] = None
         self.serve_http_url: Optional[str] = None
 
-    def initialize(
-        self, server: RemoteService, artifact_manager: ObjectProxy, serve_http_url: str
+    async def initialize(
+        self,
+        server: RemoteService,
+        artifact_manager: ObjectProxy,
+        serve_http_url: str,
     ) -> None:
         """
         Connect the AppBuilder to external services required for operation.
@@ -240,12 +252,10 @@ class AppBuilder:
             authorized_users: ["user123", "admin@example.com"]
             ```
         """
-        if os.environ.get("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"):
+        if os.environ.get("BIOENGINE_LOCAL_ARTIFACT_PATH"):
             # Load the file content from local path
             artifact_folder = artifact_id.split("/")[1].replace("-", "_")
-            local_deployments_dir = Path(
-                os.environ["BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"]
-            )
+            local_deployments_dir = Path(os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"])
             local_path = local_deployments_dir / artifact_folder / "manifest.yaml"
             if not local_path.exists():
                 raise FileNotFoundError(f"Local manifest file not found: {local_path}")
@@ -290,7 +300,7 @@ class AppBuilder:
 
         return manifest
 
-    def _update_actor_options(
+    async def _update_ray_actor_options(
         self,
         deployment: serve.Deployment,
         application_id: str,
@@ -337,7 +347,6 @@ class AppBuilder:
         The working directory structure created is:
         - apps_cache_dir/application_id/ (main workspace)
         - apps_cache_dir/application_id/tmp/ (temporary files)
-        - Access to apps_data_dir/ (shared data across all apps)
         """
         ray_actor_options = deployment.ray_actor_options.copy()
 
@@ -348,6 +357,7 @@ class AppBuilder:
         # Update runtime environment with BioEngine requirements
         runtime_env = ray_actor_options.setdefault("runtime_env", {})
         pip_requirements = runtime_env.setdefault("pip", [])
+        py_modules = runtime_env.setdefault("py_modules", [])
         env_vars = runtime_env.setdefault("env_vars", {})
 
         # Add custom environment variables
@@ -366,6 +376,14 @@ class AppBuilder:
 
         # Update with BioEngine requirements
         pip_requirements = update_requirements(pip_requirements)
+        runtime_env["pip"] = pip_requirements
+
+        # Add bioengine as module
+        bioengine_remote_uri = get_uri_for_directory(
+            os.path.dirname(bioengine.__file__)
+        )
+        py_modules.append(bioengine_remote_uri)
+        runtime_env["py_modules"] = py_modules
 
         # Set BioEngine environment variables
         app_work_dir = self.apps_cache_dir / application_id
@@ -376,6 +394,10 @@ class AppBuilder:
         env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
         env_vars["HYPHA_TOKEN"] = token
 
+        runtime_env["env_vars"] = env_vars
+
+        # Update deployment options
+        ray_actor_options["runtime_env"] = runtime_env
         updated_deployment = deployment.options(
             ray_actor_options=ray_actor_options,
             max_ongoing_requests=max_ongoing_requests,
@@ -419,12 +441,13 @@ class AppBuilder:
 
         orig_init = getattr(deployment.func_or_class, "__init__")
 
+        # Stream zarr dataset either from public or locally started server
+        # Example for a local hypha server: "http://localhost:9527"
+        data_server_url = self.data_server_url
+        data_server_workspace = self.data_server_workspace
+
         @wraps(orig_init)
         def wrapped_init(self, *args, **kwargs):
-            import asyncio
-            import os
-            from pathlib import Path
-
             # Get replica identifier for logging
             try:
                 self.replica_id = serve.get_replica_context().replica_tag
@@ -432,8 +455,12 @@ class AppBuilder:
                 self.replica_id = "unknown"
 
             # Ensure the current working directory is set to the application working directory
-            workdir = Path.home().resolve()  # Home directory is set to the apps_cache_dir
-            os.environ["HOME"] = str(workdir)  # Update the HOME environment variable with resolved path
+            workdir = (
+                Path.home().resolve()
+            )  # Home directory is set to the apps_cache_dir
+            os.environ["HOME"] = str(
+                workdir
+            )  # Update the HOME environment variable with resolved path
             workdir.mkdir(parents=True, exist_ok=True)
             os.chdir(workdir)
             print(f"📁 [{self.replica_id}] Working directory: {workdir}/")
@@ -444,6 +471,13 @@ class AppBuilder:
 
             # Create a health check lock to synchronize health checks
             self._health_check_lock = asyncio.Lock()
+
+            # Initialize BioEngine datasets
+            self.bioengine_datasets = BioEngineDatasets(
+                data_server_url=data_server_url,
+                deployment_name=self.__class__.__name__,
+                data_server_workspace=data_server_workspace,
+            )
 
             # Call the original __init__ method
             orig_init(self, *args, **kwargs)
@@ -494,8 +528,6 @@ class AppBuilder:
 
         @wraps(orig_async_init)
         async def wrapped_async_init(self):
-            import asyncio
-
             start_time = time.time()
             print(
                 f"⚡ [{self.replica_id}] Running async initialization for '{self.__class__.__name__}'..."
@@ -569,8 +601,6 @@ class AppBuilder:
 
         @wraps(orig_test_deployment)
         async def wrapped_test_deployment(self):
-            import asyncio
-
             start_time = time.time()
             print(
                 f"🧪 [{self.replica_id}] Running deployment test for '{self.__class__.__name__}'..."
@@ -642,26 +672,25 @@ class AppBuilder:
 
         @wraps(orig_health_check)
         async def check_health(self):
-            import asyncio
-
             async with self._health_check_lock:
                 # Ensure async initialization has completed
-                if not getattr(self, "_deployment_initialized", False):
+                if not self._deployment_initialized:
                     await self.async_init()
 
                 # Ensure deployment testing has completed
-                if not getattr(self, "_deployment_tested", False):
+                if not self._deployment_tested:
                     await self.test_deployment()
 
                 try:
+                    # Ensure data server can be reached
+                    await self.bioengine_datasets.ping_data_server()
+
                     # Check if the original health check method is async
                     if inspect.iscoroutinefunction(orig_health_check):
-                        result = await orig_health_check(self)
+                        await orig_health_check(self)
                     else:
                         # If it's a regular function, call it directly
-                        result = await asyncio.to_thread(orig_health_check, self)
-
-                    return result
+                        await asyncio.to_thread(orig_health_check, self)
 
                 except Exception as e:
                     print(
@@ -892,15 +921,13 @@ class AppBuilder:
             import_path="model_server:ImageClassifier" loads the ImageClassifier
             class from model_server.py file in the artifact.
         """
-        if os.environ.get("BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"):
+        if os.environ.get("BIOENGINE_LOCAL_ARTIFACT_PATH"):
             # Load the file content from local path
             artifact_folder = artifact_id.split("/")[1].replace("-", "_")
             self.logger.debug(
                 f"Loading deployment code from local path: {python_file} in folder {artifact_folder}/"
             )
-            local_deployments_dir = Path(
-                os.environ["BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"]
-            )
+            local_deployments_dir = Path(os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"])
             local_path = local_deployments_dir / artifact_folder / python_file
             if not local_path.exists():
                 raise FileNotFoundError(
@@ -948,7 +975,7 @@ class AppBuilder:
                 raise RuntimeError(f"Error loading {class_name} from {artifact_id}")
 
             # Update environment variables and requirements
-            deployment = self._update_actor_options(
+            deployment = await self._update_ray_actor_options(
                 deployment=deployment,
                 application_id=application_id,
                 disable_gpu=disable_gpu,
@@ -1256,17 +1283,15 @@ class AppBuilder:
 
 
 if __name__ == "__main__":
-    import asyncio
-
     from hypha_rpc import connect_to_server
 
     server_url = "https://hypha.aicell.io"
     token = os.environ["HYPHA_TOKEN"]
 
-    base_dir = Path(__file__).parent.parent
-    apps_cache_dir = base_dir / ".bioengine" / "apps"
-    apps_data_dir = base_dir / "data"
-    os.environ["BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH"] = str(base_dir / "tests")
+    base_dir = Path(__file__).parent.parent.parent
+    os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"] = str(base_dir / "tests")
+
+    apps_cache_dir = Path.home() / ".bioengine" / "apps"
 
     async def test_app_builder():
         server = await connect_to_server({"server_url": server_url, "token": token})
@@ -1275,7 +1300,6 @@ if __name__ == "__main__":
         app_builder = AppBuilder(
             token=token,
             apps_cache_dir=apps_cache_dir,
-            apps_data_dir=apps_data_dir,
             log_file=None,
             debug=True,
         )

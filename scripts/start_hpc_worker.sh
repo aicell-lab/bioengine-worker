@@ -148,7 +148,7 @@ fi
 # === Load BioEngine image ===
 
 # Get the container cache directory
-CACHE_DIR=$(get_arg_value "--cache_dir" "$WORKING_DIR/.bioengine")
+CACHE_DIR=$(get_arg_value "--cache_dir" "${HOME}/.bioengine")
 CACHE_DIR=$(realpath $CACHE_DIR)
 
 IMAGE_CACHEDIR=$(get_arg_value "--apptainer_cachedir")
@@ -214,28 +214,13 @@ fi
 
 # CACHE_DIR is needed by the BioEngine worker -> container path
 mkdir -p $CACHE_DIR
-add_bind $CACHE_DIR "/tmp/bioengine"
-set_arg_value "--cache_dir" "/tmp/bioengine"
+add_bind $CACHE_DIR "${HOME}/.bioengine"
+set_arg_value "--cache_dir" "${HOME}/.bioengine"
 
 # Pass the real cache_dir to the SLURM worker node via --worker_cache_dir
 WORKER_CACHE_DIR=$(get_arg_value "--worker_cache_dir" $CACHE_DIR)
 WORKER_CACHE_DIR=$(realpath $WORKER_CACHE_DIR)
 set_arg_value "--worker_cache_dir" $WORKER_CACHE_DIR
-
-# DATA_DIR is needed on by the DatasetsManager -> container path
-DATA_DIR=$(get_arg_value "--data_dir")
-if [[ -n "$DATA_DIR" ]]; then
-    DATA_DIR=$(realpath $DATA_DIR)
-    add_bind $DATA_DIR "/data" "ro"  # Read-only
-    set_arg_value "--data_dir" /data
-fi
-
-# Pass the real data_dir to the SLURM worker node via --worker_data_dir
-WORKER_DATA_DIR=$(get_arg_value "--worker_data_dir" $DATA_DIR)
-if [[ -n "$WORKER_DATA_DIR" ]]; then
-    WORKER_DATA_DIR=$(realpath $WORKER_DATA_DIR)
-    set_arg_value "--worker_data_dir" $WORKER_DATA_DIR
-fi
 
 # Check if the flag `--debug` is set
 DEBUG_MODE=$(get_arg_value "--debug" "false")
@@ -316,4 +301,4 @@ $CONTAINER_CMD exec \
     "${ENV_VARS[@]}" \
     "${BIND_OPTS[@]}" \
     "$IMAGE" \
-    python -m bioengine_worker "${BIOENGINE_WORKER_ARGS[@]}"
+    python -m bioengine.worker "${BIOENGINE_WORKER_ARGS[@]}"

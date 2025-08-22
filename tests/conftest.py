@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 from hypha_rpc import connect_to_server
 from hypha_rpc.rpc import ObjectProxy, RemoteService
 
-from bioengine_worker.ray_cluster import RayCluster
+from bioengine.ray import RayCluster
 
 # Load environment variables from .env file
 load_dotenv()
@@ -64,7 +64,7 @@ def worker_mode(request) -> str:
 @pytest.fixture(scope="session")
 def workspace_folder() -> Path:
     """
-    Return project root directory and set BIOENGINE_WORKER_LOCAL_ARTIFACT_PATH.
+    Return project root directory and set BIOENGINE_LOCAL_ARTIFACT_PATH.
 
     Configures environment for local test artifact discovery.
     """
@@ -145,7 +145,7 @@ def ray_address(worker_mode: str) -> Generator[str, None, None]:
             ray_cluster._set_head_node_address()
             ray_cluster.is_ready.set()
 
-            yield ray_cluster.head_node_address
+            yield ray_cluster.address
 
             # Stop the Ray cluster after tests complete
             asyncio.run(ray_cluster.stop())

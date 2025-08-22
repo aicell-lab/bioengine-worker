@@ -4,7 +4,7 @@
 
 BioEngine Worker is an enterprise distributed AI platform with 3-tier architecture:
 
-**Core Worker (`bioengine_worker/worker.py`)**
+**Core Worker (`bioengine/worker/worker.py`)**
 - Orchestrates 3 component managers: RayCluster, AppsManager, DatasetsManager  
 - Registers as Hypha service with admin permission system
 - Supports 3 modes: `slurm` (HPC), `single-machine` (local), `external-cluster`
@@ -44,7 +44,7 @@ conda run -n bioengine-worker pytest tests/ -v
 ### Local Development
 ```bash
 # Start worker locally
-python -m bioengine_worker --mode single-machine --debug
+python -m bioengine.worker --mode single-machine --debug
 
 # With Docker Compose
 UID=$(id -u) GID=$(id -g) docker compose up
@@ -73,7 +73,7 @@ class ComponentManager:
 
 ### Permission Checking Pattern
 ```python
-from bioengine_worker.utils import check_permissions
+from bioengine.utils import check_permissions
 
 @schema_method  # For Hypha service methods
 async def admin_operation(self, context=None):
@@ -102,15 +102,15 @@ async def admin_operation(self, context=None):
 ## Key File Locations
 
 ### Core Components
-- `bioengine_worker/worker.py` - Main orchestrator
-- `bioengine_worker/ray_cluster.py` - Ray cluster lifecycle  
-- `bioengine_worker/apps_manager.py` - Model deployment management
-- `bioengine_worker/datasets_manager.py` - Dataset streaming services
+- `bioengine/worker/worker.py` - Main orchestrator
+- `bioengine/ray/ray_cluster.py` - Ray cluster lifecycle  
+- `bioengine/applications/apps_manager.py` - Model deployment management
+- `bioengine/datasets/datasets_manager.py` - Dataset streaming services
 
 ### Utilities & Shared Code
-- `bioengine_worker/utils/` - Logging, permissions, context creation
-- `bioengine_worker/slurm_workers.py` - HPC autoscaling logic
-- `bioengine_worker/proxy_actor.py` - Ray actor for cluster coordination
+- `bioengine/utils/` - Logging, permissions, context creation
+- `bioengine/ray/slurm_workers.py` - HPC autoscaling logic
+- `bioengine/ray/proxy_actor.py` - Ray actor for cluster coordination
 
 ### Testing
 - `tests/test_end_to_end/` - Integration tests via Hypha service API
@@ -128,7 +128,7 @@ async def admin_operation(self, context=None):
 Ray auto-allocates ports starting from defaults (6379, 8000, etc.). Check `ray_cluster.py/_set_cluster_ports()` for logic.
 
 ### SLURM Issues  
-Worker containers mount `/tmp/bioengine` and `/data`. Check `slurm_workers.py` for job submission patterns.
+Worker containers mount `${HOME}/bioengine`. Check `slurm_workers.py` for job submission patterns.
 
 ### Hypha Connection
 Authentication via `HYPHA_TOKEN` env var or interactive login. Service discovery uses workspace-scoped IDs.

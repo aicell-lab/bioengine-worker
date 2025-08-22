@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import re
-import socket
 import subprocess
 import time
 import uuid
@@ -14,10 +13,15 @@ from typing import Dict, List, Literal, Optional, Union
 import ray
 from ray import serve
 
-from bioengine_worker import __version__
-from bioengine_worker.proxy_actor import BioEngineProxyActor
-from bioengine_worker.slurm_workers import SlurmWorkers
-from bioengine_worker.utils import create_logger, stream_logging_format
+import bioengine
+from bioengine.ray.proxy_actor import BioEngineProxyActor
+from bioengine.ray.slurm_workers import SlurmWorkers
+from bioengine.utils import (
+    acquire_free_port,
+    create_logger,
+    get_internal_ip,
+    stream_logging_format,
+)
 
 
 class RayCluster:
@@ -58,7 +62,7 @@ class RayCluster:
 
     def __init__(
         self,
-        mode: Literal["single-machine", "slurm", "external-cluster"] = "single-machine",
+        mode: Literal["single-machine", "slurm", "external-cluster"],
         # Ray Head Node Configuration parameters
         head_node_address: Optional[str] = None,
         head_node_port: int = 6379,
@@ -69,16 +73,15 @@ class RayCluster:
         dashboard_port: int = 8265,
         client_server_port: int = 10001,
         redis_password: Optional[str] = None,
-        ray_temp_dir: str = "/tmp/bioengine/ray",
+        ray_temp_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine/ray",
         head_num_cpus: int = 0,
         head_num_gpus: int = 0,
         head_memory_in_gb: Optional[int] = None,
         runtime_env_pip_cache_size_gb: int = 30,  # Ray default is 10 GB
         force_clean_up: bool = True,
         # SLURM Worker Configuration parameters
-        image: str = f"ghcr.io/aicell-lab/bioengine-worker:{__version__}",
+        image: str = f"ghcr.io/aicell-lab/bioengine-worker:{bioengine.__version__}",
         worker_cache_dir: Optional[str] = None,
-        worker_data_dir: Optional[str] = None,
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
         default_mem_in_gb_per_cpu: int = 16,
@@ -110,7 +113,7 @@ class RayCluster:
             dashboard_port: Port for Ray dashboard. Default 8265.
             client_server_port: Base port for Ray client services. Default 10001.
             redis_password: Password for Redis server. Generated randomly if None.
-            ray_temp_dir: Temporary directory for Ray. Default '/tmp/bioengine/ray'.
+            ray_temp_dir: Temporary directory for Ray. Default '/home/<user>/.bioengine/ray'.
             head_num_cpus: Number of CPUs for head node (single-machine mode). Default 0.
             head_num_gpus: Number of GPUs for head node (single-machine mode). Default 0.
             head_memory_in_gb: Memory limit for head node in GB. If not set, Ray will auto-detect available memory.
@@ -118,7 +121,6 @@ class RayCluster:
             force_clean_up: Force cleanup of previous Ray cluster on start. Default True.
             image: Container image for workers (SLURM mode). Default bioengine-worker.
             worker_cache_dir: Cache directory mounted to worker containers (SLURM mode).
-            worker_data_dir: Data directory mounted to worker containers (SLURM mode).
             default_num_gpus: Default GPU count per worker. Default 1.
             default_num_cpus: Default CPU count per worker. Default 8.
             default_mem_in_gb_per_cpu: Default memory per CPU in GB. Default 16.
@@ -144,26 +146,78 @@ class RayCluster:
             log_file=log_file,
         )
 
+        # Check mode
+        if mode not in ["single-machine", "slurm", "external-cluster"]:
+            raise ValueError(
+                f"Unsupported Ray cluster mode: '{mode}'. "
+                "Supported modes are 'slurm', 'single-machine' and 'external-cluster'."
+            )
+        self.mode = mode
+
         # Initialize cluster state and monitoring attributes
-        self.is_ready = asyncio.Event()
-        self.lock_file = None
-        self.start_time = None
-        self.head_node_address = None
+        self.address = None
         self.serve_http_url = None
         self.proxy_actor_handle = None
         self.cluster_status_history = OrderedDict()
         self.max_status_history_length = 100
+        self.is_ready = asyncio.Event()
+
+        self.start_time = None
+        self.lock_file = None
         self.slurm_workers = None
 
-        # Set mode and validate configuration
-        self.mode = mode
-        if self.mode in ["single-machine", "slurm"]:
+        # Base configuration for connecting to Ray cluster
+        self.ray_cluster_config = {
+            "head_node_address": str(head_node_address or get_internal_ip()),
+            "ports": {
+                "head_node": int(head_node_port),  # GCS server port
+                "client_server": int(client_server_port),
+                "serve": int(serve_port),
+            },
+            "slurm": {},
+        }
+
+        # Additional configuration for starting a Ray cluster
+        if mode in ["single-machine", "slurm"]:
             # Find and store Ray executable path
             self.ray_exec_path = self._find_ray_executable()
             self.serve_exec_path = self._find_serve_executable()
 
             # Check if Ray temp dir does not exceed length of 107 bytes
+            ray_temp_dir = Path(ray_temp_dir).resolve()
             self._check_ray_temp_dir_length(ray_temp_dir)
+
+            # Check number of CPUs if in single-machine mode
+            if self.mode == "single-machine" and head_num_cpus <= 0:
+                raise ValueError(
+                    "When running on a single machine, 'head_num_cpus' must be greater than 0"
+                )
+
+            # Set cluster configuration
+            self.ray_cluster_config.update(
+                {
+                    "ray_temp_dir": ray_temp_dir,
+                    "head_num_cpus": int(head_num_cpus),
+                    "head_num_gpus": int(head_num_gpus),
+                    "head_memory_in_gb": (
+                        int(head_memory_in_gb)
+                        if head_memory_in_gb is not None
+                        else None
+                    ),
+                    "redis_password": str(redis_password or os.urandom(16).hex()),
+                    "force_clean_up": bool(force_clean_up),
+                }
+            )
+
+            # Set cluster ports
+            self.ray_cluster_config["ports"].update(
+                {
+                    "node_manager": int(node_manager_port),
+                    "object_manager": int(object_manager_port),
+                    "redis_shard": int(redis_shard_port),
+                    "dashboard": int(dashboard_port),
+                }
+            )
 
             # Set runtime environment pip cache size
             if runtime_env_pip_cache_size_gb <= 0:
@@ -174,64 +228,37 @@ class RayCluster:
             self.logger.debug(
                 f"Setting RAY_RUNTIME_ENV_PIP_CACHE_SIZE_GB to {runtime_env_pip_cache_size_gb}"
             )
-        elif self.mode != "external-cluster":
-            raise ValueError(
-                f"Unsupported Ray cluster mode: '{self.mode}'. "
-                "Supported modes are 'slurm', 'single-machine' and 'external-cluster'."
-            )
 
-        self.ray_cluster_config = {
-            "head_node_address": str(head_node_address or self._find_internal_ip()),
-            "head_node_port": int(head_node_port),  # GCS server port
-            "node_manager_port": int(node_manager_port),
-            "object_manager_port": int(object_manager_port),
-            "redis_shard_port": int(redis_shard_port),
-            "serve_port": int(serve_port),
-            "dashboard_port": int(dashboard_port),
-            "client_server_port": int(client_server_port),
-            "redis_password": str(redis_password or os.urandom(16).hex()),
-            "ray_temp_dir": str(ray_temp_dir),
-            "head_num_cpus": int(head_num_cpus),
-            "head_num_gpus": int(head_num_gpus),
-            "head_memory_in_gb": (
-                int(head_memory_in_gb) if head_memory_in_gb is not None else None
-            ),
-            "force_clean_up": bool(force_clean_up),
-        }
+            # Set SLURM worker configuration if in slurm mode
+            if self.mode == "slurm":
+                self._check_slurm_available()
 
-        # Check number of CPUs if in single-machine mode
-        if self.mode == "single-machine" and head_num_cpus <= 0:
-            raise ValueError(
-                "When running on a single machine, 'head_num_cpus' must be greater than 0"
-            )
-
-        # Set SLURM worker configuration if in slurm mode
-        if self.mode == "slurm":
-            self._check_slurm_available()
-
-            if worker_cache_dir is None:
-                raise ValueError(
-                    "worker_cache_dir must be provided when mode is 'slurm'"
+                if worker_cache_dir is None:
+                    raise ValueError(
+                        "worker_cache_dir must be provided when mode is 'slurm'"
+                    )
+                self.ray_cluster_config["slurm"].update(
+                    {
+                        "image": image,
+                        "worker_cache_dir": str(worker_cache_dir),
+                        "default_num_gpus": int(default_num_gpus),
+                        "default_num_cpus": int(default_num_cpus),
+                        "default_mem_in_gb_per_cpu": int(default_mem_in_gb_per_cpu),
+                        "default_time_limit": str(default_time_limit),
+                        "further_slurm_args": further_slurm_args or [],
+                        "min_workers": int(min_workers),
+                        "max_workers": int(max_workers),
+                        "scale_up_cooldown_seconds": int(scale_up_cooldown_seconds),
+                        "scale_down_check_interval_seconds": int(
+                            scale_down_check_interval_seconds
+                        ),
+                        "scale_down_threshold_seconds": int(
+                            scale_down_threshold_seconds
+                        ),
+                        "log_file": log_file,
+                        "debug": bool(debug),
+                    }
                 )
-            self.slurm_worker_config = {
-                "image": image,
-                "worker_cache_dir": str(worker_cache_dir),
-                "worker_data_dir": str(worker_data_dir) if worker_data_dir else None,
-                "default_num_gpus": int(default_num_gpus),
-                "default_num_cpus": int(default_num_cpus),
-                "default_mem_in_gb_per_cpu": int(default_mem_in_gb_per_cpu),
-                "default_time_limit": str(default_time_limit),
-                "further_slurm_args": further_slurm_args or [],
-                "min_workers": int(min_workers),
-                "max_workers": int(max_workers),
-                "scale_up_cooldown_seconds": int(scale_up_cooldown_seconds),
-                "scale_down_check_interval_seconds": int(
-                    scale_down_check_interval_seconds
-                ),
-                "scale_down_threshold_seconds": int(scale_down_threshold_seconds),
-                "log_file": log_file,
-                "debug": bool(debug),
-            }
 
     def __del__(self):
         """Cleanup lock file when the RayCluster instance is destroyed."""
@@ -258,7 +285,7 @@ class RayCluster:
                 - nodes: Most recent worker nodes status grouped by state
         """
         status = {
-            "head_address": self.head_node_address,
+            "head_address": self.address,
             "start_time": self.start_time if self.mode != "external-cluster" else "N/A",
             "mode": self.mode,
         }
@@ -331,14 +358,12 @@ class RayCluster:
             )
             raise RuntimeError("SLURM is not available")
 
-    def _check_ray_temp_dir_length(self, ray_temp_dir: str) -> None:
+    def _check_ray_temp_dir_length(self, ray_temp_dir: Path) -> None:
         # Simulate the longest possible session directory name
         session_name = datetime.now().strftime(
             "session_%Y-%m-%d_%H-%M-%S_999999_9999999"
         )
-        full_path = str(
-            Path(ray_temp_dir).resolve() / session_name / "sockets" / "plasma_store"
-        )
+        full_path = str(ray_temp_dir / session_name / "sockets" / "plasma_store")
         path_length = len(full_path.encode("utf-8"))
 
         if path_length > 107:
@@ -349,88 +374,6 @@ class RayCluster:
                 f"{path_length}) with the specified Ray temp directory configuration "
                 f"'{ray_temp_dir}'. Please choose a shorter path for the Ray temp directory."
             )
-
-    def _find_internal_ip(self) -> str:
-        """
-        Find the internal IP address of the system.
-
-        Uses the hostname command to retrieve the system's internal IP address.
-
-        Returns:
-            str: The internal IP address of the system
-        """
-        result = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
-        return result.stdout.strip().split()[0]  # Take the first IP
-
-    def _find_available_port(self, port: int, step: int = 1) -> int:
-        """
-        Find next available port starting from given port number.
-
-        Checks for port availability by attempting to bind to the port.
-        If the port is in use, it increments by the step value until an
-        available port is found.
-
-        Args:
-            port: Starting port number to check
-            step: Increment between port numbers to check
-
-        Returns:
-            First available port number found
-        """
-
-        def check_port(port_num):
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                return s.connect_ex(("localhost", port_num)) != 0
-
-        available = False
-        out_port = port
-        while not available:
-            available = check_port(out_port)
-            if not available:
-                out_port += step
-
-        if out_port != port:
-            self.logger.warning(
-                f"Port {port} is not available. Using {out_port} instead."
-            )
-        return out_port
-
-    def _set_cluster_ports(self) -> None:
-        """
-        Update cluster configuration with available ports.
-
-        Checks for port availability and updates the ray_cluster_config
-        dictionary with the next available ports for all Ray services.
-        Also sets worker port ranges based on the client server port.
-        """
-        # Update ports to available ones
-        self.ray_cluster_config["head_node_port"] = self._find_available_port(
-            self.ray_cluster_config["head_node_port"], step=1
-        )
-        self.ray_cluster_config["node_manager_port"] = self._find_available_port(
-            self.ray_cluster_config["node_manager_port"], step=100
-        )
-        self.ray_cluster_config["object_manager_port"] = self._find_available_port(
-            self.ray_cluster_config["object_manager_port"], step=100
-        )
-        self.ray_cluster_config["redis_shard_port"] = self._find_available_port(
-            self.ray_cluster_config["redis_shard_port"], step=100
-        )
-        self.ray_cluster_config["serve_port"] = self._find_available_port(
-            self.ray_cluster_config["serve_port"], step=1
-        )
-        self.ray_cluster_config["dashboard_port"] = self._find_available_port(
-            self.ray_cluster_config["dashboard_port"], step=1
-        )
-        self.ray_cluster_config["client_server_port"] = self._find_available_port(
-            self.ray_cluster_config["client_server_port"], step=10000
-        )
-        self.ray_cluster_config["min_worker_port"] = (
-            self.ray_cluster_config["client_server_port"] + 1
-        )
-        self.ray_cluster_config["max_worker_port"] = (
-            self.ray_cluster_config["client_server_port"] + 9998
-        )
 
     def _acquire_lock(self, ray_temp_dir: Path) -> None:
         """
@@ -509,6 +452,54 @@ class RayCluster:
 
         self.logger.info(f"Successfully acquired lock: {self.lock_file}")
 
+    def _set_cluster_ports(self) -> None:
+        """
+        Update cluster configuration with available ports.
+
+        Checks for port availability and updates the ray_cluster_config
+        dictionary with the next available ports for all Ray services.
+        Also sets worker port ranges based on the client server port.
+        """
+
+        search_steps = {
+            "head_node": 1,
+            "node_manager": 100,
+            "object_manager": 100,
+            "redis_shard": 100,
+            "serve": 1,
+            "dashboard": 1,
+            "client_server": 10000,
+        }
+
+        # Find free ports for all services; keep sockets until all ports are found
+        sockets = []
+        for port_name, step in search_steps.items():
+            desired_port = self.ray_cluster_config["ports"][port_name]
+            free_port, s = acquire_free_port(
+                port=desired_port,
+                step=step,
+                ip=self.ray_cluster_config["head_node_address"],
+                keep_open=True,
+            )
+            sockets.append(s)
+
+            if free_port != desired_port:
+                self.logger.warning(
+                    f"Port {desired_port} is not available. Using {free_port} instead."
+                )
+            self.ray_cluster_config["ports"][port_name] = free_port
+
+        # After finding all ports, close the sockets
+        for s in sockets:
+            s.close()
+
+        self.ray_cluster_config["ports"]["min_worker"] = (
+            self.ray_cluster_config["ports"]["client_server"] + 1
+        )
+        self.ray_cluster_config["ports"]["max_worker"] = (
+            self.ray_cluster_config["ports"]["client_server"] + 9998
+        )
+
     def _update_symlink(self, ray_temp_dir: Path) -> None:
         """
         Update the 'session_latest' symlink to use a relative path.
@@ -551,15 +542,15 @@ class RayCluster:
         try:
             self.logger.info("Starting Ray cluster...")
 
-            # Check and set cluster ports
-            await asyncio.to_thread(self._set_cluster_ports)
-
             # Make sure the temporary directory exists (triggers better error message than Ray)
-            ray_temp_dir = Path(self.ray_cluster_config["ray_temp_dir"])
+            ray_temp_dir = self.ray_cluster_config["ray_temp_dir"]
             await asyncio.to_thread(ray_temp_dir.mkdir, parents=True, exist_ok=True)
 
             # Check if a Ray cluster is already running using this temporary directory
             self._acquire_lock(ray_temp_dir)
+
+            # Check and set cluster ports
+            await asyncio.to_thread(self._set_cluster_ports)
 
             # Start ray as the head node with the specified parameters
             args = [
@@ -568,15 +559,15 @@ class RayCluster:
                 f"--num-cpus={self.ray_cluster_config['head_num_cpus']}",
                 f"--num-gpus={self.ray_cluster_config['head_num_gpus']}",
                 f"--node-ip-address={self.ray_cluster_config['head_node_address']}",
-                f"--port={self.ray_cluster_config['head_node_port']}",
-                f"--node-manager-port={self.ray_cluster_config['node_manager_port']}",
-                f"--object-manager-port={self.ray_cluster_config['object_manager_port']}",
-                f"--redis-shard-ports={self.ray_cluster_config['redis_shard_port']}",
-                f"--ray-client-server-port={self.ray_cluster_config['client_server_port']}",
-                f"--min-worker-port={self.ray_cluster_config['min_worker_port']}",
-                f"--max-worker-port={self.ray_cluster_config['max_worker_port']}",
+                f"--port={self.ray_cluster_config['ports']['head_node']}",
+                f"--node-manager-port={self.ray_cluster_config['ports']['node_manager']}",
+                f"--object-manager-port={self.ray_cluster_config['ports']['object_manager']}",
+                f"--redis-shard-ports={self.ray_cluster_config['ports']['redis_shard']}",
+                f"--ray-client-server-port={self.ray_cluster_config['ports']['client_server']}",
+                f"--min-worker-port={self.ray_cluster_config['ports']['min_worker']}",
+                f"--max-worker-port={self.ray_cluster_config['ports']['max_worker']}",
                 "--include-dashboard=True",
-                f"--dashboard-port={self.ray_cluster_config['dashboard_port']}",
+                f"--dashboard-port={self.ray_cluster_config['ports']['dashboard']}",
                 f"--redis-password={self.ray_cluster_config['redis_password']}",
                 f"--temp-dir={ray_temp_dir}",
             ]
@@ -614,7 +605,7 @@ class RayCluster:
             )
 
             # Start Ray Serve
-            ray_address = f"{self.ray_cluster_config['head_node_address']}:{self.ray_cluster_config['head_node_port']}"
+            ray_address = f"{self.ray_cluster_config['head_node_address']}:{self.ray_cluster_config['ports']['head_node']}"
             args = [
                 "start",
                 "--address",
@@ -622,7 +613,7 @@ class RayCluster:
                 "--http-host",
                 "0.0.0.0",
                 "--http-port",
-                str(self.ray_cluster_config["serve_port"]),
+                str(self.ray_cluster_config["ports"]["serve"]),
             ]
             proc = await asyncio.create_subprocess_exec(
                 self.serve_exec_path,
@@ -646,7 +637,7 @@ class RayCluster:
             if self.mode == "slurm":
                 # Initialize SlurmWorkers
                 self.slurm_workers = SlurmWorkers(
-                    ray_cluster=self, **self.slurm_worker_config
+                    ray_cluster=self, **self.ray_cluster_config["slurm"]
                 )
 
             self.logger.info(f"Ray cluster with Ray Serve started on '{ray_address}'")
@@ -665,18 +656,18 @@ class RayCluster:
         head_node_address = str(self.ray_cluster_config["head_node_address"])
         if head_node_address.startswith("ray://"):
             # Choose client server port for remote head node
-            port = self.ray_cluster_config["client_server_port"]
+            port = self.ray_cluster_config["ports"]["client_server"]
         else:
             # Choose GCS server port for local head node
-            port = self.ray_cluster_config["head_node_port"]
-        self.head_node_address = f"{head_node_address}:{port}"
-        self.logger.info(f"Ray head node address: {self.head_node_address}")
+            port = self.ray_cluster_config["ports"]["head_node"]
+        self.address = f"{head_node_address}:{port}"
+        self.logger.info(f"Ray head node address: {self.address}")
 
     def _set_serve_http_url(self) -> None:
         """Set the Ray Serve HTTP API base URL based on the head node address and port."""
         address = self.ray_cluster_config["head_node_address"].split("://")[-1]
         self.serve_http_url = (
-            f"http://{address}:{self.ray_cluster_config['serve_port']}"
+            f"http://{address}:{self.ray_cluster_config['ports']['serve']}"
         )
         self.logger.info(f"Ray Serve HTTP URL: {self.serve_http_url}")
 
@@ -698,8 +689,12 @@ class RayCluster:
             # Connect to the Ray cluster
             context = await asyncio.to_thread(
                 ray.init,
-                address=self.head_node_address,
+                address=self.address,
                 logging_format=stream_logging_format,
+                # Upload bioengine package to GCS storage
+                runtime_env={
+                    "py_modules": [os.path.dirname(bioengine.__file__)],
+                },
             )
 
             # Create BioEngineProxy to access cluster state
@@ -718,7 +713,7 @@ class RayCluster:
             # Test the connection by getting the cluster state
             await self.proxy_actor_handle.get_cluster_state.remote()
             self.logger.info(
-                f"Connected to Ray cluster at '{self.head_node_address}' with Serve HTTP URL {self.serve_http_url}"
+                f"Connected to Ray cluster at '{self.address}' with Serve HTTP URL {self.serve_http_url}"
             )
 
             return context

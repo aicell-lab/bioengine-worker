@@ -30,7 +30,7 @@ By default, the BioEngine worker will start a local Ray cluster with the provide
 
 An overview of all tags for the BioEngine worker can be accessed via:
 ```bash
-docker run --rm ghcr.io/aicell-lab/bioengine-worker:latest python -m bioengine_worker --help
+docker run --rm ghcr.io/aicell-lab/bioengine-worker:latest python -m bioengine.worker --help
 ```
 
 To run as your own user, the variables `UID` and `GID` are required. If not set, `export` them before running docker compose with `export UID=$(id -u)` and `export GID=$(id -g)` or add them to your `.env` file.
@@ -69,7 +69,7 @@ The directory `.bioengine` will be automatically created in the current working 
 
 The default image `ghcr.io/aicell-lab/bioengine-worker` only has a minimal list of Python packages installed. All additional Python packages need to be installed via a separate pip runtime environment when executing python code on or deploying a model to the BioEngine worker.
 
-It is possible to start a BioEngine worker with a different base image, provided that `bioengine_worker` is installed. All installations will be available when executing python code on or deploying a model.
+It is possible to start a BioEngine worker with a different base image, provided that `bioengine` is installed. All installations will be available when executing python code on or deploying a model.
 
 Here are two examples of how this can be done, from a remote docker image:
 ```bash

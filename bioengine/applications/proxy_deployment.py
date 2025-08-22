@@ -16,7 +16,7 @@ from ray.serve import deployment, get_replica_context
 from ray.serve.handle import DeploymentHandle
 from starlette.requests import Request
 
-from bioengine_worker.utils import get_pip_requirements
+from bioengine.utils import get_pip_requirements
 
 
 @deployment(
@@ -160,6 +160,9 @@ class BioEngineProxyDeployment:
         self.workspace = workspace
         self.token = token
         self.client_id = f"{worker_client_id}-{self.replica_id}"
+
+        # Store entry deployment readiness
+        self.entry_deployment_ready = False
 
         # Service state
         self.server: RemoteService = None
@@ -352,7 +355,7 @@ class BioEngineProxyDeployment:
         """
         method_name = method_schema["name"]
 
-        async def deployment_function(*args, context, **kwargs) -> Any:
+        async def deployment_function(*args, context: Dict[str, Any], **kwargs) -> Any:
             async with self.service_semaphore:
                 request_id = str(uuid.uuid4())
                 try:
@@ -818,7 +821,7 @@ class BioEngineProxyDeployment:
 
         except Exception as e:
             print(
-                f"⚠️  [{self.replica_id}] Warning: Failed to register WebRTC service for '{self.application_id}': {e}"
+                f"⚠️ [{self.replica_id}] Warning: Failed to register WebRTC service for '{self.application_id}': {e}"
             )
             # Don't fail the entire deployment if WebRTC registration fails
 
@@ -848,7 +851,9 @@ class BioEngineProxyDeployment:
             RuntimeError: If any health check fails, indicating the deployment is unhealthy
         """
         # Wait for the entry deployment to be ready and healthy
-        await self.entry_deployment_handle.check_health.remote()
+        if not self.entry_deployment_ready:
+            await self.entry_deployment_handle.check_health.remote()
+            self.entry_deployment_ready = True
 
         # Register WebRTC service if not already done
         if not self.server or not self.websocket_service_id:
@@ -882,7 +887,6 @@ class BioEngineProxyDeployment:
 
 
 if __name__ == "__main__":
-    import os
 
     class MockMethod:
         def __init__(self, name: str):
@@ -899,7 +903,7 @@ if __name__ == "__main__":
             return MockMethod(name)
 
     # Example usage of BioEngineProxyDeployment
-    async def main():
+    async def test_proxy_deployment():
         rtc_deployment_class = BioEngineProxyDeployment.func_or_class
         entry_deployment_handle = MockHandle()
         method_schema = {
@@ -941,4 +945,4 @@ if __name__ == "__main__":
 
         print("Deployment is healthy and services are registered")
 
-    asyncio.run(main())
+    asyncio.run(test_proxy_deployment())

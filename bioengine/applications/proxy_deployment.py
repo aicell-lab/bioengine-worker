@@ -866,7 +866,22 @@ class BioEngineProxyDeployment:
             print(
                 f"❌ [{self.replica_id}] Hypha server connection failed for '{self.application_id}': {e}"
             )
+            # Reset server connection to trigger re-connection on next call
+            self.server = None
             raise RuntimeError("Hypha server connection failed")
+
+        # Check if the WebSocket service can be reached
+        try:
+            websocket_service = await self.server.get_service(self.websocket_service_id)
+            await websocket_service.get_load()
+            await websocket_service.get_num_pcs()
+        except Exception as e:
+            print(
+                f"❌ [{self.replica_id}] WebSocket service connection failed for '{self.application_id}': {e}"
+            )
+            # Reset service ID to trigger re-registration on next call
+            self.websocket_service_id = None
+            raise RuntimeError("WebSocket service connection failed")
 
         # All checks passed - deployment is healthy
 

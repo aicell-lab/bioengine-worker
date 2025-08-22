@@ -287,7 +287,6 @@ async def list_files(
 
     authorized_users = authorized_users_collection[dataset_name]
     if "*" not in authorized_users:
-        raise NotImplementedError("Server side authentication is not supported yet")
         user_info = await authentication_server.parse_token(token)
         check_permissions(
             context={"user": user_info},
@@ -318,7 +317,6 @@ async def get_presigned_url(
 
     authorized_users = authorized_users_collection[dataset_name]
     if "*" not in authorized_users:
-        raise NotImplementedError("Server side authentication is not supported yet")
         user_info = await authentication_server.parse_token(token)
         check_permissions(
             context={"user": user_info},

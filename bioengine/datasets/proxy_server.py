@@ -263,12 +263,15 @@ async def create_dataset_artifact(
 async def list_datasets(
     artifact_manager: ObjectProxy,
     collection_id: str,
-) -> List[str]:
+) -> Dict[str, dict]:
     """List all datasets in the artifact manager."""
     # No checks for user authentication for listing datasets
 
-    datasets = await artifact_manager.list(collection_id)
-    return [artifact.alias for artifact in datasets]
+    dataset_artifacts = await artifact_manager.list(collection_id)
+    return {
+        artifact.alias: await asyncio.to_thread(yaml.safe_load, artifact.manifest)
+        for artifact in dataset_artifacts
+    }
 
 
 async def list_files(

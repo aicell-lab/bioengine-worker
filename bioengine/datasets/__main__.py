@@ -90,7 +90,7 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         type=str,
         required=True,
         metavar="PATH",
-        help="Root directory for dataset storage and access by the dataset manager."
+        help="Root directory for dataset storage and access by the dataset manager.",
     )
     parser.add_argument(
         "--cache-dir",

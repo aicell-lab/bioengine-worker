@@ -12,6 +12,8 @@ entry point for BioEngine worker services in both development and production env
 
 Key Features:
 - Multi-environment deployment support (SLURM, single-machine, external clusters)
+- Automatic data server detection for scientific dataset access
+- HTTP-based dataset streaming for deployed applications
 - Comprehensive command-line argument parsing with validation
 - Graceful shutdown handling with signal management
 - Structured logging with file output and debug modes
@@ -28,10 +30,16 @@ Example Deployment:
     python -m bioengine.worker \\
         --mode slurm \\
         --admin_users admin@institution.edu researcher@institution.edu \\
-        --cache_dir /shared/bioengine/cache \\
+        --cache_dir /shared/bioengine/cache \\  # Will auto-detect data server here
         --max_workers 20 \\
         --default_num_gpus 2 \\
         --server_url https://hypha.aicell.io
+        
+    # To use with a dataset server (started separately)
+    # 1. Start a datasets server in one terminal:
+    #    python -m bioengine.datasets --data-dir /path/to/datasets --cache-dir /shared/bioengine/cache
+    # 2. Start the worker with the same cache directory to auto-detect the server:
+    #    python -m bioengine.worker --mode single-machine --cache-dir /shared/bioengine/cache
 
 Author: BioEngine Development Team
 License: MIT
@@ -107,6 +115,7 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         type=str,
         metavar="PATH",
         help="Directory for worker cache, temporary files, and Ray data storage. "
+        "Also used to detect running data servers for dataset access. "
         "Should be accessible across worker nodes in distributed deployments.",
     )
     core_group.add_argument(

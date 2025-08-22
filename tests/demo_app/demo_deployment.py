@@ -104,7 +104,7 @@ class DemoDeployment:
 
         # Test BioEngine datasets
         available_datasets = await self.bioengine_datasets.list_datasets()
-        print(f"Available datasets: {available_datasets}")
+        print(f"Available datasets: {list(available_datasets.keys())}")
 
         for dataset_name in available_datasets:
             dataset = await self.bioengine_datasets.get_dataset(dataset_name)

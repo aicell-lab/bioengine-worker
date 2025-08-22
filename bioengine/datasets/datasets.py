@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 import httpx
 import zarr
@@ -11,7 +11,7 @@ from bioengine.datasets.http_zarr_store import HttpZarrStore
 
 class BioEngineDatasets:
     """
-    Client interface for accessing distributed scientific datasets in BioEngine.
+    Client interface for accessing remote scientific datasets in BioEngine.
 
     This class provides a comprehensive client interface for accessing and streaming
     scientific datasets managed by the BioEngine Datasets service. It handles the
@@ -128,23 +128,23 @@ class BioEngineDatasets:
                 )
                 raise RuntimeError("Connection to data server failed")
 
-    async def list_datasets(self) -> List[str]:
+    async def list_datasets(self) -> Dict[str, dict]:
         """
-        Retrieve a list of available datasets from the service.
+        Retrieve a dictionary of available datasets from the service.
 
         Queries the dataset service for all datasets that are available to the current
         user. This is typically the first step in the dataset access workflow and
         provides the names needed for subsequent operations.
 
         Returns:
-            List of dataset names available to the current user. Empty list if
-            service_url is None.
+            Dictionary of dataset names and their manifest available to the current user.
+            Empty dictionary if service_url is None.
 
         Raises:
             httpx.HTTPStatusError: If the request fails due to HTTP error
         """
         if self.service_url is None:
-            return []
+            return {}
 
         start_time = asyncio.get_event_loop().time()
         response = await self.http_client.get(f"{self.service_url}/list_datasets")
@@ -230,7 +230,7 @@ class BioEngineDatasets:
         start_time = asyncio.get_event_loop().time()
 
         available_datasets = await self.list_datasets()
-        if dataset_name not in available_datasets:
+        if dataset_name not in available_datasets.keys():
             raise ValueError(f"Dataset '{dataset_name}' does not exist")
 
         available_files = await self.list_files(dataset_name=dataset_name, token=token)
@@ -282,7 +282,7 @@ if __name__ == "__main__":
 
         available_datasets = await bioengine_datasets.list_datasets()
 
-        dataset_name = available_datasets[0]
+        dataset_name = list(available_datasets.keys())[0]
 
         dataset = await bioengine_datasets.get_dataset(dataset_name)
         print(dataset)

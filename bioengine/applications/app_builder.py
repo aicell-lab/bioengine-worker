@@ -89,6 +89,12 @@ class AppBuilder:
         server: Hypha RPC server connection for authentication and artifact access
         artifact_manager: Service for downloading deployment code and manifests
         serve_http_url: Base URL where Ray Serve exposes HTTP endpoints
+
+    Parameter Conventions (API):
+        - application_kwargs: Dictionary of keyword arguments for each deployment class
+        - application_env_vars: Dictionary of environment variables for each deployment class
+        - hypha_token: Hypha authentication token for application deployments (set as env var 'HYPHA_TOKEN')
+            Used for authenticating to BioEngine datasets and Hypha APIs as the logged-in user.
     """
 
     def __init__(

@@ -27,74 +27,76 @@ class BioEngineWorker:
     SLURM job scheduling to single-machine deployments and external Ray clusters. It serves
     as the central orchestration layer for the BioEngine ecosystem.
 
-    Architecture Overview:
-    The worker orchestrates two primary component managers, each handling specialized
-    functionality while maintaining enterprise-grade security, monitoring, and lifecycle management:
+     Architecture Overview:
+     The worker orchestrates two primary component managers, each handling specialized
+     functionality while maintaining enterprise-grade security, monitoring, and lifecycle management:
 
-    • RayCluster: Manages distributed Ray cluster lifecycle including SLURM-based autoscaling,
-      resource allocation, and worker node management across HPC environments
-    • AppsManager: Handles AI model deployment lifecycle through Ray Serve, including artifact
-      management, deployment orchestration, and application scaling
+     • RayCluster: Manages distributed Ray cluster lifecycle including SLURM-based autoscaling,
+        resource allocation, and worker node management across HPC environments
+     • AppsManager: Handles AI model deployment lifecycle through Ray Serve, including artifact
+        management, deployment orchestration, and application scaling
 
-    For datasets, the worker connects to an external data server service via HTTP:
-    • Detects running data servers in the BioEngine cache directory
-    • Provides data server URL to deployed applications
-    • Each deployment uses BioEngineDatasets client to stream data via HTTPZarrStore
+     For datasets, the worker connects to an external data server service via HTTP:
+     • Detects running data servers in the BioEngine cache directory
+     • Provides data server URL to deployed applications
+     • Each deployment uses BioEngineDatasets client to stream data via HTTPZarrStore
+     • Each deployment receives a per-application Hypha authentication token (hypha_token) for secure dataset and API access
 
-    Core Capabilities:
-    - Multi-environment deployment support (SLURM HPC, single-machine, external clusters)
-    - Enterprise-grade security with two-level permission systems (admin + resource-specific)
-    - Hypha server integration for remote management and service discovery
-    - Automatic Ray cluster lifecycle management with intelligent autoscaling
-    - AI model deployment and serving through Ray Serve with health monitoring
-    - Automatic data server detection and connection for dataset access
-    - Integration with deployed applications for HTTP-based dataset streaming
-    - Python code execution in distributed Ray tasks with resource allocation
-    - Comprehensive monitoring, logging, and status reporting
-    - Graceful shutdown and resource cleanup with signal handling
+     Core Capabilities:
+     - Multi-environment deployment support (SLURM HPC, single-machine, external clusters)
+     - Enterprise-grade security with two-level permission systems (admin + resource-specific)
+     - Hypha server integration for remote management and service discovery
+     - Automatic Ray cluster lifecycle management with intelligent autoscaling
+     - AI model deployment and serving through Ray Serve with health monitoring
+     - Automatic data server detection and connection for dataset access
+     - Integration with deployed applications for HTTP-based dataset streaming
+     - Python code execution in distributed Ray tasks with resource allocation
+     - Comprehensive monitoring, logging, and status reporting
+     - Graceful shutdown and resource cleanup with signal handling
 
-    Security Architecture:
-    - Admin-level permissions for cluster and deployment management operations
-    - Resource-specific authorization for dataset access and model execution
-    - Context-aware permission checking with detailed audit logging
-    - Secure artifact management with version control and validation
-    - Isolated execution environments with resource limits and monitoring
+     Security Architecture:
+     - Admin-level permissions for cluster and deployment management operations
+     - Resource-specific authorization for dataset access and model execution
+     - Context-aware permission checking with detailed audit logging
+     - Secure artifact management with version control and validation
+     - Isolated execution environments with resource limits and monitoring
+     - Per-application Hypha authentication tokens (hypha_token) for secure dataset and API access
 
-    Deployment Modes:
-    1. **SLURM Mode**: Full HPC integration with automatic worker scheduling, resource allocation,
-       and cluster autoscaling based on computational demand
-    2. **Single-Machine Mode**: Local Ray cluster for development and small-scale deployments
-       with configurable resource limits
-    3. **External-Cluster Mode**: Connection to pre-existing Ray clusters with service registration
-       and management capabilities
+     Deployment Modes:
+     1. **SLURM Mode**: Full HPC integration with automatic worker scheduling, resource allocation,
+         and cluster autoscaling based on computational demand
+     2. **Single-Machine Mode**: Local Ray cluster for development and small-scale deployments
+         with configurable resource limits
+     3. **External-Cluster Mode**: Connection to pre-existing Ray clusters with service registration
+         and management capabilities
 
-    Integration Points:
-    - Hypha Server: Service registration, remote access, and workspace integration
-    - Ray Ecosystem: Distributed computing, model serving, and resource management
-    - SLURM: HPC job scheduling, resource allocation, and cluster management
-    - BioEngine Datasets: HTTP-based dataset streaming service with access control
-    - File Systems: Artifact storage, dataset discovery, and temporary file management
+     Integration Points:
+     - Hypha Server: Service registration, remote access, and workspace integration
+     - Ray Ecosystem: Distributed computing, model serving, and resource management
+     - SLURM: HPC job scheduling, resource allocation, and cluster management
+     - BioEngine Datasets: HTTP-based dataset streaming service with access control (hypha_token)
+     - File Systems: Artifact storage, dataset discovery, and temporary file management
 
-    Attributes:
-        admin_users (List[str]): List of user IDs/emails authorized for admin operations
-        cache_dir (Path): Directory for temporary files, Ray data, and worker state
-        dashboard_url (str): URL of the BioEngine dashboard for worker management
-        monitoring_interval_seconds (int): Interval for status monitoring and health checks
-        log_file (Optional[str]): Path to log file for structured logging output
-        graceful_shutdown_timeout (int): Timeout in seconds for graceful shutdown operations
-        server_url (str): URL of the Hypha server for service registration
-        workspace (str): Hypha workspace name for service isolation
-        client_id (str): Unique client identifier for Hypha connection
-        service_id (str): Service identifier for registration ("bioengine-worker")
-        full_service_id (str): Complete service ID including workspace and user context
-        ray_cluster (RayCluster): Ray cluster management component
-        apps_manager (AppsManager): Application deployment management component
-        data_server_url (Optional[str]): URL of the detected dataset server
-        data_service_url (Optional[str]): Full URL to the dataset service endpoint
-        data_server_workspace (str): Workspace name for dataset service
-        start_time (float): Timestamp when worker was started
-        is_ready (asyncio.Event): Event signaling worker initialization completion
-        logger (logging.Logger): Structured logger for worker operations
+     Attributes:
+          admin_users (List[str]): List of user IDs/emails authorized for admin operations
+          cache_dir (Path): Directory for temporary files, Ray data, and worker state
+          dashboard_url (str): URL of the BioEngine dashboard for worker management
+          monitoring_interval_seconds (int): Interval for status monitoring and health checks
+          log_file (Optional[str]): Path to log file for structured logging output
+          graceful_shutdown_timeout (int): Timeout in seconds for graceful shutdown operations
+          server_url (str): URL of the Hypha server for service registration
+          workspace (str): Hypha workspace name for service isolation
+          client_id (str): Unique client identifier for Hypha connection
+          service_id (str): Service identifier for registration ("bioengine-worker")
+          full_service_id (str): Complete service ID including workspace and user context
+          ray_cluster (RayCluster): Ray cluster management component
+          apps_manager (AppsManager): Application deployment management component
+          data_server_url (Optional[str]): URL of the detected dataset server
+          data_service_url (Optional[str]): Full URL to the dataset service endpoint
+          data_server_workspace (str): Workspace name for dataset service
+          start_time (float): Timestamp when worker was started
+          is_ready (asyncio.Event): Event signaling worker initialization completion
+          logger (logging.Logger): Structured logger for worker operations
 
     Example Usage:
         ```python

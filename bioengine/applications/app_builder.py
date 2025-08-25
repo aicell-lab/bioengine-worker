@@ -459,6 +459,7 @@ class AppBuilder:
                 data_server_url=data_server_url,
                 deployment_name=self.__class__.__name__,
                 data_server_workspace=data_server_workspace,
+                hypha_token=secret_env_vars.get("HYPHA_TOKEN"),
             )
 
             # Update secret environment variable with real value (previously set to "*****")

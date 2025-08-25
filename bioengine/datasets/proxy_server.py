@@ -42,6 +42,7 @@ from typing import Any, Dict, List, Optional, Union
 import uvicorn
 import yaml
 from hypha.server import create_application, get_argparser
+from hypha_rpc import connect_to_server
 from hypha_rpc.rpc import ObjectProxy, RemoteService
 
 from bioengine import __version__
@@ -60,6 +61,7 @@ MINIO_CONFIG = {
     "minio_user": str,
     "minio_password": str,
 }
+AUTHENTICATION_SERVER_URL: str
 
 
 def get_log_config(log_file: Optional[Path] = None) -> Dict[str, Any]:
@@ -260,6 +262,32 @@ async def create_dataset_artifact(
         return None, None
 
 
+async def parse_token(token: str, cached_user_info: Dict[str, dict]) -> Dict[str, str]:
+    global AUTHENTICATION_SERVER_URL
+
+    if token is not None:
+        if (
+            token in cached_user_info
+            and cached_user_info[token]["expires_at"] > time.time()
+        ):
+            user_info = cached_user_info[token]
+        else:
+
+            client = await connect_to_server(
+                {"server_url": AUTHENTICATION_SERVER_URL, "token": token}
+            )
+            user_info = client.config.user
+
+            cached_user_info[token] = user_info
+            if len(cached_user_info) > 1000:
+                # Limit cache size to 1000 entries
+                cached_user_info.pop(next(iter(cached_user_info)))
+    else:
+        user_info = {"id": "anonymous-user", "email": "no-email"}
+
+    return user_info
+
+
 async def list_datasets(
     artifact_manager: ObjectProxy,
     collection_id: str,
@@ -277,7 +305,7 @@ async def list_datasets(
 async def list_files(
     dataset_name: str,
     token: str,
-    authentication_server: RemoteService,
+    cached_user_info: Dict[str, dict],
     authorized_users_collection: Dict[str, List[str]],
     artifact_manager: ObjectProxy,
 ) -> List[str]:
@@ -285,14 +313,17 @@ async def list_files(
     if dataset_name not in authorized_users_collection:
         raise ValueError(f"Dataset '{dataset_name}' does not exist")
 
+    user_info = await parse_token(
+        token=token,
+        cached_user_info=cached_user_info,
+    )
+
     authorized_users = authorized_users_collection[dataset_name]
-    if "*" not in authorized_users:
-        user_info = await authentication_server.parse_token(token)
-        check_permissions(
-            context={"user": user_info},
-            authorized_users=authorized_users,
-            resource_name=f"list files in the dataset '{dataset_name}'",
-        )
+    check_permissions(
+        context={"user": user_info},
+        authorized_users=authorized_users,
+        resource_name=f"list files in the dataset '{dataset_name}'",
+    )
 
     files = await artifact_manager.list_files(f"public/{dataset_name}")
     return [
@@ -306,7 +337,7 @@ async def get_presigned_url(
     dataset_name: str,
     file_path: str,
     token: str,
-    authentication_server: RemoteService,
+    cached_user_info: Dict[str, dict],
     authorized_users_collection: Dict[str, List[str]],
     artifact_manager: ObjectProxy,
     logger: logging.Logger,
@@ -315,14 +346,19 @@ async def get_presigned_url(
     if dataset_name not in authorized_users_collection:
         raise ValueError(f"Dataset '{dataset_name}' does not exist")
 
+    user_info = await parse_token(
+        token=token,
+        cached_user_info=cached_user_info,
+    )
+    user_id = user_info["id"]
+    user_email = user_info["email"]
+
     authorized_users = authorized_users_collection[dataset_name]
-    if "*" not in authorized_users:
-        user_info = await authentication_server.parse_token(token)
-        check_permissions(
-            context={"user": user_info},
-            authorized_users=authorized_users,
-            resource_name=f"access '{file_path}' in the dataset '{dataset_name}'",
-        )
+    check_permissions(
+        context={"user": user_info},
+        authorized_users=authorized_users,
+        resource_name=f"access '{file_path}' in the dataset '{dataset_name}'",
+    )
 
     start_time = asyncio.get_event_loop().time()
     try:
@@ -331,11 +367,15 @@ async def get_presigned_url(
             file_path=file_path,
         )
         time_taken = asyncio.get_event_loop().time() - start_time
-        logger.info(f"Generated pre-signed URL in {time_taken:.2f} seconds")
+        logger.info(
+            f"Generated pre-signed URL for user '{user_id}' ({user_email}) in {time_taken:.2f} seconds"
+        )
         return url
     except Exception as e:
         time_taken = asyncio.get_event_loop().time() - start_time
-        logger.info(f"Failed to generate pre-signed URL after {time_taken:.2f} seconds")
+        logger.info(
+            f"Failed to generate pre-signed URL for user '{user_id}' ({user_email}) after {time_taken:.2f} seconds"
+        )
         raise e
 
 
@@ -391,10 +431,8 @@ async def create_bioengine_datasets(server: RemoteService):
 
         logger.info(f"Available datasets: {list(authorized_users_collection.keys())}")
 
-        # TODO: add server once server side authentication is implemented
-        authentication_server = None
-
         # Register service to hand out pre-signed urls
+        cached_user_info = {}
         service_info = await server.register_service(
             {
                 "id": "bioengine-datasets",
@@ -414,13 +452,13 @@ async def create_bioengine_datasets(server: RemoteService):
                 ),
                 "list_files": partial(
                     list_files,
-                    authentication_server=authentication_server,
+                    cached_user_info=cached_user_info,
                     authorized_users_collection=authorized_users_collection,
                     artifact_manager=artifact_manager,
                 ),
                 "get_presigned_url": partial(
                     get_presigned_url,
-                    authentication_server=authentication_server,
+                    cached_user_info=cached_user_info,
                     authorized_users_collection=authorized_users_collection,
                     artifact_manager=artifact_manager,
                     logger=logger,
@@ -440,6 +478,7 @@ def start_proxy_server(
     server_ip: Optional[str] = None,
     server_port: int = 9527,
     minio_port: int = 10000,
+    authentication_server_url: str = "https://hypha.aicell.io",
     log_file: Optional[Union[str, Path]] = None,
 ) -> None:
     """
@@ -481,6 +520,7 @@ def start_proxy_server(
     # Set paths
     global BIOENGINE_DATA_DIR
     global MINIO_CONFIG
+    global AUTHENTICATION_SERVER_URL
 
     BIOENGINE_DATA_DIR = Path(data_dir).resolve()
     bioengine_cache_dir = Path(bioengine_cache_dir).resolve()
@@ -491,6 +531,8 @@ def start_proxy_server(
     )
     minio_workdir = datasets_cache_dir / "s3"
     minio_config_dir = datasets_cache_dir / "config"
+
+    AUTHENTICATION_SERVER_URL = authentication_server_url
 
     # Initialize logging
     if log_file != "off":

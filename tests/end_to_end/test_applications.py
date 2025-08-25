@@ -278,7 +278,7 @@ async def test_startup_application(
       - display_name, description, artifact_id, version
       - start_time, status (RUNNING/HEALTHY/etc), message
       - deployments: Dict of deployment status and replica states
-      - resource allocation: application_resources, deployment_kwargs, gpu_enabled
+      - resource allocation: application_resources, application_kwargs, gpu_enabled
       - service_ids: WebSocket and WebRTC service endpoints
       - access control: authorized_users, last_updated_by
       - available_methods: List of exposed application methods
@@ -322,7 +322,7 @@ async def test_startup_application(
             "status",
             "message",
             "deployments",
-            "deployment_kwargs",
+            "application_kwargs",
             "gpu_enabled",
             "application_resources",
             "authorized_users",
@@ -359,8 +359,8 @@ async def test_startup_application(
             app_info["deployments"], dict
         ), f"deployments should be a dictionary for '{application_id}'"
         assert isinstance(
-            app_info["deployment_kwargs"], dict
-        ), f"deployment_kwargs should be a dictionary for '{application_id}'"
+            app_info["application_kwargs"], dict
+        ), f"application_kwargs should be a dictionary for '{application_id}'"
         assert isinstance(
             app_info["gpu_enabled"], bool
         ), f"gpu_enabled should be a boolean for '{application_id}'"
@@ -473,10 +473,10 @@ async def test_startup_application(
                 ), f"Resource value should be numeric or string in '{application_id}'"
 
         # Validate deployment kwargs structure
-        if app_info["deployment_kwargs"]:
+        if app_info["application_kwargs"]:
             assert isinstance(
-                app_info["deployment_kwargs"], dict
-            ), f"deployment_kwargs should be a dictionary for '{application_id}'"
+                app_info["application_kwargs"], dict
+            ), f"application_kwargs should be a dictionary for '{application_id}'"
 
         # Validate gpu_enabled field
         assert isinstance(
@@ -629,7 +629,7 @@ async def test_deploy_application_locally(
     composition_app_config = {
         "artifact_id": composition_artifact_id,
         "application_id": f"composition-app-{hyphen_test_id}",
-        "deployment_kwargs": {
+        "application_kwargs": {
             "CompositionDeployment": {"demo_input": "Hello World!"},
             "Deployment2": {"start_number": 10},
         },
@@ -758,7 +758,7 @@ async def test_deploy_application_from_artifact(
     composition_app_config = {
         "artifact_id": composition_artifact_id,
         "application_id": f"composition-app-{hyphen_test_id}",
-        "deployment_kwargs": {
+        "application_kwargs": {
             "CompositionDeployment": {"demo_input": "Hello World!"},
             "Deployment2": {"start_number": 10},
         },
@@ -1063,7 +1063,7 @@ async def test_call_composition_app_functions(
     # Deploy the composition-app with apps_manager.deploy_application from local path
     composition_app_config = {
         "artifact_id": f"{hypha_workspace}/composition_app",
-        "deployment_kwargs": {
+        "application_kwargs": {
             "CompositionDeployment": {"demo_input": "Test Hello World!"},
             "Deployment2": {"start_number": 100},
         },

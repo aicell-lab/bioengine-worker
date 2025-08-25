@@ -241,15 +241,17 @@ class BioEngineWorker:
 
         # Hypha server configuration
         self.server_url = server_url
+        self.server = None
         self.workspace = workspace
         self._token = token or os.environ.get("HYPHA_TOKEN")
+        self._token_expires_at = 0
         self.client_id = client_id
         self.service_id = "bioengine-worker"
 
         # Worker state management
         self.start_time = None
         self._last_monitoring = 0
-        self.server = None
+
         self.is_ready = asyncio.Event()
         self._shutdown_event = asyncio.Event()
         self._shutdown_event.set()
@@ -303,7 +305,6 @@ class BioEngineWorker:
             # Initialize component managers with enhanced configuration
             self.apps_manager = AppsManager(
                 ray_cluster=self.ray_cluster,
-                token=self._token,
                 apps_cache_dir=self.cache_dir / "apps",
                 data_server_url=self.data_server_url,
                 data_server_workspace="public",
@@ -451,15 +452,30 @@ class BioEngineWorker:
             }
         )
 
+        # Check if provided token has admin permission level to generate new tokens
+        try:
+            await self.server.generate_token()
+        except Exception as e:
+            if "Only admin can generate token" in str(e):
+                raise ValueError("Provided token does not have admin permissions.")
+            else:
+                raise e
+
+        # Update connection configuration from server response
+        if self.workspace and self.workspace != self.server.config.workspace:
+            raise ValueError(
+                f"Workspace mismatch: {self.workspace} (local) vs {self.server.config.workspace} (server)"
+            )
+        self.workspace = self.server.config.workspace
+        if self.client_id and self.client_id != self.server.config.client_id:
+            raise ValueError(
+                f"Client ID mismatch: {self.client_id} (local) vs {self.server.config.client_id} (server)"
+            )
+        self.client_id = self.server.config.client_id
+
         # Extract authenticated user information
         user_id = self.server.config.user["id"]
         user_email = self.server.config.user["email"]
-
-        # Update connection configuration from server response (if not set)
-        if self.workspace is None:
-            self.workspace = self.server.config.workspace
-        if self.client_id is None:
-            self.client_id = self.server.config.client_id
 
         self.logger.info(
             f"User '{user_id}' ({user_email}) connected as client "
@@ -499,6 +515,24 @@ class BioEngineWorker:
                 await self._register_bioengine_worker_service()
             else:
                 raise RuntimeError(f"Hypha server connection error: {e}")
+
+    async def _check_token_expiry(self) -> None:
+        if self._token_expires_at - time.time() < 3600:
+            # Renew token if it's about to expire
+            self.logger.info(
+                "Generating a new Hypha token with expiration time set to 3 hours."
+            )
+            self._token = await self.server.generate_token(
+                {
+                    "workspace": self.workspace,
+                    "client_id": self.client_id,
+                    "permission": "admin",
+                    "expires_in": 3600 * 3,
+                }
+            )
+
+            user_info = await self.server.parse_token(self._token)
+            self._token_expires_at = user_info.expires_at
 
     async def _register_bioengine_worker_service(self) -> None:
         # Register service interface
@@ -678,6 +712,9 @@ class BioEngineWorker:
                     # Check connection to Hypha server
                     await self._check_hypha_connection()
 
+                    # Check token expiry
+                    await self._check_token_expiry()
+
                     # Check connection to Ray cluster
                     await self.ray_cluster.check_connection()
 
@@ -781,7 +818,7 @@ class BioEngineWorker:
             # Start the Ray cluster
             await self.ray_cluster.start()
 
-            # Register the BioEngine worker service with the Hypha server
+            # Connect the BioEngine worker to the Hypha server
             await self._connect_to_server()
             await self._check_hypha_connection(reconnect=False)
 

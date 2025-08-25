@@ -272,11 +272,10 @@ async def parse_token(token: str, cached_user_info: Dict[str, dict]) -> Dict[str
         ):
             user_info = cached_user_info[token]
         else:
-
-            client = await connect_to_server(
+            async with connect_to_server(
                 {"server_url": AUTHENTICATION_SERVER_URL, "token": token}
-            )
-            user_info = client.config.user
+            ) as user_client:
+                user_info = user_client.config.user
 
             cached_user_info[token] = user_info
             if len(cached_user_info) > 1000:

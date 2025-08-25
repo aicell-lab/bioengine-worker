@@ -68,12 +68,17 @@ class AppsManager:
         logger: Logger instance for deployment operations
         _deployed_applications (Dict): Internal tracking of active deployments with task references
         _deployment_lock (asyncio.Lock): Ensures single deployment operation at a time
+
+    Parameter Conventions (API):
+        - application_kwargs: Dictionary of keyword arguments for each deployment class
+        - application_env_vars: Dictionary of environment variables for each deployment class
+        - hypha_token: Hypha authentication token for application deployments (set as env var 'HYPHA_TOKEN')
+            Used for authenticating to BioEngine datasets and Hypha APIs as the logged-in user.
     """
 
     def __init__(
         self,
         ray_cluster: RayCluster,
-        token: str,
         apps_cache_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine/apps",
         data_server_url: Optional[str] = None,
         data_server_workspace: str = "public",
@@ -96,7 +101,6 @@ class AppsManager:
 
         Args:
             ray_cluster: Ray cluster manager instance for compute resource management
-            token: Authentication token for Hypha server access
             apps_cache_dir: Directory for caching application artifacts and build files
             data_server_url: URL for the data server
             data_server_workspace: Workspace on the data server (default: "public")
@@ -132,7 +136,6 @@ class AppsManager:
             )
 
         self.app_builder = AppBuilder(
-            token=token,
             apps_cache_dir=apps_cache_dir,
             data_server_url=data_server_url,
             data_server_workspace=data_server_workspace,
@@ -356,12 +359,13 @@ class AppsManager:
                 application_id=application_id,
                 artifact_id=artifact_id,
                 version=version,
-                deployment_kwargs=self._deployed_applications[application_id][
-                    "deployment_kwargs"
+                application_kwargs=self._deployed_applications[application_id][
+                    "application_kwargs"
                 ],
-                deployment_env_vars=self._deployed_applications[application_id][
-                    "deployment_env_vars"
+                application_env_vars=self._deployed_applications[application_id][
+                    "application_env_vars"
                 ],
+                hypha_token=self._deployed_applications[application_id]["hypha_token"],
                 disable_gpu=self._deployed_applications[application_id]["disable_gpu"],
                 max_ongoing_requests=self._deployed_applications[application_id][
                     "max_ongoing_requests"
@@ -375,16 +379,13 @@ class AppsManager:
             )
 
             # Run the deployment in Ray Serve with unique route prefix
-            deployment_coroutine = asyncio.to_thread(
+            await asyncio.to_thread(
                 serve.run,
                 target=app,
                 name=application_id,
                 route_prefix=f"/{application_id}",
                 blocking=False,
             )
-
-            # Await the coroutine to start the deployment
-            app_handle = await deployment_coroutine
 
             # Update application metadata in the internal state
             self._deployed_applications[application_id]["display_name"] = app.metadata[
@@ -488,6 +489,13 @@ class AppsManager:
             Exception: If server connection fails, artifact manager is unavailable,
                       or startup application deployment fails
         """
+        if not server or not isinstance(server, RemoteService):
+            raise ValueError("Invalid server connection provided.")
+        if not isinstance(admin_users, list) or not all(
+            isinstance(user, str) for user in admin_users
+        ):
+            raise ValueError("Invalid admin_users list provided.")
+
         # Store server connection and list of admin users
         self.server = server
         self.admin_users = admin_users
@@ -513,7 +521,7 @@ class AppsManager:
         )
 
         # Initialize the AppBuilder with the server and artifact manager
-        await self.app_builder.initialize(
+        self.app_builder.complete_initialization(
             server=self.server,
             artifact_manager=self.artifact_manager,
             serve_http_url=self.ray_cluster.serve_http_url,
@@ -524,6 +532,20 @@ class AppsManager:
             self.logger.info(
                 f"Deploying {len(self.startup_applications)} startup application(s)..."
             )
+
+            # Pass the worker owner's token to the startup applications (if not already set)
+            startup_applications_token = await self.server.generate_token(
+                {
+                    "workspace": self.server.config.workspace,
+                    "permission": "read_write",
+                    "expires_in": 3600 * 24 * 30,  # support application for 30 days
+                }
+            )
+            for app_config in self.startup_applications:
+                if "hypha_token" not in app_config:
+                    app_config["hypha_token"] = startup_applications_token
+
+            # Deploy the startup applications
             admin_context = create_context(admin_users[0])
             application_ids = await self.deploy_applications(
                 app_configs=self.startup_applications,
@@ -665,8 +687,8 @@ class AppsManager:
                 "message": message,
                 "deployments": deployments,
                 "consecutive_failures": application_info["consecutive_failures"],
-                "deployment_kwargs": application_info["deployment_kwargs"],
-                "deployment_env_vars": application_info["deployment_env_vars"],
+                "application_kwargs": application_info["application_kwargs"],
+                "application_env_vars": application_info["application_env_vars"],
                 "gpu_enabled": application_info["disable_gpu"],
                 "application_resources": application_info["application_resources"],
                 "authorized_users": application_info["authorized_users"],
@@ -1004,13 +1026,17 @@ class AppsManager:
             None,
             description="Unique identifier for this deployment instance. If not provided, a random unique ID will be automatically generated. Use this to manage multiple deployments of the same artifact.",
         ),
-        deployment_kwargs: Optional[Dict[str, Dict[str, Any]]] = Field(
+        application_kwargs: Optional[Dict[str, Dict[str, Any]]] = Field(
             None,
             description="Advanced deployment configuration parameters. Dictionary where keys are deployment class names and values are dictionaries of keyword arguments to pass to those classes during initialization.",
         ),
-        deployment_env_vars: Optional[Dict[str, Dict[str, str]]] = Field(
+        application_env_vars: Optional[Dict[str, Dict[str, str]]] = Field(
             None,
-            description="Environment variables to set for the deployment. Dictionary where keys are deployment class names and values are dictionaries of environment variable names and their values.",
+            description="Environment variables to set for each deployment. Dictionary where keys are deployment class names and values are dictionaries of environment variable names and their values.",
+        ),
+        hypha_token: str = Field(
+            None,
+            description="Hypha connection token for authentication. The token will be set as environment variable 'HYPHA_TOKEN' in the application deployments. An already existing environment variable named 'HYPHA_TOKEN' will not be overwritten. The token is used to authenticate to BioEngine datasets and enables Hypha API calls as logged in user.",
         ),
         disable_gpu: bool = Field(
             False,
@@ -1081,66 +1107,78 @@ class AppsManager:
             if not application_id:
                 application_id = await self._generate_application_id()
 
-            # Validate deployment_kwargs
-            if deployment_kwargs is not None:
-                if not isinstance(deployment_kwargs, dict):
+            # Validate application_kwargs
+            if application_kwargs is not None:
+                if not isinstance(application_kwargs, dict):
                     raise ValueError(
-                        "deployment_kwargs must be a dictionary of keyword arguments."
+                        "application_kwargs must be a dictionary of keyword arguments."
                     )
                 # Ensure all values are dictionaries
-                for key, value in deployment_kwargs.items():
+                for key, value in application_kwargs.items():
                     if not isinstance(value, dict):
                         raise ValueError(
-                            f"Value for '{key}' in deployment_kwargs must be a dictionary."
+                            f"Value for '{key}' in application_kwargs must be a dictionary."
                         )
 
                 kwargs_str = ", ".join(
                     f"{deployment_class}("
                     + ", ".join(
-                        [f"{key}={value!r}" for key, value in init_kwargs.items()]
+                        [f"{key}={value!r}" for key, value in deployment_kwargs.items()]
                     )
                     + ")"
-                    for deployment_class, init_kwargs in deployment_kwargs.items()
+                    for deployment_class, deployment_kwargs in application_kwargs.items()
                 )
             else:
-                deployment_kwargs = {}
+                application_kwargs = {}
                 kwargs_str = "None"
 
-            # Validate deployment_env_vars
-            if deployment_env_vars is not None:
-                if not isinstance(deployment_env_vars, dict):
+            if application_env_vars is not None:
+                # Validate application_env_vars
+                if not isinstance(application_env_vars, dict):
                     raise ValueError(
-                        "deployment_env_vars must be a dictionary of environment variables."
+                        "application_env_vars must be a dictionary of environment variables."
                     )
-                # Ensure all values are dictionaries
-                for key, value in deployment_env_vars.items():
+                for key, value in application_env_vars.items():
                     if not isinstance(value, dict):
                         raise ValueError(
-                            f"Value for '{key}' in deployment_env_vars must be a dictionary."
+                            f"Value for '{key}' in application_env_vars must be a dictionary."
                         )
 
+                # Construct the environment variables string, hide secret env vars starting with underscore as *****
                 env_vars_str = ", ".join(
-                    f"{deployment_class}("
-                    + ", ".join([f"{key}={value!r}" for key, value in env_vars.items()])
-                    + ")"
-                    for deployment_class, env_vars in deployment_env_vars.items()
+                    f"{deployment_class}: "
+                    + " ".join(
+                        [
+                            f"{key}={value!r}"
+                            for key, value in env_vars.items()
+                            if not key.startswith("_")
+                        ]
+                    )
+                    + " ".join(
+                        [
+                            f'{key}="*****"'
+                            for key in env_vars.keys()
+                            if key.startswith("_")
+                        ]
+                    )
+                    for deployment_class, env_vars in application_env_vars.items()
                 )
             else:
-                deployment_env_vars = {}
+                application_env_vars = {}
                 env_vars_str = "None"
 
             if application_id not in self._deployed_applications:
                 # Create a new application if application_id is not provided
                 self.logger.info(
                     f"User '{user_id}' is deploying new application '{application_id}' from artifact '{artifact_id}', "
-                    f"version '{version}'. kwargs: {kwargs_str}; env_vars: {env_vars_str}"
+                    f"version '{version}'; kwargs: {kwargs_str}; env_vars: {env_vars_str}"
                 )
             else:
                 # If already deployed, cancel the existing deployment task to update deployment in a new task
                 application_info = self._deployed_applications[application_id]
                 self.logger.info(
-                    f"User '{user_id}' is updating existing application from artifact '{artifact_id}', version '{version}'. "
-                    f"kwargs: {kwargs_str}; env_vars: {env_vars_str}"
+                    f"User '{user_id}' is updating existing application '{application_id}' from artifact '{artifact_id}', "
+                    f"version '{version}'; kwargs: {kwargs_str}; env_vars: {env_vars_str}"
                 )
                 application_info["remove_on_exit"] = False
                 application_info["deployment_task"].cancel()
@@ -1160,8 +1198,9 @@ class AppsManager:
                 "description": "",
                 "artifact_id": artifact_id,
                 "version": version,
-                "deployment_kwargs": deployment_kwargs,
-                "deployment_env_vars": deployment_env_vars,
+                "application_kwargs": application_kwargs,
+                "application_env_vars": application_env_vars,
+                "hypha_token": hypha_token,
                 "disable_gpu": disable_gpu,
                 "max_ongoing_requests": max_ongoing_requests,
                 "application_resources": {},
@@ -1192,7 +1231,7 @@ class AppsManager:
             ...,
             description=(
                 "List of application deployment configurations. Each configuration must be a dictionary containing "
-                "'artifact_id' (required) and optionally 'version', 'application_id', 'deployment_kwargs', 'deployment_env_vars', "
+                "'artifact_id' (required) and optionally 'version', 'application_id', 'application_kwargs', 'application_env_vars', 'hypha_token', "
                 "'disable_gpu', and 'max_ongoing_requests'. Allows batch deployment of multiple applications with different settings."
             ),
         ),
@@ -1213,8 +1252,8 @@ class AppsManager:
         - artifact_id (required): The application artifact to deploy
         - version (optional): Specific version to deploy
         - application_id (optional): Custom deployment ID
-        - deployment_kwargs (optional): Keyword arguments for deployment class(es)
-        - deployment_env_vars (optional): Environment variables for deployment class(es)
+        - application_kwargs (optional): Keyword arguments for deployment class(es)
+        - application_env_vars (optional): Environment variables for deployment class(es)
         - disable_gpu (optional): Force CPU-only deployment
         - max_ongoing_requests (optional): Concurrency limit
 
@@ -1229,7 +1268,7 @@ class AppsManager:
             },
             {
                 "artifact_id": "my-workspace/image-analysis",
-                "deployment_kwargs": {"ModelDeployment": {"batch_size": 16}}
+                "application_kwargs": {"ModelDeployment": {"batch_size": 16}}
             }
         ]
         ```
@@ -1258,8 +1297,9 @@ class AppsManager:
                 artifact_id=app_config["artifact_id"],
                 version=app_config.get("version"),
                 application_id=app_config.get("application_id"),
-                deployment_kwargs=app_config.get("deployment_kwargs"),
-                deployment_env_vars=app_config.get("deployment_env_vars"),
+                application_kwargs=app_config.get("application_kwargs"),
+                application_env_vars=app_config.get("application_env_vars"),
+                hypha_token=app_config.get("hypha_token"),
                 disable_gpu=app_config.get("disable_gpu", False),
                 max_ongoing_requests=app_config.get("max_ongoing_requests", 10),
                 context=context,

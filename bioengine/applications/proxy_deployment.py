@@ -87,7 +87,7 @@ class BioEngineProxyDeployment:
         max_ongoing_requests: int,
         server_url: str,
         workspace: str,
-        token: str,
+        proxy_service_token: str,
         worker_client_id: str,
         authorized_users: List[str],
         serve_http_url: str,
@@ -121,7 +121,7 @@ class BioEngineProxyDeployment:
             workspace: Hypha workspace identifier for service organization. Can be None
                       for default workspace. Used for multi-tenancy.
 
-            token: Authentication token for Hypha server access. Required for service
+            proxy_service_token: Authentication token for Hypha server access. Required for service
                   registration with appropriate permissions.
 
             worker_client_id: Client ID of the worker that created this deployment.
@@ -158,7 +158,7 @@ class BioEngineProxyDeployment:
         # Hypha server connection parameters
         self.server_url = server_url
         self.workspace = workspace
-        self.token = token
+        self.proxy_service_token = proxy_service_token
         self.client_id = f"{worker_client_id}-{self.replica_id}"
 
         # Store entry deployment readiness
@@ -689,7 +689,7 @@ class BioEngineProxyDeployment:
             self.server = await connect_to_server(
                 {
                     "server_url": self.server_url,
-                    "token": self.token,
+                    "token": self.proxy_service_token,
                     "workspace": self.workspace,
                     "client_id": self.client_id,
                 }
@@ -935,7 +935,7 @@ if __name__ == "__main__":
             method_schemas=[method_schema],
             server_url=server_url,
             workspace=workspace,
-            token=token,
+            proxy_service_token=token,
             worker_client_id=worker_client_id,
             authorized_users=["*"],
             serve_http_url="not_used_in_mock",

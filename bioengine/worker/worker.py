@@ -27,74 +27,76 @@ class BioEngineWorker:
     SLURM job scheduling to single-machine deployments and external Ray clusters. It serves
     as the central orchestration layer for the BioEngine ecosystem.
 
-    Architecture Overview:
-    The worker orchestrates two primary component managers, each handling specialized
-    functionality while maintaining enterprise-grade security, monitoring, and lifecycle management:
+     Architecture Overview:
+     The worker orchestrates two primary component managers, each handling specialized
+     functionality while maintaining enterprise-grade security, monitoring, and lifecycle management:
 
-    • RayCluster: Manages distributed Ray cluster lifecycle including SLURM-based autoscaling,
-      resource allocation, and worker node management across HPC environments
-    • AppsManager: Handles AI model deployment lifecycle through Ray Serve, including artifact
-      management, deployment orchestration, and application scaling
+     • RayCluster: Manages distributed Ray cluster lifecycle including SLURM-based autoscaling,
+        resource allocation, and worker node management across HPC environments
+     • AppsManager: Handles AI model deployment lifecycle through Ray Serve, including artifact
+        management, deployment orchestration, and application scaling
 
-    For datasets, the worker connects to an external data server service via HTTP:
-    • Detects running data servers in the BioEngine cache directory
-    • Provides data server URL to deployed applications
-    • Each deployment uses BioEngineDatasets client to stream data via HTTPZarrStore
+     For datasets, the worker connects to an external data server service via HTTP:
+     • Detects running data servers in the BioEngine cache directory
+     • Provides data server URL to deployed applications
+     • Each deployment uses BioEngineDatasets client to stream data via HTTPZarrStore
+     • Each deployment receives a per-application Hypha authentication token (hypha_token) for secure dataset and API access
 
-    Core Capabilities:
-    - Multi-environment deployment support (SLURM HPC, single-machine, external clusters)
-    - Enterprise-grade security with two-level permission systems (admin + resource-specific)
-    - Hypha server integration for remote management and service discovery
-    - Automatic Ray cluster lifecycle management with intelligent autoscaling
-    - AI model deployment and serving through Ray Serve with health monitoring
-    - Automatic data server detection and connection for dataset access
-    - Integration with deployed applications for HTTP-based dataset streaming
-    - Python code execution in distributed Ray tasks with resource allocation
-    - Comprehensive monitoring, logging, and status reporting
-    - Graceful shutdown and resource cleanup with signal handling
+     Core Capabilities:
+     - Multi-environment deployment support (SLURM HPC, single-machine, external clusters)
+     - Enterprise-grade security with two-level permission systems (admin + resource-specific)
+     - Hypha server integration for remote management and service discovery
+     - Automatic Ray cluster lifecycle management with intelligent autoscaling
+     - AI model deployment and serving through Ray Serve with health monitoring
+     - Automatic data server detection and connection for dataset access
+     - Integration with deployed applications for HTTP-based dataset streaming
+     - Python code execution in distributed Ray tasks with resource allocation
+     - Comprehensive monitoring, logging, and status reporting
+     - Graceful shutdown and resource cleanup with signal handling
 
-    Security Architecture:
-    - Admin-level permissions for cluster and deployment management operations
-    - Resource-specific authorization for dataset access and model execution
-    - Context-aware permission checking with detailed audit logging
-    - Secure artifact management with version control and validation
-    - Isolated execution environments with resource limits and monitoring
+     Security Architecture:
+     - Admin-level permissions for cluster and deployment management operations
+     - Resource-specific authorization for dataset access and model execution
+     - Context-aware permission checking with detailed audit logging
+     - Secure artifact management with version control and validation
+     - Isolated execution environments with resource limits and monitoring
+     - Per-application Hypha authentication tokens (hypha_token) for secure dataset and API access
 
-    Deployment Modes:
-    1. **SLURM Mode**: Full HPC integration with automatic worker scheduling, resource allocation,
-       and cluster autoscaling based on computational demand
-    2. **Single-Machine Mode**: Local Ray cluster for development and small-scale deployments
-       with configurable resource limits
-    3. **External-Cluster Mode**: Connection to pre-existing Ray clusters with service registration
-       and management capabilities
+     Deployment Modes:
+     1. **SLURM Mode**: Full HPC integration with automatic worker scheduling, resource allocation,
+         and cluster autoscaling based on computational demand
+     2. **Single-Machine Mode**: Local Ray cluster for development and small-scale deployments
+         with configurable resource limits
+     3. **External-Cluster Mode**: Connection to pre-existing Ray clusters with service registration
+         and management capabilities
 
-    Integration Points:
-    - Hypha Server: Service registration, remote access, and workspace integration
-    - Ray Ecosystem: Distributed computing, model serving, and resource management
-    - SLURM: HPC job scheduling, resource allocation, and cluster management
-    - BioEngine Datasets: HTTP-based dataset streaming service with access control
-    - File Systems: Artifact storage, dataset discovery, and temporary file management
+     Integration Points:
+     - Hypha Server: Service registration, remote access, and workspace integration
+     - Ray Ecosystem: Distributed computing, model serving, and resource management
+     - SLURM: HPC job scheduling, resource allocation, and cluster management
+     - BioEngine Datasets: HTTP-based dataset streaming service with access control (hypha_token)
+     - File Systems: Artifact storage, dataset discovery, and temporary file management
 
-    Attributes:
-        admin_users (List[str]): List of user IDs/emails authorized for admin operations
-        cache_dir (Path): Directory for temporary files, Ray data, and worker state
-        dashboard_url (str): URL of the BioEngine dashboard for worker management
-        monitoring_interval_seconds (int): Interval for status monitoring and health checks
-        log_file (Optional[str]): Path to log file for structured logging output
-        graceful_shutdown_timeout (int): Timeout in seconds for graceful shutdown operations
-        server_url (str): URL of the Hypha server for service registration
-        workspace (str): Hypha workspace name for service isolation
-        client_id (str): Unique client identifier for Hypha connection
-        service_id (str): Service identifier for registration ("bioengine-worker")
-        full_service_id (str): Complete service ID including workspace and user context
-        ray_cluster (RayCluster): Ray cluster management component
-        apps_manager (AppsManager): Application deployment management component
-        data_server_url (Optional[str]): URL of the detected dataset server
-        data_service_url (Optional[str]): Full URL to the dataset service endpoint
-        data_server_workspace (str): Workspace name for dataset service
-        start_time (float): Timestamp when worker was started
-        is_ready (asyncio.Event): Event signaling worker initialization completion
-        logger (logging.Logger): Structured logger for worker operations
+     Attributes:
+          admin_users (List[str]): List of user IDs/emails authorized for admin operations
+          cache_dir (Path): Directory for temporary files, Ray data, and worker state
+          dashboard_url (str): URL of the BioEngine dashboard for worker management
+          monitoring_interval_seconds (int): Interval for status monitoring and health checks
+          log_file (Optional[str]): Path to log file for structured logging output
+          graceful_shutdown_timeout (int): Timeout in seconds for graceful shutdown operations
+          server_url (str): URL of the Hypha server for service registration
+          workspace (str): Hypha workspace name for service isolation
+          client_id (str): Unique client identifier for Hypha connection
+          service_id (str): Service identifier for registration ("bioengine-worker")
+          full_service_id (str): Complete service ID including workspace and user context
+          ray_cluster (RayCluster): Ray cluster management component
+          apps_manager (AppsManager): Application deployment management component
+          data_server_url (Optional[str]): URL of the detected dataset server
+          data_service_url (Optional[str]): Full URL to the dataset service endpoint
+          data_server_workspace (str): Workspace name for dataset service
+          start_time (float): Timestamp when worker was started
+          is_ready (asyncio.Event): Event signaling worker initialization completion
+          logger (logging.Logger): Structured logger for worker operations
 
     Example Usage:
         ```python
@@ -241,15 +243,17 @@ class BioEngineWorker:
 
         # Hypha server configuration
         self.server_url = server_url
+        self.server = None
         self.workspace = workspace
         self._token = token or os.environ.get("HYPHA_TOKEN")
+        self._token_expires_at = 0
         self.client_id = client_id
         self.service_id = "bioengine-worker"
 
         # Worker state management
         self.start_time = None
         self._last_monitoring = 0
-        self.server = None
+
         self.is_ready = asyncio.Event()
         self._shutdown_event = asyncio.Event()
         self._shutdown_event.set()
@@ -303,7 +307,6 @@ class BioEngineWorker:
             # Initialize component managers with enhanced configuration
             self.apps_manager = AppsManager(
                 ray_cluster=self.ray_cluster,
-                token=self._token,
                 apps_cache_dir=self.cache_dir / "apps",
                 data_server_url=self.data_server_url,
                 data_server_workspace="public",
@@ -451,15 +454,30 @@ class BioEngineWorker:
             }
         )
 
+        # Check if provided token has admin permission level to generate new tokens
+        try:
+            await self.server.generate_token()
+        except Exception as e:
+            if "Only admin can generate token" in str(e):
+                raise ValueError("Provided token does not have admin permissions.")
+            else:
+                raise e
+
+        # Update connection configuration from server response
+        if self.workspace and self.workspace != self.server.config.workspace:
+            raise ValueError(
+                f"Workspace mismatch: {self.workspace} (local) vs {self.server.config.workspace} (server)"
+            )
+        self.workspace = self.server.config.workspace
+        if self.client_id and self.client_id != self.server.config.client_id:
+            raise ValueError(
+                f"Client ID mismatch: {self.client_id} (local) vs {self.server.config.client_id} (server)"
+            )
+        self.client_id = self.server.config.client_id
+
         # Extract authenticated user information
         user_id = self.server.config.user["id"]
         user_email = self.server.config.user["email"]
-
-        # Update connection configuration from server response (if not set)
-        if self.workspace is None:
-            self.workspace = self.server.config.workspace
-        if self.client_id is None:
-            self.client_id = self.server.config.client_id
 
         self.logger.info(
             f"User '{user_id}' ({user_email}) connected as client "
@@ -499,6 +517,24 @@ class BioEngineWorker:
                 await self._register_bioengine_worker_service()
             else:
                 raise RuntimeError(f"Hypha server connection error: {e}")
+
+    async def _check_token_expiry(self) -> None:
+        if self._token_expires_at - time.time() < 3600:
+            # Renew token if it's about to expire
+            self.logger.info(
+                "Generating a new Hypha token with expiration time set to 3 hours."
+            )
+            self._token = await self.server.generate_token(
+                {
+                    "workspace": self.workspace,
+                    "client_id": self.client_id,
+                    "permission": "admin",
+                    "expires_in": 3600 * 3,
+                }
+            )
+
+            user_info = await self.server.parse_token(self._token)
+            self._token_expires_at = user_info.expires_at
 
     async def _register_bioengine_worker_service(self) -> None:
         # Register service interface
@@ -678,6 +714,9 @@ class BioEngineWorker:
                     # Check connection to Hypha server
                     await self._check_hypha_connection()
 
+                    # Check token expiry
+                    await self._check_token_expiry()
+
                     # Check connection to Ray cluster
                     await self.ray_cluster.check_connection()
 
@@ -781,7 +820,7 @@ class BioEngineWorker:
             # Start the Ray cluster
             await self.ray_cluster.start()
 
-            # Register the BioEngine worker service with the Hypha server
+            # Connect the BioEngine worker to the Hypha server
             await self._connect_to_server()
             await self._check_hypha_connection(reconnect=False)
 

@@ -62,6 +62,7 @@ class BioEngineDatasets:
         data_server_url: Union[str, None],  # set to None for no data server
         deployment_name: str,
         data_server_workspace: str = "public",
+        hypha_token: Optional[str] = None,
     ):
         """
         Initialize the BioEngineDatasets client for dataset access.
@@ -76,6 +77,7 @@ class BioEngineDatasets:
                            used for access logging and monitoring
             data_server_workspace: Hypha workspace name containing the datasets service,
                                  defaults to "public" for shared datasets
+            hypha_token: Optional default authentication token for accessing protected datasets
 
         Note:
             When data_server_url is None, only local dataset access will be available.
@@ -105,6 +107,7 @@ class BioEngineDatasets:
             self.service_url = None
 
         self.deployment_name = deployment_name
+        self.default_token = hypha_token
 
     async def ping_data_server(self):
         """
@@ -183,6 +186,7 @@ class BioEngineDatasets:
             raise ValueError(f"Dataset '{dataset_name}' does not exist")
 
         start_time = asyncio.get_event_loop().time()
+        token = token or self.default_token
         query_url = (
             f"{self.service_url}/list_files?dataset_name={dataset_name}&token={token}"
         )
@@ -228,6 +232,7 @@ class BioEngineDatasets:
             RuntimeError: If connection to data server fails
         """
         start_time = asyncio.get_event_loop().time()
+        token = token or self.default_token
 
         available_datasets = await self.list_datasets()
         if dataset_name not in available_datasets.keys():
@@ -262,6 +267,7 @@ class BioEngineDatasets:
 
 
 if __name__ == "__main__":
+    import os
     from pathlib import Path
 
     from anndata.experimental import read_lazy
@@ -277,6 +283,7 @@ if __name__ == "__main__":
             data_server_url=data_server_url,
             deployment_name="test-deployment",
             data_server_workspace="public",
+            hypha_token=os.environ["HYPHA_TOKEN"],
         )
         await bioengine_datasets.ping_data_server()
 

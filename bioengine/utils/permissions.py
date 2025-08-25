@@ -99,6 +99,6 @@ def check_permissions(
 
     # Access denied - provide detailed error message
     raise PermissionError(
-        f"User '{user_id or 'no id'}' ({user_email or 'no email'}) is not authorized for {resource_name}. "
+        f"User '{user_id or 'no id'}' ({user_email or 'no-email'}) is not authorized for {resource_name}. "
         f"Authorized users: {authorized_users}"
     )

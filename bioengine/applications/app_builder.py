@@ -89,11 +89,16 @@ class AppBuilder:
         server: Hypha RPC server connection for authentication and artifact access
         artifact_manager: Service for downloading deployment code and manifests
         serve_http_url: Base URL where Ray Serve exposes HTTP endpoints
+
+    Parameter Conventions (API):
+        - application_kwargs: Dictionary of keyword arguments for each deployment class
+        - application_env_vars: Dictionary of environment variables for each deployment class
+        - hypha_token: Hypha authentication token for application deployments (set as env var 'HYPHA_TOKEN')
+            Used for authenticating to BioEngine datasets and Hypha APIs as the logged-in user.
     """
 
     def __init__(
         self,
-        token: str,
         apps_cache_dir: Union[str, Path],
         data_server_url: Optional[str] = None,
         data_server_workspace: str = "public",
@@ -114,7 +119,6 @@ class AppBuilder:
         • log_file: Redirects output to file instead of console (useful for production)
 
         Args:
-            token: Hypha authentication token (get from environment or web interface)
             apps_cache_dir: Directory for storing downloaded code and temporary files
             data_server_url: URL for the data server (None = no data server)
             data_server_workspace: Workspace on the data server (default: "public")
@@ -124,7 +128,6 @@ class AppBuilder:
         Example:
             ```python
             builder = AppBuilder(
-                token=os.environ["HYPHA_TOKEN"],
                 apps_cache_dir=f"{os.environ['HOME']}/apps",
                 data_server_url="http://127.0.0.1:9527",
                 data_server_workspace="public",
@@ -140,7 +143,6 @@ class AppBuilder:
         )
 
         # Store parameters
-        self._token = token
         self.apps_cache_dir = Path(apps_cache_dir)
         self.data_server_url = data_server_url
         self.data_server_workspace = data_server_workspace
@@ -149,7 +151,7 @@ class AppBuilder:
         self.artifact_manager: Optional[ObjectProxy] = None
         self.serve_http_url: Optional[str] = None
 
-    async def initialize(
+    def complete_initialization(
         self,
         server: RemoteService,
         artifact_manager: ObjectProxy,
@@ -167,41 +169,23 @@ class AppBuilder:
         • artifact_manager: Service that stores and retrieves deployment code
         • serve_http_url: Where Ray Serve will expose your deployed applications
 
-        Validation:
-        This method validates that all provided services are properly connected and
-        accessible before storing them for use in application building.
-
         Args:
             server: Live connection to Hypha server (from connect_to_server())
             artifact_manager: Proxy to artifact management service (from server.get_service())
             serve_http_url: Base URL where applications will be accessible via HTTP
 
-        Raises:
-            ValueError: If any service is None, wrong type, or not properly connected
-
         Example:
             ```python
             server = await connect_to_server({"server_url": url, "token": token})
-            artifact_mgr = await server.get_service("public/artifact-manager")
+            artifact_manager = await server.get_service("public/artifact-manager")
 
-            builder.initialize(
+            builder.complete_initialization(
                 server=server,
-                artifact_manager=artifact_mgr,
+                artifact_manager=artifact_manager,
                 serve_http_url="http://localhost:8000"
             )
             ```
         """
-        # Store server connection and artifact manager
-        if not server or not isinstance(server, RemoteService):
-            raise ValueError("Invalid server connection provided.")
-        if not artifact_manager or not isinstance(artifact_manager, ObjectProxy):
-            raise ValueError("Invalid artifact manager provided.")
-        if (
-            not serve_http_url
-            or not isinstance(serve_http_url, str)
-            or not serve_http_url.startswith("http")
-        ):
-            raise ValueError("Invalid serve HTTP URL provided.")
         self.server = server
         self.artifact_manager = artifact_manager
         self.serve_http_url = serve_http_url
@@ -305,8 +289,8 @@ class AppBuilder:
         deployment: serve.Deployment,
         application_id: str,
         disable_gpu: bool,
-        custom_env_vars: Dict[str, str],
-        token: str,
+        non_secret_env_vars: Dict[str, str],
+        secret_env_vars: Dict[str, str],
         max_ongoing_requests: int,
     ) -> serve.Deployment:
         """
@@ -360,20 +344,6 @@ class AppBuilder:
         py_modules = runtime_env.setdefault("py_modules", [])
         env_vars = runtime_env.setdefault("env_vars", {})
 
-        # Add custom environment variables
-        env_vars.update(custom_env_vars)
-
-        # Validate environment variables
-        for key, value in env_vars.items():
-            if not isinstance(key, str):
-                raise ValueError(
-                    f"Environment variable key '{key}' must be a string, got '{type(key)}'."
-                )
-            if not isinstance(value, str):
-                raise ValueError(
-                    f"Environment variable '{key}' must be a string, got '{type(value)}'."
-                )
-
         # Update with BioEngine requirements
         pip_requirements = update_requirements(pip_requirements)
         runtime_env["pip"] = pip_requirements
@@ -385,14 +355,30 @@ class AppBuilder:
         py_modules.append(bioengine_remote_uri)
         runtime_env["py_modules"] = py_modules
 
-        # Set BioEngine environment variables
+        # Add user defined environment variables
+        env_vars.update(non_secret_env_vars)
+        # Secret env vars overwrite non-secret env vars
+        hidden_secret_env_vars = {key: "*****" for key in secret_env_vars.keys()}
+        env_vars.update(hidden_secret_env_vars)
+
+        # Add BioEngine environment variables
         app_work_dir = self.apps_cache_dir / application_id
         env_vars["HOME"] = str(app_work_dir)
         env_vars["TMPDIR"] = str(app_work_dir / "tmp")
 
         env_vars["HYPHA_SERVER_URL"] = self.server.config.public_base_url
         env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
-        env_vars["HYPHA_TOKEN"] = token
+
+        # Validate all environment variables
+        for key, value in env_vars.items():
+            if not isinstance(key, str):
+                raise ValueError(
+                    f"Environment variable key '{key}' must be a string, got '{type(key)}'."
+                )
+            if not isinstance(value, str):
+                raise ValueError(
+                    f"Environment variable '{key}' must be a string, got '{type(value)}'."
+                )
 
         runtime_env["env_vars"] = env_vars
 
@@ -404,7 +390,9 @@ class AppBuilder:
         )
         return updated_deployment
 
-    def _update_init(self, deployment: serve.Deployment) -> serve.Deployment:
+    def _update_init(
+        self, deployment: serve.Deployment, secret_env_vars: Dict[str, str]
+    ) -> serve.Deployment:
         """
         Wrap the deployment's __init__ method to set up the BioEngine execution environment.
 
@@ -477,7 +465,12 @@ class AppBuilder:
                 data_server_url=data_server_url,
                 deployment_name=self.__class__.__name__,
                 data_server_workspace=data_server_workspace,
+                hypha_token=secret_env_vars.get("HYPHA_TOKEN"),
             )
+
+            # Update secret environment variable with real value (previously set to "*****")
+            for env_var, value in secret_env_vars.items():
+                os.environ[env_var] = value
 
             # Call the original __init__ method
             orig_init(self, *args, **kwargs)
@@ -868,7 +861,6 @@ class AppBuilder:
         class_name: str,
         disable_gpu: bool,
         env_vars: Dict[str, str],
-        token: str,
         max_ongoing_requests: int,
     ) -> serve.Deployment:
         """
@@ -903,8 +895,7 @@ class AppBuilder:
             python_file: Which file to load (format: "filename.py")
             class_name: Which class to load (format: "ClassName")
             disable_gpu: Force CPU-only execution regardless of class defaults
-            env_vars: Environment variables to set for the deployment
-            token: Authentication token for Hypha server access
+            env_vars: Environment variables to set for the deployment, secret env vars start with "_"
             max_ongoing_requests: Request concurrency limit for this deployment
 
         Returns:
@@ -963,10 +954,18 @@ class AppBuilder:
                 )
                 raise e
 
+        # Split environment variables into secret and non-secret
+        # Secret env vars start with "_" and are hidden in the logs and ray actor config
+        # Remove prepended "_" from secret env var names
+        non_secret_env_vars = {
+            k: v for k, v in env_vars.items() if not k.startswith("_")
+        }
+        secret_env_vars = {k[1:]: v for k, v in env_vars.items() if k.startswith("_")}
+
         # Create a restricted globals dictionary for sandboxed execution - pass some deployment options
         try:
             # Execute the code in a sandboxed environment
-            safe_globals = env_vars.copy()
+            safe_globals = non_secret_env_vars | secret_env_vars  # merged all env vars
             exec(code_content, safe_globals)
             if class_name not in safe_globals:
                 raise ValueError(f"{class_name} not found in {artifact_id}")
@@ -979,13 +978,13 @@ class AppBuilder:
                 deployment=deployment,
                 application_id=application_id,
                 disable_gpu=disable_gpu,
-                custom_env_vars=env_vars,
-                token=token,
+                non_secret_env_vars=non_secret_env_vars,
+                secret_env_vars=secret_env_vars,
                 max_ongoing_requests=max_ongoing_requests,
             )
 
             # Update the deployment class methods
-            deployment = self._update_init(deployment)
+            deployment = self._update_init(deployment, secret_env_vars)
             deployment = self._update_async_init(deployment)
             deployment = self._update_test_deployment(deployment)
             deployment = self._update_health_check(deployment)
@@ -1058,8 +1057,9 @@ class AppBuilder:
         application_id: str,
         artifact_id: str,
         version: str,
-        deployment_kwargs: Dict[str, Dict[str, Any]],
-        deployment_env_vars: Dict[str, Dict[str, Any]],
+        application_kwargs: Dict[str, Dict[str, Any]],
+        application_env_vars: Dict[str, Dict[str, Any]],
+        hypha_token: Optional[str],
         disable_gpu: bool,
         max_ongoing_requests: int,
     ) -> serve.Application:
@@ -1100,8 +1100,8 @@ class AppBuilder:
             application_id: Unique identifier for this deployment instance
             artifact_id: Location of deployment code (format: "workspace/app-name")
             version: Specific artifact version to deploy
-            deployment_kwargs: Initialization parameters for each deployment class
-            deployment_env_vars: Environment variables for each deployment class
+            application_kwargs: Initialization parameters for each deployment class
+            application_env_vars: Environment variables for each deployment class
             disable_gpu: Force CPU-only execution regardless of deployment defaults
             max_ongoing_requests: Request concurrency limit for the entire application
 
@@ -1123,10 +1123,10 @@ class AppBuilder:
                 application_id="my-classifier-v1",
                 artifact_id="my-workspace/image-classifier",
                 version="1.2.0",
-                deployment_kwargs={
+                application_kwargs={
                     "ImageClassifier": {"model_path": "/data/models/resnet50.pt"}
                 },
-                deployment_env_vars={
+                application_env_vars={
                     "ImageClassifier": {"BATCH_SIZE": "32"}
                 },
                 disable_gpu=False,
@@ -1159,8 +1159,8 @@ class AppBuilder:
                 "Expected a non-empty list of deployment import paths."
             )
 
-        deployment_kwargs = deployment_kwargs or {}
-        deployment_env_vars = deployment_env_vars or {}
+        application_kwargs = application_kwargs or {}
+        application_env_vars = application_env_vars or {}
 
         deployments = []
         for import_path in deployment_import_paths:
@@ -1173,6 +1173,11 @@ class AppBuilder:
                     "Expected format is 'filename:ClassName' (without .py extension)."
                 )
 
+            # Add user provided Hypha token as secret environment variable
+            deployment_env_vars = application_env_vars.get(class_name, {})
+            if hypha_token is not None:
+                deployment_env_vars["_HYPHA_TOKEN"] = hypha_token
+
             deployment = await self._load_deployment(
                 application_id=application_id,
                 artifact_id=artifact_id,
@@ -1180,16 +1185,15 @@ class AppBuilder:
                 python_file=python_file,
                 class_name=class_name,
                 disable_gpu=disable_gpu,
-                env_vars=deployment_env_vars.get(class_name, {}),
-                token=self._token,
+                env_vars=deployment_env_vars,
                 max_ongoing_requests=max_ongoing_requests,
             )
             deployments.append(deployment)
 
         # Calculate the total number of required resources
-        rtc_proxy_deployment = BioEngineProxyDeployment
+        proxy_deployment = BioEngineProxyDeployment
         required_resources = self._calculate_required_resources(
-            deployments + [rtc_proxy_deployment]
+            deployments + [proxy_deployment]
         )
 
         # Get all schema_methods from the entry deployment class
@@ -1207,7 +1211,7 @@ class AppBuilder:
             )
 
         # Get kwargs for the entry deployment
-        entry_deployment_kwargs = deployment_kwargs.get(class_name, {}).copy()
+        entry_deployment_kwargs = application_kwargs.get(class_name, {}).copy()
         entry_init_params = self._get_init_param_info(entry_deployment)
         self._check_params(entry_init_params, entry_deployment_kwargs)
 
@@ -1241,15 +1245,26 @@ class AppBuilder:
                     )
 
                 init_params = self._get_init_param_info(deployment)
-                kwargs = deployment_kwargs.get(class_name, {})
-                self._check_params(init_params, kwargs)
-                entry_deployment_kwargs[parameter_name] = deployment.bind(**kwargs)
+                deployment_kwargs = application_kwargs.get(class_name, {})
+                self._check_params(init_params, deployment_kwargs)
+                entry_deployment_kwargs[parameter_name] = deployment.bind(
+                    **deployment_kwargs
+                )
 
         # Create the entry deployment handle
         entry_deployment_handle = entry_deployment.bind(**entry_deployment_kwargs)
 
+        # Generate a token to register the application service
+        proxy_service_token = await self.server.generate_token(
+            {
+                "workspace": self.server.config.workspace,
+                "permission": "read_write",
+                "expires_in": 3600 * 24 * 30,  # support application for 30 days
+            }
+        )
+
         # Create the application
-        app = rtc_proxy_deployment.bind(
+        app = proxy_deployment.bind(
             application_id=application_id,
             application_name=manifest["name"],
             application_description=manifest["description"],
@@ -1258,8 +1273,8 @@ class AppBuilder:
             max_ongoing_requests=max_ongoing_requests,
             server_url=self.server.config.public_base_url,
             workspace=self.server.config.workspace,
-            token=self._token,
             worker_client_id=self.server.config.client_id,
+            proxy_service_token=proxy_service_token,
             authorized_users=manifest["authorized_users"],
             serve_http_url=self.serve_http_url,
         )
@@ -1316,7 +1331,7 @@ if __name__ == "__main__":
                 "num_gpus": 0,
                 "memory": 1024 * 1024 * 1024,  # 1 GB
             },
-            deployment_kwargs={
+            application_kwargs={
                 "CompositionDeployment": {"demo_input": "Hello World!"},
                 "Deployment2": {"start_number": 10},
             },

@@ -291,6 +291,7 @@ class AppBuilder:
         disable_gpu: bool,
         non_secret_env_vars: Dict[str, str],
         secret_env_vars: Dict[str, str],
+        artifact_id: str,
         max_ongoing_requests: int,
     ) -> serve.Deployment:
         """
@@ -320,8 +321,9 @@ class AppBuilder:
             deployment: Base Ray deployment to enhance with BioEngine capabilities
             application_id: Unique ID for creating isolated workspace directory
             disable_gpu: Set to True to force CPU-only execution
-            custom_env_vars: Environment variables to set for the deployment
-            token: Hypha authentication token for server access
+            non_secret_env_vars: Environment variables to set directly
+            secret_env_vars: Environment variables with sensitive values (set to "*****" in config)
+            artifact_id: Artifact identifier like "my-workspace/my-app" added as env var 'HYPHA_ARTIFACT_ID'
             max_ongoing_requests: How many requests can run simultaneously
 
         Returns:
@@ -368,6 +370,7 @@ class AppBuilder:
 
         env_vars["HYPHA_SERVER_URL"] = self.server.config.public_base_url
         env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
+        env_vars["HYPHA_ARTIFACT_ID"] = artifact_id
 
         # Validate all environment variables
         for key, value in env_vars.items():
@@ -531,7 +534,6 @@ class AppBuilder:
                 if inspect.iscoroutinefunction(orig_async_init):
                     await orig_async_init(self)
                 else:
-                    # If it's a regular function, call it directly
                     await asyncio.to_thread(orig_async_init, self)
 
                 elapsed_time = time.time() - start_time
@@ -604,7 +606,6 @@ class AppBuilder:
                 if inspect.iscoroutinefunction(orig_test_deployment):
                     await orig_test_deployment(self)
                 else:
-                    # If it's a regular function, call it directly
                     await asyncio.to_thread(orig_test_deployment, self)
 
                 # Mark the deployment as tested
@@ -682,7 +683,6 @@ class AppBuilder:
                     if inspect.iscoroutinefunction(orig_health_check):
                         await orig_health_check(self)
                     else:
-                        # If it's a regular function, call it directly
                         await asyncio.to_thread(orig_health_check, self)
 
                 except Exception as e:
@@ -980,6 +980,7 @@ class AppBuilder:
                 disable_gpu=disable_gpu,
                 non_secret_env_vars=non_secret_env_vars,
                 secret_env_vars=secret_env_vars,
+                artifact_id=artifact_id,
                 max_ongoing_requests=max_ongoing_requests,
             )
 

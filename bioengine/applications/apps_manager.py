@@ -149,6 +149,7 @@ class AppsManager:
         self.server = None
         self.artifact_manager = None
         self.admin_users = None
+        self.worker_service_id = None
         self.startup_applications = startup_applications
         self._deployment_lock = asyncio.Lock()
         self._deployed_applications = {}
@@ -465,7 +466,9 @@ class AppsManager:
                     f"Undeployment of application '{application_id}' completed."
                 )
 
-    async def initialize(self, server: RemoteService, admin_users: List[str]) -> None:
+    async def initialize(
+        self, server: RemoteService, admin_users: List[str], worker_service_id: str
+    ) -> None:
         """
         Initialize the deployment manager with Hypha server connections and admin permissions.
 
@@ -484,6 +487,7 @@ class AppsManager:
             server: Active Hypha server connection instance with proper authentication
             admin_users: List of user IDs or email addresses with administrative permissions
                         for managing applications and deployments
+            worker_service_id: BioEngine worker service ID
 
         Raises:
             Exception: If server connection fails, artifact manager is unavailable,
@@ -524,6 +528,7 @@ class AppsManager:
         self.app_builder.complete_initialization(
             server=self.server,
             artifact_manager=self.artifact_manager,
+            worker_service_id=worker_service_id,
             serve_http_url=self.ray_cluster.serve_http_url,
         )
 

@@ -1,8 +1,8 @@
-from typing import Dict, Union, List, Optional
+from typing import Any, Dict, Union, List, Optional
 
 
 def create_context(
-    user_id: str = None, user_email: str = None
+    user_id: Optional[str] = None, user_email: Optional[str] = None
 ) -> Dict[str, Dict[str, str]]:
     """
     Create a context dictionary for user authentication and authorization.
@@ -28,7 +28,7 @@ def create_context(
 
 
 def check_permissions(
-    context: Optional[Dict[str, any]],
+    context: Optional[Dict[str, Any]],
     authorized_users: Union[List[str], str, None],
     resource_name: str,
 ) -> None:

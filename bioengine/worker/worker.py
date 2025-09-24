@@ -475,6 +475,8 @@ class BioEngineWorker:
             )
         self.client_id = self.server.config.client_id
 
+        self.full_service_id = f"{self.workspace}/{self.client_id}:{self.service_id}"
+
         # Extract authenticated user information
         user_id = self.server.config.user["id"]
         user_email = self.server.config.user["email"]
@@ -497,7 +499,9 @@ class BioEngineWorker:
 
         # Pass server connection and admin users to component managers
         await self.apps_manager.initialize(
-            server=self.server, admin_users=self.admin_users
+            server=self.server,
+            admin_users=self.admin_users,
+            worker_service_id=self.full_service_id,
         )
         await self.code_executor.initialize(admin_users=self.admin_users)
 
@@ -547,6 +551,7 @@ class BioEngineWorker:
             description += " in a pre-existing Ray environment."
 
         worker_services = {
+            "test_access": self.test_access,
             "get_status": self.get_status,
             "update_datasets": self.update_datasets,
             "execute_python_code": self.code_executor.execute_python_code,
@@ -573,7 +578,11 @@ class BioEngineWorker:
                 **worker_services,
             }
         )
-        self.full_service_id = service_info.id
+
+        if self.full_service_id != service_info.id:
+            raise ValueError(
+                f"Service ID mismatch: {self.full_service_id} (expected) vs {service_info.id} (registered)"
+            )
 
         mcp_service = await self.server.register_service(
             {
@@ -888,6 +897,25 @@ class BioEngineWorker:
             self.logger.info(
                 f"Updated available datasets from data server: {list(self.available_datasets.keys())}"
             )
+
+    @schema_method
+    async def test_access(
+        self,
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
+    ) -> bool:
+        """Test whether a user is in the admin users list."""
+        try:
+            check_permissions(
+                context=context,
+                authorized_users=self.admin_users,
+                resource_name="accessing BioEngine Worker",
+            )
+            return True
+        except PermissionError:
+            return False
 
     @schema_method
     async def get_status(

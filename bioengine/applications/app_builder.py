@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, TypedDict, Union
 
 import httpx
 import yaml
+from hypha_rpc import connect_to_server
 from hypha_rpc.rpc import RemoteService
 from hypha_rpc.utils import ObjectProxy
 from ray import serve
@@ -149,12 +150,14 @@ class AppBuilder:
         self.bioengine_package_alias = "bioengine-package"
         self.server: Optional[RemoteService] = None
         self.artifact_manager: Optional[ObjectProxy] = None
+        self.worker_service_id: Optional[str] = None
         self.serve_http_url: Optional[str] = None
 
     def complete_initialization(
         self,
         server: RemoteService,
         artifact_manager: ObjectProxy,
+        worker_service_id: str,
         serve_http_url: str,
     ) -> None:
         """
@@ -172,6 +175,7 @@ class AppBuilder:
         Args:
             server: Live connection to Hypha server (from connect_to_server())
             artifact_manager: Proxy to artifact management service (from server.get_service())
+            worker_service_id: BioEngine worker service ID
             serve_http_url: Base URL where applications will be accessible via HTTP
 
         Example:
@@ -182,12 +186,14 @@ class AppBuilder:
             builder.complete_initialization(
                 server=server,
                 artifact_manager=artifact_manager,
+                worker_service_id="my-workspace/bioengine-worker",
                 serve_http_url="http://localhost:8000"
             )
             ```
         """
         self.server = server
         self.artifact_manager = artifact_manager
+        self.worker_service_id = worker_service_id
         self.serve_http_url = serve_http_url
 
     async def _load_manifest(
@@ -322,7 +328,7 @@ class AppBuilder:
             application_id: Unique ID for creating isolated workspace directory
             disable_gpu: Set to True to force CPU-only execution
             non_secret_env_vars: Environment variables to set directly
-            secret_env_vars: Environment variables with sensitive values (set to "*****" in config)
+            secret_env_vars: Environment variables with sensitive values
             artifact_id: Artifact identifier like "my-workspace/my-app" added as env var 'HYPHA_ARTIFACT_ID'
             max_ongoing_requests: How many requests can run simultaneously
 
@@ -371,6 +377,8 @@ class AppBuilder:
         env_vars["HYPHA_SERVER_URL"] = self.server.config.public_base_url
         env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace
         env_vars["HYPHA_ARTIFACT_ID"] = artifact_id
+
+        env_vars["BIOENGINE_WORKER_SERVICE_ID"] = self.worker_service_id
 
         # Validate all environment variables
         for key, value in env_vars.items():
@@ -470,6 +478,11 @@ class AppBuilder:
                 data_server_workspace=data_server_workspace,
                 hypha_token=secret_env_vars.get("HYPHA_TOKEN"),
             )
+
+            # Initialize a BioEngine worker service
+            self.bioengine_worker_service = None
+            # By default, assume the token can be used to access the BioEngine worker service
+            self._hypha_token_is_admin_user = True
 
             # Update secret environment variable with real value (previously set to "*****")
             for env_var, value in secret_env_vars.items():
@@ -674,6 +687,71 @@ class AppBuilder:
                 # Ensure deployment testing has completed
                 if not self._deployment_tested:
                     await self.test_deployment()
+
+                worker_service_id = os.getenv("BIOENGINE_WORKER_SERVICE_ID")
+                if (
+                    self._hypha_token_is_admin_user
+                    and self.bioengine_worker_service is None
+                ):
+
+                    # Try to (re)connect to the worker service
+                    try:
+                        client = None
+                        client = await connect_to_server(
+                            {
+                                "server_url": os.getenv("HYPHA_SERVER_URL"),
+                                "token": os.getenv("HYPHA_TOKEN"),
+                            }
+                        )
+                        self.bioengine_worker_service = await client.get_service(
+                            worker_service_id
+                        )
+                        print(
+                            f"✅ [{self.replica_id}] Successfully connected to BioEngine "
+                            f"worker service with ID '{worker_service_id}'."
+                        )
+
+                    except Exception as e:
+                        if client is not None:
+                            try:
+                                await client.disconnect()
+                            except:
+                                pass
+
+                        self.bioengine_worker_service = None
+                        if "Service not found:" in str(e):
+                            # The service is not (yet) available
+                            print(
+                                f"⚠️ [{self.replica_id}] BioEngine worker service with ID "
+                                f"'{worker_service_id}' is currently not available."
+                            )
+                        else:
+                            print(
+                                f"❌ [{self.replica_id}] Connection to BioEngine worker service failed: {e}"
+                            )
+                            raise e
+
+                # Try to access the BioEngine worker service
+                if self.bioengine_worker_service is not None:
+                    try:
+                        is_admin = await self.bioengine_worker_service.test_access()
+                        self._hypha_token_is_admin_user = is_admin
+
+                        if not is_admin:
+                            print(
+                                f"⚠️ [{self.replica_id}] Application token is not authorized "
+                                f"to access the BioEngine worker service with ID '{worker_service_id}'."
+                            )
+                            # If the token cannot access the BioEngine worker service, reset the service connection (and don't try to reconnect again)
+                            self.bioengine_worker_service = None
+
+                    except Exception as e:
+                        print(
+                            f"❌ [{self.replica_id}] BioEngine worker service failed: {e}"
+                        )
+                        # Reset service connection to trigger re-connection on next call
+                        self.bioengine_worker_service = None
+                        raise RuntimeError("BioEngine worker service connection failed")
 
                 try:
                     # Ensure data server can be reached

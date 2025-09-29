@@ -691,7 +691,7 @@ class RayCluster:
                 ray.init,
                 address=self.address,
                 logging_format=stream_logging_format,
-                # Upload bioengine package to GCS storage
+                # Upload bioengine package to GCS storage (does not install dependencies)
                 runtime_env={
                     "py_modules": [os.path.dirname(bioengine.__file__)],
                 },

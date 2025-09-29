@@ -59,7 +59,7 @@ class HttpZarrStore(Store):
     supports_partial_writes: bool = False
     supports_listing: bool = False
 
-    def __init__(self, service_url: str, dataset_name: str, token: str):
+    def __init__(self, service_url: str, dataset_name: str, file_path: str, token: str):
         """
         Initialize the HTTP-based Zarr store for remote dataset access.
 
@@ -74,8 +74,12 @@ class HttpZarrStore(Store):
         super().__init__(read_only=True)
         self.service_url = service_url.rstrip("/")
         self.dataset_name = dataset_name
+        self.file_path = file_path[1:] if file_path.startswith("/") else file_path
         self.token = token
         self.http_client = httpx.AsyncClient(timeout=120)  # seconds
+
+        if not self.file_path.endswith(".zarr"):
+            raise ValueError("file_path must end with .zarr")
 
     async def _get_presigned_url(self, key: str) -> str | None:
         """
@@ -96,7 +100,7 @@ class HttpZarrStore(Store):
         """
         query_url = (
             f"{self.service_url}/get_presigned_url?dataset_name={self.dataset_name}&"
-            f"file_path={key}&token={self.token}"
+            f"file_path={self.file_path}/{key}&token={self.token}"
         )
         response = await self.http_client.get(query_url)
         if response.status_code == 400 and "FileNotFoundError" in response.text:

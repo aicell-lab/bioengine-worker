@@ -47,7 +47,7 @@ class BioEngineDatasets:
     Dataset Access Workflow:
     The class implements a list → access → close pattern for dataset interaction,
     where datasets are first discovered through listing, then accessed through
-    the get_dataset method which returns a Zarr group, and finally connections
+    the open_file method which returns a Zarr group, and finally connections
     are managed automatically.
 
     Attributes:
@@ -200,11 +200,11 @@ class BioEngineDatasets:
 
         return files
 
-    async def get_dataset(
-        self, dataset_name: str, file: Optional[str] = None, token: Optional[str] = None
-    ) -> zarr.Group:
+    async def open_file(
+        self, dataset_name: str, file_name: Optional[str] = None, token: Optional[str] = None
+    ) -> HttpZarrStore:
         """
-        Access a dataset as a Zarr group for efficient data operations.
+        Access a remote data file as a streamable Zarr store for efficient data operations.
 
         This is the primary method for accessing dataset content, providing access to
         the data through Zarr's efficient partial data access mechanisms. The method
@@ -215,17 +215,16 @@ class BioEngineDatasets:
         1. Validates dataset existence through list_datasets
         2. Checks file availability through list_files
         3. Auto-selects the file if only one is available
-        4. Creates an HttpZarrStore for efficient streaming access
-        5. Opens and returns a Zarr group for data operations
+        4. Creates and returns an HttpZarrStore for efficient streaming access
 
         Args:
             dataset_name: Name of the dataset to access
-            file: Optional specific file within the dataset to access.
+            file_name: Optional specific file within the dataset to access.
                  If None and only one file exists, that file is automatically selected.
             token: Optional authentication token for accessing protected datasets
 
         Returns:
-            Connected Zarr group for data access operations
+            Connected HttpZarrStore instance for the specified dataset file
 
         Raises:
             ValueError: If dataset/file doesn't exist or ambiguous file selection
@@ -242,31 +241,40 @@ class BioEngineDatasets:
         if len(available_files) == 0:
             raise ValueError(f"No files found in dataset '{dataset_name}'")
 
-        if file is None:
+        if file_name is None:
             if len(available_files) > 1:
                 raise ValueError(
                     f"File not specified and multiple files found in dataset '{dataset_name}'"
                 )
-            file = available_files[0]
+            file_name = available_files[0]
         else:
-            if file not in available_files:
-                raise ValueError(f"File '{file}' not found in dataset '{dataset_name}'")
+            if file_name not in available_files:
+                raise ValueError(f"File '{file_name}' not found in dataset '{dataset_name}'")
 
         store = HttpZarrStore(
-            service_url=self.service_url, dataset_name=dataset_name, token=token
+            service_url=self.service_url,
+            dataset_name=dataset_name,
+            file_path=file_name,
+            token=token
         )
-
-        dataset = await asyncio.to_thread(zarr.open_group, store, mode="r", path=file)
 
         end_time = asyncio.get_event_loop().time()
         print(
             f"🕒 [{self.replica_id}] Time taken to get dataset: {end_time - start_time:.2f} seconds"
         )
 
-        return dataset
+        return store
 
 
 if __name__ == "__main__":
+    """
+    Requires the following packages:
+
+    ```
+    pip install -r requirements-datasets.txt
+    pip install "anndata[lazy]==0.12.2" # for read_lazy
+    ```
+    """
     import os
     from pathlib import Path
 
@@ -291,11 +299,10 @@ if __name__ == "__main__":
 
         dataset_name = list(available_datasets.keys())[0]
 
-        dataset = await bioengine_datasets.get_dataset(dataset_name)
-        print(dataset)
+        store = await bioengine_datasets.open_file(dataset_name)
+        print(store)
 
-        # `read_lazy` from anndata==0.12.0rc1
-        adata = await asyncio.to_thread(read_lazy, dataset, load_annotation_index=True)
+        adata = await asyncio.to_thread(read_lazy, store, load_annotation_index=True)
         print(adata)
         print(adata.obs)
         print(adata.X)

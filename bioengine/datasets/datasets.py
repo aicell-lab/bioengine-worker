@@ -320,6 +320,7 @@ if __name__ == "__main__":
     import os
     from pathlib import Path
 
+    import numpy as np
     from anndata.experimental import read_lazy
 
     async def test_bioengine_datasets():
@@ -364,6 +365,24 @@ if __name__ == "__main__":
         print(adata)
         print(adata.obs)
         print(adata.X)
+
+        # Load a slice of data
+        adata.layers["X_binned"][1, :].compute()
+        # loaded chunks: 0.0, 0.1, 0.2, 0.4
+
+        # Test presigned URL caching
+        adata.layers["X_binned"][1, :].compute()
+        # -> does not need to request new presigned URL
+        # -> still needs to fetch same data chunks again
+
+        # Load next slice of data
+        adata.layers["X_binned"][2, :].compute()
+        # -> does not need to request new presigned URL - slice in in same chunks
+        # -> needs to fetch new data chunks
+
+        adata.layers["X_binned"][:, 1].compute()
+        # loaded chunks: 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0
+        # -> needs to request new presigned URL - different chunks, one overlap
 
         # Cleanup
         store.close()

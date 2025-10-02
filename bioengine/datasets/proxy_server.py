@@ -182,7 +182,8 @@ async def mirror_dataset_to_artifact(
 
         # Filesystem path to all files except manifest.yml (already handled separately)
         all_files = [
-            f for f in await asyncio.to_thread(lambda: list(dataset_dir.iterdir()))
+            f
+            for f in await asyncio.to_thread(lambda: list(dataset_dir.iterdir()))
             if (f.is_file() and f.name != "manifest.yml") or f.is_dir()
         ]
         for data_file in all_files:
@@ -330,6 +331,7 @@ async def list_files(
         resource_name=f"list files in the dataset '{dataset_name}'",
     )
 
+    # TODO: list folders recursively, but not .zarr
     files = await artifact_manager.list_files(f"public/{dataset_name}")
     return [file.name for file in files]
 
@@ -661,11 +663,3 @@ def start_proxy_server(
                 shutil.rmtree(minio_config_dir)
             except Exception as e:
                 logger.warning(f"Failed to clean up MinIO config dir: {e}")
-
-
-if __name__ == "__main__":
-    start_proxy_server(
-        data_dir="/data/nmechtel/bioengine-worker/data",
-        bioengine_cache_dir="/data/nmechtel/bioengine-worker/.bioengine",
-        log_file="off",
-    )

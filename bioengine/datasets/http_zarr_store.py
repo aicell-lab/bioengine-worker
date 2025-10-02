@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 from dataclasses import dataclass
 from typing import AsyncIterator, Iterable
@@ -80,7 +81,9 @@ class HttpZarrStore(Store):
         dataset_name: str,
         zarr_path: str,
         token: str,
-        max_chunk_cache_size: int = 1024 * 1024 * 1024,  # 1 GiB default
+        max_chunk_cache_size: int = int(
+            os.getenv("BIOENGINE_DATASETS_ZARR_STORE_CACHE_SIZE", 1024 * 1024 * 1024)
+        ),  # 1 GiB default
     ):
         """
         Initialize the HTTP-based Zarr store for remote dataset access.

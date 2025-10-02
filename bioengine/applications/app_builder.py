@@ -18,6 +18,7 @@ from ray.serve.handle import DeploymentHandle
 
 import bioengine
 from bioengine.applications.proxy_deployment import BioEngineProxyDeployment
+from bioengine.datasets import BioEngineDatasets
 from bioengine.utils import create_logger, update_requirements
 
 
@@ -452,8 +453,6 @@ class AppBuilder:
 
         @wraps(orig_init)
         def wrapped_init(self, *args, **kwargs):
-            from bioengine.datasets import BioEngineDatasets
-
             # Get replica identifier for logging
             try:
                 self.replica_id = serve.get_replica_context().replica_tag

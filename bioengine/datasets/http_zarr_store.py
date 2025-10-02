@@ -3,6 +3,15 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Iterable
 
 import httpx
+
+try:
+    import zarr
+except ImportError as e:
+    raise ImportError("zarr>=3.0.0 is required") from e
+
+if zarr.__version__ < "3.0.0":
+    raise ImportError(f"zarr>=3.0.0 is required but found {zarr.__version__}")
+
 from zarr.abc.store import (
     ByteRequest,
     OffsetByteRequest,
@@ -11,6 +20,8 @@ from zarr.abc.store import (
     SuffixByteRequest,
 )
 from zarr.core.buffer import Buffer, BufferPrototype
+
+from bioengine.datasets.utils import get_presigned_url
 
 
 @dataclass
@@ -59,7 +70,7 @@ class HttpZarrStore(Store):
     supports_partial_writes: bool = False
     supports_listing: bool = False
 
-    def __init__(self, service_url: str, dataset_name: str, file_path: str, token: str):
+    def __init__(self, service_url: str, dataset_name: str, zarr_path: str, token: str):
         """
         Initialize the HTTP-based Zarr store for remote dataset access.
 
@@ -74,47 +85,23 @@ class HttpZarrStore(Store):
         super().__init__(read_only=True)
         self.service_url = service_url.rstrip("/")
         self.dataset_name = dataset_name
-        self.file_path = file_path[1:] if file_path.startswith("/") else file_path
+        self.zarr_path = zarr_path[1:] if zarr_path.startswith("/") else zarr_path
         self.token = token
-        self.http_client = httpx.AsyncClient(timeout=120)  # seconds
+        self.http_client = None
 
-        if not self.file_path.endswith(".zarr"):
-            raise ValueError("file_path must end with .zarr")
+        if not self.zarr_path.endswith(".zarr"):
+            raise ValueError("zarr_path must end with .zarr")
 
-    async def _get_presigned_url(self, key: str) -> str | None:
-        """
-        Get a presigned URL for secure access to a specific dataset chunk.
-
-        Requests a temporary, authenticated URL for accessing the specified key within
-        the dataset. This method is used internally by the get() and exists() methods
-        to securely access data chunks.
-
-        Args:
-            key: Path to the chunk within the dataset
-
-        Returns:
-            Presigned URL for accessing the chunk, or None if the chunk doesn't exist
-
-        Raises:
-            httpx.HTTPStatusError: If the request fails for reasons other than file not found
-        """
-        query_url = (
-            f"{self.service_url}/get_presigned_url?dataset_name={self.dataset_name}&"
-            f"file_path={self.file_path}/{key}&token={self.token}"
-        )
-        response = await self.http_client.get(query_url)
-        if response.status_code == 400 and "FileNotFoundError" in response.text:
-            return None
-        response.raise_for_status()
-        presigned_url = response.json()
-
-        return presigned_url
+    def _set_http_client(self) -> None:
+        if self.http_client is None:
+            self.http_client = httpx.AsyncClient(timeout=120)  # seconds
 
     def __eq__(self, other: object) -> bool:
         return all(
             isinstance(other, HttpZarrStore)
             and self.service_url == other.service_url
             and self.dataset_name == other.dataset_name
+            and self.zarr_path == other.zarr_path
             and self.token == other.token
         )
 
@@ -145,7 +132,14 @@ class HttpZarrStore(Store):
         Raises:
             httpx.HTTPStatusError: If the HTTP request fails
         """
-        url = await self._get_presigned_url(key)
+        self._set_http_client()
+        url = await get_presigned_url(
+            data_service_url=self.service_url,
+            dataset_name=self.dataset_name,
+            file_path=f"{self.zarr_path}/{key}",
+            token=self.token,
+            http_client=self.http_client,
+        )
         if url is None:
             return None
 
@@ -197,7 +191,13 @@ class HttpZarrStore(Store):
         Returns:
             True if the key exists, False otherwise
         """
-        url = await self._get_presigned_url(key)
+        url = await get_presigned_url(
+            data_service_url=self.service_url,
+            dataset_name=self.dataset_name,
+            file_path=f"{self.zarr_path}/{key}",
+            token=self.token,
+            http_client=self.http_client,
+        )
         return url is not None
 
     async def set(self, key: str, value: Buffer) -> None:
@@ -219,3 +219,7 @@ class HttpZarrStore(Store):
 
     def list_dir(self, prefix: str) -> AsyncIterator[str]:
         raise NotImplementedError("Dir listing not supported")
+
+    def close(self):
+        self.http_client = None
+        return super().close()

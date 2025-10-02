@@ -1,12 +1,12 @@
 import asyncio
 import uuid
+from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 import httpx
-import zarr
 from ray.serve import get_replica_context
 
-from bioengine.datasets.http_zarr_store import HttpZarrStore
+from bioengine.datasets.utils import get_presigned_url
 
 
 class BioEngineDatasets:
@@ -52,15 +52,15 @@ class BioEngineDatasets:
 
     Attributes:
         service_url (str): URL for the BioEngine Datasets service
-        deployment_name (str): Name of the deployment using this client
+        client_name (str): Client name
         http_client (httpx.AsyncClient): HTTP client for service communication
         replica_id (str): Unique identifier for this client instance
     """
 
     def __init__(
         self,
-        data_server_url: Union[str, None],  # set to None for no data server
-        deployment_name: str,
+        data_server_url: Optional[str] = "auto",  # set to None for no data server
+        client_name: Optional[str] = None,
         data_server_workspace: str = "public",
         hypha_token: Optional[str] = None,
     ):
@@ -73,8 +73,8 @@ class BioEngineDatasets:
 
         Args:
             data_server_url: URL of the datasets server, or None to disable remote access
-            deployment_name: Identifier for the deployment using this client,
-                           used for access logging and monitoring
+            client_name: Identifier for the client using this instance, used for access
+                        logging and monitoring
             data_server_workspace: Hypha workspace name containing the datasets service,
                                  defaults to "public" for shared datasets
             hypha_token: Optional default authentication token for accessing protected datasets
@@ -89,15 +89,29 @@ class BioEngineDatasets:
         except Exception:
             self.replica_id = f"uuid-{str(uuid.uuid4())[:8]}"
 
+        self.client_name = client_name or self.replica_id
+
         print(
             f"🚀 [{self.replica_id}] Initializing {self.__class__.__name__} "
-            f"for '{deployment_name}'"
+            f"for '{self.client_name}'"
         )
         print(f"🔗 [{self.replica_id}] Data server URL: {data_server_url}")
         print(
             f"🏢 [{self.replica_id}] Data service workspace: '{data_server_workspace}'"
         )
 
+        if data_server_url == "auto":
+            bioengine_dir = Path.home() / ".bioengine"
+            current_server_file = bioengine_dir  / "datasets" / "bioengine_current_server"
+            try:
+                data_server_url = current_server_file.read_text()
+            except FileNotFoundError:
+                data_server_url = None
+                print(
+                    f"⚠️ [{self.replica_id}] No current data server found at "
+                    f"'{current_server_file}', proceeding without remote datasets"
+                )
+        
         if data_server_url is not None:
             self.service_url = (
                 f"{data_server_url}/{data_server_workspace}/services/bioengine-datasets"
@@ -106,7 +120,6 @@ class BioEngineDatasets:
         else:
             self.service_url = None
 
-        self.deployment_name = deployment_name
         self.default_token = hypha_token
 
     async def ping_data_server(self):
@@ -127,7 +140,7 @@ class BioEngineDatasets:
             except Exception as e:
                 print(
                     f"⚠️ [{self.replica_id}] Connection to data server "
-                    f"failed for '{self.deployment_name}': {e}"
+                    f"failed for '{self.client_name}': {e}"
                 )
                 raise RuntimeError("Connection to data server failed")
 
@@ -200,9 +213,9 @@ class BioEngineDatasets:
 
         return files
 
-    async def open_file(
+    async def get_file(
         self, dataset_name: str, file_name: Optional[str] = None, token: Optional[str] = None
-    ) -> HttpZarrStore:
+    ) -> Union["HttpZarrStore", bytes]:
         """
         Access a remote data file as a streamable Zarr store for efficient data operations.
 
@@ -250,20 +263,40 @@ class BioEngineDatasets:
         else:
             if file_name not in available_files:
                 raise ValueError(f"File '{file_name}' not found in dataset '{dataset_name}'")
+            
+        if file_name.endswith(".zarr"):
+            try:
+                from bioengine.datasets.http_zarr_store import HttpZarrStore
+            except ImportError as e:
+                raise ImportError("Unable to load HttpZarrStore") from e
 
-        store = HttpZarrStore(
-            service_url=self.service_url,
-            dataset_name=dataset_name,
-            file_path=file_name,
-            token=token
-        )
+            file_output = HttpZarrStore(
+                    service_url=self.service_url,
+                    dataset_name=dataset_name,
+                    zarr_path=file_name,
+                    token=token
+                )
+        else:
+            presigned_url = await get_presigned_url(
+                data_service_url=self.service_url,
+                dataset_name=dataset_name,
+                file_path=file_name,
+                token=token,
+                http_client=self.http_client,
+            )
+            if presigned_url is None:
+                raise ValueError(f"File '{file_name}' not found in dataset '{dataset_name}'")
+            
+            response = await self.http_client.get(presigned_url)
+            response.raise_for_status()
+            file_output = response.content
 
         end_time = asyncio.get_event_loop().time()
         print(
             f"🕒 [{self.replica_id}] Time taken to get dataset: {end_time - start_time:.2f} seconds"
         )
 
-        return store
+        return file_output
 
 
 if __name__ == "__main__":
@@ -289,7 +322,7 @@ if __name__ == "__main__":
 
         bioengine_datasets = BioEngineDatasets(
             data_server_url=data_server_url,
-            deployment_name="test-deployment",
+            client_name="test-client",
             data_server_workspace="public",
             hypha_token=os.environ["HYPHA_TOKEN"],
         )
@@ -299,8 +332,24 @@ if __name__ == "__main__":
 
         dataset_name = list(available_datasets.keys())[0]
 
-        store = await bioengine_datasets.open_file(dataset_name)
+        available_files = await bioengine_datasets.list_files(dataset_name)
+        print(available_files)
+
+        zarr_file = [f for f in available_files if f.endswith(".zarr")][0]
+        readme = [f for f in available_files if f == "README.md"][0]
+
+        store = await bioengine_datasets.get_file(
+            dataset_name=dataset_name, file_name=zarr_file
+        )
         print(store)
+
+        # Test resetting the http client
+        store.close()
+
+        readme_file = await bioengine_datasets.get_file(
+            dataset_name=dataset_name, file_name=readme
+        )
+        print(readme_file.decode("utf-8"))
 
         adata = await asyncio.to_thread(read_lazy, store, load_annotation_index=True)
         print(adata)

@@ -170,7 +170,8 @@ class BioEngineDatasets:
         datasets = response.json()
         end_time = asyncio.get_event_loop().time()
         print(
-            f"🕒 [{self.replica_id}] Listed {len(datasets)} dataset(s) in {end_time - start_time:.2f} seconds"
+            f"🕒 [{self.replica_id}] Listed {len(datasets)} dataset(s) "
+            f"in {end_time - start_time:.2f} seconds"
         )
 
         return datasets
@@ -210,7 +211,8 @@ class BioEngineDatasets:
         files = response.json()
         end_time = asyncio.get_event_loop().time()
         print(
-            f"🕒 [{self.replica_id}] Listed {len(files)} file(s) in dataset '{dataset_name}' in {end_time - start_time:.2f} seconds"
+            f"🕒 [{self.replica_id}] Listed {len(files)} file(s) in dataset "
+            f"'{dataset_name}' in {end_time - start_time:.2f} seconds"
         )
 
         return files
@@ -302,7 +304,8 @@ class BioEngineDatasets:
 
         end_time = asyncio.get_event_loop().time()
         print(
-            f"🕒 [{self.replica_id}] Time taken to get dataset: {end_time - start_time:.2f} seconds"
+            f"🕒 [{self.replica_id}] Time taken to get file '{file_name}' from dataset "
+            f"'{dataset_name}': {end_time - start_time:.2f} seconds"
         )
 
         return file_output

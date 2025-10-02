@@ -6,9 +6,8 @@ preservation, access control, and efficient data streaming capabilities. It prov
 both the server-side implementation of the datasets API and the infrastructure for
 deploying standalone dataset services.
 
-The proxy server integrates with Hypha for authentication and service registration,
-MinIO for secure object storage, and implements a custom HTTP-based protocol for
-efficient streaming of large scientific datasets in Zarr format.
+The proxy server integrates with Hypha for authentication and service registration
+and MinIO for secure object storage.
 
 Key Components:
 - Hypha server integration for authentication and service discovery
@@ -147,7 +146,7 @@ async def create_datasets_collection(
         logger.info(f"Creating collection '{collection_id}'")
         collection_manifest = {
             "name": "BioEngine Datasets",
-            "description": "A collection of Zarr-file datasets",
+            "description": "A collection of privacy-preserved datasets",
         }
         await artifact_manager.create(
             type="collection",
@@ -181,18 +180,25 @@ async def mirror_dataset_to_artifact(
             "MC_HOST_local": f"http://{root_user}:{root_password}@localhost:{port}",
         }
 
-        # Filesystem path to Zarr files
-        zarr_files = await asyncio.to_thread(dataset_dir.glob, "*.zarr")
-        for zarr_file in zarr_files:
+        # Filesystem path to all files except manifest.yml (already handled separately)
+        all_files = [
+            f for f in await asyncio.to_thread(lambda: list(dataset_dir.iterdir()))
+            if (f.is_file() and f.name != "manifest.yml") or f.is_dir()
+        ]
+        for data_file in all_files:
 
             # Path to the artifact directory in MinIO
-            s3_dest = f"local/hypha-workspaces/public/artifacts/{artifact_s3_id}/v0/{zarr_file.name}"
+            s3_dest = f"local/hypha-workspaces/public/artifacts/{artifact_s3_id}/v0/{data_file.name}"
 
             logger.info(
-                f"Copying {dataset_dir}/{zarr_file.name} to artifact '{artifact_id}'"
+                f"Copying {dataset_dir}/{data_file.name} to artifact '{artifact_id}'"
             )
 
-            args = [str(mc_exe), "mirror", str(zarr_file), s3_dest]
+            # Use 'cp' for files and 'mirror' for directories
+            if data_file.is_file():
+                args = [str(mc_exe), "cp", str(data_file), s3_dest]
+            else:  # directory
+                args = [str(mc_exe), "mirror", str(data_file), s3_dest]
             proc = await asyncio.create_subprocess_exec(
                 *args,
                 stdout=asyncio.subprocess.PIPE,
@@ -308,7 +314,7 @@ async def list_files(
     authorized_users_collection: Dict[str, List[str]],
     artifact_manager: ObjectProxy,
 ) -> List[str]:
-    """List all zarr files in a dataset."""
+    """List all files in a dataset."""
     if dataset_name not in authorized_users_collection:
         raise ValueError(f"Dataset '{dataset_name}' does not exist")
 
@@ -325,11 +331,7 @@ async def list_files(
     )
 
     files = await artifact_manager.list_files(f"public/{dataset_name}")
-    return [
-        file.name
-        for file in files
-        if file.name.endswith(".zarr") and file.type == "directory"
-    ]
+    return [file.name for file in files]
 
 
 async def get_presigned_url(

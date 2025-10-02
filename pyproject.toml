@@ -30,7 +30,7 @@ datasets = [
     "zarr>=3.0.8",
 ]
 dev = [
-    "black>=25.1.0",
+    "black>=25.9.0",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-mock>=3.10.0",

@@ -102,7 +102,9 @@ class BioEngineDatasets:
 
         if data_server_url == "auto":
             bioengine_dir = Path.home() / ".bioengine"
-            current_server_file = bioengine_dir  / "datasets" / "bioengine_current_server"
+            current_server_file = (
+                bioengine_dir / "datasets" / "bioengine_current_server"
+            )
             try:
                 data_server_url = current_server_file.read_text()
             except FileNotFoundError:
@@ -111,7 +113,7 @@ class BioEngineDatasets:
                     f"⚠️ [{self.replica_id}] No current data server found at "
                     f"'{current_server_file}', proceeding without remote datasets"
                 )
-        
+
         if data_server_url is not None:
             self.service_url = (
                 f"{data_server_url}/{data_server_workspace}/services/bioengine-datasets"
@@ -214,7 +216,10 @@ class BioEngineDatasets:
         return files
 
     async def get_file(
-        self, dataset_name: str, file_name: Optional[str] = None, token: Optional[str] = None
+        self,
+        dataset_name: str,
+        file_name: Optional[str] = None,
+        token: Optional[str] = None,
     ) -> Union["HttpZarrStore", bytes]:
         """
         Access a remote data file as a streamable Zarr store for efficient data operations.
@@ -262,8 +267,10 @@ class BioEngineDatasets:
             file_name = available_files[0]
         else:
             if file_name not in available_files:
-                raise ValueError(f"File '{file_name}' not found in dataset '{dataset_name}'")
-            
+                raise ValueError(
+                    f"File '{file_name}' not found in dataset '{dataset_name}'"
+                )
+
         if file_name.endswith(".zarr"):
             try:
                 from bioengine.datasets.http_zarr_store import HttpZarrStore
@@ -271,11 +278,11 @@ class BioEngineDatasets:
                 raise ImportError("Unable to load HttpZarrStore") from e
 
             file_output = HttpZarrStore(
-                    service_url=self.service_url,
-                    dataset_name=dataset_name,
-                    zarr_path=file_name,
-                    token=token
-                )
+                service_url=self.service_url,
+                dataset_name=dataset_name,
+                zarr_path=file_name,
+                token=token,
+            )
         else:
             presigned_url = await get_presigned_url(
                 data_service_url=self.service_url,
@@ -285,8 +292,10 @@ class BioEngineDatasets:
                 http_client=self.http_client,
             )
             if presigned_url is None:
-                raise ValueError(f"File '{file_name}' not found in dataset '{dataset_name}'")
-            
+                raise ValueError(
+                    f"File '{file_name}' not found in dataset '{dataset_name}'"
+                )
+
             response = await self.http_client.get(presigned_url)
             response.raise_for_status()
             file_output = response.content
@@ -355,5 +364,8 @@ if __name__ == "__main__":
         print(adata)
         print(adata.obs)
         print(adata.X)
+
+        # Cleanup
+        store.close()
 
     asyncio.run(test_bioengine_datasets())

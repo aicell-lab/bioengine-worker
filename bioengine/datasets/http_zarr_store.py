@@ -1,4 +1,5 @@
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import AsyncIterator, Iterable
 
@@ -42,7 +43,7 @@ class HttpZarrStore(Store):
     Key Features:
     - Efficient partial data access through HTTP range requests
     - Authentication via token-based access control
-    - Presigned URL management for secure access to S3-backed storage
+    - Presigned URL management with 59-minute caching for performance optimization
     - Compatible with standard Zarr API for seamless integration
     - Read-only access with clear error handling for write operations
 
@@ -80,6 +81,7 @@ class HttpZarrStore(Store):
         Args:
             service_url: Base URL for the dataset service API
             dataset_name: Name of the dataset to access through this store
+            zarr_path: Path within the dataset to the Zarr store (must end with .zarr)
             token: Authentication token for access control
         """
         super().__init__(read_only=True)
@@ -89,12 +91,79 @@ class HttpZarrStore(Store):
         self.token = token
         self.http_client = None
 
+        # Presigned URL cache (expires just under 1 hour for safety)
+        # Cache expiry is set to 3540 seconds (59 minutes) to be safe with 3600s URL expiry
+        self._presigned_url_cache = {}  # {cache_key: (url, timestamp)}
+        self._cache_expiry_seconds = 3540  # 59 minutes
+
         if not self.zarr_path.endswith(".zarr"):
             raise ValueError("zarr_path must end with .zarr")
 
     def _set_http_client(self) -> None:
         if self.http_client is None:
             self.http_client = httpx.AsyncClient(timeout=120)  # seconds
+
+    def _get_cache_key(self, file_path: str) -> str:
+        """Generate a cache key for the presigned URL based on file path."""
+        return f"{self.dataset_name}:{file_path}"
+
+    def _is_cache_expired(self, timestamp: float) -> bool:
+        """Check if a cached URL has expired."""
+        return (time.time() - timestamp) >= self._cache_expiry_seconds
+
+    async def _get_cached_url(self, file_path: str) -> str | None:
+        """
+        Get a cached presigned URL if available and not expired.
+
+        Args:
+            file_path: File path to get the cached URL for
+
+        Returns:
+            Cached URL if available and not expired, None otherwise
+        """
+        cache_key = self._get_cache_key(file_path)
+
+        if cache_key in self._presigned_url_cache:
+            url, timestamp = self._presigned_url_cache[cache_key]
+            if not self._is_cache_expired(timestamp):
+                return url
+            else:
+                # Remove expired entry
+                del self._presigned_url_cache[cache_key]
+
+        return None
+
+    async def _get_and_cache_url(self, file_path: str) -> str | None:
+        """
+        Get a presigned URL, using cache if available, otherwise fetching and caching.
+
+        Args:
+            file_path: File path to get the presigned URL for
+
+        Returns:
+            Presigned URL or None if file doesn't exist
+        """
+        # Try cache first
+        cached_url = await self._get_cached_url(file_path)
+        if cached_url is not None:
+            return cached_url
+
+        # Not in cache or expired, fetch new URL
+        self._set_http_client()
+        url = await get_presigned_url(
+            data_service_url=self.service_url,
+            dataset_name=self.dataset_name,
+            file_path=file_path,
+            token=self.token,
+            http_client=self.http_client,
+        )
+
+        # Cache the URL if we got one
+        if url is not None:
+            cache_key = self._get_cache_key(file_path)
+            self._presigned_url_cache[cache_key] = (url, time.time())
+
+        return url
 
     def __eq__(self, other: object) -> bool:
         return all(
@@ -132,14 +201,7 @@ class HttpZarrStore(Store):
         Raises:
             httpx.HTTPStatusError: If the HTTP request fails
         """
-        self._set_http_client()
-        url = await get_presigned_url(
-            data_service_url=self.service_url,
-            dataset_name=self.dataset_name,
-            file_path=f"{self.zarr_path}/{key}",
-            token=self.token,
-            http_client=self.http_client,
-        )
+        url = await self._get_and_cache_url(f"{self.zarr_path}/{key}")
         if url is None:
             return None
 
@@ -191,13 +253,7 @@ class HttpZarrStore(Store):
         Returns:
             True if the key exists, False otherwise
         """
-        url = await get_presigned_url(
-            data_service_url=self.service_url,
-            dataset_name=self.dataset_name,
-            file_path=f"{self.zarr_path}/{key}",
-            token=self.token,
-            http_client=self.http_client,
-        )
+        url = await self._get_and_cache_url(f"{self.zarr_path}/{key}")
         return url is not None
 
     async def set(self, key: str, value: Buffer) -> None:
@@ -222,4 +278,6 @@ class HttpZarrStore(Store):
 
     def close(self):
         self.http_client = None
+        # Clear the presigned URL cache when closing
+        self._presigned_url_cache.clear()
         return super().close()

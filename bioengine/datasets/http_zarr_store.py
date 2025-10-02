@@ -121,13 +121,67 @@ class HttpZarrStore(Store):
         if self.http_client is None:
             self.http_client = httpx.AsyncClient(timeout=120)  # seconds
 
-    def _get_cache_key(self, file_path: str) -> str:
+    def _get_url_cache_key(self, file_path: str) -> str:
         """Generate a cache key for the presigned URL based on file path."""
         return f"{self.dataset_name}:{file_path}"
 
     def _is_cache_expired(self, timestamp: float) -> bool:
         """Check if a cached URL has expired."""
         return (time.time() - timestamp) >= self._cache_expiry_seconds
+
+    async def _get_cached_url(self, file_path: str) -> str | None:
+        """
+        Get a cached presigned URL if available and not expired.
+
+        Args:
+            file_path: File path to get the cached URL for
+
+        Returns:
+            Cached URL if available and not expired, None otherwise
+        """
+        cache_key = self._get_url_cache_key(file_path)
+
+        if cache_key in self._presigned_url_cache:
+            url, timestamp = self._presigned_url_cache[cache_key]
+            if not self._is_cache_expired(timestamp):
+                return url
+            else:
+                # Remove expired entry
+                del self._presigned_url_cache[cache_key]
+
+        return None
+
+    async def _get_and_cache_url(self, file_path: str) -> str | None:
+        """
+        Get a presigned URL, using cache if available, otherwise fetching and caching.
+
+        Args:
+            file_path: File path to get the presigned URL for
+
+        Returns:
+            Presigned URL or None if file doesn't exist
+        """
+        # Try cache first
+        cached_url = await self._get_cached_url(file_path)
+        if cached_url is not None:
+            return cached_url
+
+        # Not in cache or expired, fetch new URL
+        self._set_http_client()
+        url = await get_presigned_url(
+            data_service_url=self.service_url,
+            dataset_name=self.dataset_name,
+            file_path=file_path,
+            token=self.token,
+            http_client=self.http_client,
+        )
+
+        # Cache the URL if we got one
+        if url is not None:
+            cache_key = self._get_url_cache_key(file_path)
+            self._presigned_url_cache[cache_key] = (url, time.time())
+
+        return url
 
     def _get_chunk_cache_key(self, key: str, byte_range: ByteRequest | None) -> str:
         """Generate a cache key for chunk data based on key and byte range."""
@@ -190,60 +244,6 @@ class HttpZarrStore(Store):
 
         return buffer
 
-    async def _get_cached_url(self, file_path: str) -> str | None:
-        """
-        Get a cached presigned URL if available and not expired.
-
-        Args:
-            file_path: File path to get the cached URL for
-
-        Returns:
-            Cached URL if available and not expired, None otherwise
-        """
-        cache_key = self._get_cache_key(file_path)
-
-        if cache_key in self._presigned_url_cache:
-            url, timestamp = self._presigned_url_cache[cache_key]
-            if not self._is_cache_expired(timestamp):
-                return url
-            else:
-                # Remove expired entry
-                del self._presigned_url_cache[cache_key]
-
-        return None
-
-    async def _get_and_cache_url(self, file_path: str) -> str | None:
-        """
-        Get a presigned URL, using cache if available, otherwise fetching and caching.
-
-        Args:
-            file_path: File path to get the presigned URL for
-
-        Returns:
-            Presigned URL or None if file doesn't exist
-        """
-        # Try cache first
-        cached_url = await self._get_cached_url(file_path)
-        if cached_url is not None:
-            return cached_url
-
-        # Not in cache or expired, fetch new URL
-        self._set_http_client()
-        url = await get_presigned_url(
-            data_service_url=self.service_url,
-            dataset_name=self.dataset_name,
-            file_path=file_path,
-            token=self.token,
-            http_client=self.http_client,
-        )
-
-        # Cache the URL if we got one
-        if url is not None:
-            cache_key = self._get_cache_key(file_path)
-            self._presigned_url_cache[cache_key] = (url, time.time())
-
-        return url
-
     def __eq__(self, other: object) -> bool:
         return all(
             isinstance(other, HttpZarrStore)
@@ -283,10 +283,11 @@ class HttpZarrStore(Store):
             httpx.HTTPStatusError: If the HTTP request fails
         """
         # Check chunk cache first
-        chunk_cache_key = self._get_chunk_cache_key(key, byte_range)
-        cached_buffer = self._get_cached_chunk(chunk_cache_key)
-        if cached_buffer is not None:
-            return cached_buffer
+        if self._max_chunk_cache_size > 0:
+            chunk_cache_key = self._get_chunk_cache_key(key, byte_range)
+            cached_buffer = self._get_cached_chunk(chunk_cache_key)
+            if cached_buffer is not None:
+                return cached_buffer
 
         # Not in cache, fetch from remote
         url = await self._get_and_cache_url(f"{self.zarr_path}/{key}")
@@ -308,7 +309,8 @@ class HttpZarrStore(Store):
         buffer = prototype.buffer.from_bytes(content)
 
         # Cache the buffer for future use
-        self._cache_chunk(chunk_cache_key, buffer)
+        if self._max_chunk_cache_size > 0:
+            self._cache_chunk(chunk_cache_key, buffer)
 
         return buffer
 

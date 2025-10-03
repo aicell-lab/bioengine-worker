@@ -845,12 +845,19 @@ class AppBuilder:
                 if param.annotation is not inspect.Parameter.empty
                 else None
             )
-            default = (
-                param.default if param.default is not inspect.Parameter.empty else None
-            )
+
+            # Use a sentinel value to distinguish "no default" from "default is None"
+            if param.default is inspect.Parameter.empty:
+                has_default = False
+                default_value = None
+            else:
+                has_default = True
+                default_value = param.default
+
             params[name] = {
                 "type": param_type,
-                "default": default,
+                "default": default_value,
+                "has_default": has_default,
             }
 
         # Store information about *args and **kwargs for validation
@@ -960,9 +967,13 @@ class AppBuilder:
             if param_info["type"] == DeploymentHandle:
                 # DeploymentHandle parameters are handled separately
                 continue
-            if param_info["default"] is None and key not in kwargs:
+
+            # A parameter is required if it has no default value
+            if not param_info["has_default"] and key not in kwargs:
+                param_type = param_info["type"]
+                type_name = param_type.__name__ if param_type else "unknown"
                 raise ValueError(
-                    f"Missing required parameter '{key}' of type {param_info['type'].__name__}."
+                    f"Missing required parameter '{key}' of type {type_name}."
                 )
 
     async def _load_deployment(

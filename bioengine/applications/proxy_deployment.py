@@ -756,29 +756,6 @@ class BioEngineProxyDeployment:
                 f"with ID: {self.websocket_service_id}."
             )
 
-            # Register MCP service
-            mcp_service_info = await self.server.register_service(
-                {
-                    "id": f"{self.application_id}-mcp",
-                    "name": self.application_name + " MCP Service",
-                    "description": f"MCP Service for BioEngine application {self.application_name}: {self.application_description}",
-                    "type": "mcp",
-                    "config": {"visibility": "public", "require_context": True},
-                    "tools": service_functions,
-                }
-            )
-            self.mcp_service_id = (
-                f"{self.workspace}/{self.client_id}:{self.application_id}-mcp"
-            )
-            if mcp_service_info["id"] != self.mcp_service_id:
-                raise RuntimeError(
-                    f"Service ID mismatch: expected '{self.mcp_service_id}', got '{mcp_service_info['id']}'"
-                )
-
-            print(
-                f"✅ [{self.replica_id}] Successfully registered MCP service for '{self.application_id}' with ID: {self.mcp_service_id}"
-            )
-
         except Exception as e:
             self.service_id = None
             print(

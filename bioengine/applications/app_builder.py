@@ -480,7 +480,7 @@ class AppBuilder:
             # Initialize BioEngine datasets
             self.bioengine_datasets = BioEngineDatasets(
                 data_server_url=data_server_url,
-                deployment_name=self.__class__.__name__,
+                client_name=self.__class__.__name__,
                 data_server_workspace=data_server_workspace,
                 hypha_token=secret_env_vars.get("HYPHA_TOKEN"),
             )

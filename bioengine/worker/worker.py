@@ -584,24 +584,6 @@ class BioEngineWorker:
                 f"Service ID mismatch: {self.full_service_id} (expected) vs {service_info.id} (registered)"
             )
 
-        mcp_service = await self.server.register_service(
-            {
-                "id": self.service_id + "-mcp",
-                "name": "BioEngine Worker MCP Service",
-                "description": description,
-                "type": "mcp",
-                "config": {
-                    "visibility": "public",
-                    "require_context": True,
-                },
-                "tools": worker_services,
-            }
-        )
-
-        self.logger.info(
-            f"Successfully registered MCP service for BioEngine Worker with ID: {mcp_service['id']}"
-        )
-
     async def _cleanup(self) -> None:
         """
         Perform comprehensive cleanup of all BioEngine worker components.

@@ -107,8 +107,13 @@ class DemoDeployment:
         print(f"Available datasets: {list(available_datasets.keys())}")
 
         for dataset_name in available_datasets:
-            data = await self.bioengine_datasets.get_file(dataset_name)
-            print(f"Successfully loaded dataset {dataset_name}")
+            file_names = await self.bioengine_datasets.list_files(dataset_name)
+            print(f"Files in dataset {dataset_name}: {file_names}")
+            for file_name in file_names:
+                data_file = await self.bioengine_datasets.get_file(
+                    dataset_name, file_name
+                )
+                print(f"Successfully loaded data file {file_name} from dataset {dataset_name}")
 
     # === Internal Methods ===
 

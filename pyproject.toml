@@ -6,14 +6,13 @@ build-backend = "hatchling.build"
 name = "bioengine"
 version = "0.4.6"
 description = "BioEngine Worker for managing Ray clusters and datasets"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     {name = "Nils Mechtel", github = "nilsmechtel", affiliation = "KTH"}
 ]
 readme = "README.md"
 license = {file = "LICENSE"}
 dependencies = [
-    "aiortc>=1.13.0",
     "cloudpickle>=3.1.1",
     "haikunator>=2.1.0",
     "httpx>=0.28.1",
@@ -28,6 +27,9 @@ dependencies = [
 datasets = [
     "hypha[s3]>=0.21.23",
     "zarr>=3.0.8",
+]
+rtc = [
+    "aiortc>=1.13.0",
 ]
 dev = [
     "black>=25.9.0",

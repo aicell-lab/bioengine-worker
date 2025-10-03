@@ -5,7 +5,6 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
-from aiortc import RTCPeerConnection
 from httpx import AsyncClient, HTTPStatusError, RequestError
 from hypha_rpc import connect_to_server, register_rtc_service
 from hypha_rpc.rpc import RemoteService
@@ -24,7 +23,8 @@ from bioengine.utils import get_pip_requirements
         "num_cpus": 0,
         "runtime_env": {
             "pip": get_pip_requirements(
-                select=["aiortc", "httpx", "hypha-rpc", "pydantic"]
+                select=["aiortc", "httpx", "hypha-rpc", "pydantic"],
+                extras=["rtc"],
             ),
         },
     },
@@ -438,7 +438,7 @@ class BioEngineProxyDeployment:
             parameters=method_schema["parameters"],
         )
 
-    async def _on_webrtc_init(self, peer_connection: RTCPeerConnection) -> None:
+    async def _on_webrtc_init(self, peer_connection: "RTCPeerConnection") -> None:
         """
         Initialize and monitor a new WebRTC peer connection.
 

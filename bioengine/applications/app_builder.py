@@ -485,8 +485,10 @@ class AppBuilder:
                 hypha_token=secret_env_vars.get("HYPHA_TOKEN"),
             )
 
-            # Initialize a BioEngine worker service
+            # Initialize a BioEngine Hypha client and worker service
+            self.bioengine_hypha_client = None
             self.bioengine_worker_service = None
+
             # By default, assume the token can be used to access the BioEngine worker service
             self._hypha_token_is_admin_user = True
 
@@ -702,15 +704,23 @@ class AppBuilder:
 
                     # Try to (re)connect to the worker service
                     try:
-                        client = None
-                        client = await connect_to_server(
+                        if self.bioengine_hypha_client is not None:
+                            try:
+                                await self.bioengine_hypha_client.disconnect()
+                            except:
+                                pass
+                            self.bioengine_hypha_client = None
+
+                        self.bioengine_hypha_client = await connect_to_server(
                             {
                                 "server_url": os.getenv("HYPHA_SERVER_URL"),
                                 "token": os.getenv("HYPHA_TOKEN"),
                             }
                         )
-                        self.bioengine_worker_service = await client.get_service(
-                            worker_service_id
+                        self.bioengine_worker_service = (
+                            await self.bioengine_hypha_client.get_service(
+                                worker_service_id
+                            )
                         )
                         print(
                             f"✅ [{self.replica_id}] Successfully connected to BioEngine "
@@ -718,11 +728,12 @@ class AppBuilder:
                         )
 
                     except Exception as e:
-                        if client is not None:
+                        if self.bioengine_hypha_client is not None:
                             try:
-                                await client.disconnect()
+                                await self.bioengine_hypha_client.disconnect()
                             except:
                                 pass
+                            self.bioengine_hypha_client = None
 
                         self.bioengine_worker_service = None
                         if "Service not found:" in str(e):

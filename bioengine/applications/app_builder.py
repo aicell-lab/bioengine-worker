@@ -5,7 +5,7 @@ import os
 import time
 from functools import wraps
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TypedDict, Union
+from typing import Any, Dict, List, Optional, TypedDict, Union, get_origin
 
 import httpx
 import yaml
@@ -858,6 +858,33 @@ class AppBuilder:
         params["__has_var_keyword__"] = {"type": None, "default": has_var_keyword}
         return params
 
+    def _is_instance_of_type(self, value: Any, expected_type: Any) -> bool:
+        """
+        Check if a value is an instance of the expected type, handling subscripted generics.
+
+        This method works around the limitation that subscripted generics like typing.List[str]
+        cannot be used directly with isinstance(). It extracts the origin type (e.g., list from
+        List[str]) and performs the type check against that.
+
+        Args:
+            value: The value to check
+            expected_type: The expected type, which may be a subscripted generic
+
+        Returns:
+            True if the value is an instance of the expected type, False otherwise
+        """
+        try:
+            # First try the direct isinstance check (works for regular types)
+            return isinstance(value, expected_type)
+        except TypeError:
+            # Handle subscripted generics like typing.List[str], typing.Dict[str, int], etc.
+            # Use get_origin to extract the base type (e.g., list from List[str])
+            origin = get_origin(expected_type)
+            if origin is not None:
+                return isinstance(value, origin)
+            # If we can't handle it, just skip the type check
+            return True
+
     def _check_params(
         self, init_params: Dict[str, Dict[str, Any]], kwargs: Dict[str, Any]
     ) -> None:
@@ -920,7 +947,9 @@ class AppBuilder:
                 # If **kwargs is present, allow any additional parameters
             else:
                 expected_type = filtered_init_params[key]["type"]
-                if expected_type and not isinstance(kwargs[key], expected_type):
+                if expected_type and not self._is_instance_of_type(
+                    kwargs[key], expected_type
+                ):
                     raise ValueError(
                         f"Parameter '{key}' must be of type {expected_type.__name__}, "
                         f"but got {type(kwargs[key]).__name__}."

@@ -753,7 +753,7 @@ class BioEngineProxyDeployment:
                 )
             print(
                 f"✅ [{self.replica_id}] Successfully registered WebSocket service for '{self.application_id}' "
-                f"with ID: {self.websocket_service_id}."
+                f"with ID: {self.websocket_service_id}"
             )
 
         except Exception as e:

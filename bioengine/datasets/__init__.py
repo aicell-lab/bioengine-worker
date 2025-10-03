@@ -1,2 +1,3 @@
 from .datasets import BioEngineDatasets
-from .proxy_server import start_proxy_server
+
+# Don't import from proxy_server to avoid additional dependencies

@@ -352,11 +352,17 @@ class AppBuilder:
         py_modules = runtime_env.setdefault("py_modules", [])
         env_vars = runtime_env.setdefault("env_vars", {})
 
-        # Update with BioEngine requirements
-        pip_requirements = update_requirements(pip_requirements)
+        # Update pip requirements
+        # hypha-rpc and pydantic to serialize/de-serialize `schema_method` decorated methods
+        # httpx and zarr to support streaming datasets from BioEngine data server
+        pip_requirements = update_requirements(
+            pip_requirements,
+            select=["httpx", "hypha-rpc", "pydantic", "zarr"],
+            extras=["datasets"],
+        )
         runtime_env["pip"] = pip_requirements
 
-        # Add bioengine as module
+        # Add bioengine as module (does not install dependencies)
         bioengine_remote_uri = get_uri_for_directory(
             os.path.dirname(bioengine.__file__)
         )

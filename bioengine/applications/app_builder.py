@@ -354,11 +354,10 @@ class AppBuilder:
 
         # Update pip requirements
         # hypha-rpc and pydantic to serialize/de-serialize `schema_method` decorated methods
-        # httpx and zarr to support streaming datasets from BioEngine data server
+        # httpx to support streaming datasets from BioEngine data server (zarr needs to be added by the application itself)
         pip_requirements = update_requirements(
             pip_requirements,
-            select=["httpx", "hypha-rpc", "pydantic", "zarr"],
-            extras=["datasets"],
+            select=["httpx", "hypha-rpc", "pydantic"],
         )
         runtime_env["pip"] = pip_requirements
 

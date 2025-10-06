@@ -298,7 +298,6 @@ class AppBuilder:
         non_secret_env_vars: Dict[str, str],
         secret_env_vars: Dict[str, str],
         artifact_id: str,
-        max_ongoing_requests: int,
     ) -> serve.Deployment:
         """
         Configure the Ray runtime environment for BioEngine deployments.
@@ -330,7 +329,6 @@ class AppBuilder:
             non_secret_env_vars: Environment variables to set directly
             secret_env_vars: Environment variables with sensitive values
             artifact_id: Artifact identifier like "my-workspace/my-app" added as env var 'HYPHA_ARTIFACT_ID'
-            max_ongoing_requests: How many requests can run simultaneously
 
         Returns:
             Enhanced deployment with BioEngine runtime environment configured
@@ -402,7 +400,6 @@ class AppBuilder:
         ray_actor_options["runtime_env"] = runtime_env
         updated_deployment = deployment.options(
             ray_actor_options=ray_actor_options,
-            max_ongoing_requests=max_ongoing_requests,
         )
         return updated_deployment
 
@@ -995,7 +992,6 @@ class AppBuilder:
         class_name: str,
         disable_gpu: bool,
         env_vars: Dict[str, str],
-        max_ongoing_requests: int,
     ) -> serve.Deployment:
         """
         Download and transform Python code into a Ray Serve deployment.
@@ -1030,7 +1026,6 @@ class AppBuilder:
             class_name: Which class to load (format: "ClassName")
             disable_gpu: Force CPU-only execution regardless of class defaults
             env_vars: Environment variables to set for the deployment, secret env vars start with "_"
-            max_ongoing_requests: Request concurrency limit for this deployment
 
         Returns:
             Fully configured Ray Serve deployment ready for use in applications
@@ -1115,7 +1110,6 @@ class AppBuilder:
                 non_secret_env_vars=non_secret_env_vars,
                 secret_env_vars=secret_env_vars,
                 artifact_id=artifact_id,
-                max_ongoing_requests=max_ongoing_requests,
             )
 
             # Update the deployment class methods
@@ -1321,7 +1315,6 @@ class AppBuilder:
                 class_name=class_name,
                 disable_gpu=disable_gpu,
                 env_vars=deployment_env_vars,
-                max_ongoing_requests=max_ongoing_requests,
             )
             deployments.append(deployment)
 

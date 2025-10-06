@@ -1058,7 +1058,7 @@ class ModelRunner:
     async def test_deployment(
         self,
         model_id: str = "ambitious-ant",
-    ) -> Dict[str, Union[bool, str, float, Dict]]:
+    ) -> None:
         """Comprehensive test of all public endpoints using a known working model (that should pass all checks)."""
         print(f"🧪 [{self.replica_id}] Starting deployment test with model: {model_id}")
 

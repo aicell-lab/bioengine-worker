@@ -115,7 +115,7 @@ class CompositionDeployment:
         print("Initializing CompositionDeployment...")
         await asyncio.sleep(0.01)
 
-    async def test_deployment(self) -> bool:
+    async def test_deployment(self) -> None:
         """
         An optional method to test the deployment. If defined, it will be called when the deployment
         is started to check if the deployment is working correctly.
@@ -123,7 +123,6 @@ class CompositionDeployment:
         Requirements:
         - Must be an async method.
         - Must not accept any arguments.
-        - Must return a boolean value indicating whether the deployment is working correctly.
         """
         # Test importing a library set in the runtime environment
         import pandas

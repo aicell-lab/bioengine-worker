@@ -79,7 +79,7 @@ class DemoDeployment:
         # Mock initialization logic
         await asyncio.sleep(0.01)
 
-    async def test_deployment(self) -> bool:
+    async def test_deployment(self) -> None:
         """
         An optional method to test the deployment. If defined, it will be called when the deployment
         is started to check if the deployment is working correctly.

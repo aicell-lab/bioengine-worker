@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bioengine"
-version = "0.4.8"
+version = "0.4.9"
 description = "BioEngine Worker for managing Ray clusters and datasets"
 requires-python = ">=3.11"
 authors = [
@@ -29,7 +29,7 @@ datasets = [
     "zarr>=3.0.8",
 ]
 rtc = [
-    "aiortc>=1.13.0",
+    "aiortc==1.13.0",
 ]
 dev = [
     "black>=25.9.0",

@@ -176,7 +176,13 @@ class BioEngineProxyDeployment:
 
         # Store request events
         self.serve_http_url = serve_http_url
-        self._request_events: Dict[str, asyncio.Event] = {}
+        self._request_events: Dict[str, Dict[str, Any]] = {}
+        
+        # Lock for service registration
+        self._registration_lock = asyncio.Lock()
+        
+        # Start background cleanup task
+        self._cleanup_task = None
 
     async def __call__(self, request: Request) -> Dict[str, Any]:
         """
@@ -217,15 +223,22 @@ class BioEngineProxyDeployment:
                 "message": "Missing X-Request-ID header",
             }
 
-        print(f"⏳ [{self.replica_id}] Waiting for request event: {request_id}")
+        print(f"⏳ [{self.replica_id}] Waiting for request: {request_id}")
         # Wait for the corresponding request event
-        event = self._request_events.get(request_id)
-        if event:
-            await event.wait()
-            print(f"✅ [{self.replica_id}] Request completed: {request_id}")
-            return {"status": "completed", "request_id": request_id}
+        event_data = self._request_events.get(request_id)
+        if event_data:
+            try:
+                await asyncio.wait_for(event_data["event"].wait(), timeout=3600)  # free after 1 hour
+                print(f"✅ [{self.replica_id}] Request completed: {request_id}")
+                return {"status": "completed", "request_id": request_id}
+            except asyncio.TimeoutError:
+                print(f"⏱️ [{self.replica_id}] Request timed out after 1 hour: {request_id}")
+                return {"status": "timeout", "request_id": request_id}
+            finally:
+                # Always remove the event to prevent memory leaks
+                self._request_events.pop(request_id, None)
         else:
-            print(f"⚠️ [{self.replica_id}] Request event not found: {request_id}")
+            print(f"⚠️ [{self.replica_id}] Request not found: {request_id}")
             # Request may have already completed
             return {"status": "not_found", "request_id": request_id}
 
@@ -325,6 +338,41 @@ class BioEngineProxyDeployment:
             print(
                 f"⚠️ [{self.replica_id}] Failed to send autoscaling trigger for '{self.application_id}' request {request_id}: {e}"
             )
+            # Clean up orphaned event since HTTP request failed
+            self._request_events.pop(request_id, None)
+
+    async def _cleanup_orphaned_events(self) -> None:
+        """
+        Periodically clean up orphaned events that were never completed.
+        
+        This background task runs every 5 minutes and removes events older than 2 hours
+        to prevent unbounded memory growth from failed or abandoned requests.
+        """
+        while True:
+            try:
+                await asyncio.sleep(300)  # Run every 5 minutes
+                
+                current_time = time.time()
+                max_age = 7200  # 2 hours
+                
+                orphaned_ids = []
+                for request_id, event_data in self._request_events.items():
+                    age = current_time - event_data["created_at"]
+                    if age > max_age:
+                        orphaned_ids.append(request_id)
+                
+                if orphaned_ids:
+                    print(
+                        f"🧹 [{self.replica_id}] Cleaning up {len(orphaned_ids)} orphaned events older than 2 hours"
+                    )
+                    for request_id in orphaned_ids:
+                        self._request_events.pop(request_id, None)
+                        
+            except asyncio.CancelledError:
+                print(f"🛑 [{self.replica_id}] Cleanup task cancelled")
+                break
+            except Exception as e:
+                print(f"⚠️ [{self.replica_id}] Error in cleanup task: {e}")
 
     def _create_deployment_function(
         self, method_schema: Dict[str, Any]
@@ -358,6 +406,7 @@ class BioEngineProxyDeployment:
         async def deployment_function(*args, context: Dict[str, Any], **kwargs) -> Any:
             async with self.service_semaphore:
                 request_id = str(uuid.uuid4())
+                event_created = False
                 try:
                     # Check user permissions
                     await self._check_permissions(context)
@@ -369,8 +418,22 @@ class BioEngineProxyDeployment:
                         f"🎯 [{self.replica_id}] User '{user_id}' calling method '{method_name}' on app '{self.application_id}'"
                     )
 
-                    # Mimic a request to trigger autoscaling (do not block)
-                    self._request_events[request_id] = asyncio.Event()
+                    # Get the method from the entry deployment handle
+                    method = getattr(self.entry_deployment_handle, method_name, None)
+                    if method is None:
+                        print(
+                            f"❌ [{self.replica_id}] Method '{method_name}' not found on entry deployment"
+                        )
+                        raise AttributeError(
+                            f"Method '{method_name}' not found on entry deployment"
+                        )
+
+                    # Create event with timestamp for tracking BEFORE starting mimic request
+                    self._request_events[request_id] = {
+                        "event": asyncio.Event(),
+                        "created_at": time.time(),
+                    }
+                    event_created = True
 
                     # Create the mimic request task but don't await it to avoid blocking
                     mimic_task = asyncio.create_task(self._mimic_request(request_id))
@@ -381,18 +444,10 @@ class BioEngineProxyDeployment:
                             print(
                                 f"⚠️ [{self.replica_id}] Mimic request task failed for '{self.application_id}' request ID {request_id}: {task.exception()}"
                             )
+                            # Clean up orphaned event if mimic request failed
+                            self._request_events.pop(request_id, None)
 
                     mimic_task.add_done_callback(handle_mimic_error)
-
-                    # Get the method from the entry deployment handle
-                    method = getattr(self.entry_deployment_handle, method_name, None)
-                    if method is None:
-                        print(
-                            f"❌ [{self.replica_id}] Method '{method_name}' not found on entry deployment"
-                        )
-                        raise AttributeError(
-                            f"Method '{method_name}' not found on entry deployment"
-                        )
 
                     # Forward the request to the actual deployment
                     try:
@@ -416,19 +471,24 @@ class BioEngineProxyDeployment:
                     print(
                         f"⚠️ [{self.replica_id}] Permission denied for method '{method_name}': {e}"
                     )
+                    # Clean up event if created before permission error
+                    if event_created:
+                        self._request_events.pop(request_id, None)
                     raise
                 except Exception as e:
                     print(
                         f"❌ [{self.replica_id}] Error in proxy function '{method_name}': {e}"
                     )
+                    # Clean up event if created before error
+                    if event_created:
+                        self._request_events.pop(request_id, None)
                     raise
                 finally:
-                    # Remove the event to prevent memory leaks
-                    event = self._request_events.pop(request_id, None)
-
-                    # Signal that the request is complete
-                    if event:
-                        event.set()
+                    # Signal that the request is complete, but don't remove the event yet
+                    # The event will be removed when the HTTP request completes in __call__
+                    event_data = self._request_events.get(request_id)
+                    if event_data:
+                        event_data["event"].set()
 
         return schema_function(
             func=deployment_function,
@@ -832,9 +892,18 @@ class BioEngineProxyDeployment:
             await self.entry_deployment_handle.check_health.remote()
             self.entry_deployment_ready = True
 
-        # Register WebRTC service if not already done
+        # Register services if not already done (with lock to prevent concurrent registration)
         if not self.server or not self.websocket_service_id:
-            await self._register_services()
+            async with self._registration_lock:
+                # Double-check after acquiring lock
+                if not self.server or not self.websocket_service_id:
+                    await self._register_services()
+                    
+                    # Start cleanup task on first successful registration
+                    if self._cleanup_task is None or self._cleanup_task.done():
+                        self._cleanup_task = asyncio.create_task(
+                            self._cleanup_orphaned_events()
+                        )
 
         # Check if Hypha server can be reached
         try:
@@ -845,6 +914,8 @@ class BioEngineProxyDeployment:
             )
             # Reset server connection to trigger re-connection on next call
             self.server = None
+            # Clear orphaned events since the connection is lost
+            self._request_events.clear()
             raise RuntimeError("Hypha server connection failed")
 
         # Check if the WebSocket service can be reached
@@ -858,6 +929,8 @@ class BioEngineProxyDeployment:
             )
             # Reset service ID to trigger re-registration on next call
             self.websocket_service_id = None
+            # Clear orphaned events since the service is lost
+            self._request_events.clear()
             raise RuntimeError("WebSocket service connection failed")
 
         # All checks passed - deployment is healthy

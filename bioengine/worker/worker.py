@@ -136,6 +136,7 @@ class BioEngineWorker:
         mode: Literal["single-machine", "slurm", "external-cluster"],
         admin_users: Optional[List[str]] = None,
         cache_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine",
+        ray_cache_dir: Optional[Union[str, Path]] = None,
         startup_applications: Optional[List[dict]] = None,
         monitoring_interval_seconds: int = 10,
         # Hypha server connection configuration
@@ -181,6 +182,11 @@ class BioEngineWorker:
                         Auto-includes the authenticated user from Hypha connection.
             cache_dir: Directory path for temporary files, Ray data storage, and worker state.
                       Must be accessible and have sufficient space for Ray operations.
+            ray_cache_dir: Directory path for Ray cluster cache when connecting to an external
+                          Ray cluster. Only used in 'external-cluster' mode. This allows the
+                          remote Ray cluster to use a different cache directory than the local
+                          machine. If not specified, uses the same directory as cache_dir.
+                          Not applicable for 'single-machine' or 'slurm' modes.
             startup_applications: List of application configuration dictionaries to deploy
                                  automatically during worker startup. Each dictionary should contain
                                  deployment parameters including 'artifact_id' and optionally
@@ -217,6 +223,7 @@ class BioEngineWorker:
         # Store configuration parameters
         self.admin_users = admin_users or []
         self.cache_dir = Path(cache_dir)
+        self.ray_cache_dir = Path(ray_cache_dir) if ray_cache_dir else None
         self.dashboard_url = dashboard_url.rstrip("/")
         self.monitoring_interval_seconds = monitoring_interval_seconds
 
@@ -304,10 +311,18 @@ class BioEngineWorker:
             # Check for running data server
             self._check_data_server()
 
+            # Determine the apps cache directory based on mode
+            # For external-cluster mode, use ray_cache_dir if provided, otherwise use cache_dir
+            # For single-machine and slurm modes, always use cache_dir
+            if mode == "external-cluster" and self.ray_cache_dir:
+                apps_cache_dir = self.ray_cache_dir / "apps"
+            else:
+                apps_cache_dir = self.cache_dir / "apps"
+
             # Initialize component managers with enhanced configuration
             self.apps_manager = AppsManager(
                 ray_cluster=self.ray_cluster,
-                apps_cache_dir=self.cache_dir / "apps",
+                apps_cache_dir=apps_cache_dir,
                 data_server_url=self.data_server_url,
                 data_server_workspace="public",
                 startup_applications=startup_applications,

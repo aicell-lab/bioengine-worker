@@ -126,15 +126,6 @@ class AppsManager:
         # Initialize components
         self.ray_cluster = ray_cluster
 
-        if self.ray_cluster.mode == "slurm":
-            # SLURM workers always mount cache directory to /home/<user>/.bioengine inside the container
-            apps_cache_dir = Path.home() / ".bioengine" / "apps"
-        elif self.ray_cluster.mode not in ["single-machine", "external-cluster"]:
-            raise ValueError(
-                f"Unsupported Ray cluster mode: {self.ray_cluster.mode}. "
-                "Supported modes are 'slurm', 'single-machine', and 'external-cluster'."
-            )
-
         self.app_builder = AppBuilder(
             apps_cache_dir=apps_cache_dir,
             data_server_url=data_server_url,

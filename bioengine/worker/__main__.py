@@ -119,6 +119,15 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "Should be accessible across worker nodes in distributed deployments.",
     )
     core_group.add_argument(
+        "--ray_cache_dir",
+        type=str,
+        metavar="PATH",
+        help="Directory for Ray cluster cache when connecting to an external Ray cluster. "
+        "Only used in 'external-cluster' mode. This allows the remote Ray cluster to use "
+        "a different cache directory than the local machine. If not specified, uses the "
+        "same directory as --cache_dir. Not applicable for 'single-machine' or 'slurm' modes.",
+    )
+    core_group.add_argument(
         "--startup_applications",
         type=str,
         nargs="+",

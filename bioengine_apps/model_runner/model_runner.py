@@ -989,10 +989,11 @@ class ModelCache:
         # "memory": 16 * 1024 * 1024 * 1024,  # 16GB RAM limit
         "runtime_env": {
             "pip": [
+                "aiofiles>=23.0.0",
                 "bioimageio.core==0.9.0",
                 "numpy==1.26.4",
+                "pyyaml>=5.4.1"
                 "tqdm>=4.64.0",
-                "aiofiles>=23.0.0",
             ],
         },
     },

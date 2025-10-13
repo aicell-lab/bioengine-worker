@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bioengine"
-version = "0.4.11"
+version = "0.4.12"
 description = "BioEngine Worker for managing Ray clusters and datasets"
 requires-python = ">=3.11"
 authors = [
@@ -19,7 +19,7 @@ dependencies = [
     "hypha-rpc>=0.20.81",
     "numpy==1.26.4",
     "pydantic>=2.11.0",
-    "pyyaml>=6.0.2",
+    "pyyaml>=5.4.1",
     "ray[client,serve]==2.33.0",
 ]
 

@@ -137,9 +137,9 @@ async def ensure_applications_collection(
         logger.info(f"Collection '{collection_id}' already exists")
     except Exception as collection_error:
         expected_error = (
-            f"KeyError: \"Artifact with ID '{collection_id}' does not exist.\""
+            f"KeyError: \"Artifact with ID '{collection_id}' does not exist."
         )
-        if str(collection_error).strip().endswith(expected_error):
+        if expected_error in str(collection_error).strip():
             collection_manifest = {
                 "name": "Applications",
                 "description": f"A collection of applications for workspace {workspace}",

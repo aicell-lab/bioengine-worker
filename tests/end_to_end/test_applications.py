@@ -54,15 +54,13 @@ async def test_create_and_delete_artifacts(
     ), f"Composition app directory not found: {composition_app_path}"
 
     # Create file lists from both directories
-    demo_app_files, demo_artifact_alias = create_file_list_from_directory(
+    demo_app_files = create_file_list_from_directory(
         directory_path=demo_app_path, _artifact_id_suffix=test_id
     )
-    demo_artifact_id = f"{hypha_workspace}/{demo_artifact_alias}"
 
-    composition_app_files, composition_artifact_alias = create_file_list_from_directory(
+    composition_app_files = create_file_list_from_directory(
         directory_path=composition_app_path, _artifact_id_suffix=test_id
     )
-    composition_artifact_id = f"{hypha_workspace}/{composition_artifact_alias}"
 
     # Verify we have files to upload
     assert len(demo_app_files) > 0, "Demo app directory should contain files"
@@ -70,7 +68,7 @@ async def test_create_and_delete_artifacts(
         len(composition_app_files) > 0
     ), "Composition app directory should contain files"
 
-    # Verify artifact has manifest files
+    # Verify artifact has manifest files and extract artifact IDs
     demo_manifest_file = next(
         (f for f in demo_app_files if f["name"] == "manifest.yaml"), None
     )
@@ -82,16 +80,24 @@ async def test_create_and_delete_artifacts(
     assert demo_manifest_file, "Demo app manifest not found"
     assert composition_manifest_file, "Composition app manifest not found"
 
-    # Ensure manifest files are valid YAML
+    # Ensure manifest files are valid YAML and extract artifact aliases
     try:
         demo_manifest = yaml.safe_load(demo_manifest_file["content"])
+        demo_artifact_alias = demo_manifest["id"]
+        demo_artifact_id = f"{hypha_workspace}/{demo_artifact_alias}"
     except yaml.YAMLError as e:
         pytest.fail(f"Invalid YAML in demo app manifest: {e}")
+    except KeyError:
+        pytest.fail("Demo app manifest missing 'id' field")
 
     try:
         composition_manifest = yaml.safe_load(composition_manifest_file["content"])
+        composition_artifact_alias = composition_manifest["id"]
+        composition_artifact_id = f"{hypha_workspace}/{composition_artifact_alias}"
     except yaml.YAMLError as e:
         pytest.fail(f"Invalid YAML in composition app manifest: {e}")
+    except KeyError:
+        pytest.fail("Composition app manifest missing 'id' field")
 
     # Verify the artifact IDs do not already exist
     existing_artifacts = await bioengine_worker_service.list_applications()
@@ -780,10 +786,20 @@ async def test_deploy_application_from_artifact(
         # Create artifacts first
         for app_path, artifact_id in zip(app_paths, artifact_ids):
             # Create file list from directory
-            files, artifact_alias = create_file_list_from_directory(
+            files = create_file_list_from_directory(
                 directory_path=app_path, _artifact_id_suffix=test_id
             )
+
+            # Extract artifact alias from manifest to verify it matches expected
+            manifest_file = next(
+                (f for f in files if f["name"] == "manifest.yaml"), None
+            )
+            assert manifest_file, f"Manifest not found in {app_path}"
+
+            manifest = yaml.safe_load(manifest_file["content"])
+            artifact_alias = manifest["id"]
             created_artifact_id = f"{hypha_workspace}/{artifact_alias}"
+
             assert (
                 created_artifact_id == artifact_id
             ), f"Artifact ID mismatch: expected {artifact_id}, got {created_artifact_id}"

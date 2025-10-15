@@ -1,11 +1,9 @@
 import asyncio
-import base64
 import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-import yaml
 from haikunator import Haikunator
 from hypha_rpc.rpc import RemoteService
 from hypha_rpc.utils.schema import schema_method
@@ -317,16 +315,19 @@ class AppsManager:
 
         Deployment Lifecycle:
         1. Reset deployment status and prepare for deployment
-        2. Build the application using the AppBuilder
-        3. Validate resource requirements and availability
-        4. Deploy to Ray Serve with unique routing
-        5. Update internal state with deployment metadata
-        6. Keep the deployment active until cancelled
-        7. Perform cleanup when task is cancelled or fails
+        2. Use the pre-built application from _deployed_applications or build if not available
+        3. Deploy to Ray Serve with unique routing
+        4. Keep the deployment active until cancelled
+        5. Perform cleanup when task is cancelled or fails
 
         The method runs indefinitely to maintain the deployment until explicitly
         cancelled. All cleanup is handled in the finally block to ensure proper
         resource management regardless of how the deployment ends.
+
+        Note:
+            Application building and resource validation are now done in deploy_application()
+            before this task is created, providing immediate user feedback for errors.
+            The built app is stored in _deployed_applications["built_app"] to avoid duplicate builds.
 
         Args:
             application_id: Unique identifier for the application deployment
@@ -346,29 +347,9 @@ class AppsManager:
             artifact_id = self._deployed_applications[application_id]["artifact_id"]
             version = self._deployed_applications[application_id]["version"]
 
-            # Create the deployment from the artifact
-            app = await self.app_builder.build(
-                application_id=application_id,
-                artifact_id=artifact_id,
-                version=version,
-                application_kwargs=self._deployed_applications[application_id][
-                    "application_kwargs"
-                ],
-                application_env_vars=self._deployed_applications[application_id][
-                    "application_env_vars"
-                ],
-                hypha_token=self._deployed_applications[application_id]["hypha_token"],
-                disable_gpu=self._deployed_applications[application_id]["disable_gpu"],
-                max_ongoing_requests=self._deployed_applications[application_id][
-                    "max_ongoing_requests"
-                ],
-            )
-
-            # Check if the required resources are available
-            await self._check_resources(
-                application_id=application_id,
-                required_resources=app.metadata["resources"],
-            )
+            # Use the pre-built app from _deployed_applications
+            # This was built and validated in deploy_application() before this task was created
+            app = self._deployed_applications[application_id]["built_app"]
 
             # Run the deployment in Ray Serve with unique route prefix
             await asyncio.to_thread(
@@ -878,55 +859,13 @@ class AppsManager:
             resource_name=f"creating or modifying an application",
         )
 
-        # Find the manifest file to extract metadata
-        manifest_file = None
-        for file in files:
-            if file["name"].lower() == "manifest.yaml":
-                manifest_file = file
-                break
-
-        if not manifest_file:
-            raise ValueError(
-                "No manifest file found in files list. Expected 'manifest.yaml'"
-            )
-
-        # Load the manifest content
-        if manifest_file["type"] == "text":
-            manifest_content = manifest_file["content"]
-        else:
-            # Remove `data:...` prefix from the base64 content
-            if manifest_file["content"].startswith("data:"):
-                manifest_content = manifest_file["content"].split(",")[1]
-            # Decode base64 content
-            manifest_content = base64.b64decode(manifest_content).decode("utf-8")
-            # remove data:... prefix from the base64 content
-            if manifest_content.startswith("data:"):
-                manifest_content = manifest_content.split(",")[1]
-
-        deployment_manifest = yaml.safe_load(manifest_content)
-
-        # Check if type is set to 'ray-serve'
-        artifact_type = deployment_manifest.get("type")
-        if artifact_type != "ray-serve":
-            raise ValueError(f"Type must be 'ray-serve', got '{artifact_type}'")
-
-        # Ensure the 'applications' collection exists
-        await ensure_applications_collection(
-            artifact_manager=self.artifact_manager,
-            workspace=self.server.config.workspace,
-            logger=self.logger,
-        )
-
-        # Prepare manifest updates to add created_by field
-        manifest_updates = {"created_by": context["user"]["id"]}
-
         # Create or update the artifact using the utility function
         try:
             created_artifact_id = await create_application_from_files(
                 artifact_manager=self.artifact_manager,
                 files=files,
                 workspace=self.server.config.workspace,
-                manifest_updates=manifest_updates,
+                user_id=context["user"]["id"],
                 logger=self.logger,
             )
         except Exception as e:
@@ -1189,9 +1128,30 @@ class AppsManager:
                         f"did not finish in time ({timeout} seconds). Proceeding with new deployment."
                     )
 
+            # Build the application first to validate format and catch errors early
+            app = await self.app_builder.build(
+                application_id=application_id,
+                artifact_id=artifact_id,
+                version=version,
+                application_kwargs=application_kwargs,
+                application_env_vars=application_env_vars,
+                hypha_token=hypha_token,
+                disable_gpu=disable_gpu,
+                max_ongoing_requests=max_ongoing_requests,
+            )
+
+            # Check resources before creating deployment task
+            self.logger.debug(
+                f"Checking resources for application '{application_id}': {app.metadata['resources']}"
+            )
+            await self._check_resources(
+                application_id=application_id,
+                required_resources=app.metadata["resources"],
+            )
+
             self._deployed_applications[application_id] = {
-                "display_name": "",
-                "description": "",
+                "display_name": app.metadata["name"],
+                "description": app.metadata["description"],
                 "artifact_id": artifact_id,
                 "version": version,
                 "application_kwargs": application_kwargs,
@@ -1199,14 +1159,15 @@ class AppsManager:
                 "hypha_token": hypha_token,
                 "disable_gpu": disable_gpu,
                 "max_ongoing_requests": max_ongoing_requests,
-                "application_resources": {},
-                "authorized_users": [],
-                "available_methods": [],
+                "application_resources": app.metadata["resources"],
+                "authorized_users": app.metadata["authorized_users"],
+                "available_methods": app.metadata["available_methods"],
                 "last_updated_by": user_id,
                 "deployment_task": None,  # Track the deployment task
                 "is_deployed": asyncio.Event(),  # Track if the deployment has been started
                 "remove_on_exit": not self.debug,  # Remove on exit unless in debug mode
                 "consecutive_failures": 0,  # Track consecutive failures for monitoring
+                "built_app": app,  # Store the pre-built app to avoid duplicate builds
             }
 
             # Create and start the deployment task

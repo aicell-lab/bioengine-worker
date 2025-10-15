@@ -7,7 +7,8 @@
 4. [Manifest Configuration](#manifest-configuration)
 5. [Creating Deployments](#creating-deployments)
 6. [Environment Variables and Built-in Classes](#environment-variables-and-built-in-classes)
-7. [Deployment and Usage](#deployment-and-usage)
+7. [Creating Applications from Local Files](#creating-applications-from-local-files)
+8. [Deployment and Usage](#deployment-and-usage)
 
 ## Introduction
 
@@ -419,6 +420,132 @@ async def process_data(
 ```
 
 The `Field` descriptions and method docstring become part of the API documentation.
+
+## Creating Applications from Local Files
+
+Once you've created your application directory with the required files, you can upload it to Hypha as an artifact using either the command-line script or the web interface.
+
+### Method 1: Using the Command-Line Script
+
+#### Setup Requirements
+
+Before using the `create_application.py` script, you need to clone the BioEngine repository and install it:
+
+```bash
+# Clone the repository
+git clone https://github.com/aicell-lab/bioengine-worker.git
+cd bioengine-worker
+
+# Install BioEngine
+pip install .
+```
+
+#### Prerequisites
+
+1. **Authentication** (Optional): You can authenticate to Hypha in two ways:
+   - **Environment variable**: Export your Hypha authentication token:
+     ```bash
+     export HYPHA_TOKEN="your-hypha-token-here"
+     ```
+   - **Interactive login**: If `HYPHA_TOKEN` is not set, you'll be prompted to log in interactively when running the script
+   
+   You can obtain a token from the Hypha server web interface or use the interactive login flow.
+
+2. **Prepare your application directory**: Ensure your directory contains at minimum:
+   - `manifest.yaml` with all required fields
+   - Python deployment file(s) referenced in the manifest
+
+#### Basic Usage
+
+```bash
+python scripts/create_application.py --directory <path-to-your-app>
+```
+
+**Example:**
+```bash
+python scripts/create_application.py --directory tests/demo_app
+```
+
+This command will:
+1. Read all files from the specified directory
+2. Validate the `manifest.yaml` file
+3. Upload the application to Hypha as an artifact
+4. Display the created artifact ID (e.g., `your-workspace/my-app`)
+
+#### What Happens During Upload
+
+The script performs the following steps:
+
+1. **Validation**: Checks that your manifest contains all required fields:
+   - `name`, `id`, `id_emoji`, `description`, `type`, `deployments`, `authorized_users`
+   - Validates that `type` is set to `ray-serve`
+   - Verifies deployment and authorized_users lists are non-empty
+
+2. **File Processing**: 
+   - Reads all files in your directory (including subdirectories)
+   - Text files (`.py`, `.yaml`, `.md`, etc.) are uploaded as-is
+   - Binary files are automatically base64-encoded
+
+3. **Artifact Creation**:
+   - Creates or updates the artifact in the Hypha artifact manager
+   - Places the artifact in the `applications` collection
+   - Adds metadata like `created_by` field with your user ID
+
+4. **File Management**: If updating an existing artifact:
+   - Uploads all new files
+   - Removes files that existed before but are not in the new directory
+   - Only removes old files after all new files upload successfully
+
+#### Success Output
+
+Upon successful upload, you'll see:
+```
+Application created successfully!
+Artifact ID: your-workspace/my-app-id
+```
+
+You can now deploy this application using the BioEngine worker service.
+
+#### Common Issues
+
+**Error: "Manifest is missing required field"**
+- Solution: Check that your `manifest.yaml` includes all required fields listed in the [Manifest Configuration](#manifest-configuration) section
+
+**Error: "Application type must be 'ray-serve'"**
+- Solution: Ensure your manifest has `type: ray-serve`
+
+**Error: "Invalid artifact alias"**
+- Solution: The `id` field in your manifest must use lowercase letters, numbers, and hyphens only (no underscores or slashes)
+
+**Authentication error or login prompt**
+- The script will prompt you to log in interactively if `HYPHA_TOKEN` is not set
+- Alternatively, you can export `HYPHA_TOKEN` as an environment variable to skip the interactive login
+
+### Method 2: Using the Hypha Web Interface
+
+You can also create and upload applications directly through the Hypha web interface without cloning the repository or installing BioEngine.
+
+#### Steps
+
+1. **Navigate to Hypha**: Go to [https://hypha.aicell.io/](https://hypha.aicell.io/)
+
+2. **Access your workspace**:
+   - Click on your profile picture in the top right corner
+   - Select **"My Workspace"**
+
+3. **Open Artifacts section**:
+   - Click on **"Artifacts"** in the navigation menu
+
+4. **Create new artifact**:
+   - Click the **"+ Create Artifact"** button
+
+5. **Configure and upload**:
+   - Fill in the artifact details (name, description, etc.)
+   - Set the artifact type to **"application"**
+   - Upload your application files (`manifest.yaml`, Python files, etc.)
+   - Click **"Create"** to finalize
+
+The web interface provides a user-friendly way to manage your applications without needing command-line tools, and it automatically validates your manifest and files during the upload process.
 
 ## Deployment and Usage
 

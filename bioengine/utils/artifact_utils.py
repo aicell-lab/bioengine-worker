@@ -13,7 +13,7 @@ from .logger import create_logger
 def create_file_list_from_directory(
     directory_path: Union[str, Path],
     _artifact_id_suffix: Optional[str] = None,
-) -> tuple[List[Dict[str, Any]], str]:
+) -> List[Dict[str, Any]]:
     """
     Convert a local directory to a list of file dictionaries for artifact creation.
 
@@ -27,21 +27,22 @@ def create_file_list_from_directory(
                            (useful for creating unique test artifacts)
 
     Returns:
-        Tuple of (list of file dictionaries, artifact alias)
-        File dictionaries contain 'name', 'content', and 'type' keys
-        Artifact alias is the ID from manifest.yaml without workspace prefix
+        List of file dictionaries with keys:
+        - 'name': relative file path (str)
+        - 'content': file content (str for text, base64 string for binary)
+        - 'type': 'text' for text files, 'base64' for binary files
 
     Raises:
-        ValueError: If no manifest.yaml found or directory doesn't exist
+        ValueError: If directory doesn't exist or is not a directory
         RuntimeError: If file reading fails
 
     Example:
-        files, artifact_alias = create_file_list_from_directory(
+        files = create_file_list_from_directory(
             directory_path="/path/to/my-app",
             _artifact_id_suffix="test-123"
         )
-        # Returns files list and "my-app-test-123"
-        # Then construct full ID: f"{workspace}/{artifact_alias}"
+        # Returns list of file dictionaries
+        # The manifest.yaml ID will be modified if suffix is provided
     """
     directory_path = Path(directory_path)
     if not directory_path.exists():
@@ -50,7 +51,6 @@ def create_file_list_from_directory(
         raise ValueError(f"Path is not a directory: {directory_path}")
 
     files = []
-    artifact_alias = None
 
     for file_path in directory_path.rglob("*"):
         if file_path.is_file():
@@ -90,23 +90,11 @@ def create_file_list_from_directory(
                 except Exception as e:
                     raise ValueError(f"Failed to update manifest: {e}")
 
-            # Extract artifact alias from manifest
-            if str(relative_path) == "manifest.yaml":
-                try:
-                    manifest = yaml.safe_load(content)
-                    if "id" in manifest:
-                        artifact_alias = manifest["id"]
-                except yaml.YAMLError:
-                    pass  # Will be caught later if artifact_alias is None
-
             files.append(
                 {"name": str(relative_path), "content": content, "type": file_type}
             )
 
-    if artifact_alias is None:
-        raise ValueError("No manifest.yaml file found or manifest missing 'id' field")
-
-    return files, artifact_alias
+    return files
 
 
 async def ensure_applications_collection(
@@ -174,24 +162,25 @@ async def ensure_applications_collection(
     return collection_id
 
 
-async def extract_and_validate_manifest(
+async def load_manifest_from_files(
     files: List[Dict[str, Any]],
-    manifest_updates: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Extract and validate the manifest from a list of files.
+    Extract and parse the manifest from a list of files.
+
+    This function only loads and parses the manifest YAML file from the files list.
+    It does NOT perform validation - use validate_manifest() for that.
 
     Args:
         files: List of file dictionaries
-        manifest_updates: Optional dictionary of fields to add/update in the manifest
 
     Returns:
-        Validated deployment manifest
+        Parsed manifest dictionary
 
     Raises:
-        ValueError: If manifest is missing or invalid
+        ValueError: If manifest file is missing or YAML is invalid
     """
-    # Find and validate manifest file
+    # Find manifest file
     manifest_file = None
     for file in files:
         if file["name"].lower() == "manifest.yaml":
@@ -212,15 +201,66 @@ async def extract_and_validate_manifest(
         manifest_content = base64.b64decode(manifest_content).decode("utf-8")
 
     try:
-        deployment_manifest = yaml.safe_load(manifest_content)
+        manifest = yaml.safe_load(manifest_content)
     except yaml.YAMLError as e:
         raise ValueError(f"Invalid YAML in manifest file: {e}")
 
-    # Apply any manifest updates
-    if manifest_updates:
-        deployment_manifest.update(manifest_updates)
+    return manifest
 
-    return deployment_manifest
+
+def validate_manifest(manifest: Dict[str, Any]) -> None:
+    """
+    Validate that a manifest contains all required fields and has correct format.
+
+    Validates manifest structure for Ray Serve application deployments.
+    This function can be called from both artifact creation (via load_manifest_from_files)
+    and deployment time (via AppBuilder._load_manifest).
+
+    Args:
+        manifest: The manifest dictionary to validate
+
+    Raises:
+        ValueError: If manifest is missing required fields or has invalid format
+
+    Example:
+        manifest = yaml.safe_load(manifest_content)
+        validate_manifest(manifest)  # Raises ValueError if invalid
+    """
+    # Validate required fields
+    required_fields = [
+        "name",
+        "id",
+        "id_emoji",
+        "description",
+        "type",
+        "deployments",
+        "authorized_users",
+    ]
+    for field in required_fields:
+        if field not in manifest:
+            raise ValueError(f"Manifest is missing required field: '{field}'")
+
+    # Validate type
+    if manifest["type"] != "ray-serve":
+        raise ValueError(
+            f"Invalid manifest type: '{manifest['type']}'. Expected 'ray-serve'."
+        )
+
+    # Validate deployments format
+    deployments = manifest["deployments"]
+    if not isinstance(deployments, list) or len(deployments) == 0:
+        raise ValueError(
+            "Invalid deployments format in manifest. "
+            "Expected a non-empty list of deployment descriptions in the format 'python_file:class_name'."
+        )
+
+    # Validate authorized_users format
+    authorized_users = manifest["authorized_users"]
+    if not isinstance(authorized_users, list) or len(authorized_users) == 0:
+        raise ValueError(
+            "Invalid authorized_users format in manifest. "
+            "Expected a non-empty list of user IDs or '*' for all users."
+        )
 
 
 def validate_artifact_id(
@@ -280,12 +320,10 @@ def validate_artifact_id(
     return full_artifact_id
 
 
-async def edit_artifact(
+async def stage_artifact(
     artifact_manager: ObjectProxy,
     workspace: str,
     manifest: Dict[str, Any],
-    artifact_type: str = "application",
-    collection: str = "applications",
     logger: Optional[logging.Logger] = None,
 ) -> ObjectProxy:
     """
@@ -295,8 +333,6 @@ async def edit_artifact(
         artifact_manager: Hypha artifact manager service instance
         workspace: Hypha workspace identifier
         manifest: The updated artifact manifest
-        artifact_type: The type of artifact to create
-        collection: The collection to place the artifact in
         logger: Optional logger instance for debugging
 
     Returns:
@@ -311,12 +347,6 @@ async def edit_artifact(
     # Get full artifact ID
     artifact_id = validate_artifact_id(manifest, workspace)
 
-    # Use workspace from full_artifact_id for consistency
-    if collection is not None:
-        collection_id = f"{workspace}/{collection}"
-    else:
-        collection_id = None
-
     # Check if artifact exists and handle collection placement
     artifact = None
     try:
@@ -325,6 +355,7 @@ async def edit_artifact(
 
         # Check if artifact is in the correct collection
         current_parent_id = getattr(existing_artifact, "parent_id", None)
+        collection_id = f"{workspace}/applications"
         if current_parent_id != collection_id:
             logger.info(
                 f"Artifact '{artifact_id}' exists but is in wrong collection "
@@ -341,15 +372,13 @@ async def edit_artifact(
             artifact = await artifact_manager.edit(
                 artifact_id=artifact_id,
                 manifest=manifest,
-                type=artifact_type,
+                type="application",
                 stage=True,
             )
             logger.info(f"Editing existing artifact '{artifact_id}'")
     except Exception as e:
-        expected_error = (
-            f"KeyError: \"Artifact with ID '{artifact_id}' does not exist.\""
-        )
-        if not str(e).strip().endswith(expected_error):
+        expected_error = f"KeyError: \"Artifact with ID '{artifact_id}' does not exist."
+        if expected_error not in str(e).strip():
             raise e
 
     # Create new artifact if it doesn't exist or was deleted
@@ -357,7 +386,7 @@ async def edit_artifact(
         try:
             artifact = await artifact_manager.create(
                 parent_id=collection_id,
-                type=artifact_type,
+                type="application",
                 alias=artifact_id.split("/")[1],
                 manifest=manifest,
                 stage=True,
@@ -439,6 +468,35 @@ async def upload_file_to_artifact(
         raise RuntimeError(f"Failed to upload file '{file_name}': {e}")
 
 
+async def remove_file_from_artifact(
+    artifact_manager: ObjectProxy,
+    artifact_id: str,
+    file_name: str,
+    logger: Optional[logging.Logger] = None,
+) -> None:
+    """
+    Remove a file from an artifact.
+
+    Args:
+        artifact_manager: Hypha artifact manager service instance
+        artifact_id: The artifact ID
+        file_name: The file name/path to remove
+        logger: Optional logger instance for debugging
+
+    Raises:
+        RuntimeError: If file removal fails
+    """
+    if logger is None:
+        logger = create_logger("ArtifactUtils")
+
+    logger.info(f"Removing file '{file_name}' from artifact...")
+
+    try:
+        await artifact_manager.remove_file(artifact_id, file_path=file_name)
+    except Exception as e:
+        raise RuntimeError(f"Failed to remove file '{file_name}': {e}")
+
+
 async def commit_artifact(
     artifact_manager: ObjectProxy,
     artifact_id: str,
@@ -470,7 +528,7 @@ async def create_application_from_files(
     artifact_manager: ObjectProxy,
     files: List[Dict[str, Any]],
     workspace: str,
-    manifest_updates: Optional[Dict[str, Any]] = None,
+    user_id: str,
     logger: Optional[logging.Logger] = None,
 ) -> str:
     """
@@ -480,6 +538,17 @@ async def create_application_from_files(
     from a list of files, including manifest validation, collection management,
     file uploads, and artifact commitment.
 
+    When updating an existing artifact, this function will:
+    1. Validate the manifest (must have type='ray-serve')
+    2. Add 'created_by' field to the manifest with the provided user_id
+    3. Upload all files from the provided files list
+    4. Only if all uploads succeed, remove any files that existed in the artifact
+       before but are not in the new files list
+
+    This ensures the artifact contains exactly the files specified in the files list,
+    with no orphaned files from previous versions. The removal of old files only
+    happens after all new files are successfully uploaded to prevent data loss.
+
     Args:
         artifact_manager: Hypha artifact manager service instance
         files: List of file dictionaries with keys:
@@ -487,14 +556,15 @@ async def create_application_from_files(
                - 'content': file content (str or bytes)
                - 'type': 'text' for text files, 'base64' for binary files
         workspace: Hypha workspace identifier
-        manifest_updates: Optional dictionary of fields to add/update in the manifest
+        user_id: User ID to set as the 'created_by' field in the manifest
         logger: Optional logger instance for debugging
 
     Returns:
         The artifact ID of the created or updated artifact
 
     Raises:
-        ValueError: If manifest is missing, invalid, or artifact ID format is incorrect
+        ValueError: If manifest is missing, invalid, type is not 'ray-serve',
+                   or artifact ID format is incorrect
         RuntimeError: If artifact creation, file upload, or commit fails
 
     Example:
@@ -507,7 +577,7 @@ async def create_application_from_files(
             artifact_manager=am,
             files=files,
             workspace="my-workspace",
-            manifest_updates={"created_by": "user123"}
+            user_id="user@example.com",
         )
     """
     if logger is None:
@@ -521,32 +591,80 @@ async def create_application_from_files(
     )
 
     # Extract and validate manifest
-    application_manifest = await extract_and_validate_manifest(
-        files=files, manifest_updates=manifest_updates
-    )
+    application_manifest = await load_manifest_from_files(files)
+    validate_manifest(application_manifest)
+
+    # Add created_by field to the manifest
+    application_manifest["created_by"] = user_id
 
     # Edit or create artifact, put in stage mode
-    artifact = await edit_artifact(
+    artifact = await stage_artifact(
         artifact_manager=artifact_manager,
         workspace=workspace,
         manifest=application_manifest,
         logger=logger,
     )
 
-    # Upload all files
+    # Get existing files if artifact already exists (to remove old files later)
+    existing_files = set()
+    try:
+        files_list = await artifact_manager.list_files(artifact.id)
+        existing_files = {file.name for file in files_list}
+        logger.info(
+            f"Found {len(existing_files)} existing files in artifact '{artifact.id}'"
+        )
+    except Exception as e:
+        # Artifact might be new, so no existing files
+        logger.debug(f"Could not list existing files (artifact may be new): {e}")
+
+    # Upload all files - track success
+    new_files = set()
+    upload_errors = []
+
     for file in files:
         file_name = file["name"]
         file_content = file["content"]
         file_type = file["type"]
 
-        await upload_file_to_artifact(
-            artifact_manager=artifact_manager,
-            artifact_id=artifact.id,
-            file_name=file_name,
-            file_content=file_content,
-            file_type=file_type,
-            logger=logger,
+        try:
+            await upload_file_to_artifact(
+                artifact_manager=artifact_manager,
+                artifact_id=artifact.id,
+                file_name=file_name,
+                file_content=file_content,
+                file_type=file_type,
+                logger=logger,
+            )
+            new_files.add(file_name)
+        except Exception as e:
+            upload_errors.append((file_name, str(e)))
+            logger.error(f"Failed to upload file '{file_name}': {e}")
+
+    # If any uploads failed, raise an error before removing old files
+    if upload_errors:
+        error_details = "; ".join([f"{name}: {err}" for name, err in upload_errors])
+        raise RuntimeError(
+            f"Failed to upload {len(upload_errors)} file(s): {error_details}"
         )
+
+    # Only remove old files if all new files were successfully uploaded
+    files_to_remove = existing_files - new_files
+    if files_to_remove:
+        logger.info(
+            f"Removing {len(files_to_remove)} old files that are no longer present"
+        )
+        for file_name in files_to_remove:
+            try:
+                await remove_file_from_artifact(
+                    artifact_manager=artifact_manager,
+                    artifact_id=artifact.id,
+                    file_name=file_name,
+                    logger=logger,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to remove old file '{file_name}': {e}. Continuing anyway..."
+                )
 
     # Commit the artifact
     await commit_artifact(

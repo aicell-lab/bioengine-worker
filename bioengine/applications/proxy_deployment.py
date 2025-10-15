@@ -177,10 +177,10 @@ class BioEngineProxyDeployment:
         # Store request events
         self.serve_http_url = serve_http_url
         self._request_events: Dict[str, Dict[str, Any]] = {}
-        
+
         # Lock for service registration
         self._registration_lock = asyncio.Lock()
-        
+
         # Start background cleanup task
         self._cleanup_task = None
 
@@ -228,11 +228,15 @@ class BioEngineProxyDeployment:
         event_data = self._request_events.get(request_id)
         if event_data:
             try:
-                await asyncio.wait_for(event_data["event"].wait(), timeout=3600)  # free after 1 hour
+                await asyncio.wait_for(
+                    event_data["event"].wait(), timeout=3600
+                )  # free after 1 hour
                 print(f"✅ [{self.replica_id}] Request completed: {request_id}")
                 return {"status": "completed", "request_id": request_id}
             except asyncio.TimeoutError:
-                print(f"⏱️ [{self.replica_id}] Request timed out after 1 hour: {request_id}")
+                print(
+                    f"⏱️ [{self.replica_id}] Request timed out after 1 hour: {request_id}"
+                )
                 return {"status": "timeout", "request_id": request_id}
             finally:
                 # Always remove the event to prevent memory leaks
@@ -344,30 +348,30 @@ class BioEngineProxyDeployment:
     async def _cleanup_orphaned_events(self) -> None:
         """
         Periodically clean up orphaned events that were never completed.
-        
+
         This background task runs every 5 minutes and removes events older than 2 hours
         to prevent unbounded memory growth from failed or abandoned requests.
         """
         while True:
             try:
                 await asyncio.sleep(300)  # Run every 5 minutes
-                
+
                 current_time = time.time()
                 max_age = 7200  # 2 hours
-                
+
                 orphaned_ids = []
                 for request_id, event_data in self._request_events.items():
                     age = current_time - event_data["created_at"]
                     if age > max_age:
                         orphaned_ids.append(request_id)
-                
+
                 if orphaned_ids:
                     print(
                         f"🧹 [{self.replica_id}] Cleaning up {len(orphaned_ids)} orphaned events older than 2 hours"
                     )
                     for request_id in orphaned_ids:
                         self._request_events.pop(request_id, None)
-                        
+
             except asyncio.CancelledError:
                 print(f"🛑 [{self.replica_id}] Cleanup task cancelled")
                 break
@@ -898,7 +902,7 @@ class BioEngineProxyDeployment:
                 # Double-check after acquiring lock
                 if not self.server or not self.websocket_service_id:
                     await self._register_services()
-                    
+
                     # Start cleanup task on first successful registration
                     if self._cleanup_task is None or self._cleanup_task.done():
                         self._cleanup_task = asyncio.create_task(

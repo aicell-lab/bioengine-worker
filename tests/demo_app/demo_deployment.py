@@ -113,7 +113,9 @@ class DemoDeployment:
                 data_file = await self.bioengine_datasets.get_file(
                     dataset_name, file_name
                 )
-                print(f"Successfully loaded data file {file_name} from dataset {dataset_name}")
+                print(
+                    f"Successfully loaded data file {file_name} from dataset {dataset_name}"
+                )
 
     # === Internal Methods ===
 

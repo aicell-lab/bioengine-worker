@@ -9,7 +9,6 @@ from bioengine.utils import (
     create_application_from_files,
     create_file_list_from_directory,
     create_logger,
-    ensure_applications_collection,
 )
 
 
@@ -45,9 +44,10 @@ async def create_application(
         }
     )
     workspace = server.config.workspace
+    user_id = server.config.user["id"]
 
     logger.info(
-        f"Connected to workspace {workspace} as client {server.config.client_id}"
+        f"Connected to workspace {workspace} as user {user_id} (client {server.config.client_id})"
     )
 
     artifact_manager = await server.get_service("public/artifact-manager")
@@ -55,23 +55,13 @@ async def create_application(
 
     # Create file list from directory
     try:
-        files, artifact_alias = create_file_list_from_directory(
+        files = create_file_list_from_directory(
             directory_path=directory,
         )
-        extracted_artifact_id = f"{workspace}/{artifact_alias}"
-        logger.info(
-            f"Created file list with {len(files)} files for artifact {extracted_artifact_id}"
-        )
+        logger.info(f"Created file list with {len(files)} files")
     except Exception as e:
         logger.error(f"Failed to create file list from directory: {e}")
         raise
-
-    # Ensure applications collection exists
-    await ensure_applications_collection(
-        artifact_manager=artifact_manager,
-        workspace=workspace,
-        logger=logger,
-    )
 
     # Create or update the artifact using the utility function
     try:
@@ -79,6 +69,7 @@ async def create_application(
             artifact_manager=artifact_manager,
             files=files,
             workspace=workspace,
+            user_id=user_id,
             logger=logger,
         )
         return artifact_id

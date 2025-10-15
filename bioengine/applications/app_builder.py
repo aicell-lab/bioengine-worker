@@ -19,7 +19,7 @@ from ray.serve.handle import DeploymentHandle
 import bioengine
 from bioengine.applications.proxy_deployment import BioEngineProxyDeployment
 from bioengine.datasets import BioEngineDatasets
-from bioengine.utils import create_logger, update_requirements
+from bioengine.utils import create_logger, update_requirements, validate_manifest
 
 
 class AppManifest(TypedDict):
@@ -218,20 +218,19 @@ class AppBuilder:
         • authorized_users: Who can access the deployed application
         • type: Must be "ray-serve" for Ray Serve deployments
 
-        Validation:
-        Checks that all required fields are present and have the correct format.
-        Ensures deployments list contains valid Python import paths.
+        Validation is performed on the loaded manifest to ensure all required
+        fields are present and have valid formats.
 
         Args:
             artifact_id: Artifact identifier like "my-workspace/my-app"
             version: Specific version to load (None = latest version)
 
         Returns:
-            Parsed and validated manifest as a typed dictionary
+            Parsed manifest as a typed dictionary
 
         Raises:
             FileNotFoundError: Manifest file missing in local development mode
-            ValueError: Manifest is malformed, missing fields, or wrong type
+            ValueError: Manifest not found in artifact
             Exception: Network/permission error downloading from artifact manager
 
         Example Manifest:
@@ -257,36 +256,8 @@ class AppBuilder:
             if manifest is None:
                 raise ValueError(f"Manifest not found in artifact {artifact_id}.")
 
-        required_fields = [
-            "name",
-            "id",
-            "id_emoji",
-            "description",
-            "type",
-            "deployments",
-            "authorized_users",
-        ]
-        for field in required_fields:
-            if field not in manifest:
-                raise ValueError(f"Manifest is missing required field: {field}")
-
-        if manifest["type"] != "ray-serve":
-            raise ValueError(
-                f"Invalid manifest type: {manifest['type']}. Expected 'ray-serve'."
-            )
-
-        deployments = manifest["deployments"]
-        if not isinstance(deployments, list) and len(deployments) > 0:
-            raise ValueError(
-                f"Invalid deployments format in artifact. "
-                "Expected a list of deployment descriptions in the format 'python_file:class_name'."
-            )
-        authorized_users = manifest["authorized_users"]
-        if not isinstance(authorized_users, list) and len(authorized_users) > 0:
-            raise ValueError(
-                f"Invalid authorized users format in artifact. "
-                "Expected a list of user IDs or '*' for all users."
-            )
+        # Validate the manifest structure
+        validate_manifest(manifest)
 
         return manifest
 

@@ -1,11 +1,9 @@
 import asyncio
-import base64
 import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-import yaml
 from haikunator import Haikunator
 from hypha_rpc.rpc import RemoteService
 from hypha_rpc.utils.schema import schema_method
@@ -878,55 +876,13 @@ class AppsManager:
             resource_name=f"creating or modifying an application",
         )
 
-        # Find the manifest file to extract metadata
-        manifest_file = None
-        for file in files:
-            if file["name"].lower() == "manifest.yaml":
-                manifest_file = file
-                break
-
-        if not manifest_file:
-            raise ValueError(
-                "No manifest file found in files list. Expected 'manifest.yaml'"
-            )
-
-        # Load the manifest content
-        if manifest_file["type"] == "text":
-            manifest_content = manifest_file["content"]
-        else:
-            # Remove `data:...` prefix from the base64 content
-            if manifest_file["content"].startswith("data:"):
-                manifest_content = manifest_file["content"].split(",")[1]
-            # Decode base64 content
-            manifest_content = base64.b64decode(manifest_content).decode("utf-8")
-            # remove data:... prefix from the base64 content
-            if manifest_content.startswith("data:"):
-                manifest_content = manifest_content.split(",")[1]
-
-        deployment_manifest = yaml.safe_load(manifest_content)
-
-        # Check if type is set to 'ray-serve'
-        artifact_type = deployment_manifest.get("type")
-        if artifact_type != "ray-serve":
-            raise ValueError(f"Type must be 'ray-serve', got '{artifact_type}'")
-
-        # Ensure the 'applications' collection exists
-        await ensure_applications_collection(
-            artifact_manager=self.artifact_manager,
-            workspace=self.server.config.workspace,
-            logger=self.logger,
-        )
-
-        # Prepare manifest updates to add created_by field
-        manifest_updates = {"created_by": context["user"]["id"]}
-
         # Create or update the artifact using the utility function
         try:
             created_artifact_id = await create_application_from_files(
                 artifact_manager=self.artifact_manager,
                 files=files,
                 workspace=self.server.config.workspace,
-                manifest_updates=manifest_updates,
+                user_id=context["user"]["id"],
                 logger=self.logger,
             )
         except Exception as e:

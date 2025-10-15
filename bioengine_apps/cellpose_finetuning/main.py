@@ -1,25 +1,225 @@
+"""Cellpose finetuning service using AsyncHyphaArtifact and simplified flows."""
+
+from __future__ import annotations
+
+import base64
+import io
+import logging
 import os
-import tempfile
-import zipfile
 from pathlib import Path
-import json
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
+from pydantic import Field
+from ray import serve
+
+from hypha_rpc import login
+from hypha_rpc.utils.schema import schema_function
+
+if TYPE_CHECKING:  # typing-only import
+    from cellpose.models import CellposeModel
+    from hypha_artifact import AsyncHyphaArtifact
+
+# Configure logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+# Avoid typing issues with Ray Serve decorators in absence of full stubs
+serve = cast("Any", serve)
+
+GB = 1024**3
+NDIM_3D_THRESHOLD = 2
 
 
-class CellposeFinetune(object):
+def _ensure_model_dir() -> Path:
+    d = Path.cwd() / "model"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _channels(train_channel: str, second_train_channel: str) -> list[int]:
+    lut = {"Grayscale": 0, "Red": 1, "Green": 2, "Blue": 3}
+    return [lut[train_channel], lut[second_train_channel]]
+
+
+def _artifact_cache_dir(artifact_id: str) -> Path:
+    """Return persistent cache dir for an artifact, creating it if needed.
+
+    Example: ./data_cache/workspace__alias
     """
+    safe = artifact_id.replace("/", "__")
+    cache_dir = Path.cwd() / "data_cache" / safe
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _encode_ndarray(arr: np.ndarray) -> dict[str, Any]:
+    r"""Encode a numpy array into a JSON-serializable dict (NPY-in-base64).
+
+    Reconstruction examples:
+    - Python:
+        data = base64.b64decode(obj["data"])\n
+        arr = np.load(
+            io.BytesIO(data),
+            allow_pickle=False,
+        )
+    - JS/TS: decode base64 to ArrayBuffer and parse with an NPY reader
+      (or handle server-side and send a PNG if visualization only is needed).
+    """
+    buf = io.BytesIO()
+    # NPY stores dtype and shape
+    np.save(buf, arr, allow_pickle=False)
+    payload = base64.b64encode(buf.getvalue()).decode("ascii")
+    return {
+        "encoding": "npy_base64",
+        "data": payload,
+        "dtype": str(arr.dtype),
+        "shape": list(arr.shape),
+    }
+
+
+async def _make_artifact_client(
+    artifact_id: str,
+    token: str,
+    server_url: str,
+) -> AsyncHyphaArtifact:
+    from hypha_artifact import AsyncHyphaArtifact
+
+    if "/" not in artifact_id:
+        msg = "artifact_id must be of form 'workspace/alias'"
+        raise ValueError(msg)
+    workspace, _alias = artifact_id.split("/", 1)
+    return AsyncHyphaArtifact(
+        artifact_id=artifact_id,
+        workspace=workspace,
+        server_url=server_url,
+        token=token,
+    )
+
+
+def _split_train_test(
+    pairs: list[tuple[Path, Path]],
+    train_ratio: float,
+) -> tuple[list[Path], list[Path], list[Path], list[Path]]:
+    idx = np.arange(len(pairs))
+    rng = np.random.default_rng()
+    rng.shuffle(idx)
+    tsize = max(1, int(len(idx) * train_ratio))
+    tr, te = idx[:tsize], idx[tsize:]
+    train_files = [pairs[i][0] for i in tr]
+    train_labels = [pairs[i][1] for i in tr]
+    test_files = [pairs[i][0] for i in te]
+    test_labels = [pairs[i][1] for i in te]
+    return train_files, train_labels, test_files, test_labels
+
+
+def _train(
+    save_dir: Path,
+    model: CellposeModel,
+    initial_model: str,
+    train_files: list[Path],
+    train_labels_files: list[Path],
+    test_files: list[Path],
+    test_labels_files: list[Path],
+    channels: list[int],
+    n_epochs: int,
+    learning_rate: float,
+    weight_decay: float,
+) -> Path:
+    from cellpose import train
+
+    new_model_path, _train_losses, _test_losses = train.train_seg(
+        model.net,
+        train_files=train_files,
+        train_labels_files=train_labels_files,
+        test_files=test_files,
+        test_labels_files=test_labels_files,
+        channels=channels,
+        n_epochs=n_epochs,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        SGD=True,
+        nimg_per_epoch=1,
+        save_path=save_dir,
+        model_name=f"finetuned_{initial_model}",
+        min_train_masks=1,
+    )
+    return Path(new_model_path)
+
+
+def _load_local_model(initial_model: str) -> CellposeModel:
+    from cellpose import core, models
+
+    return models.CellposeModel(
+        gpu=core.use_gpu(),
+        model_type=initial_model,
+    )
+
+
+def _load_model(identifier: str) -> CellposeModel:
+    """Load a Cellpose model by builtin name or by local file path.
+
+    If `identifier` points to an existing file, it is treated as a path to a
+    finetuned model. Otherwise, it is treated as a builtin model name
+    (e.g., "cyto3").
+    """
+    from cellpose import core, models
+
+    use_gpu = core.use_gpu()
+    p = Path(identifier)
+    if p.exists():
+        return models.CellposeModel(gpu=use_gpu, model_type=str(p))
+    return models.CellposeModel(gpu=use_gpu, model_type=identifier)
+
+
+@serve.deployment(
+    ray_actor_options={
+        "num_gpus": 1,
+        "num_cpus": 1,
+        "memory": 4 * GB,
+        "runtime_env": {
+            "pip": [
+                "cellpose==3.1.1.1",
+                "numpy==1.26.4",
+                "tifffile",
+                "hypha-artifact==0.1.2",
+                "hypha-rpc",
+            ],
+        },
+    },
+    max_ongoing_requests=3,
+    max_queued_requests=10,
+    autoscaling_config={
+        "min_replicas": 1,
+        "initial_replicas": 1,
+        "max_replicas": 2,
+        "target_num_ongoing_requests_per_replica": 0.8,
+        "metrics_interval_s": 2.0,
+        "look_back_period_s": 10.0,
+        "downscale_delay_s": 300,
+        "upscale_delay_s": 0.0,
+    },
+    health_check_period_s=30.0,
+    health_check_timeout_s=30.0,
+    graceful_shutdown_timeout_s=300.0,
+    graceful_shutdown_wait_loop_s=2.0,
+)
+class CellposeFinetune:
+    """Ray Serve deployment for finetuning and inference with Cellpose.
+
+    Downloads per-timepoint TIFFs from a dataset artifact, finetunes a Cellpose
+    model locally, and runs inference using the saved model stored in ./model.
+
     Based on cellpose 2.0 finetune notebook:
     https://colab.research.google.com/github/MouseLand/cellpose/blob/main/notebooks/run_cellpose_2.ipynb#scrollTo=Q7c7V4yEqDc_
     """
 
-    def __init__(self):
-        # Set up model directory
-        models_dir = Path().resolve() / "models"
-        models_dir.mkdir(parents=True, exist_ok=True)
-        os.environ["CELLPOSE_LOCAL_MODELS_PATH"] = str(models_dir)
-
-        # Define available pretrained models
+    def __init__(self) -> None:
+        """Initialize the deployment and prepare local directories."""
+        _ensure_model_dir()
+        os.environ.setdefault("CELLPOSE_LOCAL_MODELS_PATH", str(Path.cwd() / "models"))
+        # Provided by BioEngine runtime; annotated for type checkers
+        self.bioengine_hypha_client: Any | None = None
         self.pretrained_models = [
             "cyto",
             "cyto3",
@@ -33,457 +233,349 @@ class CellposeFinetune(object):
             "deepbacs_cp3",
         ]
 
-    async def _download_data(self, tmp_dir: Path, download_url: str) -> Path:
-        import httpx
+    async def list_pretrained_models(self) -> list[str]:
+        """Return available pretrained model identifiers."""
+        return self.pretrained_models
 
-        # Define the path to save the downloaded zip file
-        zip_file_path = tmp_dir / "data.zip"
+    def _get_missing_paths(
+        self,
+        dests: list[Path],
+        out_dir: Path,
+    ) -> tuple[list[str], list[str]]:
+        """Get lists of a set of remote & local paths that are missing locally."""
+        missing_dests: list[Path] = [
+            dest for dest in dests if not (dest.exists() and dest.stat().st_size > 0)
+        ]
+        for dest in missing_dests:
+            dest.parent.mkdir(parents=True, exist_ok=True)
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(download_url)
-            response.raise_for_status()
-            zip_file_path.write_bytes(response.content)
+        remote_paths = [str(dest) for dest in missing_dests]
+        local_paths = [str(out_dir / dest) for dest in missing_dests]
 
-        # Unzip the downloaded file directly to tmp_dir
-        # This will create the data/ folder structure inside tmp_dir
-        with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
-            zip_ref.extractall(tmp_dir)
+        return remote_paths, local_paths
 
-        # Return the path to the extracted data directory
-        data_dir = tmp_dir / "data"
+    async def _download_pairs_from_artifact(
+        self,
+        artifact: AsyncHyphaArtifact,
+        out_dir: Path,
+    ) -> list[tuple[Path, Path]]:
+        """Download dataset files in batches and return local (img, ann) pairs."""
+        metadata_dir = out_dir / "metadata"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
 
-        # Verify the data directory exists
-        if not data_dir.exists():
-            raise FileNotFoundError(f"Expected data directory not found at {data_dir}")
+        await artifact.get(
+            "metadata/",
+            str(metadata_dir),
+            recursive=True,
+            on_error="ignore",
+        )
 
-        return data_dir
+        image_paths, annotation_paths = self._image_annotation_paths(out_dir)
+        if not image_paths or not annotation_paths:
+            msg = "No metadata/*.json found or no valid image/annotation pairs"
+            raise FileNotFoundError(msg)
 
-    async def _find_image_annotation_pairs(self, image_dir):
-        annotations_dir = image_dir / "annotations"
+        missing_rpaths, missing_lpaths = self._get_missing_paths(
+            image_paths + annotation_paths,
+            out_dir,
+        )
 
-        # Verify annotations directory exists
-        if not annotations_dir.exists():
-            raise FileNotFoundError(
-                f"Annotations directory not found at {annotations_dir}"
-            )
+        if missing_rpaths:
+            await artifact.get(missing_rpaths, missing_lpaths, on_error="ignore")
 
-        # List to hold pairs of image and corresponding annotation masks
-        image_annotation_pairs = []
+        return list(zip(image_paths, annotation_paths))
 
-        # Get list of all annotations
-        annotation_files = list(annotations_dir.glob("*.tif"))
+    def _image_annotation_paths(
+        self,
+        cache_root: Path,
+    ) -> tuple[list[Path], list[Path]]:
+        """Parse local metadata files to image/annotation Path pairs.
 
-        if not annotation_files:
-            raise ValueError(f"No annotation files found in {annotations_dir}")
+        Reads JSON files from cache_root/metadata and extracts
+        uploaded_images/uploaded_annotations lists fields.
+        Malformed JSON files are skipped with a warning.
+        """
+        import json
 
-        # Iterate through each annotation file
-        for annotation_file in annotation_files:
-            annotation_name = annotation_file.name
-            # Handle both "_mask.tif" and "_mask_1.tif" patterns
-            if "_mask.tif" in annotation_name:
-                image_name = annotation_name.replace("_mask.tif", ".tif")
-            elif "_mask_" in annotation_name:
-                image_name = annotation_name.split("_mask_")[0] + ".tif"
-            else:
-                # Skip files that don't match expected mask pattern
+        all_image_paths: list[Path] = []
+        all_annotation_paths: list[Path] = []
+        for mf in (cache_root / "metadata").glob("*.json"):
+            try:
+                text = mf.read_text(encoding="utf-8")
+                meta = json.loads(text)
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                logger.warning("Skipping metadata file %s due to error: %s", mf, exc)
                 continue
 
-            image_file = image_dir / image_name
+            meta_img_paths: list[Path] = [
+                Path(item) for item in meta.get("uploaded_images", [])
+            ]
+            meta_ann_paths: list[Path] = [
+                Path(item) for item in meta.get("uploaded_annotations", [])
+            ]
+            if (
+                meta_img_paths
+                and meta_ann_paths
+                and len(meta_img_paths) == len(meta_ann_paths)
+            ):
+                all_image_paths.extend(meta_img_paths)
+                all_annotation_paths.extend(meta_ann_paths)
 
-            # Only add the pair if both files exist
-            if image_file.exists():
-                image_annotation_pairs.append((image_file, annotation_file))
-            else:
-                print(
-                    f"Warning: Image file {image_file} not found for annotation {annotation_file}"
-                )
+        return all_image_paths, all_annotation_paths
 
-        if not image_annotation_pairs:
-            raise ValueError(f"No valid image-annotation pairs found in {image_dir}")
-
-        return image_annotation_pairs
-
-    def _set_channels(self, train_channel, second_train_channel):
-        channels_lut = {
-            "Grayscale": 0,
-            "Red": 1,
-            "Green": 2,
-            "Blue": 3,
-        }
-        channels = [
-            channels_lut[train_channel],  # Channel to use for training
-            channels_lut[
-                second_train_channel
-            ],  # Second training channel (if applicable)
-        ]
-        return channels
-
-    def _prepare_training_data(self, image_annotation_pairs, train_ratio):
-        # Get all indices of the list
-        all_indices = np.arange(len(image_annotation_pairs))
-
-        # Define the split ratio (e.g., 80% train, 20% test)
-        train_size = int(len(all_indices) * train_ratio)
-
-        # Randomly shuffle and split indices
-        np.random.shuffle(all_indices)
-        train_indices = all_indices[:train_size]
-        test_indices = all_indices[train_size:]
-
-        # Create train and test splits
-        train_files = [image_annotation_pairs[i][0] for i in train_indices]
-        train_labels_files = [image_annotation_pairs[i][1] for i in train_indices]
-        test_files = [image_annotation_pairs[i][0] for i in test_indices]
-        test_labels_files = [image_annotation_pairs[i][1] for i in test_indices]
-
-        return train_files, train_labels_files, test_files, test_labels_files
-
-    def _train_cellpose(
+    @schema_function(skip_self=True, arbitrary_types_allowed=True)
+    async def train(
         self,
-        save_dir,
-        model,
-        initial_model,
-        train_files,
-        train_labels_files,
-        test_files,
-        test_labels_files,
-        channels,
-        n_epochs=10,
-        learning_rate=0.000001,
-        weight_decay=0.0001,
-    ):
-        from cellpose import train
+        data_artifact_id: str = Field(
+            ...,
+            description="Artifact id 'workspace/alias' containing dataset TIFFs",
+            examples=["ri-scale/zarr-demo"],
+        ),
+        model: str = Field(
+            "cyto3",
+            description="Base Cellpose model to finetune",
+            examples=["cyto", "cyto3", "nuclei"],
+        ),
+        train_channel: str = Field(
+            "Grayscale",
+            description="First channel identifier for Cellpose",
+        ),
+        second_train_channel: str = Field(
+            "Grayscale",
+            description="Second channel identifier for Cellpose",
+        ),
+        train_ratio: float = Field(
+            0.8,
+            ge=0.0,
+            le=1.0,
+            description="Fraction of pairs used for training (rest for testing)",
+        ),
+        n_epochs: int = Field(10, ge=1, description="Training epochs"),
+        learning_rate: float = Field(
+            1e-6,
+            gt=0,
+            description="Optimizer learning rate",
+        ),
+        weight_decay: float = Field(
+            1e-4,
+            ge=0,
+            description="Optimizer weight decay",
+        ),
+        server_url: str = Field(
+            "https://hypha.aicell.io",
+            description="Hypha server URL",
+        ),
+    ) -> dict[str, Any]:
+        """Train using images saved in artifact in per-timepoint TIFF layout."""
+        if model not in self.pretrained_models:
+            msg = f"Invalid base model: {model}"
+            raise ValueError(msg)
 
-        new_model_path, train_losses, test_losses = train.train_seg(
-            model.net,
+        env_token = os.environ.get("HYPHA_TOKEN")
+        token = env_token if env_token else await login({"server_url": server_url})
+
+        artifact = await _make_artifact_client(
+            data_artifact_id,
+            token,
+            server_url,
+        )
+        # Use persistent cache directory for dataset
+        cache_dir = _artifact_cache_dir(data_artifact_id)
+        pairs = await self._download_pairs_from_artifact(
+            artifact,
+            cache_dir,
+        )
+        train_files, train_labels, test_files, test_labels = _split_train_test(
+            pairs,
+            train_ratio,
+        )
+
+        channels = _channels(train_channel, second_train_channel)
+
+        cp_model = _load_local_model(model)
+        new_model_path = _train(
+            save_dir=cache_dir,
+            model=cp_model,
+            initial_model=model,
             train_files=train_files,
-            train_labels_files=train_labels_files,
+            train_labels_files=train_labels,
             test_files=test_files,
-            test_labels_files=test_labels_files,
+            test_labels_files=test_labels,
             channels=channels,
             n_epochs=n_epochs,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
-            SGD=True,
-            nimg_per_epoch=1,
-            save_path=save_dir,
-            model_name=f"finetuned_{initial_model}",
-            min_train_masks=1,
         )
 
-        return model, new_model_path, train_losses, test_losses
+        # Save to local model/ directory
+        model_dir = _ensure_model_dir()
+        final_path = model_dir / new_model_path.name
+        final_path.write_bytes(new_model_path.read_bytes())
 
-    def _evaluate_cellpose(self, model, channels, test_files, test_labels_files, stage):
-        from cellpose import metrics
-        from tifffile import imread, imwrite
+        return {"status": "success", "model_path": str(final_path)}
 
-        # get files (during training, test_data is transformed so we will load it again)
-        test_data = [imread(image_path) for image_path in test_files]
-        test_labels = [imread(image_path) for image_path in test_labels_files]
-
-        # diameter of labels in training images - use model diameter
-        diam_labels = model.diam_labels.item()
-
-        # run model on test images
-        masks = model.eval(test_data, channels=channels, diameter=diam_labels)[0]
-
-        # check performance using ground truth labels
-        ap = metrics.average_precision(test_labels, masks, threshold=[0.5, 0.75, 0.9])[
-            0
-        ]
-
-        # TODO: save masks to disk
-        prediction_files = []
-        predictions_dir = test_files[0].parent / f"predictions"
-        predictions_dir.mkdir(parents=True, exist_ok=True)
-        for image_file, mask in zip(test_files, masks):
-            counter = 1
-            prediction_file = (
-                predictions_dir
-                / f"{image_file.stem}_{stage}_predicted_mask_{counter}.tif"
-            )
-            while prediction_file.exists():
-                counter += 1
-                prediction_file = (
-                    predictions_dir
-                    / f"{image_file.stem}_{stage}_predicted_mask_{counter}.tif"
-                )
-            prediction_files.append(prediction_file)
-            imwrite(prediction_file, mask)
-
-        # precision at different IOU thresholds
-        ap = {str(t): p for t, p in zip([0.5, 0.75, 0.9], ap.mean(axis=0))}
-
-        return prediction_files, ap
-
-    async def _upload_data(
+    @schema_function(skip_self=True, arbitrary_types_allowed=True)
+    async def infer(
         self,
-        result_upload_url: str,
-        tmp_dir: Path,
-        model_path: str,
-        test_files: list,
-        test_labels_files: list,
-        initial_predictions: list,
-        finetuned_predictions: list,
-        train_losses: list,
-        test_losses: list,
-        initial_ap: dict,
-        finetuned_ap: dict,
-    ):
-        # Create a zip file with the finetuned model, test_files, test_labels_files, initial_predictions, finetuned_predictions
-        # Summarize train_losses, test_losses, initial_ap and finetuned_ap in one json file and add it to the zip file
-        import httpx
+        artifact_id: str = Field(
+            ...,
+            description="Artifact id 'workspace/alias' containing source images",
+        ),
+        image_paths: list[str] = Field(
+            ...,
+            description="List of image paths within the artifact",
+            min_length=1,
+        ),
+        model: str = Field(
+            "cyto3",
+            description=(
+                "Model identifier: either a local finetuned model file path (*.pth) "
+                "or the name of a builtin pretrained model (e.g., 'cyto3')."
+            ),
+        ),
+        train_channel: str = Field(
+            "Grayscale",
+            description="First channel identifier for Cellpose",
+        ),
+        second_train_channel: str = Field(
+            "Grayscale",
+            description="Second channel identifier for Cellpose",
+        ),
+        diameter: float | None = Field(None, description="Diameter for Cellpose", ge=0),
+        server_url: str = Field(
+            "https://hypha.aicell.io",
+            description="Hypha server URL",
+        ),
+    ) -> dict[str, Any]:
+        """Run inference and return encoded mask arrays instead of file paths.
 
-        # Create a summary file with train_losses, test_losses, initial_ap and finetuned_ap
-        summary = {
-            "train_losses": list(train_losses),
-            "test_losses": list(test_losses),
-            "initial_ap": list(initial_ap),
-            "finetuned_ap": list(finetuned_ap),
-        }
+        Returns a dict with a `predictions` list, where each item contains the
+        original artifact path and an encoded array payload describing the mask.
+        """
+        from tifffile import imread
 
-        summary_file = tmp_dir / "summary.json"
-        with summary_file.open("w") as f:
-            json.dump(summary, f)
+        env_token = os.environ.get("HYPHA_TOKEN")
+        token = env_token if env_token else await login({"server_url": server_url})
 
-        # Create a list of all files to include in the zip
-        files_to_zip = (
-            [
-                model_path,
-                summary_file,
-            ]
-            + test_files
-            + test_labels_files
-            + initial_predictions
-            + finetuned_predictions
+        # Resolve model identifier (local path or builtin name)
+        model_identifier = model
+        # If a path-like identifier is provided but doesn't exist, error early
+        if model and Path(model).suffix and not Path(model).exists():
+            msg = f"Model path not found: {model}"
+            raise FileNotFoundError(msg)
+
+        model_obj = _load_model(model_identifier)
+        channels = _channels(train_channel, second_train_channel)
+
+        artifact = await _make_artifact_client(
+            artifact_id,
+            token,
+            server_url,
         )
 
-        # Create a zip file
-        zip_file_path = tmp_dir / "finetuned_model.zip"
-        with zipfile.ZipFile(zip_file_path, "w") as zip_file:
-            for file in files_to_zip:
-                zip_file.write(file, arcname=file.name)
-
-        # Upload the zip file to the provided upload URL
-        zip_content = zip_file_path.read_bytes()
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.put(result_upload_url, content=zip_content)
-            response.raise_for_status()
-
-    async def list_pretrained_models(self) -> list:
-        return self.pretrained_models
-
-    async def train(self, data: dict) -> dict:
-        """
-        Runs Cellpose v2 finetuning
-
-        Args:
-            data: Dictionary containing the following keys:
-                - data_download_url: Presigned URL of the data to download
-                - result_upload_url: Presigned URL to upload the model finetuning results
-                - initial_model: Initial model to use for finetuning (not used if 'model_download_url' is given)
-
-            Additional optional keys:
-                - model_download_url: Presigned URL to download checkpoint from (optional)  # TODO: implement
-                - train_channel: Channel to use for training, default is "Grayscale"
-                - second_train_channel: Second training channel (if applicable)
-                - train_ratio: Ratio of training data, default is 0.8
-                - n_epochs: Number of epochs for training, default is 10
-                - learning_rate: Learning rate for training, default is 0.000001
-                - weight_decay: Weight decay for training, default is 0.0001
-
-        Returns:
-            A dictionary with the status of the finetuning process.
-        """
-        from cellpose import core, models
-
-        # Check if the required keys are present in the data dictionary
-        required_keys = [
-            "data_download_url",
-            "result_upload_url",
-            "initial_model",
-        ]
-        for key in required_keys:
-            if key not in data:
-                raise ValueError(f"Missing required key: {key} in data dictionary.")
-
-        # Check if the initial model is valid
-        if data["initial_model"] not in self.pretrained_models:
-            raise ValueError(
-                f"Invalid initial model: {data['initial_model']}. "
-                f"Available models: {', '.join(self.pretrained_models)}."
+        # Use the same persistent cache for inference; download missing files
+        cache_dir = _artifact_cache_dir(artifact_id)
+        out_items: list[dict[str, Any]] = []
+        for p in image_paths:
+            local_img = cache_dir / p
+            local_img.parent.mkdir(parents=True, exist_ok=True)
+            if not (local_img.exists() and local_img.stat().st_size > 0):
+                async with artifact.open(p, "rb") as fh:
+                    bytes_or_str = await fh.read()
+                    data_bytes = (
+                        bytes_or_str.encode("utf-8")
+                        if isinstance(bytes_or_str, str)
+                        else bytes_or_str
+                    )
+                    local_img.write_bytes(data_bytes)
+            img = imread(local_img)
+            masks = model_obj.eval([img], channels=channels, diameter=diameter)[0]
+            # Cellpose returns labeled mask as 2D; if not, take first plane
+            mask_np = masks if isinstance(masks, np.ndarray) else np.asarray(masks)
+            mask_np = mask_np[0] if mask_np.ndim > NDIM_3D_THRESHOLD else mask_np
+            # Ensure integer type for segmentation masks
+            if not np.issubdtype(mask_np.dtype, np.integer):
+                mask_np = mask_np.astype(np.int32, copy=False)
+            out_items.append(
+                {
+                    "artifact_path": p,
+                    "array": _encode_ndarray(mask_np),
+                },
             )
 
-        # If model_download_url is provided, raise NotImplementedError
-        if "model_download_url" in data:
-            raise NotImplementedError(
-                "Starting from a model checkpoint is not implemented yet."
-            )
+        return {"predictions": out_items}
 
-        # Create a temporary directory to save the downloaded file
-        with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmp:
-            tmp_dir = Path(tmp)
 
-            # Download the data from the provided URL
-            # TODO: replace this with HttpZarrStore from artifact manager (https://docs.amun.ai/#/artifact-manager?id=endpoint-2-workspaceartifactsartifact_aliaszip-fileszip_file_pathpathpathpath)
-            image_dir = await self._download_data(tmp_dir, data["data_download_url"])
+def _generate_test_image(size: tuple[int, int] = (256, 256)) -> np.ndarray:
+    """Generate a simple synthetic grayscale image with a few bright blobs.
 
-            # Create pairs of image and annotation masks
-            image_annotation_pairs = await self._find_image_annotation_pairs(image_dir)
-            train_files, train_labels_files, test_files, test_labels_files = (
-                self._prepare_training_data(
-                    image_annotation_pairs=image_annotation_pairs,
-                    train_ratio=data.get("train_ratio", 0.8),
-                )
-            )
+    No external dependencies; draws 2-3 disks on a dark background.
+    """
+    h, w = size
+    yy, xx = np.mgrid[0:h, 0:w]
+    img = np.zeros((h, w), dtype=np.float32)
+    # Three disks with different centers/radii
+    disks = [
+        ((h * 0.3, w * 0.35), min(h, w) * 0.10, 0.8),
+        ((h * 0.6, w * 0.6), min(h, w) * 0.12, 1.0),
+        ((h * 0.7, w * 0.3), min(h, w) * 0.08, 0.6),
+    ]
+    for (cy, cx), r, val in disks:
+        mask = (yy - cy) ** 2 + (xx - cx) ** 2 <= r**2
+        img[mask] = np.maximum(img[mask], val)
+    # Add mild noise
+    rng = np.random.default_rng(42)
+    img = np.clip(
+        img + 0.05 * rng.standard_normal(img.shape, dtype=np.float32),
+        0.0,
+        1.0,
+    )
+    return (img * 255).astype(np.uint8)
 
-            # Initialize Cellpose model from one of the available models
-            model = models.CellposeModel(
-                gpu=core.use_gpu(), model_type=data["initial_model"]
-            )
 
-            # Set channels for training
-            channels = self._set_channels(
-                train_channel=data.get("train_channel", "Grayscale"),
-                second_train_channel=data.get("second_train_channel", "Grayscale"),
-            )
+def _run_local_model_test() -> dict[str, str]:
+    """Run a local smoke test: save synthetic image, run model, save prediction.
 
-            # Evaluate initial model
-            initial_predictions, initial_ap = self._evaluate_cellpose(
-                model=model,
-                channels=channels,
-                test_files=test_files,
-                test_labels_files=test_labels_files,
-                stage="initial",
-            )
+    Returns a dict with paths to input and output files.
+    """
+    from tifffile import imread, imwrite
 
-            # Finetune Cellpose model
-            model, model_path, train_losses, test_losses = self._train_cellpose(
-                save_dir=tmp_dir,
-                model=model,
-                initial_model=data["initial_model"],
-                train_files=train_files,
-                train_labels_files=train_labels_files,
-                test_files=test_files,
-                test_labels_files=test_labels_files,
-                channels=channels,
-                n_epochs=data.get("n_epochs", 10),
-                learning_rate=data.get("learning_rate", 0.000001),
-                weight_decay=data.get("weight_decay", 0.0001),
-            )
+    base_dir = Path.cwd() / "local_tests"
+    in_dir = base_dir / "inputs"
+    out_dir = base_dir / "outputs"
+    in_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-            # Evaluate finetuned model
-            finetuned_predictions, finetuned_ap = self._evaluate_cellpose(
-                model=model,
-                channels=channels,
-                test_files=test_files,
-                test_labels_files=test_labels_files,
-                stage="finetuned",
-            )
+    input_path = in_dir / "synthetic_256.ome.tif"
+    if not input_path.exists():
+        img = _generate_test_image()
+        imwrite(input_path, img)
 
-            # Save the finetuning results in a zip file and upload it
-            await self._upload_data(
-                result_upload_url=data["result_upload_url"],
-                tmp_dir=tmp_dir,
-                model_path=model_path,
-                test_files=test_files,
-                test_labels_files=test_labels_files,
-                initial_predictions=initial_predictions,
-                finetuned_predictions=finetuned_predictions,
-                train_losses=train_losses,
-                test_losses=test_losses,
-                initial_ap=initial_ap,
-                finetuned_ap=finetuned_ap,
-            )
+    # Choose model: prefer finetuned model in ./model, else fallback to pretrained
+    model_dir = _ensure_model_dir()
+    # Prefer a finetuned model if present (optional); we still use initial_model
+    _finetuned_candidates = sorted(model_dir.glob("*.pth"))
+    initial_model = "cyto3"
+    model = _load_local_model(initial_model)
 
-            # Clean up the finetuned model `model_path`
-            os.remove(model_path)
+    channels = _channels("Grayscale", "Grayscale")
+    img = imread(input_path)
+    masks = model.eval([img], channels=channels)[0]
+    masks_np = masks if isinstance(masks, np.ndarray) else np.asarray(masks)
+    output_path = out_dir / "synthetic_256_pred.tif"
+    imwrite(
+        output_path,
+        masks_np[0] if masks_np.ndim > NDIM_3D_THRESHOLD else masks_np,
+    )
 
-            return {"status": "success"}
+    return {"input": str(input_path), "output": str(output_path)}
 
 
 if __name__ == "__main__":
-    import asyncio
-
-    from hypha_rpc import connect_to_server, login
-
-    async def test_model():
-        os.environ["TMPDIR"] = str(
-            Path("__file__").parent.parent.parent / ".bioengine" / "cellpose_finetuning"
-        )
-        server_url = "https://hypha.aicell.io"
-        token = os.environ["HYPHA_TOKEN"] or await login({"server_url": server_url})
-        server = await connect_to_server({"server_url": server_url, "token": token})
-
-        artifact_manager = await server.get_service("public/artifact-manager")
-
-        workspace = server.config.workspace
-        collection_id = f"{workspace}/bioimageio-colab"
-        data_artifact_alias = "hpa-demo"
-        model_artifact_alias = "cellpose-cyto3-hpa-finetuned"
-
-        finetuning_result = model_artifact_alias.replace("-", "_") + ".zip"
-
-        # Create an artifact for the fine-tuned Cellpose model
-        model_manifest = {
-            "name": "Finetuned Cellpose model",
-            "description": "Finetuned model for Cellpose cyto3",
-            "type": "generic",
-        }
-
-        try:
-            model_artifact = await artifact_manager.create(
-                alias=model_artifact_alias,
-                parent_id=collection_id,
-                manifest=model_manifest,
-                type="application",
-                stage=True,
-            )
-            print(f"Artifact created with ID: {model_artifact.id}")
-        except:
-            artifact_id = f"{workspace}/{model_artifact_alias}"
-            artifact_files = await artifact_manager.list_files(artifact_id)
-            for file in artifact_files:
-                if file.name == finetuning_result:
-                    print(
-                        f"The file '{finetuning_result}' already exists in the artifact '{artifact_id}'. Overwriting it."
-                    )
-                    break
-
-            # Edit the existing artifact with the new manifest
-            model_artifact = await artifact_manager.edit(
-                artifact_id=f"{workspace}/{model_artifact_alias}",
-                manifest=model_manifest,
-                type=model_manifest["type"],
-                stage=True,
-            )
-
-        # Create presigned URLs for data download and model upload
-        data_download_url = await artifact_manager.get_file(
-            artifact_id=f"{workspace}/{data_artifact_alias}",
-            file_path="data.zip",
-        )
-
-        result_upload_url = await artifact_manager.put_file(
-            artifact_id=model_artifact.id,
-            file_path=finetuning_result,
-        )
-
-        data = {
-            "data_download_url": data_download_url,
-            "result_upload_url": result_upload_url,
-            "initial_model": "cyto3",
-        }
-
-        # Run the finetuning process
-        cellpose_finetuning = CellposeFinetune()
-
-        output = await cellpose_finetuning.train(data)
-
-        assert output["status"] == "success", "Finetuning failed"
-
-        # Commit the artifact
-        await artifact_manager.commit(artifact_id=model_artifact.id)
-        print(f"Committed artifact with ID: {model_artifact.id}")
-
-    asyncio.run(test_model())
+    # Simple local smoke test: generate an input, run model, store outputs locally.
+    paths = _run_local_model_test()
+    logger.info(
+        "Local model test completed. Input: %s Output: %s",
+        paths["input"],
+        paths["output"],
+    )

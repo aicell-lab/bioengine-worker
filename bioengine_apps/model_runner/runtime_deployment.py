@@ -11,12 +11,14 @@ from ray import serve
 # Deployment default runtime environment
 requirements = [
     "bioimageio.core==0.9.0",
-    "xarray==2025.1.2",  # this is needed for bioimageio.core
+    "careamics==0.0.16",
+    "cellpose==3.1.1.2",
     "numpy==1.26.4",
+    "onnxruntime==1.20.1",
+    "tensorflow==2.16.1",
     "torch==2.5.1",
     "torchvision==0.20.1",
-    "tensorflow==2.16.1",
-    "onnxruntime==1.20.1",
+    "xarray==2025.1.2",  # this is needed for bioimageio.core
 ]
 
 

@@ -1112,6 +1112,22 @@ class ModelRunner:
         infer_duration = time.time() - infer_start
         print(f"✅ [{self.replica_id}] Inference completed ({infer_duration:.2f}s)")
 
+    # === Internal Methods ===
+
+    async def _update_test_results(self, model_id: str, test_result: Dict[str, Union[str, bool, List, Dict]]) -> None:
+        """
+        Update the test results for a specific model.
+
+        Args:
+            model_id: Unique identifier of the model.
+            test_result: Dictionary containing the test results to update.
+        """
+        print(f"🔄 [{self.replica_id}] Updating test results for model: {model_id}")
+        
+        # TODO: get artifact manager and update 
+
+        print(f"✅ [{self.replica_id}] Test results updated for model: {model_id}")
+
     # === Exposed BioEngine App Methods - all methods decorated with @schema_method will be exposed as API endpoints ===
     # Note: Parameter type hints and docstrings will be used to generate the API documentation.
 
@@ -1294,6 +1310,14 @@ class ModelRunner:
             raise RuntimeError(error_msg)
 
         print(f"✅ [{self.replica_id}] Model test completed for '{model_id}'.")
+
+        try:
+            # TODO: check if running in bioimage.io workspace
+            asyncio.create_task(self._update_test_results(model_id, test_result))
+        except:
+            # Do not fail function call if task can not be scheduled
+            pass
+
         return test_result
 
     @schema_method(arbitrary_types_allowed=True)

@@ -303,7 +303,7 @@ async def test_deployment(self) -> None:
 )
 ```
 
-> **Note**: GPU allocation is managed by BioEngine. The `disable_gpu=True` parameter in `deploy_application()` will override GPU requests to force CPU-only execution.
+> **Note**: GPU allocation is managed by BioEngine. The `disable_gpu=True` parameter in `run_application()` will override GPU requests to force CPU-only execution.
 
 ## Environment Variables and Built-in Classes
 
@@ -324,7 +324,7 @@ workspace = os.environ["HYPHA_WORKSPACE"]        # Current workspace
 artifact_id = os.environ["HYPHA_ARTIFACT_ID"]    # Full artifact ID (workspace/name)
 worker_service_id = os.environ["BIOENGINE_WORKER_SERVICE_ID"]  # Worker service ID
 
-# Authentication (if provided via deploy_application)
+# Authentication (if provided via run_application)
 token = os.environ.get("HYPHA_TOKEN")            # User authentication token
 ```
 
@@ -429,7 +429,7 @@ Once you've created your application directory with the required files, you can 
 
 #### Setup Requirements
 
-Before using the `create_application.py` script, you need to clone the BioEngine repository and install it:
+Before using the `save_application.py` script, you need to clone the BioEngine repository and install it:
 
 ```bash
 # Clone the repository
@@ -458,12 +458,12 @@ pip install .
 #### Basic Usage
 
 ```bash
-python scripts/create_application.py --directory <path-to-your-app>
+python scripts/save_application.py --directory <path-to-your-app>
 ```
 
 **Example:**
 ```bash
-python scripts/create_application.py --directory tests/demo_app
+python scripts/save_application.py --directory tests/demo_app
 ```
 
 This command will:
@@ -555,12 +555,12 @@ Deploy your application using the BioEngine worker service:
 
 ```python
 # Basic deployment
-application_id = await bioengine_worker_service.deploy_application(
+application_id = await bioengine_worker_service.run_application(
     artifact_id="workspace/my-app"
 )
 
 # Advanced deployment with configuration
-application_id = await bioengine_worker_service.deploy_application(
+application_id = await bioengine_worker_service.run_application(
     artifact_id="workspace/my-app",
     version=None,                       # Latest version
     application_id="custom-id",         # Custom instance ID
@@ -582,7 +582,7 @@ application_id = await bioengine_worker_service.deploy_application(
 
 ### Deploy Application Parameters
 
-The `deploy_application` method supports these parameters:
+The `run_application` method supports these parameters:
 
 - **`artifact_id`** *(required)*: Application artifact identifier
 - **`version`** *(optional)*: Specific artifact version to deploy
@@ -600,8 +600,9 @@ The `deploy_application` method supports these parameters:
 ```python
 # Get worker status to find application services
 app_id = "my-application-id"  # Replace with your application ID
-worker_status = await bioengine_worker_service.get_status()
-app_status = worker_status["bioengine_apps"][app_id]
+app_status = await bioengine_worker_service.get_application_status(
+    application_ids=[app_id]
+)
 
 # Extract service IDs
 websocket_service_id = app_status["service_ids"]["websocket_service_id"]
@@ -647,15 +648,16 @@ result = await webrtc_service.process_data(
 ### Application Lifecycle Management
 
 ```python
-# Deploy application
-app_id = await bioengine_worker_service.deploy_application("workspace/my-app")
+# Start application
+app_id = await bioengine_worker_service.run_application("workspace/my-app")
 
-# Monitor deployment status
-status = await bioengine_worker_service.get_status()
-app_status = status["bioengine_apps"][app_id]
+# Monitor application status
+app_status = await bioengine_worker_service.get_application_status(
+    application_ids=[app_id]
+)
 
-# Undeploy application when done
-await bioengine_worker_service.undeploy_application(app_id)
+# Stop application when done
+await bioengine_worker_service.stop_application(app_id)
 ```
 
 ---

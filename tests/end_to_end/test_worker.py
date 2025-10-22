@@ -90,8 +90,6 @@ async def test_get_status(
         "workspace",  # Hypha workspace identifier
         "client_id",  # Unique client identifier
         "ray_cluster",  # Ray distributed computing cluster status
-        "bioengine_apps",  # Applications manager status and deployments
-        "bioengine_datasets",  # Datasets manager status and loaded data
         "admin_users",  # List of users with administrative privileges
         "is_ready",  # Worker operational readiness flag
     ]
@@ -127,12 +125,6 @@ async def test_get_status(
 
     # Validate component manager status structures
     assert isinstance(status["ray_cluster"], dict), "ray_cluster should be a dictionary"
-    assert isinstance(
-        status["bioengine_apps"], dict
-    ), "bioengine_apps should be a dictionary"
-    assert isinstance(
-        status["bioengine_datasets"], dict
-    ), "bioengine_datasets should be a dictionary"
 
     # Extended validation for Ray cluster status
     ray_cluster_status = status["ray_cluster"]

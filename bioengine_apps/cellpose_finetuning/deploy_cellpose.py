@@ -14,7 +14,7 @@ async def deploy():
 
     worker = await hypha.get_service("bioimage-io/bioengine-worker")
 
-    app_id = await worker.deploy_application(
+    app_id = await worker.run_application(
         artifact_id="ri-scale/cellpose-finetuning",
         application_id="cellpose-finetuning",
         hypha_token=token,
@@ -24,8 +24,8 @@ async def deploy():
     )
     print("App ID:", app_id)
 
-    status = await worker.get_status()
-    service_ids = status["bioengine_apps"][app_id]["service_ids"]
+    app_status = await worker.get_application_status(application_ids=[app_id])
+    service_ids = app_status["service_ids"]
     print("Services:", service_ids)
     return service_ids
 

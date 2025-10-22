@@ -566,18 +566,24 @@ class BioEngineWorker:
             description += " in a pre-existing Ray environment."
 
         worker_services = {
-            "test_access": self.test_access,
+            # Worker management services
             "get_status": self.get_status,
-            "update_datasets": self.update_datasets,
-            "execute_python_code": self.code_executor.execute_python_code,
-            "list_applications": self.apps_manager.list_applications,
-            "create_application": self.apps_manager.create_application,
-            "delete_application": self.apps_manager.delete_application,
-            "deploy_application": self.apps_manager.deploy_application,
-            "deploy_applications": self.apps_manager.deploy_applications,
-            "undeploy_application": self.apps_manager.undeploy_application,
-            "cleanup_applications": self.apps_manager.cleanup,
             "stop_worker": self.stop,
+            "test_access": self.test_access,
+            # Dataset management services
+            "list_datasets": self.list_datasets,
+            "update_datasets": self.update_datasets,
+            # Code execution service
+            "execute_python_code": self.code_executor.execute_python_code,
+            # Application management services
+            "save_application": self.apps_manager.save_application,
+            "list_applications": self.apps_manager.list_applications,
+            "get_application_manifest": self.apps_manager.get_application_manifest,
+            "delete_application": self.apps_manager.delete_application,
+            "run_application": self.apps_manager.run_application,
+            "stop_application": self.apps_manager.stop_application,
+            "stop_all_applications": self.apps_manager.stop_all_applications,
+            "get_application_status": self.apps_manager.get_application_status,
         }
         # TODO: return more informative error messages, e.g. by returning error instead of raising it
         service_info = await self.server.register_service(
@@ -630,7 +636,7 @@ class BioEngineWorker:
         if hasattr(self, "apps_manager") and self.apps_manager:
             try:
                 admin_context = getattr(self, "_admin_context", None)
-                await self.apps_manager.cleanup(admin_context)
+                await self.apps_manager.stop_all_applications(admin_context)
             except Exception as e:
                 self.logger.error(f"Error cleaning up apps manager: {e}")
 
@@ -867,6 +873,18 @@ class BioEngineWorker:
         return self.full_service_id
 
     @schema_method
+    async def list_datasets(
+        self,
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
+    ) -> None:
+        """List available datasets from connected BioEngine data server."""
+        # No permission check needed for listing datasets
+        return self.available_datasets
+
+    @schema_method
     async def update_datasets(
         self,
         context: Dict[str, Any] = Field(
@@ -947,20 +965,6 @@ class BioEngineWorker:
           * Cluster connectivity and operational state
           * Resource utilization metrics
 
-        BIOENGINE APPLICATIONS:
-        - bioengine_apps: Applications manager status including:
-          * List of active deployments with health status
-          * Resource allocation per deployment
-          * Deployment configuration and metadata
-          * Application scaling and performance metrics
-
-        BIOENGINE DATASETS:
-        - bioengine_datasets: Dataset manager status including:
-          * Currently loaded datasets with access URLs
-          * Dataset manifest information and permissions
-          * HTTP service endpoints and streaming status
-          * Dataset usage metrics and connection counts
-
         RETURN VALUE STRUCTURE:
         {
             "service_start_time": 1234567890.123,
@@ -969,8 +973,6 @@ class BioEngineWorker:
             "workspace": "my-workspace",
             "client_id": "client-abc123",
             "ray_cluster": {...},
-            "bioengine_apps": {...},
-            "bioengine_datasets": {...},
             "admin_users": ["user@example.com"],
             "is_ready": true
         }
@@ -979,8 +981,6 @@ class BioEngineWorker:
         Health monitoring: status = await worker.get_status()
         Dashboard display: Use all returned fields for comprehensive view
         Resource planning: Focus on ray_cluster resource information
-        Deployment monitoring: Check bioengine_apps for deployment health
-        Dataset monitoring: Check bioengine_datasets for data access status
 
         ERROR SCENARIOS:
         Returns partial status if individual components fail to report, with error information included in the component's status section.
@@ -993,8 +993,6 @@ class BioEngineWorker:
             "workspace": self.workspace,
             "client_id": self.client_id,
             "ray_cluster": self.ray_cluster.status,
-            "bioengine_apps": await self.apps_manager.get_status(),
-            "bioengine_datasets": self.available_datasets,
             "admin_users": self.admin_users,
             "is_ready": self.is_ready.is_set(),
         }

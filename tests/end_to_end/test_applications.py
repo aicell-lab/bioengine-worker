@@ -111,7 +111,7 @@ async def test_create_and_delete_artifacts(
     test_completed = False
     try:
         # Create demo-app artifact
-        created_demo_artifact_id = await bioengine_worker_service.create_application(
+        created_demo_artifact_id = await bioengine_worker_service.save_application(
             files=demo_app_files
         )
 
@@ -126,7 +126,7 @@ async def test_create_and_delete_artifacts(
 
         # Create composition-app artifact
         created_composition_artifact_id = (
-            await bioengine_worker_service.create_application(
+            await bioengine_worker_service.save_application(
                 files=composition_app_files
             )
         )
@@ -152,7 +152,7 @@ async def test_create_and_delete_artifacts(
         ), "Composition artifact should be listed in available artifacts"
 
         # Update demo-app artifact
-        updated_demo_artifact_id = await bioengine_worker_service.create_application(
+        updated_demo_artifact_id = await bioengine_worker_service.save_application(
             files=demo_app_files
         )
         assert (
@@ -161,7 +161,7 @@ async def test_create_and_delete_artifacts(
 
         # Update composition-app artifact
         updated_composition_artifact_id = (
-            await bioengine_worker_service.create_application(
+            await bioengine_worker_service.save_application(
                 files=composition_app_files
             )
         )
@@ -273,14 +273,14 @@ async def test_startup_application(
     Test that all startup applications are properly deployed.
 
     This test validates the AppsManager status reporting and startup application deployment:
-    1. Retrieves comprehensive worker status including AppsManager state
-    2. Validates "bioengine_apps" field structure and content
+    1. Retrieves application status using get_application_status
+    2. Validates application status structure and content
     3. Checks that startup applications are properly deployed and healthy
     4. Verifies application metadata, resource allocation, and service registration
     5. Ensures deployment configuration matches expected startup specifications
 
-    Expected AppsManager Status Structure:
-    - bioengine_apps: Dict[application_id, application_info] where each application_info contains:
+    Expected Application Status Structure:
+    - Dict[application_id, application_info] where each application_info contains:
       - display_name, description, artifact_id, version
       - start_time, status (RUNNING/HEALTHY/etc), message
       - deployments: Dict of deployment status and replica states
@@ -294,15 +294,11 @@ async def test_startup_application(
         startup_applications and len(startup_applications) > 0
     ), "No startup applications configured for this test. Please define at least one in the fixture."
 
-    # Get comprehensive worker status
-    status = await bioengine_worker_service.get_status()
+    # Get application status (returns all deployed applications when application_ids is None)
+    apps_status = await bioengine_worker_service.get_application_status()
 
-    # Validate bioengine_apps field exists and is properly structured
-    assert (
-        "bioengine_apps" in status
-    ), "Worker status should contain 'bioengine_apps' field"
-    apps_status = status["bioengine_apps"]
-    assert isinstance(apps_status, dict), "bioengine_apps should be a dictionary"
+    # Validate apps_status is properly structured
+    assert isinstance(apps_status, dict), "Application status should be a dictionary"
 
     # Assert that applications are deployed based on startup configuration
     expected_app_count = len(startup_applications)
@@ -607,7 +603,7 @@ async def test_startup_application(
 
 @pytest.mark.end_to_end
 @pytest.mark.asyncio
-async def test_deploy_application_locally(
+async def test_run_application_locally(
     monkeypatch: pytest.MonkeyPatch,
     tests_dir: Path,
     hypha_workspace: str,
@@ -648,7 +644,7 @@ async def test_deploy_application_locally(
     try:
         for app_config in app_configs:
             # Deploy the application
-            application_id = await bioengine_worker_service.deploy_application(
+            application_id = await bioengine_worker_service.run_application(
                 **app_config
             )
             deployed_app_ids.append(application_id)
@@ -660,8 +656,9 @@ async def test_deploy_application_locally(
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            status = await bioengine_worker_service.get_status()
-            bioengine_apps = status.get("bioengine_apps", {})
+            bioengine_apps = await bioengine_worker_service.get_application_status(
+                application_ids=deployed_app_ids
+            )
 
             # Check if all apps are no longer in DEPLOYING state
             all_deployed = True
@@ -685,8 +682,9 @@ async def test_deploy_application_locally(
             )
 
         # Check that both apps are healthy and have running replicas
-        status = await bioengine_worker_service.get_status()
-        bioengine_apps = status.get("bioengine_apps", {})
+        bioengine_apps = await bioengine_worker_service.get_application_status(
+            application_ids=deployed_app_ids
+        )
 
         for app_id in deployed_app_ids:
             assert app_id in bioengine_apps, f"Application {app_id} not found in status"
@@ -724,7 +722,7 @@ async def test_deploy_application_locally(
         # Cleanup: Ensure applications are undeployed (even if test fails)
         for app_id in deployed_app_ids:
             try:
-                await bioengine_worker_service.undeploy_application(
+                await bioengine_worker_service.stop_application(
                     application_id=app_id
                 )
                 print(f"Undeployed application: {app_id}")
@@ -734,7 +732,7 @@ async def test_deploy_application_locally(
 
 @pytest.mark.end_to_end
 @pytest.mark.asyncio
-async def test_deploy_application_from_artifact(
+async def test_run_application_from_artifact(
     monkeypatch: pytest.MonkeyPatch,
     tests_dir: Path,
     test_id: str,
@@ -805,7 +803,7 @@ async def test_deploy_application_from_artifact(
             ), f"Artifact ID mismatch: expected {artifact_id}, got {created_artifact_id}"
 
             # Create the artifact
-            result_artifact_id = await bioengine_worker_service.create_application(
+            result_artifact_id = await bioengine_worker_service.save_application(
                 files=files
             )
             assert (
@@ -822,7 +820,7 @@ async def test_deploy_application_from_artifact(
 
         # Deploy applications from artifacts
         for app_config in app_configs:
-            application_id = await bioengine_worker_service.deploy_application(
+            application_id = await bioengine_worker_service.run_application(
                 **app_config
             )
             deployed_app_ids.append(application_id)
@@ -834,8 +832,9 @@ async def test_deploy_application_from_artifact(
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            status = await bioengine_worker_service.get_status()
-            bioengine_apps = status.get("bioengine_apps", {})
+            bioengine_apps = await bioengine_worker_service.get_application_status(
+                application_ids=deployed_app_ids
+            )
 
             # Check if all apps are no longer in DEPLOYING state
             all_deployed = True
@@ -859,8 +858,9 @@ async def test_deploy_application_from_artifact(
             )
 
         # Check that both apps are healthy and have running replicas
-        status = await bioengine_worker_service.get_status()
-        bioengine_apps = status.get("bioengine_apps", {})
+        bioengine_apps = await bioengine_worker_service.get_application_status(
+            application_ids=deployed_app_ids
+        )
 
         for app_id in deployed_app_ids:
             assert app_id in bioengine_apps, f"Application {app_id} not found in status"
@@ -908,7 +908,7 @@ async def test_deploy_application_from_artifact(
         # Cleanup: Ensure applications are undeployed (even if test fails)
         for app_id in deployed_app_ids:
             try:
-                await bioengine_worker_service.undeploy_application(
+                await bioengine_worker_service.stop_application(
                     application_id=app_id
                 )
                 print(f"Undeployed application: {app_id}")
@@ -936,10 +936,10 @@ async def test_call_demo_app_functions(
     monkeypatch.setenv("BIOENGINE_LOCAL_ARTIFACT_PATH", str(tests_dir))
     assert os.getenv("BIOENGINE_LOCAL_ARTIFACT_PATH") == str(tests_dir)
 
-    # Deploy the demo-app with apps_manager.deploy_application from local path
+    # Deploy the demo-app with apps_manager.run_application from local path
     demo_artifact_id = f"{hypha_workspace}/demo-app"
 
-    app_id = await bioengine_worker_service.deploy_application(
+    app_id = await bioengine_worker_service.run_application(
         artifact_id=demo_artifact_id, disable_gpu=True
     )
 
@@ -950,11 +950,12 @@ async def test_call_demo_app_functions(
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            status = await bioengine_worker_service.get_status()
-            bioengine_apps = status.get("bioengine_apps", {})
+            app_status_result = await bioengine_worker_service.get_application_status(
+                application_ids=[app_id]
+            )
 
-            if app_id in bioengine_apps:
-                app_status = bioengine_apps[app_id]
+            if app_id in app_status_result:
+                app_status = app_status_result[app_id]
                 if (
                     app_status["status"] == "RUNNING"
                     and len(app_status.get("service_ids", [])) > 0
@@ -965,10 +966,11 @@ async def test_call_demo_app_functions(
         else:
             pytest.fail("Demo app deployment timed out")
 
-        # Get the service ID from the worker status
-        status = await bioengine_worker_service.get_status()
-        bioengine_apps = status["bioengine_apps"]
-        app_status = bioengine_apps[app_id]
+        # Get the service ID from the application status
+        app_status_result = await bioengine_worker_service.get_application_status(
+            application_ids=[app_id]
+        )
+        app_status = app_status_result[app_id]
         first_replica = app_status["service_ids"][0]
 
         websocket_service_id = first_replica["websocket_service_id"]
@@ -1050,7 +1052,7 @@ async def test_call_demo_app_functions(
     finally:
         # Cleanup: Ensure applications are undeployed (even if test fails)
         try:
-            await bioengine_worker_service.undeploy_application(application_id=app_id)
+            await bioengine_worker_service.stop_application(application_id=app_id)
             print(f"Undeployed application: {app_id}")
         except Exception as e:
             warnings.warn(f"Failed to undeploy application {app_id}: {e}")
@@ -1076,7 +1078,7 @@ async def test_call_composition_app_functions(
     monkeypatch.setenv("BIOENGINE_LOCAL_ARTIFACT_PATH", str(tests_dir))
     assert os.getenv("BIOENGINE_LOCAL_ARTIFACT_PATH") == str(tests_dir)
 
-    # Deploy the composition-app with apps_manager.deploy_application from local path
+    # Deploy the composition-app with apps_manager.run_application from local path
     composition_app_config = {
         "artifact_id": f"{hypha_workspace}/composition_app",
         "application_kwargs": {
@@ -1086,7 +1088,7 @@ async def test_call_composition_app_functions(
         "disable_gpu": True,
     }
 
-    app_id = await bioengine_worker_service.deploy_application(**composition_app_config)
+    app_id = await bioengine_worker_service.run_application(**composition_app_config)
 
     try:
         # Wait for deployment to complete
@@ -1095,11 +1097,12 @@ async def test_call_composition_app_functions(
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            status = await bioengine_worker_service.get_status()
-            bioengine_apps = status.get("bioengine_apps", {})
+            app_status_result = await bioengine_worker_service.get_application_status(
+                application_ids=[app_id]
+            )
 
-            if app_id in bioengine_apps:
-                app_status = bioengine_apps[app_id]
+            if app_id in app_status_result:
+                app_status = app_status_result[app_id]
                 if (
                     app_status["status"] == "RUNNING"
                     and len(app_status.get("service_ids", [])) > 0
@@ -1110,10 +1113,11 @@ async def test_call_composition_app_functions(
         else:
             pytest.fail("Composition app deployment timed out")
 
-        # Get the service ID from the worker status
-        status = await bioengine_worker_service.get_status()
-        bioengine_apps = status["bioengine_apps"]
-        app_status = bioengine_apps[app_id]
+        # Get the service ID from the application status
+        app_status_result = await bioengine_worker_service.get_application_status(
+            application_ids=[app_id]
+        )
+        app_status = app_status_result[app_id]
         first_replica = app_status["service_ids"][0]
 
         websocket_service_id = first_replica["websocket_service_id"]
@@ -1214,7 +1218,7 @@ async def test_call_composition_app_functions(
     finally:
         # Cleanup: Ensure applications are undeployed (even if test fails)
         try:
-            await bioengine_worker_service.undeploy_application(application_id=app_id)
+            await bioengine_worker_service.stop_application(application_id=app_id)
             print(f"Undeployed application: {app_id}")
         except Exception as e:
             warnings.warn(f"Failed to undeploy application {app_id}: {e}")

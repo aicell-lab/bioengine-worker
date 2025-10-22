@@ -108,17 +108,18 @@ The default `service_id` is `bioengine_worker`.
 
 The worker service provides the following functions:
 - `get_status()`
-- `load_dataset(dataset_id)`
-- `close_dataset(dataset_id)`
-- `cleanup_datasets()`
-- `execute_python_code(...)`
-- `list_applications()`
-- `create_application(files)`
-- `deploy_application(artifact_id, ...)`
-- `deploy_application(app_configurations)`
-- `undeploy_application(application_id)`
-- `cleanup_applications()`
 - `stop_worker()`
+- `check_access()`
+- `list_datasets()`
+- `refresh_datasets()`
+- `execute_python_code(...)`
+- `save_application(files)`
+- `list_applications()`
+- `get_application_manifest(application_id)`
+- `delete_application(application_id)`
+- `run_application(artifact_id, ...)`
+- `stop_application(application_id)`
+- `get_application_status()`
 
 As an example, the worker status can be called like this:
 ```python
@@ -128,10 +129,6 @@ status = await worker_service.get_status()
 The status contains information about the:
 - Hypha service (`service`)
 - Ray cluster (`ray_cluster`)
-- BioEngine Apps (`bioengine_apps`)
-- BioEngine Datasets (`bioengine_datasets`)
-
-Both BioEngine Apps and Datasets have separate Hypha service IDs, which can be accessed via `status["bioengine_apps"]["service_id"]` and `status["bioengine_datasets"]["loaded_datasets"]`.
 
 ### Deploying models to the BioEngine worker
 

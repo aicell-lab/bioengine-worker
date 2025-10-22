@@ -718,7 +718,7 @@ class AppBuilder:
                 # Try to access the BioEngine worker service
                 if self.bioengine_worker_service is not None:
                     try:
-                        is_admin = await self.bioengine_worker_service.test_access()
+                        is_admin = await self.bioengine_worker_service.check_access()
                         self._hypha_token_is_admin_user = is_admin
 
                         if not is_admin:

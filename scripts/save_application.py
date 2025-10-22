@@ -12,23 +12,26 @@ from bioengine.utils import (
 )
 
 
-async def create_application(
+async def save_application(
     directory: str,
     server_url: str,
     workspace: str = None,
     token: str = None,
 ) -> str:
-    """Create or delete a deployment artifact in Hypha
+    """
+    Creates or updates a BioEngine application artifact in the Hypha artifact manager.
 
     Args:
         directory: Path to the artifact directory
         server_url: URL of the Hypha server
         workspace: Hypha workspace to connect to
         token: Authentication token for Hypha server
-        delete: Delete the artifact instead of creating/updating it
 
     Returns:
-        str: ID of the created artifact (None for delete operations)
+        str: ID of the created artifact
+
+    Raises:
+        Exception: If any step in the process fails
     """
     logger = create_logger("ArtifactManager")
 
@@ -111,7 +114,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     asyncio.run(
-        create_application(
+        save_application(
             directory=args.directory,
             server_url=args.server_url,
             workspace=args.workspace,

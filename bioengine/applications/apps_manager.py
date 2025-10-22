@@ -134,12 +134,20 @@ class AppsManager:
 
         self.haikunator = Haikunator()
 
+        # Store startup applications to deploy on initialization
+        if startup_applications is None:
+            startup_applications = []
+        if not isinstance(startup_applications, list):
+            raise ValueError(
+                f"startup_applications must be a list, got {type(startup_applications)}"
+            )
+        self.startup_applications = startup_applications
+
         # Initialize state variables
         self.server = None
         self.artifact_manager = None
         self.admin_users = None
         self.worker_service_id = None
-        self.startup_applications = startup_applications
         self._deployment_lock = asyncio.Lock()
         self._deployed_applications = {}
         self.debug = debug
@@ -325,7 +333,7 @@ class AppsManager:
         resource management regardless of how the deployment ends.
 
         Note:
-            Application building and resource validation are now done in deploy_application()
+            Application building and resource validation are now done in run_application()
             before this task is created, providing immediate user feedback for errors.
             The built app is stored in _deployed_applications["built_app"] to avoid duplicate builds.
 
@@ -348,7 +356,7 @@ class AppsManager:
             version = self._deployed_applications[application_id]["version"]
 
             # Use the pre-built app from _deployed_applications
-            # This was built and validated in deploy_application() before this task was created
+            # This was built and validated in run_application() before this task was created
             app = self._deployed_applications[application_id]["built_app"]
 
             # Run the deployment in Ray Serve with unique route prefix
@@ -510,6 +518,8 @@ class AppsManager:
                 f"Deploying {len(self.startup_applications)} startup application(s)..."
             )
 
+            admin_context = create_context(admin_users[0])
+
             # Pass the worker owner's token to the startup applications (if not already set)
             startup_applications_token = await self.server.generate_token(
                 {
@@ -518,163 +528,37 @@ class AppsManager:
                     "expires_in": 3600 * 24 * 30,  # support application for 30 days
                 }
             )
+
+            # Deploy the startup applications
+            application_ids = []
             for app_config in self.startup_applications:
+                if not isinstance(app_config, dict):
+                    raise ValueError("Each app_config must be a dictionary.")
+
+                if "artifact_id" not in app_config:
+                    raise ValueError("Each app_config must contain an 'artifact_id'.")
+
                 if "hypha_token" not in app_config:
                     app_config["hypha_token"] = startup_applications_token
 
-            # Deploy the startup applications
-            admin_context = create_context(admin_users[0])
-            application_ids = await self.deploy_applications(
-                app_configs=self.startup_applications,
-                context=admin_context,
-            )
+                application_id = await self.run_application(
+                    artifact_id=app_config["artifact_id"],
+                    version=app_config.get("version"),
+                    application_id=app_config.get("application_id"),
+                    application_kwargs=app_config.get("application_kwargs"),
+                    application_env_vars=app_config.get("application_env_vars"),
+                    hypha_token=app_config.get("hypha_token"),
+                    disable_gpu=app_config.get("disable_gpu", False),
+                    max_ongoing_requests=app_config.get("max_ongoing_requests", 10),
+                    context=admin_context,
+                )
+                application_ids.append(application_id)
 
             # Wait for all startup applications to be deployed
             for application_id in application_ids:
                 app_info = self._deployed_applications.get(application_id)
                 if app_info:
                     await app_info["is_deployed"].wait()
-
-    async def get_status(self) -> Dict[str, Union[str, list, dict]]:
-        """
-        Retrieve comprehensive status information for all deployed applications.
-
-        Provides detailed information about each currently tracked application deployment,
-        cross-referencing internal state with Ray Serve status to ensure accuracy.
-        Includes deployment metadata, resource usage, service endpoints, and health status.
-
-        Status Information Includes:
-        - Application metadata (name, description, artifact details)
-        - Deployment status and health from Ray Serve
-        - Resource allocation and usage
-        - Service endpoint information for client connections
-        - Failure tracking and monitoring data
-        - Replica states and deployment details
-
-        Consistency Validation:
-        The method validates deployment state by comparing internal tracking with
-        Ray Serve status, providing warnings for any inconsistencies found.
-
-        Returns:
-            Dictionary mapping application IDs to their detailed status information.
-            Empty dictionary if no applications are currently deployed.
-
-        Raises:
-            RuntimeError: If Ray cluster connection is unavailable
-
-        Note:
-            Only applications that exist in both internal tracking and are accessible
-            via Ray Serve are included to ensure data accuracy.
-        """
-        output = {}
-
-        if not self._deployed_applications:
-            return output
-
-        # Get status of actively running deployments
-        await self.ray_cluster.check_connection()
-        serve_status = await asyncio.to_thread(serve.status)
-
-        for application_id, application_info in self._deployed_applications.items():
-            application = serve_status.applications.get(application_id)
-
-            if application:
-                start_time = application.last_deployed_time_s
-                status = application.status.value
-                message = application.message
-                deployments = {
-                    class_name: {
-                        "status": deployment_info.status.value,
-                        "message": deployment_info.message,
-                        "replica_states": deployment_info.replica_states,
-                    }
-                    for class_name, deployment_info in application.deployments.items()
-                }
-
-            else:
-                start_time = None
-                if application_info["is_deployed"].is_set():
-                    status = "UNHEALTHY"
-                    message = f"Application '{application_id}' is marked as deployed but not found in Ray Serve status."
-                    self.logger.warning(
-                        f"Application '{application_id}' for artifact '{application_info['artifact_id']}' "
-                        "is marked as deployed but not found in Ray Serve status."
-                    )
-                else:
-                    status = "NOT_STARTED"
-                    message = (
-                        f"Application '{application_id}' has not been deployed yet."
-                    )
-                deployments = {}
-
-            # Construct the service IDs for the application using the replica IDs
-            workspace = self.server.config.workspace
-            replica_ids = (
-                await self.ray_cluster.proxy_actor_handle.get_deployment_replica.remote(
-                    app_name=application_id, deployment_name="BioEngineProxyDeployment"
-                )
-            )
-            if replica_ids:
-                worker_client_id = self.server.config.client_id
-                service_ids = [
-                    {
-                        "websocket_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}",
-                        "webrtc_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}-rtc",
-                    }
-                    for replica_id in replica_ids
-                ]
-            else:
-                service_ids = [
-                    {
-                        "websocket_service_id": None,
-                        "webrtc_service_id": None,
-                    }
-                ]
-
-            # class ApplicationStatus(str, Enum):
-            #     NOT_STARTED = "NOT_STARTED"
-            #     DEPLOYING = "DEPLOYING"
-            #     DEPLOY_FAILED = "DEPLOY_FAILED"
-            #     RUNNING = "RUNNING"
-            #     UNHEALTHY = "UNHEALTHY"
-            #     DELETING = "DELETING"
-
-            # class DeploymentStatus(str, Enum):
-            #     UPDATING = "UPDATING"
-            #     HEALTHY = "HEALTHY"
-            #     UNHEALTHY = "UNHEALTHY"
-            #     UPSCALING = "UPSCALING"
-            #     DOWNSCALING = "DOWNSCALING"
-
-            # class ReplicaState(str, Enum):
-            #     STARTING = "STARTING"
-            #     UPDATING = "UPDATING"
-            #     RECOVERING = "RECOVERING"
-            #     RUNNING = "RUNNING"
-            #     STOPPING = "STOPPING"
-            #     PENDING_MIGRATION = "PENDING_MIGRATION"
-
-            output[application_id] = {
-                "display_name": application_info["display_name"],
-                "description": application_info["description"],
-                "artifact_id": application_info["artifact_id"],
-                "version": application_info["version"] or "latest",
-                "start_time": start_time,
-                "status": status,
-                "message": message,
-                "deployments": deployments,
-                "consecutive_failures": application_info["consecutive_failures"],
-                "application_kwargs": application_info["application_kwargs"],
-                "application_env_vars": application_info["application_env_vars"],
-                "gpu_enabled": application_info["disable_gpu"],
-                "application_resources": application_info["application_resources"],
-                "authorized_users": application_info["authorized_users"],
-                "available_methods": application_info["available_methods"],
-                "service_ids": service_ids,
-                "last_updated_by": application_info["last_updated_by"],
-            }
-
-        return output
 
     async def monitor_applications(self) -> None:
         """
@@ -762,57 +646,7 @@ class AppsManager:
             raise e
 
     @schema_method
-    async def list_applications(
-        self,
-        context: Dict[str, Any] = Field(
-            ...,
-            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
-        ),
-    ) -> Dict[str, List[str]]:
-        """
-        Lists all available BioEngine application artifacts stored in the Hypha artifact manager.
-
-        This method retrieves and returns information about all BioEngine applications that have been
-        uploaded to the current workspace, including their manifest data and associated files.
-        Each application artifact contains the necessary code, configuration, and dependencies
-        needed to deploy a BioEngine application.
-
-        Returns:
-            Dictionary mapping artifact IDs to their metadata and files. Each entry contains:
-            - manifest: Application configuration and deployment specifications
-            - files: List of file names included in the artifact package
-
-        Raises:
-            PermissionError: If the user lacks admin permissions to list applications
-            RuntimeError: If the Hypha server connection is not initialized
-        """
-        self._check_initialized()
-
-        check_permissions(
-            context=context,
-            authorized_users=self.admin_users,
-            resource_name=f"listing applications",
-        )
-
-        collection_id = f"{self.server.config.workspace}/applications"
-        bioengine_apps_artifacts = await self.artifact_manager.list(collection_id)
-        bioengine_apps = {}
-        for artifact in bioengine_apps_artifacts:
-            try:
-                manifest = await self.artifact_manager.read(artifact.id)
-                files = await self.artifact_manager.list_files(artifact.id)
-                file_names = [file.name for file in files]
-                bioengine_apps[artifact.id] = {
-                    "manifest": manifest,
-                    "files": file_names,
-                }
-            except Exception as e:
-                self.logger.error(f"Error reading artifact '{artifact.id}': {e}")
-
-        return bioengine_apps
-
-    @schema_method
-    async def create_application(
+    async def save_application(
         self,
         files: List[dict] = Field(
             ...,
@@ -828,7 +662,7 @@ class AppsManager:
 
         This method allows you to upload a complete BioEngine application package including
         all necessary files, code, and configuration. The application can then be deployed
-        to Ray Serve using the deploy_application method.
+        to Ray Serve using the run_application method.
 
         Application Structure:
         - manifest.yaml: Required configuration file defining the application metadata,
@@ -883,6 +717,107 @@ class AppsManager:
         )
 
         return created_artifact_id
+
+    @schema_method
+    async def list_applications(
+        self,
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
+    ) -> Dict[str, List[str]]:
+        """
+        Lists all available BioEngine application artifacts stored in the Hypha artifact manager.
+
+        This method retrieves and returns information about all BioEngine applications that have been
+        uploaded to the current workspace, including their manifest data and associated files.
+        Each application artifact contains the necessary code, configuration, and dependencies
+        needed to deploy a BioEngine application.
+
+        Returns:
+            Dictionary mapping artifact IDs to their metadata and files. Each entry contains:
+            - manifest: Application configuration and deployment specifications
+            - files: List of file names included in the artifact package
+
+        Raises:
+            PermissionError: If the user lacks admin permissions to list applications
+            RuntimeError: If the Hypha server connection is not initialized
+        """
+        self._check_initialized()
+
+        check_permissions(
+            context=context,
+            authorized_users=self.admin_users,
+            resource_name=f"listing applications",
+        )
+
+        collection_id = f"{self.server.config.workspace}/applications"
+        bioengine_apps_artifacts = await self.artifact_manager.list(collection_id)
+        bioengine_apps = {}
+        for artifact in bioengine_apps_artifacts:
+            try:
+                manifest = await self.artifact_manager.read(artifact.id)
+                files = await self.artifact_manager.list_files(artifact.id)
+                file_names = [file.name for file in files]
+                bioengine_apps[artifact.id] = {
+                    "manifest": manifest,
+                    "files": file_names,
+                }
+            except Exception as e:
+                self.logger.error(f"Error reading artifact '{artifact.id}': {e}")
+
+        return bioengine_apps
+
+    @schema_method
+    async def get_application_manifest(
+        self,
+        artifact_id: str = Field(
+            ...,
+            description="Unique identifier of the application artifact to retrieve the manifest for. Can be either the full artifact ID (workspace/artifact-name) or just the artifact name if it belongs to the current workspace.",
+        ),
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
+    ) -> Dict[str, Any]:
+        """
+        Retrieves the manifest configuration of a specific BioEngine application artifact.
+
+        This method fetches and returns the manifest.yaml content from the specified
+        application artifact stored in the Hypha artifact manager. The manifest contains
+        essential metadata and deployment specifications for the BioEngine application.
+
+        Args:
+            artifact_id: The unique identifier of the application artifact.
+
+        Returns:
+            Dictionary representing the manifest configuration of the application.
+
+        Raises:
+            ValueError: If the artifact doesn't exist or cannot be read
+            PermissionError: If user lacks admin permissions to access applications
+            RuntimeError: If Hypha connection is not available
+        """
+        self._check_initialized()
+
+        check_permissions(
+            context=context,
+            authorized_users=self.admin_users,
+            resource_name=f"accessing the artifact '{artifact_id}'",
+        )
+
+        # Get the full artifact ID
+        self.logger.debug(f"Retrieving manifest for artifact '{artifact_id}'...")
+        artifact_id = self._get_full_artifact_id(artifact_id)
+
+        # Read and return the manifest
+        try:
+            manifest = await self.artifact_manager.read(artifact_id)
+            return manifest
+        except Exception as e:
+            raise ValueError(
+                f"Failed to read manifest for artifact '{artifact_id}': {e}"
+            )
 
     @schema_method
     async def delete_application(
@@ -947,7 +882,7 @@ class AppsManager:
         self.logger.info(f"Successfully deleted artifact '{artifact_id}'.")
 
     @schema_method
-    async def deploy_application(
+    async def run_application(
         self,
         artifact_id: str = Field(
             ...,
@@ -1001,7 +936,7 @@ class AppsManager:
         5. Registers the application as a callable service
 
         The deployment runs asynchronously - this method returns immediately after starting
-        the deployment process. Use get_status() to monitor deployment progress and health.
+        the deployment process. Use get_application_status() to monitor deployment progress and health.
 
         Resource Management:
         - Automatically scales Ray cluster if needed (SLURM mode)
@@ -1182,95 +1117,11 @@ class AppsManager:
             return application_id
 
     @schema_method
-    async def deploy_applications(
-        self,
-        app_configs: List[dict] = Field(
-            ...,
-            description=(
-                "List of application deployment configurations. Each configuration must be a dictionary containing "
-                "'artifact_id' (required) and optionally 'version', 'application_id', 'application_kwargs', 'application_env_vars', 'hypha_token', "
-                "'disable_gpu', and 'max_ongoing_requests'. Allows batch deployment of multiple applications with different settings."
-            ),
-        ),
-        context: Dict[str, Any] = Field(
-            ...,
-            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
-        ),
-    ) -> List[str]:
-        """
-        Deploys multiple BioEngine applications simultaneously from a list of configurations.
-
-        This method allows you to deploy several applications at once, each with their own
-        configuration settings. It's useful for setting up complex environments or deploying
-        related applications together.
-
-        Configuration Format:
-        Each app_config dictionary supports the same parameters as deploy_application:
-        - artifact_id (required): The application artifact to deploy
-        - version (optional): Specific version to deploy
-        - application_id (optional): Custom deployment ID
-        - application_kwargs (optional): Keyword arguments for deployment class(es)
-        - application_env_vars (optional): Environment variables for deployment class(es)
-        - disable_gpu (optional): Force CPU-only deployment
-        - max_ongoing_requests (optional): Concurrency limit
-
-        Example Configuration:
-        ```
-        [
-            {
-                "artifact_id": "my-workspace/cell-segmentation",
-                "version": "v1.2.0",
-                "disable_gpu": false,
-                "max_ongoing_requests": 5
-            },
-            {
-                "artifact_id": "my-workspace/image-analysis",
-                "application_kwargs": {"ModelDeployment": {"batch_size": 16}}
-            }
-        ]
-        ```
-
-        Returns:
-            List of application IDs for all successfully started deployments.
-            Use these IDs to monitor, manage, or undeploy the applications.
-
-        Raises:
-            ValueError: If any configuration is invalid or missing required fields
-            PermissionError: If user lacks admin permissions to deploy applications
-            RuntimeError: If Ray cluster connection fails or any deployment cannot start
-        """
-        if not isinstance(app_configs, list) or not app_configs:
-            raise ValueError("Provided app_configs must be a non-empty list.")
-
-        application_ids = []
-        for app_config in app_configs:
-            if not isinstance(app_config, dict):
-                raise ValueError("Each app_config must be a dictionary.")
-
-            if "artifact_id" not in app_config:
-                raise ValueError("Each app_config must contain an 'artifact_id'.")
-
-            application_id = await self.deploy_application(
-                artifact_id=app_config["artifact_id"],
-                version=app_config.get("version"),
-                application_id=app_config.get("application_id"),
-                application_kwargs=app_config.get("application_kwargs"),
-                application_env_vars=app_config.get("application_env_vars"),
-                hypha_token=app_config.get("hypha_token"),
-                disable_gpu=app_config.get("disable_gpu", False),
-                max_ongoing_requests=app_config.get("max_ongoing_requests", 10),
-                context=context,
-            )
-            application_ids.append(application_id)
-
-        return application_ids
-
-    @schema_method
-    async def undeploy_application(
+    async def stop_application(
         self,
         application_id: str = Field(
             ...,
-            description="Unique identifier of the deployed application to remove. This is the application ID that was returned when the application was deployed using deploy_application().",
+            description="Unique identifier of the deployed application to remove. This is the application ID that was returned when the application was deployed using run_application().",
         ),
         context: Dict[str, Any] = Field(
             ...,
@@ -1334,7 +1185,7 @@ class AppsManager:
         self._deployed_applications[application_id]["deployment_task"].cancel()
 
     @schema_method
-    async def cleanup(
+    async def stop_all_applications(
         self,
         context: Dict[str, Any] = Field(
             ...,
@@ -1391,7 +1242,7 @@ class AppsManager:
 
         # Cancel all deployment tasks
         for artifact_id in list(self._deployed_applications.keys()):
-            await self.undeploy_application(artifact_id, context)
+            await self.stop_application(artifact_id, context)
 
         # Wait for all undeployment tasks to complete
         failed_attempts = 0
@@ -1413,3 +1264,213 @@ class AppsManager:
             self.logger.warning(
                 f"Failed to clean up all deployments, {failed_attempts} remaining."
             )
+
+    @schema_method
+    async def get_application_status(
+        self,
+        application_ids: Optional[List[str]] = Field(
+            None,
+            description="List of application IDs to retrieve status for. If not provided, status for all deployed applications will be returned. If a list with only one application ID is provided, only that application's status is returned directly (not nested in a dictionary).",
+        ),
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
+    ) -> Dict[str, Any]:
+        """
+        Retrieve comprehensive status information for deployed applications.
+
+        Provides detailed information about application deployments, cross-referencing
+        internal state with Ray Serve status to ensure accuracy. Includes deployment
+        metadata, resource usage, service endpoints, and health status.
+
+        Status Information Includes:
+        - Application metadata (name, description, artifact details)
+        - Deployment status and health from Ray Serve
+        - Resource allocation and usage
+        - Service endpoint information for client connections
+        - Failure tracking and monitoring data
+        - Replica states and deployment details
+
+        For applications that are not deployed, returns a simplified status indicating
+        the application is not running with instructions to deploy it.
+
+        Consistency Validation:
+        The method validates deployment state by comparing internal tracking with
+        Ray Serve status, providing warnings for any inconsistencies found.
+
+        Args:
+            application_ids: Optional list of specific application IDs to query.
+                           If None, returns status for all tracked applications.
+                           If a list with exactly one application ID, returns only
+                           that application's status directly (not wrapped in a dictionary).
+
+        Returns:
+            - If application_ids is None or contains multiple IDs: Dictionary mapping
+              application IDs to their detailed status information.
+            - If application_ids contains exactly one ID: The status information for
+              that single application (not nested in a dictionary).
+            - Empty dictionary if no applications match the criteria (when application_ids is None).
+
+        Raises:
+            RuntimeError: If Ray cluster connection is unavailable
+            ValueError: If application_ids is not a list or None
+
+        Note:
+            Applications in the query list that are not deployed will return a simplified
+            status with instructions for deployment.
+
+        Examples:
+            # Get all applications (returns dict of all apps)
+            all_apps = await get_application_status()
+            # Returns: {"app1": {...}, "app2": {...}}
+
+            # Get multiple specific applications (returns dict)
+            apps = await get_application_status(application_ids=["app1", "app2"])
+            # Returns: {"app1": {...}, "app2": {...}}
+
+            # Get single application (returns status directly)
+            app = await get_application_status(application_ids=["app1"])
+            # Returns: {...} (single app status, not {"app1": {...}})
+        """
+        output = {}
+
+        # Determine which applications to check
+        if application_ids is None:
+            # Return status for all tracked applications
+            if not self._deployed_applications:
+                return output
+            apps_to_check = list(self._deployed_applications.keys())
+        else:
+            # Return status for specified applications
+            if not isinstance(application_ids, list):
+                raise ValueError("application_ids must be a list of strings or None")
+            apps_to_check = application_ids
+
+        # Get status of actively running deployments if we have tracked applications
+        serve_status = None
+        workspace = None
+        worker_client_id = None
+
+        if self._deployed_applications:
+            await self.ray_cluster.check_connection()
+            serve_status = await asyncio.to_thread(serve.status)
+            workspace = self.server.config.workspace
+            worker_client_id = self.server.config.client_id
+
+        # Iterate over applications to check
+        for application_id in apps_to_check:
+            # Check if application is in tracked applications
+            if application_id not in self._deployed_applications:
+                # Application is not running, return simplified status
+                output[application_id] = {
+                    "status": "NOT_RUNNING",
+                    "message": f"Application '{application_id}' is not currently deployed. "
+                    f"To deploy this application, call run_application(application_id='{application_id}', ...) "
+                    f"with the appropriate artifact_id and parameters.",
+                }
+                continue
+
+            # Get application info from tracked applications
+            application_info = self._deployed_applications[application_id]
+            application = serve_status.applications.get(application_id)
+
+            if application:
+                start_time = application.last_deployed_time_s
+                status = application.status.value
+                message = application.message
+                deployments = {
+                    class_name: {
+                        "status": deployment_info.status.value,
+                        "message": deployment_info.message,
+                        "replica_states": deployment_info.replica_states,
+                    }
+                    for class_name, deployment_info in application.deployments.items()
+                }
+
+            else:
+                start_time = None
+                if application_info["is_deployed"].is_set():
+                    status = "UNHEALTHY"
+                    message = f"Application '{application_id}' is marked as deployed but not found in Ray Serve status."
+                    self.logger.warning(
+                        f"Application '{application_id}' for artifact '{application_info['artifact_id']}' "
+                        "is marked as deployed but not found in Ray Serve status."
+                    )
+                else:
+                    status = "NOT_STARTED"
+                    message = (
+                        f"Application '{application_id}' has not been deployed yet."
+                    )
+                deployments = {}
+
+            # Construct the service IDs for the application using the replica IDs
+            replica_ids = (
+                await self.ray_cluster.proxy_actor_handle.get_deployment_replica.remote(
+                    app_name=application_id, deployment_name="BioEngineProxyDeployment"
+                )
+            )
+            if replica_ids:
+                service_ids = [
+                    {
+                        "websocket_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}",
+                        "webrtc_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}-rtc",
+                    }
+                    for replica_id in replica_ids
+                ]
+            else:
+                service_ids = [
+                    {
+                        "websocket_service_id": None,
+                        "webrtc_service_id": None,
+                    }
+                ]
+
+            # class ApplicationStatus(str, Enum):
+            #     NOT_STARTED = "NOT_STARTED"
+            #     DEPLOYING = "DEPLOYING"
+            #     DEPLOY_FAILED = "DEPLOY_FAILED"
+            #     RUNNING = "RUNNING"
+            #     UNHEALTHY = "UNHEALTHY"
+            #     DELETING = "DELETING"
+
+            # class DeploymentStatus(str, Enum):
+            #     UPDATING = "UPDATING"
+            #     HEALTHY = "HEALTHY"
+            #     UNHEALTHY = "UNHEALTHY"
+            #     UPSCALING = "UPSCALING"
+            #     DOWNSCALING = "DOWNSCALING"
+
+            # class ReplicaState(str, Enum):
+            #     STARTING = "STARTING"
+            #     UPDATING = "UPDATING"
+            #     RECOVERING = "RECOVERING"
+            #     RUNNING = "RUNNING"
+            #     STOPPING = "STOPPING"
+            #     PENDING_MIGRATION = "PENDING_MIGRATION"
+
+            output[application_id] = {
+                "display_name": application_info["display_name"],
+                "description": application_info["description"],
+                "artifact_id": application_info["artifact_id"],
+                "version": application_info["version"] or "latest",
+                "start_time": start_time,
+                "status": status,
+                "message": message,
+                "deployments": deployments,
+                "consecutive_failures": application_info["consecutive_failures"],
+                "application_kwargs": application_info["application_kwargs"],
+                "application_env_vars": application_info["application_env_vars"],
+                "gpu_enabled": application_info["disable_gpu"],
+                "application_resources": application_info["application_resources"],
+                "authorized_users": application_info["authorized_users"],
+                "available_methods": application_info["available_methods"],
+                "service_ids": service_ids,
+                "last_updated_by": application_info["last_updated_by"],
+            }
+
+        # If only one application was requested, return just its status
+        if application_ids is not None and len(application_ids) == 1:
+            output = output[application_ids[0]]
+
+        return output

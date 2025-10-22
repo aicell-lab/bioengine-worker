@@ -347,6 +347,9 @@ async def stage_artifact(
     # Get full artifact ID
     artifact_id = validate_artifact_id(manifest, workspace)
 
+    # Define collection_id early so it's available for artifact creation
+    collection_id = f"{workspace}/applications"
+
     # Check if artifact exists and handle collection placement
     artifact = None
     try:
@@ -355,7 +358,6 @@ async def stage_artifact(
 
         # Check if artifact is in the correct collection
         current_parent_id = getattr(existing_artifact, "parent_id", None)
-        collection_id = f"{workspace}/applications"
         if current_parent_id != collection_id:
             logger.info(
                 f"Artifact '{artifact_id}' exists but is in wrong collection "

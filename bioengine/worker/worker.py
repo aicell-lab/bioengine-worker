@@ -566,16 +566,16 @@ class BioEngineWorker:
             description += " in a pre-existing Ray environment."
 
         worker_services = {
-            # Worker management services
+            # 🧩 Worker management
             "get_status": self.get_status,
             "stop_worker": self.stop,
-            "test_access": self.test_access,
-            # Dataset management services
+            "check_access": self.check_access,
+            # 📦 Dataset management
             "list_datasets": self.list_datasets,
-            "update_datasets": self.update_datasets,
-            # Code execution service
+            "refresh_datasets": self.refresh_datasets,
+            # 🧮 Code execution
             "execute_python_code": self.code_executor.execute_python_code,
-            # Application management services
+            # 🚀 Application management
             "save_application": self.apps_manager.save_application,
             "list_applications": self.apps_manager.list_applications,
             "get_application_manifest": self.apps_manager.get_application_manifest,
@@ -885,14 +885,14 @@ class BioEngineWorker:
         return self.available_datasets
 
     @schema_method
-    async def update_datasets(
+    async def refresh_datasets(
         self,
         context: Dict[str, Any] = Field(
             ...,
             description="Authentication context containing user information, automatically provided by Hypha during service calls.",
         ),
     ) -> None:
-        """Update connected BioEngine data server, then fetch and store available datasets from connected data server."""
+        """Refresh connected BioEngine data server, then fetch and store available datasets from connected data server."""
         check_permissions(
             context=context,
             authorized_users=self.admin_users,
@@ -914,14 +914,14 @@ class BioEngineWorker:
             )
 
     @schema_method
-    async def test_access(
+    async def check_access(
         self,
         context: Dict[str, Any] = Field(
             ...,
             description="Authentication context containing user information, automatically provided by Hypha during service calls.",
         ),
     ) -> bool:
-        """Test whether a user is in the admin users list."""
+        """Check if a user is in the admin users list."""
         try:
             check_permissions(
                 context=context,

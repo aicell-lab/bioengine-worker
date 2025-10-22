@@ -1270,13 +1270,13 @@ class AppsManager:
         self,
         application_ids: Optional[List[str]] = Field(
             None,
-            description="List of application IDs to retrieve status for. If not provided, status for all deployed applications will be returned.",
+            description="List of application IDs to retrieve status for. If not provided, status for all deployed applications will be returned. If a list with only one application ID is provided, only that application's status is returned directly (not nested in a dictionary).",
         ),
         context: Dict[str, Any] = Field(
             ...,
             description="Authentication context containing user information, automatically provided by Hypha during service calls.",
         ),
-    ) -> Dict[str, Union[str, list, dict]]:
+    ) -> Dict[str, Any]:
         """
         Retrieve comprehensive status information for deployed applications.
 
@@ -1302,17 +1302,36 @@ class AppsManager:
         Args:
             application_ids: Optional list of specific application IDs to query.
                            If None, returns status for all tracked applications.
+                           If a list with exactly one application ID, returns only
+                           that application's status directly (not wrapped in a dictionary).
 
         Returns:
-            Dictionary mapping application IDs to their detailed status information.
-            Empty dictionary if no applications match the criteria.
+            - If application_ids is None or contains multiple IDs: Dictionary mapping
+              application IDs to their detailed status information.
+            - If application_ids contains exactly one ID: The status information for
+              that single application (not nested in a dictionary).
+            - Empty dictionary if no applications match the criteria (when application_ids is None).
 
         Raises:
             RuntimeError: If Ray cluster connection is unavailable
+            ValueError: If application_ids is not a list or None
 
         Note:
             Applications in the query list that are not deployed will return a simplified
             status with instructions for deployment.
+
+        Examples:
+            # Get all applications (returns dict of all apps)
+            all_apps = await get_application_status()
+            # Returns: {"app1": {...}, "app2": {...}}
+
+            # Get multiple specific applications (returns dict)
+            apps = await get_application_status(application_ids=["app1", "app2"])
+            # Returns: {"app1": {...}, "app2": {...}}
+
+            # Get single application (returns status directly)
+            app = await get_application_status(application_ids=["app1"])
+            # Returns: {...} (single app status, not {"app1": {...}})
         """
         output = {}
 

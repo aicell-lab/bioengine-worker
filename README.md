@@ -109,9 +109,9 @@ The default `service_id` is `bioengine_worker`.
 The worker service provides the following functions:
 - `get_status()`
 - `stop_worker()`
-- `test_access()`
+- `check_access()`
 - `list_datasets()`
-- `update_datasets()`
+- `refresh_datasets()`
 - `execute_python_code(...)`
 - `save_application(files)`
 - `list_applications()`

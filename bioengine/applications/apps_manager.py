@@ -134,12 +134,20 @@ class AppsManager:
 
         self.haikunator = Haikunator()
 
+        # Store startup applications to deploy on initialization
+        if startup_applications is None:
+            startup_applications = []
+        if not isinstance(startup_applications, list):
+            raise ValueError(
+                f"startup_applications must be a list, got {type(startup_applications)}"
+            )
+        self.startup_applications = startup_applications
+
         # Initialize state variables
         self.server = None
         self.artifact_manager = None
         self.admin_users = None
         self.worker_service_id = None
-        self.startup_applications = startup_applications
         self._deployment_lock = asyncio.Lock()
         self._deployed_applications = {}
         self.debug = debug
@@ -510,6 +518,8 @@ class AppsManager:
                 f"Deploying {len(self.startup_applications)} startup application(s)..."
             )
 
+            admin_context = create_context(admin_users[0])
+
             # Pass the worker owner's token to the startup applications (if not already set)
             startup_applications_token = await self.server.generate_token(
                 {
@@ -518,16 +528,31 @@ class AppsManager:
                     "expires_in": 3600 * 24 * 30,  # support application for 30 days
                 }
             )
+
+            # Deploy the startup applications
+            application_ids = []
             for app_config in self.startup_applications:
+                if not isinstance(app_config, dict):
+                    raise ValueError("Each app_config must be a dictionary.")
+
+                if "artifact_id" not in app_config:
+                    raise ValueError("Each app_config must contain an 'artifact_id'.")
+                
                 if "hypha_token" not in app_config:
                     app_config["hypha_token"] = startup_applications_token
 
-            # Deploy the startup applications
-            admin_context = create_context(admin_users[0])
-            application_ids = await self.deploy_applications(
-                app_configs=self.startup_applications,
-                context=admin_context,
-            )
+                application_id = await self.deploy_application(
+                    artifact_id=app_config["artifact_id"],
+                    version=app_config.get("version"),
+                    application_id=app_config.get("application_id"),
+                    application_kwargs=app_config.get("application_kwargs"),
+                    application_env_vars=app_config.get("application_env_vars"),
+                    hypha_token=app_config.get("hypha_token"),
+                    disable_gpu=app_config.get("disable_gpu", False),
+                    max_ongoing_requests=app_config.get("max_ongoing_requests", 10),
+                    context=admin_context,
+                )
+                application_ids.append(application_id)
 
             # Wait for all startup applications to be deployed
             for application_id in application_ids:
@@ -1180,90 +1205,6 @@ class AppsManager:
             ] = deployment_task
 
             return application_id
-
-    @schema_method
-    async def deploy_applications(
-        self,
-        app_configs: List[dict] = Field(
-            ...,
-            description=(
-                "List of application deployment configurations. Each configuration must be a dictionary containing "
-                "'artifact_id' (required) and optionally 'version', 'application_id', 'application_kwargs', 'application_env_vars', 'hypha_token', "
-                "'disable_gpu', and 'max_ongoing_requests'. Allows batch deployment of multiple applications with different settings."
-            ),
-        ),
-        context: Dict[str, Any] = Field(
-            ...,
-            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
-        ),
-    ) -> List[str]:
-        """
-        Deploys multiple BioEngine applications simultaneously from a list of configurations.
-
-        This method allows you to deploy several applications at once, each with their own
-        configuration settings. It's useful for setting up complex environments or deploying
-        related applications together.
-
-        Configuration Format:
-        Each app_config dictionary supports the same parameters as deploy_application:
-        - artifact_id (required): The application artifact to deploy
-        - version (optional): Specific version to deploy
-        - application_id (optional): Custom deployment ID
-        - application_kwargs (optional): Keyword arguments for deployment class(es)
-        - application_env_vars (optional): Environment variables for deployment class(es)
-        - disable_gpu (optional): Force CPU-only deployment
-        - max_ongoing_requests (optional): Concurrency limit
-
-        Example Configuration:
-        ```
-        [
-            {
-                "artifact_id": "my-workspace/cell-segmentation",
-                "version": "v1.2.0",
-                "disable_gpu": false,
-                "max_ongoing_requests": 5
-            },
-            {
-                "artifact_id": "my-workspace/image-analysis",
-                "application_kwargs": {"ModelDeployment": {"batch_size": 16}}
-            }
-        ]
-        ```
-
-        Returns:
-            List of application IDs for all successfully started deployments.
-            Use these IDs to monitor, manage, or undeploy the applications.
-
-        Raises:
-            ValueError: If any configuration is invalid or missing required fields
-            PermissionError: If user lacks admin permissions to deploy applications
-            RuntimeError: If Ray cluster connection fails or any deployment cannot start
-        """
-        if not isinstance(app_configs, list) or not app_configs:
-            raise ValueError("Provided app_configs must be a non-empty list.")
-
-        application_ids = []
-        for app_config in app_configs:
-            if not isinstance(app_config, dict):
-                raise ValueError("Each app_config must be a dictionary.")
-
-            if "artifact_id" not in app_config:
-                raise ValueError("Each app_config must contain an 'artifact_id'.")
-
-            application_id = await self.deploy_application(
-                artifact_id=app_config["artifact_id"],
-                version=app_config.get("version"),
-                application_id=app_config.get("application_id"),
-                application_kwargs=app_config.get("application_kwargs"),
-                application_env_vars=app_config.get("application_env_vars"),
-                hypha_token=app_config.get("hypha_token"),
-                disable_gpu=app_config.get("disable_gpu", False),
-                max_ongoing_requests=app_config.get("max_ongoing_requests", 10),
-                context=context,
-            )
-            application_ids.append(application_id)
-
-        return application_ids
 
     @schema_method
     async def undeploy_application(

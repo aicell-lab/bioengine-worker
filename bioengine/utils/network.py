@@ -8,7 +8,6 @@ def get_internal_ip() -> str:
     Get the internal IP address of the system (cross-platform).
 
     Works on Linux, macOS, and Windows using the socket module only.
-    Does not require external commands like 'hostname -I'.
 
     Returns:
         The internal IP address as a string.

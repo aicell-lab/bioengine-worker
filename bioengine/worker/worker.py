@@ -558,21 +558,21 @@ class BioEngineWorker:
         worker_services = {
             # 🧩 Worker management
             "get_status": self.get_status,
-            "stop_worker": self.stop,
+            "stop_worker": self.stop,  # Requires admin permissions
             "check_access": self.check_access,
             # 📦 Dataset management
             "list_datasets": self.list_datasets,
-            "refresh_datasets": self.refresh_datasets,
+            "refresh_datasets": self.refresh_datasets,  # Requires admin permissions
             # 🧮 Code execution
-            "execute_python_code": self.code_executor.execute_python_code,
+            "execute_python_code": self.code_executor.execute_python_code,  # Requires admin permissions
             # 🚀 Application management
-            "save_application": self.apps_manager.save_application,
-            "list_applications": self.apps_manager.list_applications,
-            "get_application_manifest": self.apps_manager.get_application_manifest,
-            "delete_application": self.apps_manager.delete_application,
-            "run_application": self.apps_manager.run_application,
-            "stop_application": self.apps_manager.stop_application,
-            "stop_all_applications": self.apps_manager.stop_all_applications,
+            "save_application": self.apps_manager.save_application,  # Requires admin permissions
+            "list_applications": self.apps_manager.list_applications,  # Requires admin permissions
+            "get_application_manifest": self.apps_manager.get_application_manifest,  # Requires admin permissions
+            "delete_application": self.apps_manager.delete_application,  # Requires admin permissions
+            "run_application": self.apps_manager.run_application,  # Requires admin permissions
+            "stop_application": self.apps_manager.stop_application,  # Requires admin permissions
+            "stop_all_applications": self.apps_manager.stop_all_applications,  # Requires admin permissions
             "get_application_status": self.apps_manager.get_application_status,
         }
         # TODO: return more informative error messages, e.g. by returning error instead of raising it

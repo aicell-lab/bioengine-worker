@@ -346,7 +346,11 @@ class AppBuilder:
         # Add BioEngine environment variables
         app_work_dir = self.apps_cache_dir / application_id
         env_vars["HOME"] = str(app_work_dir)
-        env_vars["TMPDIR"] = str(app_work_dir / "tmp")
+
+        tmp_dir = str(app_work_dir / "tmp")
+        env_vars["TMPDIR"] = tmp_dir
+        env_vars["TEMP"] = tmp_dir
+        env_vars["TMP"] = tmp_dir
 
         env_vars["HYPHA_SERVER_URL"] = self.server.config.public_base_url
         env_vars["HYPHA_WORKSPACE"] = self.server.config.workspace

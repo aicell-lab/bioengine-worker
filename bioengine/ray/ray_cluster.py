@@ -475,17 +475,23 @@ class RayCluster:
         sockets = []
         for port_name, step in search_steps.items():
             desired_port = self.ray_cluster_config["ports"][port_name]
+            # Dashboard always binds to localhost, so check against 127.0.0.1
+            check_ip = (
+                "127.0.0.1"
+                if port_name == "dashboard"
+                else self.ray_cluster_config["head_node_address"]
+            )
             free_port, s = acquire_free_port(
                 port=desired_port,
                 step=step,
-                ip=self.ray_cluster_config["head_node_address"],
+                ip=check_ip,
                 keep_open=True,
             )
             sockets.append(s)
 
             if free_port != desired_port:
                 self.logger.warning(
-                    f"Port {desired_port} is not available. Using {free_port} instead."
+                    f"Port {desired_port} for '{port_name}' is not available. Using {free_port} instead."
                 )
             self.ray_cluster_config["ports"][port_name] = free_port
 
@@ -842,7 +848,7 @@ class RayCluster:
 
         except Exception as e:
             self.logger.error(f"Error in cluster startup: {e}")
-            self.stop()
+            await self.stop()
             raise e
 
     async def stop(self) -> None:

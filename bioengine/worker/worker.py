@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 import httpx
 from hypha_rpc import connect_to_server
+from hypha_rpc.rpc import RemoteService
 from hypha_rpc.sync import login
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
@@ -250,7 +251,7 @@ class BioEngineWorker:
 
         # Hypha server configuration
         self.server_url = server_url
-        self.server = None
+        self.server: Optional[RemoteService] = None
         self.workspace = workspace
         self._token = token or os.environ.get("HYPHA_TOKEN")
         self._token_expires_at = 0
@@ -270,11 +271,11 @@ class BioEngineWorker:
         self._admin_context = None
 
         # Dataset server configuration
-        self.data_server_url = None
+        self.data_server_url: Optional[str] = None
         self.data_server_workspace = os.getenv(
             "BIOENGINE_DATA_SERVER_WORKSPACE", "public"
         )
-        self.data_service_url = None
+        self.data_service_url: Optional[str] = None
         self.available_datasets = {}
 
         try:
@@ -309,7 +310,7 @@ class BioEngineWorker:
             self.ray_cluster = RayCluster(**ray_cluster_config)
 
             # Check for running data server
-            self._check_data_server()
+            self._discover_data_server()
 
             # Determine the apps cache directory based on mode
             # For external-cluster mode, use ray_cache_dir if provided, otherwise use cache_dir
@@ -377,7 +378,7 @@ class BioEngineWorker:
             if key not in kwargs or kwargs[key] is None:
                 kwargs[key] = value
 
-    def _check_data_server(self) -> None:
+    def _discover_data_server(self) -> None:
         """
         Check for a running data server and configure connection details.
 
@@ -415,11 +416,10 @@ class BioEngineWorker:
             self.logger.info("No current data server found.")
             return
 
-        # Update server and service url
-        if self.data_server_url != data_server_url:
-            self.data_server_url = data_server_url
-            self.data_service_url = f"{self.data_server_url}/{self.data_server_workspace}/services/bioengine-datasets"
-            self.logger.info(f"Detected dataset server at: {self.data_server_url}")
+        # Set server URL and service URL
+        self.data_server_url = data_server_url
+        self.data_service_url = f"{self.data_server_url}/{self.data_server_workspace}/services/bioengine-datasets"
+        self.logger.info(f"Detected dataset server at: {self.data_server_url}")
 
         # Try to ping the dataset server
         try:
@@ -431,6 +431,27 @@ class BioEngineWorker:
                 )
         except Exception as e:
             self.logger.error(f"Error occurred while pinging dataset server: {e}")
+            self.logger.info("Clearing dataset server configuration.")
+            self.data_server_url = None
+            self.data_service_url = None
+
+    async def _refresh_datasets(self) -> None:
+        """Refresh the list of available datasets from the data server."""
+        if not self.data_service_url:
+            raise RuntimeError("No data server available")
+
+        # Fetch available datasets from the data server
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(f"{self.data_service_url}/list_datasets")
+                response.raise_for_status()
+                self.available_datasets = response.json()
+                self.logger.info(
+                    f"Successfully loaded available datasets from data server: {list(self.available_datasets.keys())}"
+                )
+        except Exception as e:
+            self.logger.error(f"Error fetching datasets from data server: {e}")
+            self.available_datasets = {}
 
     async def _connect_to_server(self) -> None:
         """
@@ -524,6 +545,56 @@ class BioEngineWorker:
             f"Admin users for this BioEngine worker: {', '.join(self.admin_users)}"
         )
 
+    async def _register_bioengine_worker_service(self) -> None:
+        # Register service interface
+        description = "Manages BioEngine Apps and Datasets"
+        if self.ray_cluster.mode == "slurm":
+            description += " on a HPC system with Ray Autoscaler support for dynamic resource management."
+        elif self.ray_cluster.mode == "single-machine":
+            description += " on a single machine Ray instance."
+        else:
+            description += " in a pre-existing Ray environment."
+
+        worker_services = {
+            # 🧩 Worker management
+            "get_status": self.get_status,
+            "stop_worker": self.stop,  # Requires admin permissions
+            "check_access": self.check_access,
+            # 📦 Dataset management
+            "list_datasets": self.list_datasets,
+            "refresh_datasets": self.refresh_datasets,  # Requires admin permissions
+            # 🧮 Code execution
+            "execute_python_code": self.code_executor.execute_python_code,  # Requires admin permissions
+            # 🚀 Application management
+            "save_application": self.apps_manager.save_application,  # Requires admin permissions
+            "list_applications": self.apps_manager.list_applications,  # Requires admin permissions
+            "get_application_manifest": self.apps_manager.get_application_manifest,  # Requires admin permissions
+            "delete_application": self.apps_manager.delete_application,  # Requires admin permissions
+            "run_application": self.apps_manager.run_application,  # Requires admin permissions
+            "stop_application": self.apps_manager.stop_application,  # Requires admin permissions
+            "stop_all_applications": self.apps_manager.stop_all_applications,  # Requires admin permissions
+            "get_application_status": self.apps_manager.get_application_status,
+        }
+        # TODO: return more informative error messages, e.g. by returning error instead of raising it
+        service_info = await self.server.register_service(
+            {
+                "id": self.service_id,
+                "name": "BioEngine Worker",
+                "type": "bioengine-worker",
+                "description": description,
+                "config": {
+                    "visibility": "public",
+                    "require_context": True,
+                },
+                **worker_services,
+            }
+        )
+
+        if self.full_service_id != service_info.id:
+            raise ValueError(
+                f"Service ID mismatch: {self.full_service_id} (expected) vs {service_info.id} (registered)"
+            )
+
     async def _check_hypha_connection(self, reconnect: bool = True) -> None:
         try:
             await asyncio.wait_for(self.server.echo("ping"), timeout=10)
@@ -554,56 +625,6 @@ class BioEngineWorker:
 
             user_info = await self.server.parse_token(self._token)
             self._token_expires_at = user_info.expires_at
-
-    async def _register_bioengine_worker_service(self) -> None:
-        # Register service interface
-        description = "Manages BioEngine Apps and Datasets"
-        if self.ray_cluster.mode == "slurm":
-            description += " on a HPC system with Ray Autoscaler support for dynamic resource management."
-        elif self.ray_cluster.mode == "single-machine":
-            description += " on a single machine Ray instance."
-        else:
-            description += " in a pre-existing Ray environment."
-
-        worker_services = {
-            # 🧩 Worker management
-            "get_status": self.get_status,
-            "stop_worker": self.stop,
-            "check_access": self.check_access,
-            # 📦 Dataset management
-            "list_datasets": self.list_datasets,
-            "refresh_datasets": self.refresh_datasets,
-            # 🧮 Code execution
-            "execute_python_code": self.code_executor.execute_python_code,
-            # 🚀 Application management
-            "save_application": self.apps_manager.save_application,
-            "list_applications": self.apps_manager.list_applications,
-            "get_application_manifest": self.apps_manager.get_application_manifest,
-            "delete_application": self.apps_manager.delete_application,
-            "run_application": self.apps_manager.run_application,
-            "stop_application": self.apps_manager.stop_application,
-            "stop_all_applications": self.apps_manager.stop_all_applications,
-            "get_application_status": self.apps_manager.get_application_status,
-        }
-        # TODO: return more informative error messages, e.g. by returning error instead of raising it
-        service_info = await self.server.register_service(
-            {
-                "id": self.service_id,
-                "name": "BioEngine Worker",
-                "type": "bioengine-worker",
-                "description": description,
-                "config": {
-                    "visibility": "public",
-                    "require_context": True,
-                },
-                **worker_services,
-            }
-        )
-
-        if self.full_service_id != service_info.id:
-            raise ValueError(
-                f"Service ID mismatch: {self.full_service_id} (expected) vs {service_info.id} (registered)"
-            )
 
     async def _cleanup(self) -> None:
         """
@@ -832,9 +853,12 @@ class BioEngineWorker:
             # Start the Ray cluster
             await self.ray_cluster.start()
 
+            # Load available datasets from the data server
+            if self.data_service_url:
+                await self._refresh_datasets()
+
             # Connect the BioEngine worker to the Hypha server
             await self._connect_to_server()
-            await self._check_hypha_connection(reconnect=False)
 
             # Register the BioEngine worker service interface
             await self._register_bioengine_worker_service()
@@ -899,19 +923,8 @@ class BioEngineWorker:
             resource_name="updating BioEngine Datasets",
         )
 
-        # Check if a new data server is available
-        await asyncio.to_thread(self._check_data_server)
-
-        if not self.data_server_url:
-            raise RuntimeError("No data server available")
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(f"{self.data_service_url}/list_datasets")
-            response.raise_for_status()
-            self.available_datasets = response.json()
-            self.logger.info(
-                f"Updated available datasets from data server: {list(self.available_datasets.keys())}"
-            )
+        # Refresh the list of available datasets
+        await self._refresh_datasets()
 
     @schema_method
     async def check_access(

@@ -10,7 +10,7 @@ from ray import serve
 
 # Deployment default runtime environment
 requirements = [
-    "bioimageio.core==0.9.4",
+    "bioimageio.core==0.9.5",
     "careamics==0.0.16",
     "cellpose==3.1.1.2",
     "numpy==1.26.4",

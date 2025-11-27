@@ -10,6 +10,7 @@ on:
       - 'pyproject.toml'
       - 'Dockerfile'
       - '.dockerignore'
+  workflow_dispatch:
 
 jobs:
   build-and-push:
@@ -34,14 +35,40 @@ jobs:
         fi
         echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-    - name: Extract previous version from HEAD~1
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Get latest version from container registry
       run: |
-        PREVIOUS_VERSION=$(git show HEAD~1:pyproject.toml | grep -E '^version\s*=' | sed -E 's/version\s*=\s*"(.*)"/\1/')
-        if [ -z "$PREVIOUS_VERSION" ]; then
-          echo "❌ Could not extract version from pyproject.toml in HEAD~1"
-          exit 1
+        if ! command -v skopeo &> /dev/null; then
+            echo "skopeo could not be found, installing..."
+            sudo apt-get update && sudo apt-get install -y skopeo
         fi
-        echo "PREVIOUS_VERSION=$PREVIOUS_VERSION" >> $GITHUB_ENV
+
+        IMAGE="docker://ghcr.io/${{ github.repository }}"
+        echo "🔍 Fetching tags for $IMAGE..."
+        
+        if ! skopeo list-tags "$IMAGE" > /dev/null 2>&1; then
+           echo "❌ Image not found or no tags. Cannot determine previous version."
+           exit 1
+        fi
+
+        TAGS=$(skopeo list-tags "$IMAGE" | jq -r '.Tags[]')
+        
+        # Filter out 'latest' and sort by version
+        LATEST_VERSION=$(echo "$TAGS" | grep -v "latest" | sort -V | tail -n1)
+        
+        if [ -z "$LATEST_VERSION" ]; then
+           echo "❌ No valid version tags found."
+           exit 1
+        fi
+        
+        echo "📦 Latest registry version: $LATEST_VERSION"
+        echo "PREVIOUS_VERSION=$LATEST_VERSION" >> $GITHUB_ENV
 
     - name: Check that version is updated and newer
       run: |
@@ -56,24 +83,6 @@ jobs:
           exit 1
         fi
         echo "✅ Version updated correctly."
-
-    - name: Check if Docker image tag already exists
-      run: |
-        IMAGE="ghcr.io/${{ github.repository }}:$VERSION"
-        echo "🔍 Checking if image $IMAGE exists..."
-        if docker pull "$IMAGE" > /dev/null 2>&1; then
-          echo "❌ Docker image tag $IMAGE already exists. Please bump the version."
-          exit 1
-        else
-          echo "✅ Docker image tag $IMAGE does not exist yet."
-        fi
-
-    - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v2
-      with:
-        registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3

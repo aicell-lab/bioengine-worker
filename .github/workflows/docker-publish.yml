@@ -33,6 +33,7 @@ jobs:
           echo "❌ Could not extract version from pyproject.toml"
           exit 1
         fi
+        echo "📦 Extracted version: $VERSION"
         echo "VERSION=$VERSION" >> $GITHUB_ENV
 
     - name: Log in to GitHub Container Registry

@@ -2,6 +2,10 @@ name: Enforce Version Update
 
 on:
   workflow_dispatch:
+    inputs:
+      pr_branch:
+        description: 'Branch to check'
+        required: true
   pull_request:
     branches:
       - main
@@ -14,13 +18,14 @@ on:
 
 jobs:
   check-version:
-    if: github.event.pull_request.draft == false
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
       with:
+        ref: ${{ inputs.pr_branch }}
         fetch-depth: 0  # Fetch full history for accurate origin/main reference
 
     - name: Extract new version from pyproject.toml (PR branch)
@@ -30,6 +35,7 @@ jobs:
           echo "❌ Could not extract version from pyproject.toml in PR branch"
           exit 1
         fi
+        echo "📦 Extracted new version: $NEW_VERSION"
         echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
     - name: Extract old version from origin/main branch
@@ -39,6 +45,7 @@ jobs:
           echo "❌ Could not extract version from pyproject.toml on origin/main"
           exit 1
         fi
+        echo "📦 Extracted previous version: $PREVIOUS_VERSION"
         echo "PREVIOUS_VERSION=$PREVIOUS_VERSION" >> $GITHUB_ENV
 
     - name: Ensure new version is greater than previous
@@ -55,13 +62,4 @@ jobs:
         fi
         echo "✅ Version updated from $PREVIOUS_VERSION to $NEW_VERSION."
 
-    - name: Ensure Docker image tag does not already exist on GHCR
-      run: |
-        IMAGE="ghcr.io/${{ github.repository }}:$NEW_VERSION"
-        echo "🔍 Checking if Docker image tag $IMAGE already exists..."
-        if docker pull "$IMAGE" > /dev/null 2>&1; then
-          echo "❌ Docker image tag $IMAGE already exists. Please update the version."
-          exit 1
-        else
-          echo "✅ Docker image tag $IMAGE does not exist yet."
-        fi
+

@@ -19,7 +19,7 @@ Key Components:
 - Command-line interface for standalone dataset service deployment
 
 Dataset Architecture:
-The system uses a manifest-driven architecture where each dataset includes a manifest.yml
+The system uses a manifest-driven architecture where each dataset includes a manifest.yaml
 file defining metadata and access permissions. Data is stored in Zarr format for efficient
 partial access, with an HTTP-based streaming protocol that minimizes data transfer.
 

@@ -599,6 +599,7 @@ def start_proxy_server(
         hypha_parser = get_argparser()
         hypha_args = hypha_parser.parse_args([])  # use default values
 
+        hypha_args.public_base_url = server_url
         hypha_args.start_minio_server = True
         hypha_args.executable_path = executable_path
         hypha_args.minio_workdir = minio_workdir
@@ -636,7 +637,7 @@ def start_proxy_server(
         # Start the server
         uvicorn.run(
             hypha_app,
-            host=server_ip,
+            host="0.0.0.0",  # server_ip
             port=free_server_port,
             log_config=log_config,
             log_level="info",

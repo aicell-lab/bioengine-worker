@@ -440,37 +440,49 @@ cd bioengine-worker
 pip install .
 ```
 
-#### Prerequisites
+**Prepare your application directory**: Ensure your directory contains at minimum:
+- `manifest.yaml` with all required fields
+- Python deployment file(s) referenced in the manifest
 
-1. **Authentication** (Optional): You can authenticate to Hypha in two ways:
-   - **Environment variable**: Export your Hypha authentication token:
-     ```bash
-     export HYPHA_TOKEN="your-hypha-token-here"
-     ```
-   - **Interactive login**: If `HYPHA_TOKEN` is not set, you'll be prompted to log in interactively when running the script
-   
-   You can obtain a token from the Hypha server web interface or use the interactive login flow.
-
-2. **Prepare your application directory**: Ensure your directory contains at minimum:
-   - `manifest.yaml` with all required fields
-   - Python deployment file(s) referenced in the manifest
-
-#### Basic Usage
+#### How to Upload
 
 ```bash
 python scripts/save_application.py --directory <path-to-your-app>
-```
-
-**Example:**
-```bash
-python scripts/save_application.py --directory tests/demo_app
 ```
 
 This command will:
 1. Read all files from the specified directory
 2. Validate the `manifest.yaml` file
 3. Upload the application to Hypha as an artifact
-4. Display the created artifact ID (e.g., `your-workspace/my-app`)
+4. Display the created artifact ID (e.g., `your-workspace/your-app`)
+
+
+**Authentication**: You need to authenticate with Hypha to upload applications. You have three options:
+- **Environment variable**: Export your Hypha authentication token:
+    ```bash
+    export HYPHA_TOKEN="your-hypha-token-here"
+    ```
+- **`--token` command-line argument**: You can also pass the token directly as an argument to the script:
+    ```bash
+    python scripts/save_application.py --directory <path-to-your-app> --token "your-hypha-token-here"
+    ```
+- **Interactive login**: If no token is provided, you'll be prompted to log in interactively when running the script.
+
+A token can be obtained from the Hypha server web interface at [hypha.aicell.io](https://hypha.aicell.io/).
+
+In addition to authentication, you can specify the Hypha server URL and workspace using command-line arguments:
+- `--server_url`: Hypha server URL (default: `https://hypha.aicell.io`)
+- `--workspace`: Target workspace for the artifact (default: your default workspace)
+
+
+**Full Example:**
+```bash
+python scripts/save_application.py \
+    --directory "bioengine_apps/model_runner" \
+    --server_url "https://hypha.aicell.io" \
+    --workspace "bioimage-io" \
+    --token "$HYPHA_TOKEN"
+```
 
 #### What Happens During Upload
 

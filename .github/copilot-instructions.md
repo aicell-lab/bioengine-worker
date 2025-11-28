@@ -90,12 +90,12 @@ async def admin_operation(self, context=None):
 - **external-cluster**: Connect to existing Ray cluster, data access only
 
 ### Dataset Management
-- Manifest-driven: `dataset_dir/manifest.yml` + `*.zarr` files
+- Manifest-driven: `dataset_dir/manifest.yaml` + `*.zarr` files
 - HTTP streaming via `HttpZarrStore` 
 - Load → Access → Close pattern through worker service API
 
 ### Application Deployment  
-- Artifact-based: `manifest.yml` defines deployment config + Python entry point
+- Artifact-based: `manifest.yaml` defines deployment config + Python entry point
 - Ray Serve deployment with resource allocation checking
 - WebSocket + WebRTC support for real-time applications
 
@@ -119,7 +119,7 @@ async def admin_operation(self, context=None):
 
 ### Configuration & Deployment
 - `pyproject.toml` - Package config, Ray 2.33.0 + hypha-rpc dependencies
-- `docker-compose.yml` - Local development setup
+- `docker-compose.yaml` - Local development setup
 - `scripts/start_hpc_worker.sh` - HPC deployment helper
 
 ## Common Debugging

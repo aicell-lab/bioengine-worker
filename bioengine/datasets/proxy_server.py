@@ -180,11 +180,11 @@ async def mirror_dataset_to_artifact(
             "MC_HOST_local": f"http://{root_user}:{root_password}@localhost:{port}",
         }
 
-        # Filesystem path to all files except manifest.yml (already handled separately)
+        # Filesystem path to all files except manifest.yaml (already handled separately)
         all_files = [
             f
             for f in await asyncio.to_thread(lambda: list(dataset_dir.iterdir()))
-            if (f.is_file() and f.name != "manifest.yml") or f.is_dir()
+            if (f.is_file() and f.name != "manifest.yaml") or f.is_dir()
         ]
         for data_file in all_files:
 
@@ -232,7 +232,7 @@ async def create_dataset_artifact(
         artifact = None
         logger.info(f"Creating dataset from folder '{dataset_dir}/'")
 
-        dataset_manifest_content = (dataset_dir / "manifest.yml").read_text()
+        dataset_manifest_content = (dataset_dir / "manifest.yaml").read_text()
         dataset_manifest = await asyncio.to_thread(
             yaml.safe_load, dataset_manifest_content
         )
@@ -418,7 +418,7 @@ async def create_bioengine_datasets(server: RemoteService):
         datasets = [
             d
             for d in BIOENGINE_DATA_DIR.iterdir()
-            if d.is_dir() and (d / "manifest.yml").exists()
+            if d.is_dir() and (d / "manifest.yaml").exists()
         ]
         authorized_users_collection = {}
         for dataset_dir in datasets:
@@ -508,8 +508,8 @@ def start_proxy_server(
     5. Monitors service status and handles graceful shutdown
 
     Args:
-        data_dir: Root directory containing dataset folders with manifest.yml files
-                Each dataset folder should have a manifest.yml with metadata and
+        data_dir: Root directory containing dataset folders with manifest.yaml files
+                Each dataset folder should have a manifest.yaml with metadata and
                 access control configuration.
         bioengine_cache_dir: Directory for cache files, logs, and temporary storage
                            Must be writable by the service process.

@@ -138,9 +138,9 @@ The BioEngine worker deploys models from the Hypha artifact manager. To create a
 python scripts/manage_artifact.py --deployment_dir <path_to_your_deployment_dir>
 ```
 
-A deployment requires a `manifest.yml` file and a python script defining the deployment model.
+A deployment requires a `manifest.yaml` file and a python script defining the deployment model.
 
-The `manifest.yml` requires at minimum the following fields:
+The `manifest.yaml` requires at minimum the following fields:
 - `name`
 - `description`
 - `type`
@@ -163,11 +163,11 @@ example_dataset/
 │   └── ...
 ├── data_file_2.zarr/
 │   └── ...
-└── manifest.yml
+└── manifest.yaml
 ```
 
 #### Manifest File Format
-The `manifest.yml` file defines the dataset metadata and files:
+The `manifest.yaml` file defines the dataset metadata and files:
 ```yaml
 description: "This is an example dataset"
 files:
@@ -198,7 +198,7 @@ files:
 
 ### Accessing other datasets
 
-All other files that are not zarr and have no manifest.yml file will be accessible under `/data` from `execute_python_code` or from deployed models.
+All other files that are not zarr and have no manifest.yaml file will be accessible under `/data` from `execute_python_code` or from deployed models.
 
 
 ### Build a multi-arch docker image

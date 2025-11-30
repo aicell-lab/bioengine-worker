@@ -50,7 +50,7 @@ class TrainingParams(TypedDict):
     model: str | Path
     channel1: str
     channel2: str
-    ratio: float
+    test_indices: list[int]
     n_epochs: int
     learning_rate: float
     weight_decay: float
@@ -58,6 +58,7 @@ class TrainingParams(TypedDict):
     n_samples: int | None
     session_id: str
     save_every: int
+    min_train_masks: int
 
 
 class DatasetSplit(TypedDict):
@@ -396,7 +397,7 @@ def run_blocking_task(
             weight_decay=training_params["weight_decay"],
             save_every=training_params["save_every"],
             model_name="model",
-            min_train_masks=1,
+            min_train_masks=training_params["min_train_masks"],
         )
     except Exception as e:
         update_status(
@@ -427,44 +428,81 @@ async def finetune_cellpose(
 ) -> tuple[Path, list[float], list[float]]:
     """Prepare data, build model, and call Cellpose train_seg asynchronously."""
     session_id = training_params["session_id"]
-    data_save_path = artifact_cache_dir(training_params["artifact_id"])
-    pairs = await make_training_pairs(training_params, data_save_path)
-    dataset_split = split_train_test(
-        pairs,
-        training_params["ratio"],
-    )
+    try:
+        logger.info("Session %s: Getting artifact cache directory", session_id)
+        data_save_path = artifact_cache_dir(training_params["artifact_id"])
 
-    model_save_path = get_session_path(session_id)
-    model_save_path.mkdir(parents=True, exist_ok=True)
+        logger.info("Session %s: Downloading and preparing training pairs", session_id)
+        update_status(
+            session_id,
+            StatusType.PREPARING,
+            "Downloading training data from artifact...",
+        )
+        pairs = await make_training_pairs(training_params, data_save_path)
 
-    param_str = str(training_params)
-    append_info(
-        session_id,
-        f"Training started. Parameters:\n{param_str}",
-        with_time=True,
-    )
+        logger.info("Session %s: Splitting dataset into train/test", session_id)
+        update_status(
+            session_id,
+            StatusType.PREPARING,
+            "Splitting dataset into train/test sets...",
+        )
+        dataset_split = split_train_test(
+            pairs,
+            training_params["test_indices"],
+        )
 
-    channels = get_channels(training_params["channel1"], training_params["channel2"])
-    cellpose_model = load_model(training_params["model"])
+        model_save_path = get_session_path(session_id)
+        model_save_path.mkdir(parents=True, exist_ok=True)
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        executor,
-        run_blocking_task,
-        cellpose_model,
-        model_save_path,
-        channels,
-        dataset_split,
-        training_params,
-    )
+        param_str = str(training_params)
+        append_info(
+            session_id,
+            f"Training started. Parameters:\n{param_str}",
+            with_time=True,
+        )
+
+        logger.info("Session %s: Loading Cellpose model", session_id)
+        update_status(
+            session_id,
+            StatusType.PREPARING,
+            "Loading Cellpose model...",
+        )
+        channels = get_channels(training_params["channel1"], training_params["channel2"])
+        cellpose_model = load_model(training_params["model"])
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            executor,
+            run_blocking_task,
+            cellpose_model,
+            model_save_path,
+            channels,
+            dataset_split,
+            training_params,
+        )
+    except Exception as e:
+        update_status(
+            session_id,
+            StatusType.FAILED,
+            f"Training preparation failed: {str(e)}",
+        )
+        logger.exception("Training failed during preparation for session %s", session_id)
+        raise
 
 
-def launch_training_task(
+async def launch_training_task(
     training_params: TrainingParams,
     executor: ThreadPoolExecutor,
-) -> asyncio.Task:
+) -> None:
     """Launch the Cellpose finetuning task asynchronously."""
-    return asyncio.create_task(finetune_cellpose(training_params, executor))
+    session_id = training_params["session_id"]
+    logger.info("launch_training_task started for session %s", session_id)
+    try:
+        await finetune_cellpose(training_params, executor)
+        logger.info("launch_training_task completed successfully for session %s", session_id)
+    except Exception as e:
+        logger.exception("launch_training_task failed for session %s: %s", session_id, str(e))
+        raise
 
 
 def load_model(identifier: str | Path) -> CellposeModel:
@@ -596,7 +634,23 @@ async def download_pairs_from_artifact(
         out_dir,
     )
     if missing_rpaths:
-        await artifact.get(missing_rpaths, missing_lpaths, on_error="ignore")
+        logger.info("Downloading %d files from artifact", len(missing_rpaths))
+        try:
+            # Add a timeout to prevent indefinite hanging (10 minutes)
+            await asyncio.wait_for(
+                artifact.get(missing_rpaths, missing_lpaths, on_error="ignore"),
+                timeout=600,
+            )
+            logger.info("Download completed successfully")
+        except asyncio.TimeoutError:
+            logger.error("Download timed out after 600 seconds")
+            raise RuntimeError(
+                f"Download timed out after 600 seconds. "
+                f"Attempted to download {len(missing_rpaths)} files."
+            ) from None
+        except Exception as e:
+            logger.exception("Download failed: %s", str(e))
+            raise
 
     local_imgs = [to_local_path(out_dir, p) for p in image_paths]
     local_anns = [to_local_path(out_dir, p) for p in annotation_paths]
@@ -640,36 +694,81 @@ async def download_metadata_from_artifact(
         dests = [Path(meta_remote)]
         missing_remote, missing_local = get_missing_paths(dests, cache_root)
         if missing_remote:
-            await artifact.get(missing_remote, missing_local, on_error="ignore")
+            logger.info("Downloading metadata file: %s", meta_remote)
+            try:
+                await asyncio.wait_for(
+                    artifact.get(missing_remote, missing_local, on_error="ignore"),
+                    timeout=120,
+                )
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    f"Metadata download timed out after 120 seconds for {meta_remote}"
+                ) from None
         return local
 
     local.mkdir(parents=True, exist_ok=True)
-    await artifact.get(
-        f"{meta_remote.rstrip('/')}/",
-        str(local),
-        recursive=True,
-        on_error="ignore",
-    )
+    logger.info("Downloading metadata directory: %s", meta_remote)
+    try:
+        await asyncio.wait_for(
+            artifact.get(
+                f"{meta_remote.rstrip('/')}/",
+                str(local),
+                recursive=True,
+                on_error="ignore",
+            ),
+            timeout=300,
+        )
+    except asyncio.TimeoutError:
+        raise RuntimeError(
+            f"Metadata directory download timed out after 300 seconds for {meta_remote}"
+        ) from None
     return local
 
 
 def split_train_test(
     pairs: list[TrainingPair],
-    ratio: float,
+    test_indices: list[int],
 ) -> DatasetSplit:
-    """Split (image, label) pairs into train/test according to ratio."""
+    """Split (image, label) pairs into train/test using explicit test indices.
+
+    Args:
+        pairs: List of training pairs (image, annotation)
+        test_indices: List of indices to use for test set. Must contain at least one index.
+                     Remaining indices will be used for training.
+
+    Returns:
+        DatasetSplit with train and test files separated.
+
+    Raises:
+        ValueError: If no pairs are found, test_indices is empty, or indices are out of range.
+    """
     if not pairs or len(pairs) < 1:
         error_msg = "No (image, label) pairs found for train/test split."
         raise ValueError(error_msg)
-    if ratio <= 0 or ratio >= 1:
-        error_msg = "Train/test split ratio must be in the interval (0, 1)."
+
+    # Require at least one test index (Cellpose requires test samples for training)
+    if not test_indices or len(test_indices) == 0:
+        error_msg = (
+            "At least one test index must be specified. "
+            "Cellpose requires test samples during training to monitor performance. "
+            "Please provide at least one index in test_indices (e.g., test_indices=[0])."
+        )
         raise ValueError(error_msg)
 
-    rng = np.random.default_rng()
-    shuffled_indices = rng.permutation(len(pairs))
-    cut = max(int(len(pairs) * ratio), 1)
-    train_indices = shuffled_indices[:cut]
-    test_indices = shuffled_indices[cut:]
+    # Validate test indices are in valid range
+    if max(test_indices) >= len(pairs) or min(test_indices) < 0:
+        error_msg = f"Test indices must be in range [0, {len(pairs)-1}]"
+        raise ValueError(error_msg)
+
+    # Create train indices as all indices not in test_indices
+    all_indices = set(range(len(pairs)))
+    test_indices_set = set(test_indices)
+    train_indices = sorted(all_indices - test_indices_set)
+
+    if not train_indices:
+        error_msg = "Training set cannot be empty. At least one sample must be used for training."
+        raise ValueError(error_msg)
+
     return DatasetSplit(
         train_files=[pairs[train_i]["image"] for train_i in train_indices],
         train_labels_files=[pairs[train_i]["annotation"] for train_i in train_indices],
@@ -801,16 +900,16 @@ def _predict_and_encode(
     },
     max_ongoing_requests=1,
     max_queued_requests=10,
-    # autoscaling_config={
-    #     "min_replicas": 1,
-    #     "initial_replicas": 1,
-    #     "max_replicas": 2,
-    #     "target_num_ongoing_requests_per_replica": 0.8,
-    #     "metrics_interval_s": 2.0,
-    #     "look_back_period_s": 10.0,
-    #     "downscale_delay_s": 300,
-    #     "upscale_delay_s": 0.0,
-    # },
+    autoscaling_config={
+        "min_replicas": 1,
+        "initial_replicas": 1,
+        "max_replicas": 2,
+        "target_num_ongoing_requests_per_replica": 0.8,
+        "metrics_interval_s": 2.0,
+        "look_back_period_s": 10.0,
+        "downscale_delay_s": 300,
+        "upscale_delay_s": 0.0,
+    },
     health_check_period_s=30.0,
     health_check_timeout_s=30.0,
     graceful_shutdown_timeout_s=300.0,
@@ -825,6 +924,7 @@ class CellposeFinetune:
 
     pretrained_models: list[str]
     executors: dict[str, ThreadPoolExecutor]
+    tasks: dict[str, asyncio.Task]
     _session_lock: asyncio.Lock
 
     def __init__(self) -> None:
@@ -832,6 +932,7 @@ class CellposeFinetune:
         get_sessions_path().mkdir(parents=True, exist_ok=True)
         self.pretrained_models = PretrainedModel.values()
         self.executors = {}
+        self.tasks = {}
         self._session_lock = asyncio.Lock()
 
     def get_model_id(self, model: str) -> str | Path:
@@ -893,11 +994,13 @@ class CellposeFinetune:
                 "Green, Blue}."
             ),
         ),
-        ratio: float = Field(
-            0.8,
+        test_indices: list[int] | None = Field(
+            None,
             description=(
-                "Fraction of pairs used for training; the remainder is used "
-                "for testing"
+                "Indices of samples to use for testing (0-based). "
+                "At least one test index is REQUIRED (Cellpose needs test samples for training). "
+                "Remaining samples will be used for training. "
+                "Example: test_indices=[0] or test_indices=[1, 3, 5]"
             ),
         ),
         n_samples: int | None = Field(
@@ -913,6 +1016,14 @@ class CellposeFinetune:
         save_every: int = Field(
             100,
             description="Frequency (in epochs) to save the model during training.",
+        ),
+        min_train_masks: int = Field(
+            5,
+            description=(
+                "Minimum number of masks per training batch. Lower values speed up "
+                "training, useful for quick testing with large sample sets. "
+                "Cellpose default is 5."
+            ),
         ),
     ) -> SessionStatusWithId:
         """Start asynchronous finetuning of a Cellpose model on an artifact dataset.
@@ -941,7 +1052,7 @@ class CellposeFinetune:
             model=model_id,
             channel1=channel1,
             channel2=channel2,
-            ratio=ratio,
+            test_indices=test_indices if test_indices is not None else [],
             n_epochs=n_epochs,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
@@ -949,12 +1060,15 @@ class CellposeFinetune:
             n_samples=n_samples,
             session_id=session_id,
             save_every=save_every,
+            min_train_masks=min_train_masks,
         )
 
         async with self._session_lock:
             executor = ThreadPoolExecutor(max_workers=1)
             self.executors[session_id] = executor
-            launch_training_task(training_params, executor)
+            task = asyncio.create_task(launch_training_task(training_params, executor))
+            self.tasks[session_id] = task
+            logger.info("Training task created for session %s, task: %s", session_id, task)
 
         status = get_status(session_id)
         return SessionStatusWithId(**status, session_id=session_id)
@@ -968,10 +1082,17 @@ class CellposeFinetune:
         ),
     ) -> SessionStatus:
         """Stop an ongoing training session."""
+        task = self.tasks.get(session_id)
+        if task and not task.done():
+            task.cancel()
+
         executor = self.executors.get(session_id)
         if executor:
             executor.shutdown(wait=False, cancel_futures=True)
             del self.executors[session_id]
+
+        if session_id in self.tasks:
+            del self.tasks[session_id]
 
         update_status(
             session_id=session_id,
@@ -980,6 +1101,36 @@ class CellposeFinetune:
         )
 
         return get_status(session_id)
+
+    @schema_method(arbitrary_types_allowed=True)
+    async def debug_task_info(
+        self,
+        session_id: str = Field(
+            description="Session ID to debug",
+        ),
+    ) -> dict:
+        """Debug information about the training task."""
+        task = self.tasks.get(session_id)
+        executor = self.executors.get(session_id)
+
+        info = {
+            "session_id": session_id,
+            "task_exists": task is not None,
+            "executor_exists": executor is not None,
+            "all_tasks": list(self.tasks.keys()),
+            "all_executors": list(self.executors.keys()),
+        }
+
+        if task:
+            info["task_done"] = task.done()
+            info["task_cancelled"] = task.cancelled()
+            if task.done():
+                try:
+                    info["task_result"] = str(task.result())
+                except Exception as e:
+                    info["task_exception"] = str(e)
+
+        return info
 
     @schema_method(arbitrary_types_allowed=True)
     async def get_training_status(

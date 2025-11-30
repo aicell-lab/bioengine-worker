@@ -138,12 +138,16 @@ Start asynchronous model fine-tuning.
 
 ### `get_training_status()`
 
-Monitor training progress.
+Monitor training progress and retrieve training metrics.
 
 **Parameters:**
 - `session_id` (str): Training session ID
 
-**Returns:** Dict with `"status_type"` and `"message"` keys
+**Returns:** Dict with the following keys:
+- `status_type` (str): Status of the training ("waiting", "preparing", "running", "completed", "failed")
+- `message` (str): Human-readable status message
+- `train_losses` (list[float], optional): Per-epoch training loss values
+- `test_losses` (list[float], optional): Per-epoch test loss values (computed periodically)
 
 ### `list_pretrained_models()`
 
@@ -170,10 +174,11 @@ Get available pretrained models.
 
 ## Example Scripts
 
-This repository includes two example scripts:
+This repository includes several example scripts:
 
 - **`scripts/test_single_image.py`**: Run inference on a single image from URL
-- **`scripts/test_service.py`**: Full workflow including training and inference
+- **`scripts/test_service.py`**: Full workflow including training and inference with metrics display
+- **`scripts/check_status.py`**: Check training status and view metrics for a session
 
 Run them with:
 
@@ -186,6 +191,31 @@ python scripts/test_single_image.py
 
 # Test full training workflow
 python scripts/test_service.py
+
+# Check status of a training session
+python scripts/check_status.py <session_id>
+```
+
+## Training Metrics
+
+The service now tracks and returns training metrics including per-epoch training and test losses. You can:
+
+1. **Monitor during training**: The `test_service.py` script displays real-time loss values during training
+2. **Query after completion**: Use `get_training_status()` to retrieve full training history
+3. **Visualize progress**: Training and test losses are returned as lists for easy plotting
+
+Example of accessing metrics:
+
+```python
+status = await cellpose_service.get_training_status(session_id)
+
+if "train_losses" in status:
+    train_losses = status["train_losses"]
+    test_losses = status["test_losses"]
+
+    # Plot or analyze the losses
+    print(f"Initial loss: {train_losses[0]:.4f}")
+    print(f"Final loss: {train_losses[-1]:.4f}")
 ```
 
 ## Tutorial Notebook

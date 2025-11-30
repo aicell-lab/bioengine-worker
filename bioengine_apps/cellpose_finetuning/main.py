@@ -175,11 +175,13 @@ class PredictionItemModel(TypedDict):
     output: np.ndarray
 
 
-class SessionStatus(TypedDict):
+class SessionStatus(TypedDict, total=False):
     """Status and message for a background training session."""
 
     status_type: StatusType
     message: str
+    train_losses: list[float]
+    test_losses: list[float]
 
 
 class SessionStatusWithId(TypedDict):
@@ -299,19 +301,29 @@ def get_status_path(session_id: str) -> Path:
     return get_session_path(session_id) / "status.json"
 
 
-def update_status(session_id: str, status_type: StatusType, message: str) -> None:
+def update_status(
+    session_id: str,
+    status_type: StatusType,
+    message: str,
+    train_losses: list[float] | None = None,
+    test_losses: list[float] | None = None,
+) -> None:
     """Update the status of a training session."""
     status_path = get_status_path(session_id)
     with status_path.open(
         "w",
         encoding="utf-8",
     ) as f:
-        status = json.dumps(
-            SessionStatus(
-                status_type=status_type,
-                message=message,
-            ),
-        )
+        status_dict: SessionStatus = {
+            "status_type": status_type,
+            "message": message,
+        }
+        if train_losses is not None:
+            status_dict["train_losses"] = train_losses
+        if test_losses is not None:
+            status_dict["test_losses"] = test_losses
+
+        status = json.dumps(status_dict)
         f.write(status)
 
     append_info(
@@ -392,10 +404,19 @@ def run_blocking_task(
         )
         raise
 
+    # Extract training metrics from the result
+    model_path, train_losses, test_losses = seg_result
+
+    # Convert numpy arrays to lists for JSON serialization
+    train_losses_list = train_losses.tolist() if hasattr(train_losses, "tolist") else list(train_losses)
+    test_losses_list = test_losses.tolist() if hasattr(test_losses, "tolist") else list(test_losses)
+
     update_status(
         session_id,
         StatusType.COMPLETED,
         "Training completed successfully",
+        train_losses=train_losses_list,
+        test_losses=test_losses_list,
     )
 
     append_info(

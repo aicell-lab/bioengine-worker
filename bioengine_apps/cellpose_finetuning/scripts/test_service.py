@@ -104,10 +104,49 @@ async def monitor_training(
     while True:
         status = await cellpose_service.get_training_status(session_id)
         current_time = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S %Z")
-        print(f"\r[{current_time}] {status['message']}", end="")  # noqa: T201
+
+        # Build status message with metrics if available
+        message = f"\r[{current_time}] {status['message']}"
+
+        # Add current training metrics if available
+        if "train_losses" in status and status["train_losses"]:
+            train_losses = status["train_losses"]
+            # Find the last non-zero train loss
+            current_train_loss = next((loss for loss in reversed(train_losses) if loss > 0), None)
+            if current_train_loss is not None:
+                message += f" | Train Loss: {current_train_loss:.4f}"
+
+        if "test_losses" in status and status["test_losses"]:
+            test_losses = status["test_losses"]
+            # Find the last non-zero test loss
+            current_test_loss = next((loss for loss in reversed(test_losses) if loss > 0), None)
+            if current_test_loss is not None:
+                message += f" | Test Loss: {current_test_loss:.4f}"
+
+        print(message, end="")  # noqa: T201
+
         if status["status_type"] in ("completed", "failed"):
+            print()  # noqa: T201 # Add newline after completion
             break
         await asyncio.sleep(1)
+
+    # Print final training metrics summary if available
+    if status and status["status_type"] == "completed":
+        if "train_losses" in status and status["train_losses"]:
+            train_losses = status["train_losses"]
+            non_zero_train = [loss for loss in train_losses if loss > 0]
+            if non_zero_train:
+                print(f"\nTraining Metrics Summary:")  # noqa: T201
+                print(f"  Epochs: {len(non_zero_train)}")  # noqa: T201
+                print(f"  Initial Train Loss: {non_zero_train[0]:.4f}")  # noqa: T201
+                print(f"  Final Train Loss: {non_zero_train[-1]:.4f}")  # noqa: T201
+
+                if "test_losses" in status and status["test_losses"]:
+                    test_losses = status["test_losses"]
+                    non_zero_test = [loss for loss in test_losses if loss > 0]
+                    if non_zero_test:
+                        print(f"  Final Test Loss: {non_zero_test[-1]:.4f}")  # noqa: T201
+                        print(f"  Test evaluations: {len(non_zero_test)}")  # noqa: T201
 
 
 async def main(session_id: str | None = None) -> None:

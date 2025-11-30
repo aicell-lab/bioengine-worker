@@ -48,8 +48,6 @@ class TrainingParams(TypedDict):
     artifact_id: str
     metadata_path: str
     model: str | Path
-    channel1: str
-    channel2: str
     test_indices: list[int]
     n_epochs: int
     learning_rate: float
@@ -86,45 +84,9 @@ class PretrainedModel(str, Enum):
 
     description: str
 
-    CYTO = (
-        "cyto",
-        "Original Cellpose cytoplasm model (2D cell segmentation).",
-    )
-    CYTO3 = (
-        "cyto3",
-        "Cellpose 3 cytoplasm model (latest general-purpose cytoplasm).",
-    )
-    NUCLEI = (
-        "nuclei",
-        "Cellpose nuclei model for nuclear segmentation.",
-    )
-    TISSUENET_CP3 = (
-        "tissuenet_cp3",
-        "Cellpose 3 model trained on TissueNet dataset (tissue images).",
-    )
-    LIVECELL_CP3 = (
-        "livecell_cp3",
-        "Cellpose 3 model trained on LiveCell dataset (live-cell imaging).",
-    )
-    YEAST_PHC_CP3 = (
-        "yeast_PhC_cp3",
-        "Cellpose 3 model for yeast phase-contrast microscopy.",
-    )
-    YEAST_BF_CP3 = (
-        "yeast_BF_cp3",
-        "Cellpose 3 model for yeast bright-field microscopy.",
-    )
-    BACT_PHASE_CP3 = (
-        "bact_phase_cp3",
-        "Cellpose 3 model for bacterial phase-contrast microscopy.",
-    )
-    BACT_FLUOR_CP3 = (
-        "bact_fluor_cp3",
-        "Cellpose 3 model for bacterial fluorescence microscopy.",
-    )
-    DEEPBACS_CP3 = (
-        "deepbacs_cp3",
-        "Cellpose 3 model trained on DeepBACS dataset (bacteria).",
+    CPSAM = (
+        "cpsam",
+        "Cellpose-SAM 4.0 model (transformer-based, channel-order invariant).",
     )
 
     def __new__(cls, value: str, description: str) -> Self:
@@ -146,25 +108,6 @@ class PretrainedModel(str, Enum):
             {"id": m.value, "description": getattr(m, "description", m.value)}
             for m in cls
         ]
-
-
-class Channel(int, Enum):
-    """Channel enumeration for Cellpose channel indices."""
-
-    GRAYSCALE = 0
-    RED = 1
-    GREEN = 2
-    BLUE = 3
-
-
-_NAME_TO_CHANNEL: dict[str, Channel] = {
-    "grayscale": Channel.GRAYSCALE,
-    "gray": Channel.GRAYSCALE,
-    "grey": Channel.GRAYSCALE,
-    "red": Channel.RED,
-    "green": Channel.GREEN,
-    "blue": Channel.BLUE,
-}
 
 
 class StatusType(str, Enum):
@@ -298,15 +241,52 @@ def get_url_and_artifact_id(artifact_id: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _channel_index(name: str) -> int:
-    """Parse a user-provided channel name into a Channel index."""
-    ch = _NAME_TO_CHANNEL.get(name.strip().lower())
-    return ch.value if ch is not None else Channel.GRAYSCALE.value
+def ensure_3_channels(image: np.ndarray) -> np.ndarray:
+    """Convert image to 3-channel format required by Cellpose 4.0.7.
 
+    Cellpose-SAM requires images with exactly 3 channels and is channel-order invariant.
 
-def get_channels(first: str, second: str) -> list[int]:
-    """Map channel names to Cellpose channel indices."""
-    return [_channel_index(first), _channel_index(second)]
+    Args:
+        image: Input image array. Can be:
+            - (H, W): Single channel grayscale
+            - (2, H, W): Two channel image
+            - (3, H, W): Three channel image (returned as-is)
+            - (n, H, W) where n > 3: First 3 channels used
+
+    Returns:
+        Image array with shape (3, H, W)
+
+    Raises:
+        ValueError: If image dimensions are invalid
+    """
+    if image.ndim == 2:
+        # Single channel (H, W) -> replicate to (3, H, W)
+        return np.stack([image, image, image], axis=0)
+    elif image.ndim == 3:
+        n_channels = image.shape[0]
+        if n_channels == 1:
+            # (1, H, W) -> (3, H, W)
+            return np.concatenate([image, image, image], axis=0)
+        elif n_channels == 2:
+            # (2, H, W) -> (3, H, W) by padding with zeros
+            zero_channel = np.zeros_like(image[0:1])
+            return np.concatenate([image, zero_channel], axis=0)
+        elif n_channels == 3:
+            # Already 3 channels
+            return image
+        elif n_channels > 3:
+            # More than 3 channels -> use first 3
+            logger.warning(
+                f"Image has {n_channels} channels, using first 3 for Cellpose-SAM"
+            )
+            return image[:3]
+        else:
+            raise ValueError(f"Invalid number of channels: {n_channels}")
+    else:
+        raise ValueError(
+            f"Invalid image dimensions: {image.shape}. "
+            "Expected 2D (H, W) or 3D (C, H, W) image."
+        )
 
 
 def get_session_path(session_id: str) -> Path:
@@ -365,17 +345,23 @@ def get_status(session_id: str) -> SessionStatus:
             message="Waiting for training to start...",
         )
 
-    with status_path.open(
-        "r",
-        encoding="utf-8",
-    ) as f:
-        return json.load(f)
+    try:
+        with status_path.open(
+            "r",
+            encoding="utf-8",
+        ) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        # Handle race condition where file exists but is empty or being written
+        return SessionStatus(
+            status_type=StatusType.WAITING,
+            message="Waiting for training to start...",
+        )
 
 
 def run_blocking_task(
     cellpose_model: CellposeModel,
     model_save_path: Path,
-    channels: list[int],
     dataset_split: DatasetSplit,
     training_params: TrainingParams,
 ) -> tuple[Path, list[float], list[float]]:
@@ -390,7 +376,6 @@ def run_blocking_task(
         seg_result = cellpose_train.train_seg(
             cellpose_model.net,
             **dataset_split,
-            channels=channels,
             save_path=model_save_path,
             n_epochs=training_params["n_epochs"],
             learning_rate=training_params["learning_rate"],
@@ -467,7 +452,6 @@ async def finetune_cellpose(
             StatusType.PREPARING,
             "Loading Cellpose model...",
         )
-        channels = get_channels(training_params["channel1"], training_params["channel2"])
         cellpose_model = load_model(training_params["model"])
 
         loop = asyncio.get_running_loop()
@@ -476,7 +460,6 @@ async def finetune_cellpose(
             run_blocking_task,
             cellpose_model,
             model_save_path,
-            channels,
             dataset_split,
             training_params,
         )
@@ -857,16 +840,26 @@ def _predict_and_encode(
     model: CellposeModel,
     images: list[np.ndarray],
     image_paths: list[str],
-    channels: list[int],
     diameter: float | None,
+    flow_threshold: float,
+    cellprob_threshold: float,
+    niter: int | None,
 ) -> list[PredictionItemModel]:
-    """Run model on images and return encoded mask payloads."""
+    """Run model on images and return encoded mask payloads.
+
+    Images are expected to have 3 channels (preprocessed with ensure_3_channels).
+    """
     out: list[PredictionItemModel] = []
     for image, path in zip(images, image_paths):
+        # Ensure image has 3 channels (required by Cellpose 4.0.7)
+        image_3ch = ensure_3_channels(image)
+
         masks = model.eval(
-            [image],
-            channels=channels,
+            [image_3ch],
             diameter=diameter,
+            flow_threshold=flow_threshold,
+            cellprob_threshold=cellprob_threshold,
+            niter=niter,
         )[0]
         mask_np = masks if isinstance(masks, np.ndarray) else np.asarray(masks)
         if mask_np.ndim >= NDIM_3D_THRESHOLD and mask_np.shape[0] == 1:
@@ -886,12 +879,12 @@ def _predict_and_encode(
 # ---------------------------------------------------------------------------
 @serve.deployment(
     ray_actor_options={
-        "num_gpus": 0.25,
+        "num_gpus": 0.75,
         "num_cpus": 4,
         "memory": 12 * GB,
         "runtime_env": {
             "pip": [
-                "cellpose==3.1.1.1",
+                "cellpose==4.0.7",
                 "numpy==1.26.4",
                 "tifffile",
                 "hypha-artifact==0.1.2",
@@ -903,7 +896,7 @@ def _predict_and_encode(
     autoscaling_config={
         "min_replicas": 1,
         "initial_replicas": 1,
-        "max_replicas": 2,
+        "max_replicas": 1,
         "target_num_ongoing_requests_per_replica": 0.8,
         "metrics_interval_s": 2.0,
         "look_back_period_s": 10.0,
@@ -969,7 +962,7 @@ class CellposeFinetune:
             examples=["metadata/experiment1.json", "metadata/"],
         ),
         model: str = Field(
-            PretrainedModel.CYTO3.value,
+            PretrainedModel.CPSAM.value,
             description=(
                 "Name of Cellpose model to finetune."
                 " Must be a builtin pretrained Cellpose model or"
@@ -979,20 +972,6 @@ class CellposeFinetune:
                 "abc123ef-4567-890a-bcde-f1234567890a",
                 *PretrainedModel.values(),
             ],
-        ),
-        channel1: str = Field(
-            "Grayscale",
-            description=(
-                "First channel spec for Cellpose. One of {Grayscale, Red, "
-                "Green, Blue}."
-            ),
-        ),
-        channel2: str = Field(
-            "Grayscale",
-            description=(
-                "Second channel spec for Cellpose. One of {Grayscale, Red, "
-                "Green, Blue}."
-            ),
         ),
         test_indices: list[int] | None = Field(
             None,
@@ -1050,8 +1029,6 @@ class CellposeFinetune:
             artifact_id=artifact_id,
             metadata_path=metadata_path,
             model=model_id,
-            channel1=channel1,
-            channel2=channel2,
             test_indices=test_indices if test_indices is not None else [],
             n_epochs=n_epochs,
             learning_rate=learning_rate,
@@ -1199,31 +1176,40 @@ class CellposeFinetune:
             min_length=1,
         ),
         model: str = Field(
-            PretrainedModel.CYTO3.value,
+            PretrainedModel.CPSAM.value,
             description=(
                 "Identifier of the Cellpose model to use for inference. Either a "
                 "built-in pretrained model name or the session ID of a finetuned model."
             ),
             examples=["abc123ef-4567-890a-bcde-f1234567890a", PretrainedModel.values()],
         ),
-        channel1: str = Field(
-            "Grayscale",
-            description=(
-                "First channel spec for Cellpose. One of {Grayscale, Red, "
-                "Green, Blue}."
-            ),
-        ),
-        channel2: str = Field(
-            "Grayscale",
-            description=(
-                "Second channel spec for Cellpose. One of {Grayscale, Red, "
-                "Green, Blue}."
-            ),
-        ),
         diameter: float | None = Field(
             None,
             description=(
                 "Approximate object diameter; if None, Cellpose will estimate it"
+            ),
+            ge=0,
+        ),
+        flow_threshold: float = Field(
+            0.4,
+            description=(
+                "Flow error threshold for dynamics. Higher values allow more masks. "
+                "Decrease if too many ill-shaped ROIs are returned."
+            ),
+            ge=0,
+        ),
+        cellprob_threshold: float = Field(
+            0.0,
+            description=(
+                "Cell probability threshold. Decrease to find more ROIs, "
+                "increase to filter out dim areas."
+            ),
+        ),
+        niter: int | None = Field(
+            None,
+            description=(
+                "Number of iterations for flow dynamics. If None, automatically "
+                "set based on diameter. Use higher values (e.g., 250) for better convergence."
             ),
             ge=0,
         ),
@@ -1247,10 +1233,10 @@ class CellposeFinetune:
 
         model_id = self.get_model_id(model)
         model_obj = load_model(model_id)
-        channels = get_channels(channel1, channel2)
 
         images: list[np.ndarray]
         if input_arrays is not None:
+            images = input_arrays
             image_paths = [f"input_arrays[{i}]" for i in range(len(input_arrays))]
         elif artifact_id is not None and image_paths is not None:
             images = await _images_from_artifact(
@@ -1265,8 +1251,10 @@ class CellposeFinetune:
             model=model_obj,
             images=images,
             image_paths=image_paths,
-            channels=channels,
             diameter=diameter,
+            flow_threshold=flow_threshold,
+            cellprob_threshold=cellprob_threshold,
+            niter=niter,
         )
 
 

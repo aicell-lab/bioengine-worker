@@ -31,7 +31,7 @@ async def infer(
 ) -> None:
     """Test inference functionality of the Cellpose Fine-Tuning service."""
     inference_result = await cellpose_service.infer(
-        model=model,
+        model=model or "cpsam",
         artifact="ri-scale/zarr-demo",
         diameter=40,
         image_paths=["images/108bb69d-2e52-4382-8100-e96173db24ee/t0000.ome.tif"],
@@ -39,6 +39,30 @@ async def infer(
     logger.info("Inference done! Result: %s", str(inference_result)[:500] + "...")
     arr = inference_result[0]["output"]
     logger.info("Output array shape: %s", arr.shape)
+
+
+async def infer_with_numpy(
+    cellpose_service: RemoteService,
+    model: str | None = None,
+) -> None:
+    """Test inference with numpy array input."""
+    import numpy as np
+
+    # Create a test image as numpy array (3 channels, 512x512)
+    test_image = np.random.randint(0, 255, (3, 512, 512), dtype=np.uint8)
+
+    logger.info("Testing inference with numpy array input (shape: %s)", test_image.shape)
+
+    inference_result = await cellpose_service.infer(
+        model=model or "cpsam",
+        input_arrays=[test_image],
+        diameter=40,
+    )
+
+    logger.info("Numpy inference done! Result: %s", str(inference_result)[:500] + "...")
+    output_mask = inference_result[0]["output"]
+    logger.info("Output mask shape: %s", output_mask.shape)
+    logger.info("Unique mask values: %d", len(np.unique(output_mask)))
 
 
 async def get_cellpose_service(server: RemoteService) -> RemoteService:
@@ -62,6 +86,7 @@ async def start_training(
         n_epochs=n_epochs,
         n_samples=n_samples,
         test_indices=[1],  # Use second sample for testing
+        min_train_masks=1,  # Allow training with samples that have at least 1 mask (for testing)
     )
     session_id = session_status["session_id"]
     logger.info("Started training with session ID: %s", session_id)
@@ -94,7 +119,10 @@ async def main(session_id: str | None = None) -> None:
         cellpose_service = await get_cellpose_service(server)
 
         if session_id is None:
-            await infer(cellpose_service, model="cyto3")
+            await infer(cellpose_service, model="cpsam")
+
+            # Test numpy array inference
+            await infer_with_numpy(cellpose_service, model="cpsam")
 
             session_id = await start_training(
                 cellpose_service,
@@ -105,6 +133,9 @@ async def main(session_id: str | None = None) -> None:
         await monitor_training(cellpose_service, session_id)
 
         await infer(cellpose_service, model=session_id)
+
+        # Test numpy array inference with fine-tuned model
+        await infer_with_numpy(cellpose_service, model=session_id)
 
 
 if __name__ == "__main__":

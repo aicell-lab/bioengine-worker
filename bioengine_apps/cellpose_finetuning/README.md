@@ -98,10 +98,28 @@ session_status = await cellpose_service.start_training(
 session_id = session_status["session_id"]
 print(f"Training started: {session_id}")
 
-# Monitor training progress
+# Monitor training progress with real-time updates
 while True:
     status = await cellpose_service.get_training_status(session_id)
-    print(f"{status['message']}")
+
+    # Build progress message with all available info
+    msg = f"[{status['status_type']}] {status['message']}"
+
+    # Add epoch progress if available
+    if "current_epoch" in status and "total_epochs" in status:
+        msg += f" | Epoch: {status['current_epoch']}/{status['total_epochs']}"
+
+    # Add elapsed time if available
+    if "elapsed_seconds" in status:
+        msg += f" | Time: {status['elapsed_seconds']:.1f}s"
+
+    # Add latest training loss if available
+    if "train_losses" in status and status["train_losses"]:
+        losses = [l for l in status["train_losses"] if l > 0]
+        if losses:
+            msg += f" | Train Loss: {losses[-1]:.4f}"
+
+    print(msg)
 
     if status["status_type"] in ("completed", "failed"):
         break
@@ -173,7 +191,7 @@ Start asynchronous model fine-tuning.
 
 ### `get_training_status()`
 
-Monitor training progress and retrieve training metrics.
+Monitor training progress and retrieve training metrics with real-time updates.
 
 **Parameters:**
 - `session_id` (str): Training session ID
@@ -181,8 +199,14 @@ Monitor training progress and retrieve training metrics.
 **Returns:** Dict with the following keys:
 - `status_type` (str): Status of the training ("waiting", "preparing", "running", "completed", "failed")
 - `message` (str): Human-readable status message
-- `train_losses` (list[float], optional): Per-epoch training loss values
+- `train_losses` (list[float], optional): Per-epoch training loss values (updated in real-time)
 - `test_losses` (list[float], optional): Per-epoch test loss values (computed periodically)
+- `n_train` (int, optional): Number of training samples
+- `n_test` (int, optional): Number of test samples
+- `start_time` (str, optional): Training start time in ISO 8601 format
+- `current_epoch` (int, optional): Current epoch number (1-indexed)
+- `total_epochs` (int, optional): Total number of epochs
+- `elapsed_seconds` (float, optional): Elapsed time since training started
 
 ### `list_pretrained_models()`
 
@@ -231,26 +255,39 @@ python scripts/test_service.py
 python scripts/check_status.py <session_id>
 ```
 
-## Training Metrics
+## Real-Time Training Progress
 
-The service now tracks and returns training metrics including per-epoch training and test losses. You can:
+The service provides comprehensive real-time progress tracking with epoch callbacks. You can monitor:
 
-1. **Monitor during training**: The `test_service.py` script displays real-time loss values during training
-2. **Query after completion**: Use `get_training_status()` to retrieve full training history
-3. **Visualize progress**: Training and test losses are returned as lists for easy plotting
+1. **Real-time metrics during training**: Epoch-by-epoch updates with losses, timing, and progress
+2. **Dataset information**: Training/test sample counts available immediately
+3. **Detailed timing**: Start time and elapsed seconds updated after each epoch
+4. **Training history**: Full loss history available during and after training
 
-Example of accessing metrics:
+Example of accessing all status information:
 
 ```python
 status = await cellpose_service.get_training_status(session_id)
 
-if "train_losses" in status:
+# Dataset information
+print(f"Training samples: {status.get('n_train', 'N/A')}")
+print(f"Test samples: {status.get('n_test', 'N/A')}")
+
+# Training progress
+if "current_epoch" in status:
+    print(f"Progress: {status['current_epoch']}/{status['total_epochs']} epochs")
+    print(f"Elapsed time: {status['elapsed_seconds']:.1f}s")
+
+# Loss history
+if "train_losses" in status and status["train_losses"]:
     train_losses = status["train_losses"]
     test_losses = status["test_losses"]
 
-    # Plot or analyze the losses
-    print(f"Initial loss: {train_losses[0]:.4f}")
-    print(f"Final loss: {train_losses[-1]:.4f}")
+    # Filter non-zero losses
+    valid_losses = [l for l in train_losses if l > 0]
+    if valid_losses:
+        print(f"Latest training loss: {valid_losses[-1]:.4f}")
+        print(f"Initial loss: {valid_losses[0]:.4f}")
 ```
 
 ## Tutorial Notebook

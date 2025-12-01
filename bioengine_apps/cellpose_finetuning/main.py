@@ -46,9 +46,11 @@ class TrainingParams(TypedDict):
     """Grouped training parameters for scheduling and logging."""
 
     artifact_id: str
-    metadata_path: str
+    train_images: str
+    train_annotations: str
+    test_images: str | None
+    test_annotations: str | None
     model: str | Path
-    test_indices: list[int]
     n_epochs: int
     learning_rate: float
     weight_decay: float
@@ -64,12 +66,13 @@ class DatasetSplit(TypedDict):
 
     Cellpose ``train_seg`` accepts file lists via ``train_files``/
     ``train_labels_files`` and ``test_files``/``test_labels_files``.
+    Test files can be None to skip test evaluation during training.
     """
 
     train_files: list[Path]
     train_labels_files: list[Path]
-    test_files: list[Path]
-    test_labels_files: list[Path]
+    test_files: list[Path] | None
+    test_labels_files: list[Path] | None
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +185,12 @@ class SessionStatus(TypedDict, total=False):
     message: str
     train_losses: list[float]
     test_losses: list[float]
+    n_train: int  # Number of training samples
+    n_test: int  # Number of test samples
+    start_time: str  # Training start time (ISO format)
+    current_epoch: int  # Current epoch number (1-indexed)
+    total_epochs: int  # Total number of epochs
+    elapsed_seconds: float  # Elapsed time in seconds
 
 
 class SessionStatusWithId(TypedDict):
@@ -307,6 +316,12 @@ def update_status(
     message: str,
     train_losses: list[float] | None = None,
     test_losses: list[float] | None = None,
+    n_train: int | None = None,
+    n_test: int | None = None,
+    start_time: str | None = None,
+    current_epoch: int | None = None,
+    total_epochs: int | None = None,
+    elapsed_seconds: float | None = None,
 ) -> None:
     """Update the status of a training session."""
     status_path = get_status_path(session_id)
@@ -322,6 +337,18 @@ def update_status(
             status_dict["train_losses"] = train_losses
         if test_losses is not None:
             status_dict["test_losses"] = test_losses
+        if n_train is not None:
+            status_dict["n_train"] = n_train
+        if n_test is not None:
+            status_dict["n_test"] = n_test
+        if start_time is not None:
+            status_dict["start_time"] = start_time
+        if current_epoch is not None:
+            status_dict["current_epoch"] = current_epoch
+        if total_epochs is not None:
+            status_dict["total_epochs"] = total_epochs
+        if elapsed_seconds is not None:
+            status_dict["elapsed_seconds"] = elapsed_seconds
 
         status = json.dumps(status_dict)
         f.write(status)
@@ -371,6 +398,345 @@ def get_status(session_id: str) -> SessionStatus:
         )
 
 
+# ---------------------------------------------------------------------------
+# Custom Cellpose training with callbacks
+# ---------------------------------------------------------------------------
+
+
+def train_seg_with_callbacks(
+    net,
+    train_data=None,
+    train_labels=None,
+    train_files=None,
+    train_labels_files=None,
+    train_probs=None,
+    test_data=None,
+    test_labels=None,
+    test_files=None,
+    test_labels_files=None,
+    test_probs=None,
+    channel_axis=None,
+    load_files=True,
+    batch_size=1,
+    learning_rate=5e-5,
+    SGD=False,
+    n_epochs=100,
+    weight_decay=0.1,
+    normalize=True,
+    compute_flows=False,
+    save_path=None,
+    save_every=100,
+    save_each=False,
+    nimg_per_epoch=None,
+    nimg_test_per_epoch=None,
+    rescale=False,
+    scale_range=None,
+    bsize=256,
+    min_train_masks=5,
+    model_name=None,
+    class_weights=None,
+    epoch_callback=None,
+    batch_callback=None,
+):
+    """
+    Train the network with images for segmentation (with epoch and batch callbacks).
+
+    This is a modified version of cellpose.train.train_seg that adds support
+    for epoch and batch callbacks to enable real-time progress tracking.
+
+    Args:
+        net: The network model to train
+        ... (all standard parameters same as cellpose.train.train_seg)
+        epoch_callback: Optional callback function called after each epoch.
+            Signature: callback(epoch, train_loss, test_loss, elapsed_seconds)
+        batch_callback: Optional callback function called after each batch.
+            Signature: callback(epoch, batch_idx, total_batches, batch_loss, elapsed_seconds)
+
+    Returns:
+        tuple: (model_path, train_losses, test_losses)
+    """
+    import time
+
+    import torch
+    from cellpose import models
+    from cellpose.train import (
+        _get_batch,
+        _loss_fn_class,
+        _loss_fn_seg,
+        _process_train_test,
+        train_logger,
+    )
+    from cellpose.transforms import random_rotate_and_resize
+
+    if SGD:
+        train_logger.warning("SGD is deprecated, using AdamW instead")
+
+    device = net.device
+
+    original_net_dtype = None
+    if device.type == "mps" and net.dtype == torch.bfloat16:
+        original_net_dtype = torch.bfloat16
+        train_logger.warning(
+            "Training with bfloat16 on MPS is not supported, using float32 network instead"
+        )
+        net.dtype = torch.float32
+        net.to(torch.float32)
+
+    scale_range = 0.5 if scale_range is None else scale_range
+
+    if isinstance(normalize, dict):
+        normalize_params = {**models.normalize_default, **normalize}
+    elif not isinstance(normalize, bool):
+        raise ValueError("normalize parameter must be a bool or a dict")
+    else:
+        normalize_params = models.normalize_default
+        normalize_params["normalize"] = normalize
+
+    out = _process_train_test(
+        train_data=train_data,
+        train_labels=train_labels,
+        train_files=train_files,
+        train_labels_files=train_labels_files,
+        train_probs=train_probs,
+        test_data=test_data,
+        test_labels=test_labels,
+        test_files=test_files,
+        test_labels_files=test_labels_files,
+        test_probs=test_probs,
+        load_files=load_files,
+        min_train_masks=min_train_masks,
+        compute_flows=compute_flows,
+        channel_axis=channel_axis,
+        normalize_params=normalize_params,
+        device=net.device,
+    )
+    (
+        train_data,
+        train_labels,
+        train_files,
+        train_labels_files,
+        train_probs,
+        diam_train,
+        test_data,
+        test_labels,
+        test_files,
+        test_labels_files,
+        test_probs,
+        diam_test,
+        normed,
+    ) = out
+
+    # already normalized, do not normalize during training
+    if normed:
+        kwargs = {}
+    else:
+        kwargs = {"normalize_params": normalize_params, "channel_axis": channel_axis}
+
+    net.diam_labels.data = torch.Tensor([diam_train.mean()]).to(device)
+
+    if class_weights is not None and isinstance(
+        class_weights, (list, np.ndarray, tuple)
+    ):
+        class_weights = torch.from_numpy(class_weights).to(device).float()
+        print(class_weights)
+
+    nimg = len(train_data) if train_data is not None else len(train_files)
+    nimg_test = len(test_data) if test_data is not None else None
+    nimg_test = len(test_files) if test_files is not None else nimg_test
+    nimg_per_epoch = nimg if nimg_per_epoch is None else nimg_per_epoch
+    nimg_test_per_epoch = (
+        nimg_test if nimg_test_per_epoch is None else nimg_test_per_epoch
+    )
+
+    # learning rate schedule
+    LR = np.linspace(0, learning_rate, 10)
+    LR = np.append(LR, learning_rate * np.ones(max(0, n_epochs - 10)))
+    if n_epochs > 300:
+        LR = LR[:-100]
+        for _ in range(10):
+            LR = np.append(LR, LR[-1] / 2 * np.ones(10))
+    elif n_epochs > 99:
+        LR = LR[:-50]
+        for _ in range(10):
+            LR = np.append(LR, LR[-1] / 2 * np.ones(5))
+
+    train_logger.info(f">>> n_epochs={n_epochs}, n_train={nimg}, n_test={nimg_test}")
+    train_logger.info(
+        f">>> AdamW, learning_rate={learning_rate:0.5f}, weight_decay={weight_decay:0.5f}"
+    )
+    optimizer = torch.optim.AdamW(
+        net.parameters(), lr=learning_rate, weight_decay=weight_decay
+    )
+
+    t0 = time.time()
+    model_name = f"cellpose_{t0}" if model_name is None else model_name
+    save_path = Path.cwd() if save_path is None else Path(save_path)
+    filename = save_path / "models" / model_name
+    (save_path / "models").mkdir(exist_ok=True)
+
+    train_logger.info(f">>> saving model to {filename}")
+
+    lavg, nsum = 0, 0
+    train_losses, test_losses = np.zeros(n_epochs), np.zeros(n_epochs)
+
+    for iepoch in range(n_epochs):
+        np.random.seed(iepoch)
+        if nimg != nimg_per_epoch:
+            # choose random images for epoch with probability train_probs
+            rperm = np.random.choice(
+                np.arange(0, nimg), size=(nimg_per_epoch,), p=train_probs
+            )
+        else:
+            # otherwise use all images
+            rperm = np.random.permutation(np.arange(0, nimg))
+
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = LR[iepoch]  # set learning rate
+
+        net.train()
+        for k in range(0, nimg_per_epoch, batch_size):
+            kend = min(k + batch_size, nimg_per_epoch)
+            inds = rperm[k:kend]
+            imgs, lbls = _get_batch(
+                inds,
+                data=train_data,
+                labels=train_labels,
+                files=train_files,
+                labels_files=train_labels_files,
+                **kwargs,
+            )
+            diams = np.array([diam_train[i] for i in inds])
+            rsc = (
+                diams / net.diam_mean.item()
+                if rescale
+                else np.ones(len(diams), "float32")
+            )
+            # augmentations
+            imgi, lbl = random_rotate_and_resize(
+                imgs, Y=lbls, rescale=rsc, scale_range=scale_range, xy=(bsize, bsize)
+            )[:2]
+            # network and loss optimization
+            X = torch.from_numpy(imgi).to(device)
+            lbl = torch.from_numpy(lbl).to(device)
+
+            if X.dtype != net.dtype:
+                X = X.to(net.dtype)
+                lbl = lbl.to(net.dtype)
+
+            y = net(X)[0]
+            loss = _loss_fn_seg(lbl, y, device)
+            if y.shape[1] > 3:
+                loss3 = _loss_fn_class(lbl, y, class_weights=class_weights)
+                loss += loss3
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            train_loss = loss.item()
+            train_loss *= len(imgi)
+
+            # keep track of average training loss across epochs
+            lavg += train_loss
+            nsum += len(imgi)
+            # per epoch training loss
+            train_losses[iepoch] += train_loss
+
+            # **CALLBACK: Report batch progress**
+            if batch_callback is not None:
+                elapsed = time.time() - t0
+                batch_idx = k // batch_size
+                total_batches = (nimg_per_epoch + batch_size - 1) // batch_size
+                batch_loss_per_sample = loss.item()  # Loss per sample for this batch
+                batch_callback(iepoch + 1, batch_idx, total_batches, batch_loss_per_sample, elapsed)
+
+        train_losses[iepoch] /= nimg_per_epoch
+
+        # Compute test loss if appropriate
+        lavgt = 0.0
+        if iepoch == 5 or iepoch % 10 == 0:
+            if test_data is not None or test_files is not None:
+                np.random.seed(42)
+                if nimg_test != nimg_test_per_epoch:
+                    rperm = np.random.choice(
+                        np.arange(0, nimg_test),
+                        size=(nimg_test_per_epoch,),
+                        p=test_probs,
+                    )
+                else:
+                    rperm = np.random.permutation(np.arange(0, nimg_test))
+
+                for ibatch in range(0, len(rperm), batch_size):
+                    with torch.no_grad():
+                        net.eval()
+                        inds = rperm[ibatch : ibatch + batch_size]
+                        imgs, lbls = _get_batch(
+                            inds,
+                            data=test_data,
+                            labels=test_labels,
+                            files=test_files,
+                            labels_files=test_labels_files,
+                            **kwargs,
+                        )
+                        diams = np.array([diam_test[i] for i in inds])
+                        rsc = (
+                            diams / net.diam_mean.item()
+                            if rescale
+                            else np.ones(len(diams), "float32")
+                        )
+                        imgi, lbl = random_rotate_and_resize(
+                            imgs,
+                            Y=lbls,
+                            rescale=rsc,
+                            scale_range=scale_range,
+                            xy=(bsize, bsize),
+                        )[:2]
+                        X = torch.from_numpy(imgi).to(device)
+                        lbl = torch.from_numpy(lbl).to(device)
+
+                        if X.dtype != net.dtype:
+                            X = X.to(net.dtype)
+                            lbl = lbl.to(net.dtype)
+
+                        y = net(X)[0]
+                        loss = _loss_fn_seg(lbl, y, device)
+                        if y.shape[1] > 3:
+                            loss3 = _loss_fn_class(lbl, y, class_weights=class_weights)
+                            loss += loss3
+                        test_loss = loss.item()
+                        test_loss *= len(imgi)
+                        lavgt += test_loss
+
+                lavgt /= len(rperm)
+                test_losses[iepoch] = lavgt
+
+            lavg /= nsum
+            train_logger.info(
+                f"{iepoch}, train_loss={lavg:.4f}, test_loss={lavgt:.4f}, LR={LR[iepoch]:.6f}, time {time.time()-t0:.2f}s"
+            )
+            lavg, nsum = 0, 0
+
+        # **CALLBACK: Report epoch progress**
+        if epoch_callback is not None:
+            elapsed = time.time() - t0
+            epoch_callback(iepoch + 1, train_losses[iepoch], lavgt, elapsed)
+
+        # Save model if needed
+        if iepoch == n_epochs - 1 or (iepoch % save_every == 0 and iepoch != 0):
+            if save_each and iepoch != n_epochs - 1:  # separate files as model progresses
+                filename0 = str(filename) + f"_epoch_{iepoch:04d}"
+            else:
+                filename0 = filename
+            train_logger.info(f"saving network parameters to {filename0}")
+            net.save_model(filename0)
+
+    net.save_model(filename)
+
+    if original_net_dtype is not None:
+        net.dtype = original_net_dtype
+        net.to(original_net_dtype)
+
+    return filename, train_losses, test_losses
+
+
 def run_blocking_task(
     cellpose_model: CellposeModel,
     model_save_path: Path,
@@ -378,14 +744,59 @@ def run_blocking_task(
     training_params: TrainingParams,
 ) -> tuple[Path, list[float], list[float]]:
     """Run the blocking training task."""
-    from cellpose import train as cellpose_train
+    import time
 
     session_id = training_params["session_id"]
 
-    update_status(session_id, StatusType.RUNNING, "Training running")
+    # Calculate dataset sizes
+    n_train = len(dataset_split["train_files"])
+    n_test = len(dataset_split["test_files"]) if dataset_split["test_files"] is not None else 0
+
+    # Record start time
+    start_time = datetime.now(tz=timezone.utc)
+    start_time_str = start_time.isoformat()
+    t0 = time.time()
+
+    # Update status with initial training info
+    update_status(
+        session_id,
+        StatusType.RUNNING,
+        f"Training started (epoch 0/{training_params['n_epochs']})",
+        n_train=n_train,
+        n_test=n_test,
+        start_time=start_time_str,
+        current_epoch=0,
+        total_epochs=training_params["n_epochs"],
+        elapsed_seconds=0.0,
+    )
+
+    # Lists to accumulate training metrics during epoch callbacks
+    accumulated_train_losses: list[float] = []
+    accumulated_test_losses: list[float] = []
+
+    # Define epoch callback for real-time progress updates
+    def epoch_callback(epoch: int, train_loss: float, test_loss: float, elapsed_seconds: float) -> None:
+        """Update status after each epoch."""
+        # Accumulate losses
+        accumulated_train_losses.append(train_loss)
+        accumulated_test_losses.append(test_loss)
+
+        update_status(
+            session_id,
+            StatusType.RUNNING,
+            f"Training in progress (epoch {epoch}/{training_params['n_epochs']})",
+            train_losses=accumulated_train_losses.copy(),
+            test_losses=accumulated_test_losses.copy(),
+            n_train=n_train,
+            n_test=n_test,
+            start_time=start_time_str,
+            current_epoch=epoch,
+            total_epochs=training_params["n_epochs"],
+            elapsed_seconds=elapsed_seconds,
+        )
 
     try:
-        seg_result = cellpose_train.train_seg(
+        seg_result = train_seg_with_callbacks(
             cellpose_model.net,
             **dataset_split,
             save_path=model_save_path,
@@ -395,14 +806,25 @@ def run_blocking_task(
             save_every=training_params["save_every"],
             model_name="model",
             min_train_masks=training_params["min_train_masks"],
+            epoch_callback=epoch_callback,
+            batch_callback=None,  # Could add batch-level progress tracking here if needed
         )
     except Exception as e:
+        elapsed = time.time() - t0
         update_status(
             session_id,
             StatusType.FAILED,
             f"Training failed with exception: {e}",
+            n_train=n_train,
+            n_test=n_test,
+            start_time=start_time_str,
+            total_epochs=training_params["n_epochs"],
+            elapsed_seconds=elapsed,
         )
         raise
+
+    # Calculate elapsed time
+    elapsed = time.time() - t0
 
     # Extract training metrics from the result
     model_path, train_losses, test_losses = seg_result
@@ -411,17 +833,26 @@ def run_blocking_task(
     train_losses_list = train_losses.tolist() if hasattr(train_losses, "tolist") else list(train_losses)
     test_losses_list = test_losses.tolist() if hasattr(test_losses, "tolist") else list(test_losses)
 
+    # Count actual completed epochs (non-zero losses)
+    completed_epochs = len([loss for loss in train_losses_list if loss > 0])
+
     update_status(
         session_id,
         StatusType.COMPLETED,
         "Training completed successfully",
         train_losses=train_losses_list,
         test_losses=test_losses_list,
+        n_train=n_train,
+        n_test=n_test,
+        start_time=start_time_str,
+        current_epoch=completed_epochs,
+        total_epochs=training_params["n_epochs"],
+        elapsed_seconds=elapsed,
     )
 
     append_info(
         session_id,
-        "Training completed successfully.",
+        f"Training completed successfully in {elapsed:.1f}s ({completed_epochs} epochs).",
         with_time=True,
     )
 
@@ -438,24 +869,21 @@ async def finetune_cellpose(
         logger.info("Session %s: Getting artifact cache directory", session_id)
         data_save_path = artifact_cache_dir(training_params["artifact_id"])
 
-        logger.info("Session %s: Downloading and preparing training pairs", session_id)
+        logger.info("Session %s: Listing and matching training pairs", session_id)
         update_status(
             session_id,
             StatusType.PREPARING,
-            "Downloading training data from artifact...",
+            "Listing files and matching training pairs from artifact...",
         )
-        pairs = await make_training_pairs(training_params, data_save_path)
+        train_pairs, test_pairs = await make_training_pairs(training_params, data_save_path)
 
-        logger.info("Session %s: Splitting dataset into train/test", session_id)
+        logger.info("Session %s: Creating dataset split", session_id)
         update_status(
             session_id,
             StatusType.PREPARING,
-            "Splitting dataset into train/test sets...",
+            "Creating dataset split...",
         )
-        dataset_split = split_train_test(
-            pairs,
-            training_params["test_indices"],
-        )
+        dataset_split = create_dataset_split(train_pairs, test_pairs)
 
         model_save_path = get_session_path(session_id)
         model_save_path.mkdir(parents=True, exist_ok=True)
@@ -571,55 +999,156 @@ def get_missing_paths(
     ]
 
 
-def image_annotation_paths(
-    cache_root: Path,
-    metadata_path: Path | str | None = None,
-) -> tuple[list[Path], list[Path]]:
-    """Resolve metadata location (folder or file) and extract path pairs.
+def parse_path_pattern(path_pattern: str) -> tuple[str, str]:
+    """Parse a path pattern into folder and filename pattern.
 
-    Behavior
-    - If ``metadata_path`` is None: use ``cache_root / "metadata"``.
-    - If it's a directory: read all ``*.json`` files in that directory.
-    - If it's a single JSON file: read only that file.
-    - Relative paths are resolved against ``cache_root``; absolute paths are used
-      as-is.
+    Args:
+        path_pattern: Either a folder path ending with '/' or a path with wildcard pattern
 
-    Expects each JSON to contain two lists: ``uploaded_images`` and
-    ``uploaded_annotations`` of equal length. Any malformed files are skipped
-    with a warning.
+    Returns:
+        Tuple of (folder_path, filename_pattern)
+
+    Examples:
+        >>> parse_path_pattern("images/folder/")
+        ('images/folder/', '*')
+        >>> parse_path_pattern("images/folder/*.ome.tif")
+        ('images/folder/', '*.ome.tif')
+        >>> parse_path_pattern("images/folder/*_mask.ome.tif")
+        ('images/folder/', '*_mask.ome.tif')
     """
-    if metadata_path is None:
-        resolved = cache_root / METADATA_DIRNAME
-    else:
-        p = Path(metadata_path)
-        resolved = p if p.is_absolute() else (cache_root / p)
+    if path_pattern.endswith("/"):
+        # Folder path - assume all files with same names
+        return path_pattern, "*"
 
-    imgs: list[Path] = []
-    anns: list[Path] = []
+    # Extract folder and pattern
+    path_obj = Path(path_pattern)
+    folder = str(path_obj.parent) + "/"
+    pattern = path_obj.name
 
-    if resolved.is_dir():
-        json_files = sorted(resolved.glob("*.json"))
-    elif resolved.is_file():
-        json_files = [resolved]
-    else:
-        logger.warning("Metadata path does not exist: %s", resolved)
-        return imgs, anns
+    return folder, pattern
 
-    for mf in json_files:
-        try:
-            text = mf.read_text(encoding="utf-8")
-            meta = json.loads(text)
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-            logger.warning("Skipping metadata file %s due to error: %s", mf, exc)
-            continue
 
-        m_imgs = [Path(item) for item in meta.get("uploaded_images", [])]
-        m_anns = [Path(item) for item in meta.get("uploaded_annotations", [])]
-        if m_imgs and m_anns and len(m_imgs) == len(m_anns):
-            imgs.extend(m_imgs)
-            anns.extend(m_anns)
+def extract_pattern_match(filename: str, pattern: str) -> str | None:
+    """Extract the wildcard part from a filename based on a pattern.
 
-    return imgs, anns
+    Args:
+        filename: The filename to match (e.g., "t0000.ome.tif")
+        pattern: The pattern with * wildcard (e.g., "*.ome.tif")
+
+    Returns:
+        The matched wildcard part (e.g., "t0000"), or None if no match
+
+    Examples:
+        >>> extract_pattern_match("t0000.ome.tif", "*.ome.tif")
+        't0000'
+        >>> extract_pattern_match("t0000_mask.ome.tif", "*_mask.ome.tif")
+        't0000'
+        >>> extract_pattern_match("image.png", "*.ome.tif")
+        None
+    """
+    import re
+
+    # Convert pattern with * to regex
+    # Escape all regex special characters except *
+    pattern_escaped = re.escape(pattern)
+    # Replace escaped \* with (.+) to capture the wildcard part
+    pattern_regex = pattern_escaped.replace(r"\*", "(.+)")
+    # Match from start to end
+    pattern_regex = f"^{pattern_regex}$"
+
+    match = re.match(pattern_regex, filename)
+    if match:
+        return match.group(1)
+    return None
+
+
+async def list_artifact_files(
+    artifact: AsyncHyphaArtifact,
+    folder_path: str,
+) -> list[str]:
+    """List all files in an artifact folder using AsyncHyphaArtifact.ls().
+
+    Note: Currently limited to first 1000 files. Future versions will support
+    pagination for larger directories.
+
+    Args:
+        artifact: The AsyncHyphaArtifact client
+        folder_path: Path to the folder (should end with '/')
+
+    Returns:
+        List of filenames (not full paths, just basenames)
+    """
+    if not folder_path.endswith("/"):
+        folder_path = folder_path + "/"
+
+    try:
+        # ls() returns a list of file info dicts
+        files = await artifact.ls(folder_path)
+        # Extract filenames (basenames only)
+        filenames = []
+        for file_info in files:
+            # file_info is typically a dict with 'name' or 'path' key
+            # Get the basename
+            if isinstance(file_info, dict):
+                path = file_info.get("name") or file_info.get("path", "")
+            else:
+                path = str(file_info)
+
+            # Extract basename
+            basename = Path(path).name
+            if basename and basename != ".":
+                filenames.append(basename)
+
+        logger.info(f"Listed {len(filenames)} files from {folder_path}")
+        return filenames
+    except Exception as e:
+        logger.error(f"Failed to list files from {folder_path}: {e}")
+        raise
+
+
+def match_image_annotation_pairs(
+    image_files: list[str],
+    annotation_files: list[str],
+    image_pattern: str,
+    annotation_pattern: str,
+) -> list[tuple[str, str]]:
+    """Match image and annotation files based on patterns.
+
+    Args:
+        image_files: List of image filenames
+        annotation_files: List of annotation filenames
+        image_pattern: Pattern for images (e.g., "*.ome.tif")
+        annotation_pattern: Pattern for annotations (e.g., "*_mask.ome.tif")
+
+    Returns:
+        List of (image_filename, annotation_filename) pairs
+
+    Example:
+        >>> images = ["t0000.ome.tif", "t0001.ome.tif"]
+        >>> annots = ["t0000_mask.ome.tif", "t0001_mask.ome.tif"]
+        >>> match_image_annotation_pairs(images, annots, "*.ome.tif", "*_mask.ome.tif")
+        [("t0000.ome.tif", "t0000_mask.ome.tif"), ("t0001.ome.tif", "t0001_mask.ome.tif")]
+    """
+    # Build a dict mapping wildcard matches to annotation files
+    annot_map: dict[str, str] = {}
+    for annot_file in annotation_files:
+        match = extract_pattern_match(annot_file, annotation_pattern)
+        if match:
+            annot_map[match] = annot_file
+
+    # Match images to annotations
+    pairs: list[tuple[str, str]] = []
+    for image_file in image_files:
+        match = extract_pattern_match(image_file, image_pattern)
+        if match and match in annot_map:
+            pairs.append((image_file, annot_map[match]))
+
+    logger.info(
+        f"Matched {len(pairs)} pairs from {len(image_files)} images "
+        f"and {len(annotation_files)} annotations"
+    )
+
+    return pairs
 
 
 async def download_pairs_from_artifact(
@@ -679,106 +1208,39 @@ async def download_pairs_from_artifact(
     ]
 
 
-async def download_metadata_from_artifact(
-    artifact: AsyncHyphaArtifact,
-    cache_root: Path,
-    meta_remote: str,
-) -> Path:
-    """Ensure metadata (folder or single file) is present in the local cache.
-
-    - If ``meta_remote`` points to a single ``.json`` file, download only if missing
-        using batched get with computed remote/local paths.
-    - If it points to a directory, perform a best-effort recursive fetch of the
-        directory contents (limited by the artifact API capabilities).
-
-    Returns the local path to the metadata folder or file under ``cache_root``.
-    """
-    local = cache_root / meta_remote
-    if Path(meta_remote).suffix.lower() == ".json":
-        dests = [Path(meta_remote)]
-        missing_remote, missing_local = get_missing_paths(dests, cache_root)
-        if missing_remote:
-            logger.info("Downloading metadata file: %s", meta_remote)
-            try:
-                await asyncio.wait_for(
-                    artifact.get(missing_remote, missing_local, on_error="ignore"),
-                    timeout=120,
-                )
-            except asyncio.TimeoutError:
-                raise RuntimeError(
-                    f"Metadata download timed out after 120 seconds for {meta_remote}"
-                ) from None
-        return local
-
-    local.mkdir(parents=True, exist_ok=True)
-    logger.info("Downloading metadata directory: %s", meta_remote)
-    try:
-        await asyncio.wait_for(
-            artifact.get(
-                f"{meta_remote.rstrip('/')}/",
-                str(local),
-                recursive=True,
-                on_error="ignore",
-            ),
-            timeout=300,
-        )
-    except asyncio.TimeoutError:
-        raise RuntimeError(
-            f"Metadata directory download timed out after 300 seconds for {meta_remote}"
-        ) from None
-    return local
-
-
-def split_train_test(
-    pairs: list[TrainingPair],
-    test_indices: list[int],
+def create_dataset_split(
+    train_pairs: list[TrainingPair],
+    test_pairs: list[TrainingPair],
 ) -> DatasetSplit:
-    """Split (image, label) pairs into train/test using explicit test indices.
+    """Convert train and test pairs into DatasetSplit format for Cellpose.
 
     Args:
-        pairs: List of training pairs (image, annotation)
-        test_indices: List of indices to use for test set. Must contain at least one index.
-                     Remaining indices will be used for training.
+        train_pairs: List of training (image, annotation) pairs
+        test_pairs: List of test (image, annotation) pairs (can be empty)
 
     Returns:
-        DatasetSplit with train and test files separated.
+        DatasetSplit with train and test files
 
     Raises:
-        ValueError: If no pairs are found, test_indices is empty, or indices are out of range.
+        ValueError: If no training pairs are provided
     """
-    if not pairs or len(pairs) < 1:
-        error_msg = "No (image, label) pairs found for train/test split."
+    if not train_pairs or len(train_pairs) < 1:
+        error_msg = "No training pairs found. At least one training sample is required."
         raise ValueError(error_msg)
 
-    # Require at least one test index (Cellpose requires test samples for training)
-    if not test_indices or len(test_indices) == 0:
-        error_msg = (
-            "At least one test index must be specified. "
-            "Cellpose requires test samples during training to monitor performance. "
-            "Please provide at least one index in test_indices (e.g., test_indices=[0])."
-        )
-        raise ValueError(error_msg)
-
-    # Validate test indices are in valid range
-    if max(test_indices) >= len(pairs) or min(test_indices) < 0:
-        error_msg = f"Test indices must be in range [0, {len(pairs)-1}]"
-        raise ValueError(error_msg)
-
-    # Create train indices as all indices not in test_indices
-    all_indices = set(range(len(pairs)))
-    test_indices_set = set(test_indices)
-    train_indices = sorted(all_indices - test_indices_set)
-
-    if not train_indices:
-        error_msg = "Training set cannot be empty. At least one sample must be used for training."
-        raise ValueError(error_msg)
-
-    return DatasetSplit(
-        train_files=[pairs[train_i]["image"] for train_i in train_indices],
-        train_labels_files=[pairs[train_i]["annotation"] for train_i in train_indices],
-        test_files=[pairs[test_i]["image"] for test_i in test_indices],
-        test_labels_files=[pairs[test_i]["annotation"] for test_i in test_indices],
+    dataset_split = DatasetSplit(
+        train_files=[pair["image"] for pair in train_pairs],
+        train_labels_files=[pair["annotation"] for pair in train_pairs],
+        test_files=[pair["image"] for pair in test_pairs] if test_pairs else None,
+        test_labels_files=[pair["annotation"] for pair in test_pairs] if test_pairs else None,
     )
+
+    logger.info(
+        f"Created dataset split: {len(dataset_split['train_files'])} train, "
+        f"{len(dataset_split['test_files']) if dataset_split['test_files'] is not None else 0} test"
+    )
+
+    return dataset_split
 
 
 def get_training_subset(
@@ -797,33 +1259,96 @@ def get_training_subset(
 async def make_training_pairs(
     config: TrainingParams,
     save_path: Path,
-) -> list[TrainingPair]:
-    """Download metadata and dataset pairs from artifact according to config."""
+) -> tuple[list[TrainingPair], list[TrainingPair]]:
+    """List files from artifact folders and match image-annotation pairs.
+
+    Returns:
+        Tuple of (train_pairs, test_pairs). test_pairs is empty if test folders not specified.
+    """
     artifact = await make_artifact_client(
         config["artifact_id"],
         config["server_url"],
     )
-    # TODO: don't download metadata if already present
-    await download_metadata_from_artifact(artifact, save_path, config["metadata_path"])
 
-    image_paths, annotation_paths = image_annotation_paths(
-        cache_root=save_path,
-        metadata_path=config["metadata_path"],
+    # Parse training path patterns
+    train_img_folder, train_img_pattern = parse_path_pattern(config["train_images"])
+    train_ann_folder, train_ann_pattern = parse_path_pattern(config["train_annotations"])
+
+    # List training files
+    logger.info("Listing training images from %s", train_img_folder)
+    train_image_files = await list_artifact_files(artifact, train_img_folder)
+    logger.info("Listing training annotations from %s", train_ann_folder)
+    train_annotation_files = await list_artifact_files(artifact, train_ann_folder)
+
+    # Match training pairs
+    train_matched = match_image_annotation_pairs(
+        train_image_files,
+        train_annotation_files,
+        train_img_pattern,
+        train_ann_pattern,
     )
 
-    if config["n_samples"] is not None:
-        image_paths, annotation_paths = get_training_subset(
-            image_paths,
-            annotation_paths,
+    # Build full paths for training files
+    train_image_paths = [
+        Path(train_img_folder) / img for img, _ in train_matched
+    ]
+    train_annotation_paths = [
+        Path(train_ann_folder) / ann for _, ann in train_matched
+    ]
+
+    # Apply n_samples if specified
+    if config["n_samples"] is not None and config["n_samples"] < len(train_image_paths):
+        train_image_paths, train_annotation_paths = get_training_subset(
+            train_image_paths,
+            train_annotation_paths,
             config["n_samples"],
         )
 
-    return await download_pairs_from_artifact(
+    # Download training pairs
+    train_pairs = await download_pairs_from_artifact(
         artifact,
         save_path,
-        image_paths,
-        annotation_paths,
+        train_image_paths,
+        train_annotation_paths,
     )
+
+    # Handle test pairs if specified
+    test_pairs: list[TrainingPair] = []
+    if config["test_images"] and config["test_annotations"]:
+        # Parse test path patterns
+        test_img_folder, test_img_pattern = parse_path_pattern(config["test_images"])
+        test_ann_folder, test_ann_pattern = parse_path_pattern(config["test_annotations"])
+
+        logger.info("Listing test images from %s", test_img_folder)
+        test_image_files = await list_artifact_files(artifact, test_img_folder)
+        logger.info("Listing test annotations from %s", test_ann_folder)
+        test_annotation_files = await list_artifact_files(artifact, test_ann_folder)
+
+        # Match test pairs
+        test_matched = match_image_annotation_pairs(
+            test_image_files,
+            test_annotation_files,
+            test_img_pattern,
+            test_ann_pattern,
+        )
+
+        # Build full paths for test files
+        test_image_paths = [
+            Path(test_img_folder) / img for img, _ in test_matched
+        ]
+        test_annotation_paths = [
+            Path(test_ann_folder) / ann for _, ann in test_matched
+        ]
+
+        # Download test pairs
+        test_pairs = await download_pairs_from_artifact(
+            artifact,
+            save_path,
+            test_image_paths,
+            test_annotation_paths,
+        )
+
+    return train_pairs, test_pairs
 
 
 # ---------------------------------------------------------------------------
@@ -972,15 +1497,36 @@ class CellposeFinetune:
             ),
             examples=["ri-scale/zarr-demo"],
         ),
-        metadata_path: str = Field(
-            "metadata/",
+        train_images: str = Field(
             description=(
-                "Path within the artifact to either a folder of *.json files "
-                "or a single metadata JSON. Each JSON must contain two lists "
-                "of equal length: 'uploaded_images' and 'uploaded_annotations' "
-                "(paths relative to the artifact)."
+                "Path to training images. Can be either:\n"
+                "1. Folder path ending with '/' (assumes same filenames as annotations)\n"
+                "2. Path pattern with wildcard (e.g., 'images/folder/*.ome.tif')"
             ),
-            examples=["metadata/experiment1.json", "metadata/"],
+            examples=["images/108bb69d-2e52-4382-8100-e96173db24ee/", "images/folder/*.ome.tif"],
+        ),
+        train_annotations: str = Field(
+            description=(
+                "Path to training annotations. Can be either:\n"
+                "1. Folder path ending with '/' (assumes same filenames as images)\n"
+                "2. Path pattern with wildcard (e.g., 'annotations/folder/*_mask.ome.tif')\n"
+                "The * part in patterns must match between images and annotations."
+            ),
+            examples=["annotations/108bb69d-2e52-4382-8100-e96173db24ee/", "annotations/folder/*_mask.ome.tif"],
+        ),
+        test_images: str | None = Field(
+            None,
+            description=(
+                "Optional path to test images. Same format as train_images."
+            ),
+            examples=["images/test/", "images/test/*.ome.tif"],
+        ),
+        test_annotations: str | None = Field(
+            None,
+            description=(
+                "Optional path to test annotations. Same format as train_annotations."
+            ),
+            examples=["annotations/test/", "annotations/test/*_mask.ome.tif"],
         ),
         model: str = Field(
             PretrainedModel.CPSAM.value,
@@ -993,15 +1539,6 @@ class CellposeFinetune:
                 "abc123ef-4567-890a-bcde-f1234567890a",
                 *PretrainedModel.values(),
             ],
-        ),
-        test_indices: list[int] | None = Field(
-            None,
-            description=(
-                "Indices of samples to use for testing (0-based). "
-                "At least one test index is REQUIRED (Cellpose needs test samples for training). "
-                "Remaining samples will be used for training. "
-                "Example: test_indices=[0] or test_indices=[1, 3, 5]"
-            ),
         ),
         n_samples: int | None = Field(
             None,
@@ -1048,9 +1585,11 @@ class CellposeFinetune:
 
         training_params = TrainingParams(
             artifact_id=artifact_id,
-            metadata_path=metadata_path,
+            train_images=train_images,
+            train_annotations=train_annotations,
+            test_images=test_images,
+            test_annotations=test_annotations,
             model=model_id,
-            test_indices=test_indices if test_indices is not None else [],
             n_epochs=n_epochs,
             learning_rate=learning_rate,
             weight_decay=weight_decay,

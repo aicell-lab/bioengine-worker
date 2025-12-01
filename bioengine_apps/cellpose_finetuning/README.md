@@ -73,12 +73,26 @@ print(f"Detected {len(np.unique(mask)) - 1} cells")
 
 ```python
 # Start training asynchronously
+# Option 1: Using folder paths (assumes same filenames)
 session_status = await cellpose_service.start_training(
     artifact="your-workspace/your-dataset",
+    train_images="images/experiment1/",  # Folder with images
+    train_annotations="annotations/experiment1/",  # Folder with annotations (same filenames)
     model="cpsam",
-    test_indices=[0],  # Use first sample for testing
     n_epochs=10,
-    n_samples=None,  # Use all samples
+)
+
+# Option 2: Using path patterns (for different naming conventions)
+session_status = await cellpose_service.start_training(
+    artifact="your-workspace/your-dataset",
+    train_images="images/experiment1/*.ome.tif",  # Pattern for image files
+    train_annotations="annotations/experiment1/*_mask.ome.tif",  # Pattern for annotation files
+    model="cpsam",
+    n_epochs=10,
+    n_samples=None,  # Use all matched samples
+    # Optional: specify test set
+    test_images="images/test/*.ome.tif",
+    test_annotations="annotations/test/*_mask.ome.tif",
 )
 
 session_id = session_status["session_id"]
@@ -127,14 +141,35 @@ Start asynchronous model fine-tuning.
 
 **Parameters:**
 - `artifact` (str): Artifact ID containing training data
-- `model` (str): Pretrained model to start from (currently only "cpsam")
-- `test_indices` (list): **Required** - Sample indices for testing (e.g., [0])
-- `n_epochs` (int): Number of training epochs
+- `train_images` (str): **Required** - Path to training images. Can be:
+  - Folder path ending with '/': `"images/folder/"` (assumes same filenames as annotations)
+  - Path pattern with wildcard: `"images/folder/*.ome.tif"`
+- `train_annotations` (str): **Required** - Path to training annotations. Can be:
+  - Folder path ending with '/': `"annotations/folder/"` (assumes same filenames as images)
+  - Path pattern with wildcard: `"annotations/folder/*_mask.ome.tif"`
+- `test_images` (str, optional): Optional test images path (same format as train_images)
+- `test_annotations` (str, optional): Optional test annotations path (same format as train_annotations)
+- `model` (str): Pretrained model to start from (default: "cpsam")
+- `n_epochs` (int): Number of training epochs (default: 10)
 - `n_samples` (int, optional): Limit number of samples to use
-- `learning_rate` (float): Learning rate (default: 0.1)
+- `learning_rate` (float): Learning rate (default: 1e-6)
 - `weight_decay` (float): Weight decay (default: 0.0001)
 
 **Returns:** Dict with `"session_id"` key
+
+**Path Formats:**
+
+1. **Folder paths** (assumes identical filenames):
+   - `train_images="images/folder/"` and `train_annotations="annotations/folder/"`
+   - Matches all files with same names in both folders
+
+2. **Pattern paths** (for different naming conventions):
+   - `train_images="images/folder/*.ome.tif"` and `train_annotations="annotations/folder/*_mask.ome.tif"`
+   - The `*` part must match between images and annotations
+   - Example: `t0000.ome.tif` ↔ `t0000_mask.ome.tif`
+
+**Limitations:**
+- Currently limited to 1000 files per folder (via artifact.ls()). Future versions will support pagination for larger directories.
 
 ### `get_training_status()`
 

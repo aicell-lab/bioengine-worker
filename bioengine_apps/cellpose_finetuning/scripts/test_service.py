@@ -83,9 +83,10 @@ async def start_training(
     """Start a training session on the Cellpose Fine-Tuning service."""
     session_status = await cellpose_service.start_training(
         artifact=artifact,
+        train_images="images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif",
+        train_annotations="annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif",
         n_epochs=n_epochs,
         n_samples=n_samples,
-        test_indices=[1],  # Use second sample for testing
         min_train_masks=1,  # Allow training with samples that have at least 1 mask (for testing)
     )
     session_id = session_status["session_id"]

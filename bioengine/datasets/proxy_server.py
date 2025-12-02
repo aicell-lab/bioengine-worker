@@ -343,6 +343,7 @@ async def get_presigned_url(
     cached_user_info: Dict[str, dict],
     authorized_users_collection: Dict[str, List[str]],
     artifact_manager: ObjectProxy,
+    s3_server_url: str,
     logger: logging.Logger,
 ) -> Union[str, None]:
     """Get a pre-signed URL for a dataset artifact."""
@@ -365,9 +366,11 @@ async def get_presigned_url(
 
     start_time = asyncio.get_event_loop().time()
     try:
+        print("==== Using local url ====")  # TODO: remove debug print
         url = await artifact_manager.get_file(
             artifact_id=f"public/{dataset_name}",
             file_path=file_path,
+            use_local_url=s3_server_url,
         )
         time_taken = asyncio.get_event_loop().time() - start_time
         logger.info(
@@ -401,7 +404,6 @@ async def create_bioengine_datasets(server: RemoteService):
                 f"Expected workspace to be 'public', but got '{workspace}'"
             )
 
-        # * Note: server_url does not match the specified <ip>:<port>
         logger.info(
             f"Creating BioEngine datasets artifacts at '{server_url}' in workspace 'public'"
         )
@@ -434,6 +436,11 @@ async def create_bioengine_datasets(server: RemoteService):
 
         logger.info(f"Available datasets: {list(authorized_users_collection.keys())}")
 
+        # S3 server URL for presigned URLs
+        server_ip = server_url.replace("http://", "").split(":")[0]
+        s3_server_url = f"http://{server_ip}:{MINIO_CONFIG['minio_port']}"
+        print(f"==== s3_server_url: {s3_server_url} ====")  # TODO: remove debug print
+
         # Register service to hand out pre-signed urls
         cached_user_info = {}
         service_info = await server.register_service(
@@ -464,6 +471,7 @@ async def create_bioengine_datasets(server: RemoteService):
                     cached_user_info=cached_user_info,
                     authorized_users_collection=authorized_users_collection,
                     artifact_manager=artifact_manager,
+                    s3_server_url=s3_server_url,
                     logger=logger,
                 ),
             }

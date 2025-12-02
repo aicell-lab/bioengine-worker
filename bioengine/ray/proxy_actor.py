@@ -5,13 +5,14 @@ from typing import Dict, List, Optional, Union
 import ray
 from ray._private.state import GlobalState
 from ray._raylet import GcsClientOptions
-from ray.util.state import StateApiClient
+from ray.util.state import StateApiClient, get_log
 from ray.util.state.common import (
     DEFAULT_LIMIT,
     DEFAULT_RPC_TIMEOUT,
     ListApiOptions,
     StateResource,
 )
+from ray.util.state.exception import RayStateApiException
 
 
 @ray.remote(
@@ -258,5 +259,70 @@ class BioEngineProxyActor:
             ),
             raise_on_missing_output=True,
         )
-        replica_ids = [actor.name.split("#")[-1] for actor in replica_actors]
-        return replica_ids
+        replica = {
+            actor.name.split("#")[-1]: actor.actor_id for actor in replica_actors
+        }
+        return replica
+
+    def get_deployment_logs(
+        self,
+        app_name: str,
+        deployment_name: str,
+        tail: int = 1000,
+    ) -> str:
+        """
+        Get logs for a specific Ray Serve deployment.
+
+        Retrieves the stdout or stderr logs from a deployment replica actor.
+        This is useful for debugging deployment issues and monitoring
+        application behavior.
+
+        Args:
+            app_name: Name of the Ray Serve application
+            deployment_name: Name of the specific deployment within the app
+            tail: Number of lines to retrieve from the end of the log.
+                  Use -1 to get the entire log. Default is -1.
+
+        Returns:
+            String containing the log content, or an error message if the
+            replica is not found.
+        """
+        replica = self.get_deployment_replica(app_name, deployment_name)
+        if not replica:
+            return f"No active replicas found for deployment '{deployment_name}' in app '{app_name}'."
+
+        deployment_logs = {}
+        for replica_id, actor_id in replica.items():
+            deployment_logs[replica_id] = {"stdout": [], "stderr": []}
+
+            try:
+                stdout = next(
+                    get_log(
+                        actor_id=actor_id,
+                        tail=tail,
+                        timeout=DEFAULT_RPC_TIMEOUT,
+                        suffix="out",
+                    )
+                )
+                deployment_logs[replica_id]["stdout"] = stdout.splitlines()
+            except RayStateApiException as e:
+                deployment_logs[replica_id]["stdout"] = [
+                    f"Error retrieving stdout logs: {str(e)}"
+                ]
+
+            try:
+                stderr = next(
+                    get_log(
+                        actor_id=actor_id,
+                        tail=tail,
+                        timeout=DEFAULT_RPC_TIMEOUT,
+                        suffix="err",
+                    )
+                )
+                deployment_logs[replica_id]["stderr"] = stderr.splitlines()
+            except RayStateApiException as e:
+                deployment_logs[replica_id]["stderr"] = [
+                    f"Error retrieving stderr logs: {str(e)}"
+                ]
+
+        return deployment_logs

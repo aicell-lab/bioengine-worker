@@ -637,7 +637,7 @@ def start_proxy_server(
         # Start the server
         uvicorn.run(
             hypha_app,
-            host=server_ip,
+            host="0.0.0.0",
             port=free_server_port,
             log_config=log_config,
             log_level="info",

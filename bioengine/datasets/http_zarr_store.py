@@ -68,6 +68,7 @@ class HttpZarrStore(Store):
     """
 
     dataset_name: str
+    zarr_path: str
     _read_only: bool = True
 
     supports_writes: bool = False

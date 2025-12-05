@@ -334,31 +334,74 @@ Every deployment automatically has access to these built-in attributes:
 
 #### `self.bioengine_datasets`
 
-Access BioEngine datasets with streaming support:
+Access BioEngine datasets with streaming support for zarr files:
 
 ```python
 @schema_method
-async def load_dataset(self, dataset_name: str) -> Dict:
+async def load_dataset(self, dataset_id: str) -> Dict:
     """Load data from BioEngine datasets."""
     
     # List available datasets
     datasets = await self.bioengine_datasets.list_datasets()
+    dataset_info = datasets[dataset_id]
+    print(f"Dataset info: {dataset_info}")
     
     # List files in a dataset
+    selected_dataset = list(datasets.keys())[0]
     files = await self.bioengine_datasets.list_files(
-        dataset_name, 
-        token=os.environ.get("HYPHA_TOKEN")  # Required for restricted datasets
+        dataset_id=selected_dataset,
+        dir_path=None,
+        token=None,
     )
+    for file in files:
+        print(f"File: {file}")
     
     # Load a specific file
-    data = await self.bioengine_datasets.get_file(
-        dataset_name, 
-        "data.zarr", 
-        token=os.environ.get("HYPHA_TOKEN")
+    file_content = await self.bioengine_datasets.get_file(
+        dataset_id=selected_dataset, 
+        file_path="example.txt", 
+        token=None,
     )
+    file_text = file_content.decode("utf-8")
+    print(f"File content: {file_text}")
+
+    # Load a Zarr dataset
+    zarr_store = await self.bioengine_datasets.get_file(
+        dataset_id=selected_dataset,
+        file_path="data.zarr", 
+        token=None,
+    )
+    zarr_group = zarr.open_group(store=zarr_store, mode="r")
     
-    return {"shape": data.shape if hasattr(data, 'shape') else len(data)}
+    return {
+        "dataset_info": dataset_info,  # Dataset manifest info 
+        "files": files,  # List of files in dataset
+        "file_content": file_text,  # Decoded text file content
+        "zarr_keys": list(zarr_group.array_keys())  # Keys in Zarr group
+    }
 ```
+
+To list files in a specific directory within a dataset, use the `dir_path` parameter:
+
+```python
+files_in_subdir = await self.bioengine_datasets.list_files(
+    dataset_id=selected_dataset,
+    dir_path="subdirectory/path",  # Specify the directory path
+    token=None,
+)
+```
+
+Get a file within a subdirectory by providing the full relative path:
+
+```python
+file_content = await self.bioengine_datasets.get_file(
+    dataset_id=selected_dataset, 
+    file_path="subdirectory/path/example.txt",  # Full path to the file
+    token=None,
+)
+```
+
+For accessing datasets with restricted access a token is required for user authentication. `BioEngineDatasets` will default to the token that is provided during application deployment. It is also possible to provide a different token when calling the methods.
 
 #### `self.bioengine_hypha_client`
 

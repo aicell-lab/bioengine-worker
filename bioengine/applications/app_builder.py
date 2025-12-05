@@ -102,7 +102,6 @@ class AppBuilder:
         self,
         apps_cache_dir: Union[str, Path],
         data_server_url: Optional[str] = None,
-        data_server_workspace: str = "public",
         log_file: Optional[str] = None,
         debug: bool = False,
     ) -> None:
@@ -122,7 +121,6 @@ class AppBuilder:
         Args:
             apps_cache_dir: Directory for storing downloaded code and temporary files
             data_server_url: URL for the data server (None = no data server)
-            data_server_workspace: Workspace on the data server (default: "public")
             log_file: Optional file path for logging output (None = console only)
             debug: Whether to enable detailed debug logging for troubleshooting
 
@@ -131,7 +129,6 @@ class AppBuilder:
             builder = AppBuilder(
                 apps_cache_dir=f"{os.environ['HOME']}/apps",
                 data_server_url="http://127.0.0.1:9527",
-                data_server_workspace="public",
                 debug=True
             )
             ```
@@ -146,7 +143,6 @@ class AppBuilder:
         # Store parameters
         self.apps_cache_dir = Path(apps_cache_dir)
         self.data_server_url = data_server_url
-        self.data_server_workspace = data_server_workspace
         self.bioengine_package_alias = "bioengine-package"
         self.server: Optional[RemoteService] = None
         self.artifact_manager: Optional[ObjectProxy] = None
@@ -420,7 +416,6 @@ class AppBuilder:
         # Stream zarr dataset either from public or locally started server
         # Example for a local hypha server: "http://localhost:9527"
         data_server_url = self.data_server_url
-        data_server_workspace = self.data_server_workspace
 
         @wraps(orig_init)
         def wrapped_init(self, *args, **kwargs):
@@ -451,8 +446,6 @@ class AppBuilder:
             # Initialize BioEngine datasets
             self.bioengine_datasets = BioEngineDatasets(
                 data_server_url=data_server_url,
-                client_name=self.__class__.__name__,
-                data_server_workspace=data_server_workspace,
                 hypha_token=secret_env_vars.get("HYPHA_TOKEN"),
             )
 

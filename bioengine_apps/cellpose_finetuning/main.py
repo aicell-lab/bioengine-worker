@@ -24,6 +24,7 @@ from ray import serve
 from hypha_rpc.utils.schema import schema_method
 
 if TYPE_CHECKING:
+    import torch
     from cellpose.models import CellposeModel
     from hypha_artifact import AsyncHyphaArtifact
 
@@ -36,6 +37,200 @@ ENCODING_NPY_BASE64 = "npy_base64"
 METADATA_DIRNAME = "metadata"
 NDIM_3D_THRESHOLD = 3
 GB = 1024**3
+
+# Model template for BioImage.io export
+MODEL_TEMPLATE_PY = '''"""BioImage.io Model Wrapper for Cellpose 4.0.7 (Cellpose-SAM).
+
+This wrapper provides a PyTorch nn.Module interface for Cellpose 4.0.7 models
+that is compatible with the BioImage.io model format.
+"""
+import numpy as np
+import torch
+import torch.nn as nn
+from cellpose import models as cpmodels
+from cellpose.vit_sam import Transformer
+from cellpose.core import assign_device
+
+
+# Prevent mix-up between pytorch module eval and cellpose eval functions
+cpmodels.CellposeModel.evaluate = cpmodels.CellposeModel.eval  # type: ignore
+
+
+class CellposeSAMWrapper(nn.Module, cpmodels.CellposeModel):
+    """
+    A wrapper around the Cellpose 4.0.7 (Cellpose-SAM) model
+    which acts as a PyTorch model compatible with BioImage.io format.
+
+    This wrapper is designed for the Transformer-based Cellpose-SAM architecture.
+    """
+
+    def __init__(
+        self,
+        model_type="cpsam",
+        diam_mean=30.0,
+        cp_batch_size=8,
+        channels=[0, 0],
+        flow_threshold=0.4,
+        cellprob_threshold=0.0,
+        stitch_threshold=0.0,
+        estimate_diam=False,
+        normalize=True,
+        do_3D=False,
+        gpu=True,
+        use_bfloat16=True,
+    ):
+        """Initialize the Cellpose-SAM wrapper.
+
+        Args:
+            model_type: Model type (default: "cpsam" for Cellpose-SAM)
+            diam_mean: Mean diameter of objects (default: 30.0 pixels)
+            cp_batch_size: Batch size for cellpose processing (default: 8)
+            channels: Channel configuration [cytoplasm, nucleus] (default: [0, 0] for grayscale)
+            flow_threshold: Flow error threshold for mask reconstruction (default: 0.4)
+            cellprob_threshold: Cell probability threshold (default: 0.0)
+            stitch_threshold: Threshold for stitching tiles (default: 0.0)
+            estimate_diam: Whether to estimate diameter automatically (default: False)
+            normalize: Whether to normalize images (default: True)
+            do_3D: Whether to process 3D images (default: False)
+            gpu: Whether to use GPU (default: True)
+            use_bfloat16: Whether to use bfloat16 precision (default: True)
+        """
+        nn.Module.__init__(self)
+
+        self.model_type = model_type
+        self.diam_mean = diam_mean
+        self.cp_batch_size = cp_batch_size
+        self.channels = channels
+        self.flow_threshold = flow_threshold
+        self.cellprob_threshold = cellprob_threshold
+        self.stitch_threshold = stitch_threshold
+        self.estimate_diam = estimate_diam
+        self.normalize = normalize
+        self.do_3D = do_3D
+        self.use_bfloat16 = use_bfloat16
+
+        # Device assignment
+        self.device, self.gpu = assign_device(use_torch=True, gpu=gpu)
+
+        # Create Transformer network (Cellpose-SAM)
+        dtype = torch.bfloat16 if use_bfloat16 else torch.float32
+        self.net = Transformer(dtype=dtype).to(self.device)
+
+        # Set diameter parameters
+        self.net.diam_labels = nn.Parameter(torch.tensor([diam_mean]), requires_grad=False)
+        self.net.diam_mean = nn.Parameter(torch.tensor([diam_mean]), requires_grad=False)
+
+        # Cellpose model parameters
+        self.nclasses = 3
+        self.channel_axis = None
+        self.invert = False
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        """Load model weights from state dict.
+
+        Args:
+            state_dict: Dictionary containing model weights
+            strict: Whether to strictly enforce key matching (default: True)
+            assign: Whether to assign values (default: False)
+
+        Returns:
+            NamedTuple with missing_keys and unexpected_keys
+        """
+        from collections import namedtuple
+
+        Incompatible = namedtuple("IncompatibleKeys", ["missing_keys", "unexpected_keys"])
+
+        # Load the state dict into the network
+        result = self.net.load_state_dict(state_dict, strict=strict)
+
+        # Update diameter parameters from loaded weights
+        if hasattr(self.net, 'diam_mean'):
+            self.diam_mean = self.net.diam_mean.data.cpu().numpy()[0]
+        if hasattr(self.net, 'diam_labels'):
+            self.diam_labels = self.net.diam_labels.data.cpu().numpy()[0]
+
+        return result
+
+    def eval(self, *args, **kwargs):
+        """Evaluate the model.
+
+        This method handles both PyTorch module eval (no args) and
+        Cellpose eval (with args) by dispatching appropriately.
+        """
+        if len(args) == 0 and len(kwargs) == 0:
+            # PyTorch module eval
+            return self.train(False)
+        else:
+            # Cellpose model eval
+            return self.evaluate(*args, **kwargs)  # type: ignore
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass for BioImage.io compatibility.
+
+        Args:
+            x: Input tensor of shape (batch, channel, height, width)
+
+        Returns:
+            masks: Segmentation masks of shape (batch, height, width)
+
+        Raises:
+            ValueError: If input dimensions are invalid
+        """
+        if len(x.shape) != 4:
+            raise ValueError(
+                f"Input image(s) must be 4-dimensional (batch, channel, height, width), "
+                f"got shape {x.shape}"
+            )
+
+        # Convert torch tensor to list of numpy arrays (Y, X, C format for cellpose)
+        image_list = []
+        for img in x:
+            # Convert from (C, H, W) to (H, W, C)
+            img_np = img.permute(1, 2, 0).cpu().numpy()
+
+            # Ensure 3 channels for Cellpose-SAM
+            if img_np.shape[2] == 1:
+                # Replicate single channel to 3 channels
+                img_np = np.concatenate([img_np, img_np, img_np], axis=2)
+            elif img_np.shape[2] == 2:
+                # Add a zero channel
+                img_np = np.concatenate([img_np, np.zeros_like(img_np[:,:,0:1])], axis=2)
+            elif img_np.shape[2] > 3:
+                # Use first 3 channels
+                img_np = img_np[:,:,:3]
+
+            image_list.append(img_np)
+
+        # Run cellpose eval
+        masks_list, flows_list, styles_list = self.eval(  # type: ignore
+            image_list,
+            channels=self.channels,
+            channel_axis=self.channel_axis,
+            diameter=self.diam_mean,
+            flow_threshold=self.flow_threshold,
+            cellprob_threshold=self.cellprob_threshold,
+            stitch_threshold=self.stitch_threshold,
+            batch_size=self.cp_batch_size,
+            normalize=self.normalize,
+            invert=self.invert,
+            do_3D=self.do_3D,
+        )
+
+        # Convert masks to tensor
+        if isinstance(masks_list, list):
+            masks = torch.stack([torch.from_numpy(np.array(m, dtype=np.float32)) for m in masks_list])
+        else:
+            masks = torch.from_numpy(np.array(masks_list, dtype=np.float32))
+
+        # Move to same device as input
+        masks = masks.to(x.device)
+
+        # Ensure correct shape (B, H, W)
+        if len(masks.shape) == 2:
+            masks = masks.unsqueeze(0)
+
+        return masks
+'''
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -57,7 +252,6 @@ class TrainingParams(TypedDict):
     server_url: str
     n_samples: int | None
     session_id: str
-    save_every: int
     min_train_masks: int
 
 
@@ -171,11 +365,12 @@ def is_ndarray(potential_arrays: list[object]) -> TypeGuard[list[np.ndarray]]:
     return all(isinstance(array, np.ndarray) for array in potential_arrays)
 
 
-class PredictionItemModel(TypedDict):
+class PredictionItemModel(TypedDict, total=False):
     """A single prediction mapping an input identifier to an encoded mask."""
 
     input_path: str
     output: np.ndarray
+    flows: list[np.ndarray]  # Optional: [HSV flow, XY flows, cellprob, final positions]
 
 
 class SessionStatus(TypedDict, total=False):
@@ -191,6 +386,8 @@ class SessionStatus(TypedDict, total=False):
     current_epoch: int  # Current epoch number (1-indexed)
     total_epochs: int  # Total number of epochs
     elapsed_seconds: float  # Elapsed time in seconds
+    current_batch: int  # Current batch number within epoch (0-indexed)
+    total_batches: int  # Total number of batches per epoch
 
 
 class SessionStatusWithId(TypedDict):
@@ -322,6 +519,8 @@ def update_status(
     current_epoch: int | None = None,
     total_epochs: int | None = None,
     elapsed_seconds: float | None = None,
+    current_batch: int | None = None,
+    total_batches: int | None = None,
 ) -> None:
     """Update the status of a training session."""
     status_path = get_status_path(session_id)
@@ -349,6 +548,10 @@ def update_status(
             status_dict["total_epochs"] = total_epochs
         if elapsed_seconds is not None:
             status_dict["elapsed_seconds"] = elapsed_seconds
+        if current_batch is not None:
+            status_dict["current_batch"] = current_batch
+        if total_batches is not None:
+            status_dict["total_batches"] = total_batches
 
         status = json.dumps(status_dict)
         f.write(status)
@@ -425,8 +628,6 @@ def train_seg_with_callbacks(
     normalize=True,
     compute_flows=False,
     save_path=None,
-    save_every=100,
-    save_each=False,
     nimg_per_epoch=None,
     nimg_test_per_epoch=None,
     rescale=False,
@@ -719,15 +920,8 @@ def train_seg_with_callbacks(
             elapsed = time.time() - t0
             epoch_callback(iepoch + 1, train_losses[iepoch], lavgt, elapsed)
 
-        # Save model if needed
-        if iepoch == n_epochs - 1 or (iepoch % save_every == 0 and iepoch != 0):
-            if save_each and iepoch != n_epochs - 1:  # separate files as model progresses
-                filename0 = str(filename) + f"_epoch_{iepoch:04d}"
-            else:
-                filename0 = filename
-            train_logger.info(f"saving network parameters to {filename0}")
-            net.save_model(filename0)
-
+    # Save final model only (no intermediate snapshots)
+    train_logger.info(f"saving final network parameters to {filename}")
     net.save_model(filename)
 
     if original_net_dtype is not None:
@@ -774,6 +968,30 @@ def run_blocking_task(
     accumulated_train_losses: list[float] = []
     accumulated_test_losses: list[float] = []
 
+    # Define batch callback for within-epoch progress updates
+    last_batch_update = [0]  # Use list to allow modification in nested function
+
+    def batch_callback(epoch: int, batch_idx: int, total_batches: int, batch_loss: float, elapsed_seconds: float) -> None:
+        """Update status after each batch (throttled to every 10 batches)."""
+        # Update every 10 batches or on first/last batch to avoid too frequent updates
+        if batch_idx % 10 == 0 or batch_idx == 0 or batch_idx == total_batches - 1:
+            update_status(
+                session_id,
+                StatusType.RUNNING,
+                f"Training epoch {epoch}/{training_params['n_epochs']} (batch {batch_idx + 1}/{total_batches})",
+                train_losses=accumulated_train_losses.copy() if accumulated_train_losses else [0.0] * epoch,
+                test_losses=accumulated_test_losses.copy() if accumulated_test_losses else [],
+                n_train=n_train,
+                n_test=n_test,
+                start_time=start_time_str,
+                current_epoch=epoch,
+                total_epochs=training_params["n_epochs"],
+                elapsed_seconds=elapsed_seconds,
+                current_batch=batch_idx,
+                total_batches=total_batches,
+            )
+            last_batch_update[0] = batch_idx
+
     # Define epoch callback for real-time progress updates
     def epoch_callback(epoch: int, train_loss: float, test_loss: float, elapsed_seconds: float) -> None:
         """Update status after each epoch."""
@@ -803,11 +1021,10 @@ def run_blocking_task(
             n_epochs=training_params["n_epochs"],
             learning_rate=training_params["learning_rate"],
             weight_decay=training_params["weight_decay"],
-            save_every=training_params["save_every"],
             model_name="model",
             min_train_masks=training_params["min_train_masks"],
             epoch_callback=epoch_callback,
-            batch_callback=None,  # Could add batch-level progress tracking here if needed
+            batch_callback=batch_callback,
         )
     except Exception as e:
         elapsed = time.time() - t0
@@ -1352,6 +1569,324 @@ async def make_training_pairs(
 
 
 # ---------------------------------------------------------------------------
+# Model Export helpers
+# ---------------------------------------------------------------------------
+
+
+async def create_test_samples(
+    session_id: str,
+    training_params: TrainingParams,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Create test input and output samples from training data.
+
+    Uses the last training image to generate test samples for model validation.
+
+    Args:
+        session_id: Training session ID
+        training_params: Training parameters containing artifact and paths
+
+    Returns:
+        Tuple of (test_input, test_output) as numpy arrays
+    """
+    from tifffile import imread
+
+    # Get artifact and paths
+    artifact = await make_artifact_client(
+        training_params["artifact_id"],
+        training_params["server_url"],
+    )
+    save_path = artifact_cache_dir(training_params["artifact_id"])
+
+    # Parse training path patterns
+    train_img_folder, train_img_pattern = parse_path_pattern(training_params["train_images"])
+    train_ann_folder, train_ann_pattern = parse_path_pattern(training_params["train_annotations"])
+
+    # List training files
+    train_image_files = await list_artifact_files(artifact, train_img_folder)
+    train_annotation_files = await list_artifact_files(artifact, train_ann_folder)
+
+    # Match training pairs
+    train_matched = match_image_annotation_pairs(
+        train_image_files,
+        train_annotation_files,
+        train_img_pattern,
+        train_ann_pattern,
+    )
+
+    if not train_matched:
+        raise ValueError("No training pairs found for test sample generation")
+
+    # Use the last pair as test sample
+    last_img_file, last_ann_file = train_matched[-1]
+
+    # Download files if needed
+    img_path = Path(train_img_folder) / last_img_file
+    ann_path = Path(train_ann_folder) / last_ann_file
+
+    await download_pairs_from_artifact(
+        artifact,
+        save_path,
+        [img_path],
+        [ann_path],
+    )
+
+    # Load files
+    local_img = to_local_path(save_path, img_path)
+    local_ann = to_local_path(save_path, ann_path)
+
+    # Use PIL to support multiple formats (PNG, TIF, etc.)
+    from PIL import Image
+    pil_img = Image.open(local_img)
+    test_input = np.array(pil_img)
+    test_output = np.array(Image.open(local_ann))
+
+    logger.info(f"Loaded test input from PIL: shape={test_input.shape}, dtype={test_input.dtype}, PIL mode={pil_img.mode}")
+
+    # PIL returns images in (H, W, C) format for RGB/RGBA, (H, W) for grayscale
+    # ensure_3_channels expects (C, H, W) format
+    if test_input.ndim == 2:
+        # Grayscale (H, W) - ensure_3_channels can handle this
+        pass
+    elif test_input.ndim == 3 and test_input.shape[2] in [1, 3, 4]:
+        # Image is in (H, W, C) format, transpose to (C, H, W)
+        logger.info(f"Transposing from (H,W,C) to (C,H,W): {test_input.shape} -> ", end="")
+        test_input = np.transpose(test_input, (2, 0, 1))
+        logger.info(f"{test_input.shape}")
+
+    # Ensure 3 channels for input (required by Cellpose-SAM)
+    logger.info(f"Before ensure_3_channels: shape={test_input.shape}")
+    test_input = ensure_3_channels(test_input)
+    logger.info(f"After ensure_3_channels: shape={test_input.shape}")
+
+    logger.info(f"Created test samples: input shape {test_input.shape}, output shape {test_output.shape}")
+
+    return test_input, test_output
+
+
+async def generate_cover_image(
+    test_input: np.ndarray,
+    test_output: np.ndarray,
+    output_path: Path,
+    model_name: str = "Cellpose Model",
+    session_id: str = "",
+    training_info: dict = None,
+) -> None:
+    """Generate a side-by-side cover image with model metadata in title.
+
+    Args:
+        test_input: Test input image (C, H, W)
+        test_output: Test output mask (H, W)
+        output_path: Path to save cover image
+        model_name: Name of the model
+        session_id: Training session ID
+        training_info: Dictionary with training metadata (epochs, samples, loss, etc.)
+    """
+    import matplotlib.pyplot as plt
+    from datetime import datetime
+
+    logger.info(f"Generating cover: input shape {test_input.shape}, output shape {test_output.shape}")
+
+    training_info = training_info or {}
+
+    # Convert input to displayable format (H, W, C)
+    if test_input.ndim == 3:
+        display_input = np.transpose(test_input, (1, 2, 0))
+    else:
+        display_input = test_input
+
+    # Normalize input for display
+    if display_input.max() > 1:
+        display_input = (display_input - display_input.min()) / (display_input.max() - display_input.min())
+
+    # Convert to RGB if grayscale
+    if display_input.shape[2] == 1:
+        display_input = np.repeat(display_input, 3, axis=2)
+
+    # Create colored mask overlay
+    mask_colored = np.zeros((*test_output.shape, 4))
+    unique_labels = np.unique(test_output)
+    unique_labels = unique_labels[unique_labels > 0]  # Exclude background
+
+    # Use a colormap for the masks
+    cmap = plt.get_cmap('tab20')
+    for i, label in enumerate(unique_labels):
+        color = cmap(i % 20)
+        mask_colored[test_output == label] = color
+
+    # Create figure with side-by-side images
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+
+    # Plot input
+    ax1.imshow(display_input)
+    ax1.set_title('Input Image', fontsize=14)
+    ax1.axis('off')
+
+    # Plot output mask only (no background image)
+    ax2.imshow(mask_colored)
+    ax2.set_title(f'Segmentation ({len(unique_labels)} objects)', fontsize=14)
+    ax2.axis('off')
+
+    # Add overall title with model metadata
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    short_id = session_id[:8] if session_id else 'N/A'
+
+    # Get training metrics
+    n_train = training_info.get('n_train', 'N/A')
+    epochs = training_info.get('total_epochs', 'N/A')
+    train_losses = training_info.get('train_losses', [])
+    final_loss = f"{train_losses[-1]:.4f}" if train_losses and len(train_losses) > 0 else 'N/A'
+
+    # Create title with model info
+    title_lines = [
+        f'{model_name}',
+        f'Cellpose-SAM | ID: {short_id} | Date: {date_str}',
+        f'Samples: {n_train} | Epochs: {epochs} | Loss: {final_loss}'
+    ]
+
+    fig.suptitle('\n'.join(title_lines), fontsize=12, fontweight='bold', y=0.98)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+    logger.info(f"Generated cover image at {output_path}")
+
+
+def generate_rdf_yaml(
+    model_name: str,
+    session_id: str,
+    model_weights_filename: str,
+    model_py_filename: str,
+    test_input_filename: str,
+    test_output_filename: str,
+    training_params: TrainingParams,
+    test_input_shape: tuple,
+    test_output_shape: tuple,
+) -> dict:
+    """Generate BioImage.io RDF YAML structure.
+
+    Args:
+        model_name: Name of the model
+        session_id: Training session ID
+        model_weights_filename: Filename of model weights
+        model_py_filename: Filename of model.py
+        test_input_filename: Filename of test input
+        test_output_filename: Filename of test output
+        training_params: Training parameters
+        test_input_shape: Shape of test input (C, H, W)
+        test_output_shape: Shape of test output (H, W)
+
+    Returns:
+        Dictionary representing RDF YAML structure
+    """
+    import torch
+
+    return {
+        "name": model_name,
+        "description": f"Cellpose-SAM model fine-tuned on custom dataset (session: {session_id[:8]})",
+        "authors": [
+            {
+                "name": "BioEngine",
+                "affiliation": "AI Cell Lab",
+            }
+        ],
+        "cite": [
+            {
+                "text": "Stringer, C., Wang, T., Michaelos, M. et al. Cellpose: a generalist algorithm for cellular segmentation. Nat Methods 18, 100–106 (2021).",
+                "doi": "10.1038/s41592-020-01018-x",
+            },
+            {
+                "text": "Pachitariu, M., Stringer, C. Cellpose 2.0: how to train your own model. Nat Methods 19, 1634–1641 (2022).",
+                "doi": "10.1038/s41592-022-01663-4",
+            },
+            {
+                "text": "Stringer, Carsen, and Marius Pachitariu. Cellpose3: one-click image restoration for improved cellular segmentation. bioRxiv (2024).",
+                "doi": "10.1101/2024.02.10.579780",
+            },
+        ],
+        "license": "BSD-3-Clause",
+        "tags": [
+            "Cellpose",
+            "Cellpose-SAM",
+            "Cell Segmentation",
+            "Segmentation",
+            "Fine-tuned",
+        ],
+        "version": "0.1.0",
+        "format_version": "0.5.6",
+        "type": "model",
+        "id": session_id,
+        "id_emoji": "🔬",
+        "documentation": f"doc.md",
+        "inputs": [
+            {
+                "id": "input",
+                "axes": [
+                    {"type": "batch"},
+                    {
+                        "type": "channel",
+                        "channel_names": ["r", "g", "b"] if test_input_shape[0] == 3 else ["channel"],
+                    },
+                    {"size": test_input_shape[1], "id": "y", "type": "space"},
+                    {"size": test_input_shape[2], "id": "x", "type": "space"},
+                ],
+                "test_tensor": {
+                    "source": test_input_filename,
+                },
+            }
+        ],
+        "outputs": [
+            {
+                "id": "masks",
+                "axes": [
+                    {"type": "batch"},
+                    {"size": test_output_shape[0], "id": "y", "type": "space"},
+                    {"size": test_output_shape[1], "id": "x", "type": "space"},
+                ],
+                "test_tensor": {
+                    "source": test_output_filename,
+                },
+            }
+        ],
+        "weights": {
+            "pytorch_state_dict": {
+                "source": model_weights_filename,
+                "architecture": {
+                    "source": model_py_filename,
+                    "callable": "CellposeSAMWrapper",
+                    "kwargs": {
+                        "model_type": "cpsam",
+                        "diam_mean": float(training_params.get("diam_mean", 30.0)),
+                        "cp_batch_size": 8,
+                        "channels": [0, 0],
+                        "flow_threshold": 0.4,
+                        "cellprob_threshold": 0.0,
+                        "stitch_threshold": 0.0,
+                        "estimate_diam": False,
+                        "normalize": True,
+                        "do_3D": False,
+                        "gpu": False,
+                        "use_bfloat16": True,
+                    },
+                },
+                "pytorch_version": torch.__version__,
+            }
+        },
+        "config": {
+            "bioimageio": {
+                "reproducibility_tolerance": [
+                    {
+                        "relative_tolerance": 0.01,
+                        "absolute_tolerance": 0.001,
+                        "mismatched_elements_per_million": 20,
+                    }
+                ]
+            }
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Inference helpers
 # ---------------------------------------------------------------------------
 
@@ -1390,32 +1925,61 @@ def _predict_and_encode(
     flow_threshold: float,
     cellprob_threshold: float,
     niter: int | None,
+    return_flows: bool = False,
 ) -> list[PredictionItemModel]:
     """Run model on images and return encoded mask payloads.
 
     Images are expected to have 3 channels (preprocessed with ensure_3_channels).
+
+    Args:
+        model: Cellpose model to use for inference
+        images: List of input images
+        image_paths: List of image path identifiers
+        diameter: Cell diameter for inference
+        flow_threshold: Flow error threshold
+        cellprob_threshold: Cell probability threshold
+        niter: Number of iterations for dynamics
+        return_flows: If True, include flows in the output (HSV flow, XY flows, cellprob, final positions)
+
+    Returns:
+        List of prediction items with masks and optionally flows
     """
     out: list[PredictionItemModel] = []
     for image, path in zip(images, image_paths):
         # Ensure image has 3 channels (required by Cellpose 4.0.7)
         image_3ch = ensure_3_channels(image)
 
-        masks = model.eval(
+        # model.eval returns (masks, flows, styles)
+        # flows = [HSV flow, XY flows, cellprob, final pixel locations]
+        masks, flows, _styles = model.eval(
             [image_3ch],
             diameter=diameter,
             flow_threshold=flow_threshold,
             cellprob_threshold=cellprob_threshold,
             niter=niter,
-        )[0]
-        mask_np = masks if isinstance(masks, np.ndarray) else np.asarray(masks)
+        )
+
+        # Process masks
+        mask_np = masks[0] if isinstance(masks, list) else masks
+        if not isinstance(mask_np, np.ndarray):
+            mask_np = np.asarray(mask_np)
         if mask_np.ndim >= NDIM_3D_THRESHOLD and mask_np.shape[0] == 1:
             mask_np = mask_np[0]
         if not np.issubdtype(mask_np.dtype, np.integer):
             mask_np = mask_np.astype(np.int32, copy=False)
+
+        # Create output item
         out_item = PredictionItemModel(
             input_path=path,
             output=mask_np,
         )
+
+        # Optionally add flows
+        if return_flows:
+            # flows is a list containing [HSV flow, XY flows, cellprob, final positions]
+            flow_list = flows[0] if isinstance(flows, list) and len(flows) > 0 else flows
+            out_item["flows"] = flow_list
+
         out.append(out_item)
     return out
 
@@ -1550,10 +2114,6 @@ class CellposeFinetune:
         n_epochs: int = Field(10, description="Number of training epochs"),
         learning_rate: float = Field(1e-6, description="Learning rate"),
         weight_decay: float = Field(1e-4, description="Weight decay"),
-        save_every: int = Field(
-            100,
-            description="Frequency (in epochs) to save the model during training.",
-        ),
         min_train_masks: int = Field(
             5,
             description=(
@@ -1596,9 +2156,16 @@ class CellposeFinetune:
             server_url=server_url,
             n_samples=n_samples,
             session_id=session_id,
-            save_every=save_every,
             min_train_masks=min_train_masks,
         )
+
+        # Save training parameters for later export
+        training_params_path = get_session_path(session_id) / "training_params.json"
+        # Convert Path objects to strings for JSON serialization
+        params_dict = dict(training_params)
+        if "model" in params_dict and isinstance(params_dict["model"], Path):
+            params_dict["model"] = str(params_dict["model"])
+        training_params_path.write_text(json.dumps(params_dict, indent=2))
 
         async with self._session_lock:
             executor = ThreadPoolExecutor(max_workers=1)
@@ -1716,6 +2283,308 @@ class CellposeFinetune:
         }
 
     @schema_method(arbitrary_types_allowed=True)
+    async def export_model(
+        self,
+        session_id: str = Field(
+            description="Training session ID to export"
+        ),
+        model_name: str | None = Field(
+            None,
+            description="Optional custom name for the model (defaults to cellpose-{session_id})"
+        ),
+        collection: str = Field(
+            "bioimage-io/colab-annotations",
+            description="Collection to upload to (format: workspace/collection)"
+        ),
+    ) -> dict:
+        """Export trained model as BioImage.io package to artifact manager.
+
+        This function packages the trained model with all necessary files for
+        BioImage.io compatibility, including model weights, architecture code,
+        test samples, cover image, and RDF descriptor.
+
+        Args:
+            session_id: ID of completed training session
+            model_name: Custom name for the model (optional)
+            collection: Target collection in format "workspace/collection"
+
+        Returns:
+            Dictionary containing:
+                - artifact_id: ID of uploaded artifact
+                - model_name: Name of the model
+                - status: Export status
+                - url: URL to view the model
+
+        Raises:
+            ValueError: If session doesn't exist or training not completed
+            RuntimeError: If export or upload fails
+        """
+        import shutil
+        import tempfile
+        import yaml
+        from hypha_rpc import connect_to_server
+        from bioengine.utils import create_file_list_from_directory
+
+        logger.info(f"Starting model export for session {session_id}")
+
+        # Validate session
+        status = get_status(session_id)
+        if status["status_type"] != "completed":
+            raise ValueError(
+                f"Cannot export model from session {session_id}: "
+                f"training status is '{status['status_type']}', must be 'completed'"
+            )
+
+        # Get training parameters
+        session_path = get_session_path(session_id)
+        training_params_path = session_path / "training_params.json"
+        if not training_params_path.exists():
+            raise ValueError(f"Training parameters not found for session {session_id}")
+
+        training_params = json.loads(training_params_path.read_text())
+
+        # Determine model name
+        if model_name is None:
+            model_name = f"cellpose-{session_id[:8]}"
+
+        logger.info(f"Exporting model as '{model_name}' to collection '{collection}'")
+
+        # Create temporary export directory
+        export_dir = Path(tempfile.mkdtemp(prefix=f"cellpose_export_{session_id}_"))
+        logger.info(f"Created export directory: {export_dir}")
+
+        try:
+            # 1. Copy model weights
+            model_path = get_model_path(session_id)
+            if not model_path.exists():
+                raise ValueError(f"Model weights not found at {model_path}")
+
+            weights_filename = "model_weights.pth"
+            shutil.copy(model_path, export_dir / weights_filename)
+            logger.info(f"Copied model weights: {weights_filename}")
+
+            # 2. Write model.py from embedded template
+            model_py_filename = "model.py"
+            (export_dir / model_py_filename).write_text(MODEL_TEMPLATE_PY)
+            logger.info(f"Wrote model architecture: {model_py_filename}")
+
+            # 3. Generate test samples
+            logger.info("Generating test input/output samples...")
+            test_input, test_output = await create_test_samples(
+                session_id, training_params
+            )
+
+            # Save test samples as numpy arrays
+            test_input_filename = "input_sample.npy"
+            test_output_filename = "output_sample.npy"
+            np.save(export_dir / test_input_filename, test_input)
+            np.save(export_dir / test_output_filename, test_output)
+            logger.info(f"Saved test samples: {test_input.shape}, {test_output.shape}")
+
+            # 4. Generate cover image
+            logger.info("Generating cover image...")
+            cover_filename = "cover.png"
+            await generate_cover_image(
+                test_input,
+                test_output,
+                export_dir / cover_filename,
+                model_name=model_name,
+                session_id=session_id,
+                training_info=status,
+            )
+
+            # 5. Generate documentation
+            final_loss = f"{status['train_losses'][-1]:.4f}" if status.get('train_losses') and len(status['train_losses']) > 0 else 'N/A'
+            doc_content = f"""# {model_name}
+
+Cellpose-SAM model fine-tuned on custom dataset.
+
+## Training Information
+
+- **Session ID**: `{session_id}`
+- **Training samples**: {status.get('n_train', 'N/A')}
+- **Test samples**: {status.get('n_test', 0)}
+- **Epochs**: {status.get('total_epochs', 'N/A')}
+- **Final training loss**: {final_loss}
+- **Training time**: {status.get('elapsed_seconds', 0):.1f} seconds
+
+## Model Parameters
+
+- **Mean diameter**: {training_params.get('diam_mean', 30.0)} pixels
+- **Model type**: Cellpose-SAM (Transformer-based)
+- **Flow threshold**: 0.4
+- **Cell probability threshold**: 0.0
+
+## Dataset
+
+- **Artifact**: {training_params.get('artifact_id', 'N/A')}
+- **Train images**: {training_params.get('train_images', 'N/A')}
+- **Train annotations**: {training_params.get('train_annotations', 'N/A')}
+
+## Usage
+
+This model can be loaded using the BioImage.io tools or directly with PyTorch:
+
+```python
+import torch
+from model import CellposeSAMWrapper
+
+# Load the model
+model = CellposeSAMWrapper()
+model.load_state_dict(torch.load('model_weights.pth'))
+model.eval()
+
+# Run inference
+output_masks = model(input_tensor)
+```
+
+## References
+
+See the citations in the RDF file for relevant papers.
+
+## License
+
+BSD-3-Clause (Cellpose license)
+"""
+            (export_dir / "doc.md").write_text(doc_content)
+            logger.info("Generated documentation")
+
+            # 6. Generate RDF YAML
+            logger.info("Generating RDF YAML descriptor...")
+            rdf = generate_rdf_yaml(
+                model_name=model_name,
+                session_id=session_id,
+                model_weights_filename=weights_filename,
+                model_py_filename=model_py_filename,
+                test_input_filename=test_input_filename,
+                test_output_filename=test_output_filename,
+                training_params=training_params,
+                test_input_shape=test_input.shape,
+                test_output_shape=test_output.shape,
+            )
+
+            with open(export_dir / "rdf.yaml", "w") as f:
+                yaml.dump(rdf, f, default_flow_style=False, sort_keys=False)
+            logger.info("Generated RDF YAML")
+
+            # 7. Upload to artifact manager
+            logger.info(f"Uploading to artifact manager: {collection}")
+
+            # Get workspace from collection
+            workspace = collection.split("/")[0]
+
+            # Connect to hypha
+            token = os.environ.get("HYPHA_TOKEN")
+            if not token:
+                raise RuntimeError(
+                    "HYPHA_TOKEN environment variable not set. "
+                    "Cannot upload to artifact manager."
+                )
+
+            server = await connect_to_server({
+                "server_url": training_params.get("server_url", "https://hypha.aicell.io"),
+                "workspace": workspace,
+                "token": token,
+            })
+
+            artifact_manager = await server.get_service("public/artifact-manager")
+
+            # Create file list
+            files = create_file_list_from_directory(
+                directory_path=str(export_dir),
+            )
+            logger.info(f"Prepared {len(files)} files for upload")
+
+            # Get the collection ID
+            collection_alias = collection.split("/")[1] if "/" in collection else collection
+            collection_id_str = f"{workspace}/{collection_alias}"
+            try:
+                collection_info = await artifact_manager.read(collection_id_str)
+                collection_id = collection_info["id"]
+            except Exception as e:
+                logger.error(f"Collection {collection_id_str} not found: {e}")
+                raise ValueError(
+                    f"Collection '{collection_id_str}' does not exist. "
+                    f"Please create it first or use an existing collection."
+                )
+
+            # Create model artifact
+            logger.info(f"Creating model artifact in collection {collection_id}")
+            artifact_result = await artifact_manager.create(
+                type="model",
+                alias=model_name,
+                parent_id=collection_id,
+                manifest=rdf,
+                stage=True,  # Enable staging mode for file uploads
+            )
+            artifact_id = artifact_result["id"] if isinstance(artifact_result, dict) else artifact_result
+            logger.info(f"Created model artifact: {artifact_id}")
+
+            # Upload files
+            import httpx
+            import base64
+
+            async with httpx.AsyncClient(timeout=120) as client:
+                for file_info in files:
+                    logger.debug(f"Uploading file: {file_info['name']}")
+
+                    # Get presigned upload URL
+                    upload_url = await artifact_manager.put_file(
+                        artifact_id,
+                        file_path=file_info["name"]
+                    )
+
+                    # Prepare content
+                    content = file_info["content"]
+                    if file_info.get("type") == "base64":
+                        content = base64.b64decode(content)
+
+                    # Upload content to presigned URL
+                    response = await client.put(upload_url, content=content)
+                    response.raise_for_status()
+
+            # Commit the artifact
+            await artifact_manager.commit(artifact_id)
+            logger.info(f"Successfully exported model: {artifact_id}")
+
+            # Construct URLs
+            base_url = training_params.get("server_url", "https://hypha.aicell.io")
+            artifact_url = f"{base_url}/{workspace}/artifacts/{artifact_id.split('/')[-1]}"
+            download_url = f"{artifact_url}/create-zip-file"
+
+            result = {
+                "artifact_id": artifact_id,
+                "model_name": model_name,
+                "status": "exported",
+                "artifact_url": artifact_url,
+                "download_url": download_url,
+                "files": [
+                    weights_filename,
+                    model_py_filename,
+                    test_input_filename,
+                    test_output_filename,
+                    cover_filename,
+                    "doc.md",
+                    "rdf.yaml",
+                ],
+            }
+
+            logger.info(f"Model export completed: {result}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error during model export: {e}")
+            raise RuntimeError(f"Model export failed: {e}") from e
+
+        finally:
+            # Clean up temporary directory
+            try:
+                shutil.rmtree(export_dir)
+                logger.info(f"Cleaned up export directory: {export_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up export directory: {e}")
+
+    @schema_method(arbitrary_types_allowed=True)
     async def infer(
         self,
         artifact: str | None = Field(
@@ -1773,6 +2642,14 @@ class CellposeFinetune:
             ),
             ge=0,
         ),
+        return_flows: bool = Field(
+            False,
+            description=(
+                "If True, return flows in addition to masks. Flows include: "
+                "[0] HSV flow visualization, [1] XY flows at each pixel, "
+                "[2] cell probability map, [3] final pixel locations after dynamics."
+            ),
+        ),
     ) -> list[PredictionItemModel]:
         """Run Cellpose inference on artifact images and return encoded masks.
 
@@ -1780,7 +2657,14 @@ class CellposeFinetune:
         needed. For each input path, the corresponding mask array is returned as
         an NPY-serialized base64 payload suitable for cross-language transport.
 
+        Optionally, flows can be returned by setting return_flows=True, which includes
+        flow visualization, XY flows, cell probability, and final pixel positions.
+
         """
+        # Initialize with defaults to avoid UnboundLocalError
+        artifact_id: str | None = None
+        server_url: str = DEFAULT_SERVER_URL
+
         if artifact is not None:
             server_url, artifact_id = get_url_and_artifact_id(artifact)
 
@@ -1815,6 +2699,7 @@ class CellposeFinetune:
             flow_threshold=flow_threshold,
             cellprob_threshold=cellprob_threshold,
             niter=niter,
+            return_flows=return_flows,
         )
 
 

@@ -6,6 +6,7 @@ A BioEngine service for running Cellpose-SAM 4.0.7 inference and fine-tuning cel
 
 - **Inference**: Run cell segmentation on images using Cellpose-SAM
 - **Fine-tuning**: Train custom models on your annotated datasets
+- **Model Export**: Export trained models to BioImage.IO format for sharing and reuse
 - **Async API**: Monitor training progress in real-time
 - **GPU-accelerated**: Optimized for fast inference and training
 
@@ -208,6 +209,58 @@ Monitor training progress and retrieve training metrics with real-time updates.
 - `total_epochs` (int, optional): Total number of epochs
 - `elapsed_seconds` (float, optional): Elapsed time since training started
 
+### `export_model()`
+
+Export a trained model to BioImage.IO format for sharing and reuse.
+
+**Parameters:**
+- `session_id` (str): Training session ID of the model to export
+- `model_name` (str): Name for the exported model artifact
+- `collection` (str): Collection to save the model to (e.g., "bioimage-io/colab-annotations")
+
+**Returns:** Dict with the following keys:
+- `artifact_id` (str): Full artifact ID (e.g., "bioimage-io/test-model-abc123")
+- `model_name` (str): Model name
+- `status` (str): Export status ("exported")
+- `artifact_url` (str): URL to view artifact (e.g., "https://hypha.aicell.io/bioimage-io/artifacts/test-model-abc123")
+- `download_url` (str): URL to download model as zip (e.g., "https://hypha.aicell.io/bioimage-io/artifacts/test-model-abc123/create-zip-file")
+- `files` (list): List of exported files
+
+**Example:**
+```python
+# Train a model
+session_status = await cellpose_service.start_training(
+    artifact="bioimage-io/your-dataset",
+    train_images="images/*.tif",
+    train_annotations="annotations/*_mask.tif",
+    n_epochs=10,
+)
+session_id = session_status["session_id"]
+
+# Wait for training to complete...
+# (monitor with get_training_status)
+
+# Export the trained model
+export_result = await cellpose_service.export_model(
+    session_id=session_id,
+    model_name="my-cell-model-v1",
+    collection="bioimage-io/colab-annotations",
+)
+
+print(f"Model exported: {export_result['artifact_url']}")
+print(f"Download: {export_result['download_url']}")
+```
+
+**Exported Files:**
+The exported model includes 7 files in BioImage.IO format:
+1. `rdf.yaml` - Model metadata and specification
+2. `model.py` - Model architecture wrapper
+3. `model_weights.pth` - Trained weights
+4. `input_sample.npy` - Sample input for testing
+5. `output_sample.npy` - Sample output for testing
+6. `cover.png` - Visualization showing input and segmentation
+7. `doc.md` - Documentation with training details
+
 ### `list_pretrained_models()`
 
 Get available pretrained models.
@@ -236,7 +289,10 @@ Get available pretrained models.
 This repository includes several example scripts:
 
 - **`scripts/test_single_image.py`**: Run inference on a single image from URL
-- **`scripts/test_service.py`**: Full workflow including training and inference with metrics display
+- **`scripts/test_service.py`**: Full workflow including training, inference, and model export with metrics display (quick test with 2 samples, 1 epoch)
+- **`scripts/test_export_e2e.py`**: End-to-end test of model export with validation (trains, exports, and verifies all files)
+- **`scripts/train_realistic.py`**: Realistic long-running training with all samples and comprehensive progress tracking
+- **`scripts/test_callbacks.py`**: Test real-time epoch callbacks with 5 epochs
 - **`scripts/check_status.py`**: Check training status and view metrics for a session
 
 Run them with:
@@ -248,8 +304,25 @@ export HYPHA_TOKEN="your-token-here"
 # Test single image inference
 python scripts/test_single_image.py
 
-# Test full training workflow
+# Quick test training workflow with export (2 samples, 1 epoch)
 python scripts/test_service.py
+
+# End-to-end export test (trains and validates export)
+python scripts/test_export_e2e.py
+
+# Realistic training with all samples (default: 50 epochs)
+python scripts/train_realistic.py --epochs 50
+
+# Customize training parameters
+python scripts/train_realistic.py \
+    --artifact "your-workspace/your-dataset" \
+    --train-images "*.tif" \
+    --train-annotations "annotations/*_mask.tif" \
+    --epochs 100 \
+    --learning-rate 1e-6
+
+# Resume monitoring an existing training session
+python scripts/train_realistic.py --session <session_id>
 
 # Check status of a training session
 python scripts/check_status.py <session_id>

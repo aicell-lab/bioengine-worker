@@ -1869,7 +1869,7 @@ def generate_rdf_yaml(
                         "use_bfloat16": True,
                     },
                 },
-                "pytorch_version": torch.__version__,
+                "pytorch_version": str(torch.__version__),
             }
         },
         "config": {
@@ -2464,7 +2464,7 @@ BSD-3-Clause (Cellpose license)
             )
 
             with open(export_dir / "rdf.yaml", "w") as f:
-                yaml.dump(rdf, f, default_flow_style=False, sort_keys=False)
+                yaml.dump(rdf, f)
             logger.info("Generated RDF YAML")
 
             # 7. Upload to artifact manager

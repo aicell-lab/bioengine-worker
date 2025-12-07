@@ -1079,35 +1079,35 @@ class AppsManager:
         ),
         version: Optional[str] = Field(
             None,
-            description="Specific version of the artifact to deploy. If not provided, deploys the latest available version of the artifact.",
+            description="Specific version of the artifact to deploy. If not provided, deploys the latest available version of the artifact. When updating an existing application, if not specified, uses the previously deployed version.",
         ),
         application_id: Optional[str] = Field(
             None,
-            description="Unique identifier for this deployment instance. If not provided, a random unique ID will be automatically generated. Use this to manage multiple deployments of the same artifact.",
+            description="Unique identifier for this deployment instance. If not provided, a random unique ID will be automatically generated. To update an existing application, provide its application_id.",
         ),
         application_kwargs: Optional[Dict[str, Dict[str, Any]]] = Field(
             None,
-            description="Advanced deployment configuration parameters. Dictionary where keys are deployment class names and values are dictionaries of keyword arguments to pass to those classes during initialization.",
+            description="Advanced deployment configuration parameters. Dictionary where keys are deployment class names and values are dictionaries of keyword arguments to pass to those classes during initialization. When updating an existing application, if not specified, uses the previous kwargs.",
         ),
         application_env_vars: Optional[Dict[str, Dict[str, str]]] = Field(
             None,
-            description="Environment variables to set for each deployment. Dictionary where keys are deployment class names and values are dictionaries of environment variable names and their values.",
+            description="Environment variables to set for each deployment. Dictionary where keys are deployment class names and values are dictionaries of environment variable names and their values. When updating an existing application, if not specified, uses the previous env vars.",
         ),
         hypha_token: str = Field(
             None,
-            description="Hypha connection token for authentication. The token will be set as environment variable 'HYPHA_TOKEN' in the application deployments. An already existing environment variable named 'HYPHA_TOKEN' will not be overwritten. The token is used to authenticate to BioEngine datasets and enables Hypha API calls as logged in user.",
+            description="Hypha connection token for authentication. The token will be set as environment variable 'HYPHA_TOKEN' in the application deployments. An already existing environment variable named 'HYPHA_TOKEN' will not be overwritten. The token is used to authenticate to BioEngine datasets and enables Hypha API calls as logged in user. When updating an existing application, if not specified, uses the previous token.",
         ),
         disable_gpu: bool = Field(
-            False,
-            description="Set to true to disable GPU usage for this deployment, forcing it to run on CPU only. Useful for testing or when GPU resources are limited.",
+            None,
+            description="Set to true to disable GPU usage for this deployment, forcing it to run on CPU only. Useful for testing or when GPU resources are limited. When updating an existing application, if not specified (None), uses the previous setting.",
         ),
         max_ongoing_requests: int = Field(
-            10,
-            description="Maximum number of concurrent requests this application instance can handle simultaneously. Higher values allow more parallelism but use more memory.",
+            None,
+            description="Maximum number of concurrent requests this application instance can handle simultaneously. Higher values allow more parallelism but use more memory. When updating an existing application, if not specified (None), uses the previous value.",
         ),
         auto_redeploy: bool = Field(
-            False,
-            description="If set to true, the application will be automatically redeployed if it becomes unhealthy.",
+            None,
+            description="If set to true, the application will be automatically redeployed if it becomes unhealthy. When updating an existing application, if not specified (None), uses the previous setting.",
         ),
         context: Dict[str, Any] = Field(
             ...,
@@ -1115,7 +1115,7 @@ class AppsManager:
         ),
     ) -> str:
         """
-        Deploys a BioEngine application from an artifact to Ray Serve with comprehensive lifecycle management.
+        Deploys or updates a BioEngine application from an artifact to Ray Serve with comprehensive lifecycle management.
 
         This method downloads the specified application artifact, configures it according to the
         provided parameters, and creates a running deployment in the Ray Serve cluster. The
@@ -1127,6 +1127,13 @@ class AppsManager:
         3. Configures the Ray Serve deployment with specified parameters
         4. Starts the deployment and monitors its health
         5. Registers the application as a callable service
+
+        Update Process (when application_id already exists):
+        1. Preserves the original creation time (started_at)
+        2. Uses previous parameter values for any unspecified parameters
+        3. Downloads and rebuilds the application from the artifact
+        4. Updates last_updated_at and last_updated_by timestamps
+        5. Redeploys with new configuration
 
         The deployment runs asynchronously - this method returns immediately after starting
         the deployment process. Use get_application_status() to monitor deployment progress and health.
@@ -1170,79 +1177,112 @@ class AppsManager:
             if not application_id:
                 application_id = await self._generate_application_id()
 
+            # Check if this is an update to an existing application
+            is_update = application_id in self._deployed_applications
+            
+            # For updates, preserve original creation time and inherit unspecified parameters
+            if is_update:
+                existing_app = self._deployed_applications[application_id]
+                started_at = existing_app["started_at"]
+                last_updated_at = time.time()  # Update time for updates
+                
+                # Inherit previous parameters if not specified
+                if version is None:
+                    version = existing_app["version"]
+                if application_kwargs is None:
+                    application_kwargs = existing_app["application_kwargs"]
+                if application_env_vars is None:
+                    application_env_vars = existing_app["application_env_vars"]
+                if hypha_token is None:
+                    hypha_token = existing_app["hypha_token"]
+                if disable_gpu is None:
+                    disable_gpu = existing_app["disable_gpu"]
+                if max_ongoing_requests is None:
+                    max_ongoing_requests = existing_app["max_ongoing_requests"]
+                if auto_redeploy is None:
+                    auto_redeploy = existing_app["auto_redeploy"]
+            else:
+                # For new deployments, set creation time and default values
+                started_at = time.time()
+                last_updated_at = started_at  # Same as started_at for new deployments
+                
+                # Set default values for None parameters
+                if application_kwargs is None:
+                    application_kwargs = {}
+                if application_env_vars is None:
+                    application_env_vars = {}
+                if disable_gpu is None:
+                    disable_gpu = False
+                if max_ongoing_requests is None:
+                    max_ongoing_requests = 10
+                if auto_redeploy is None:
+                    auto_redeploy = False
+
             # Validate application_kwargs
-            if application_kwargs is not None:
-                if not isinstance(application_kwargs, dict):
+            if not isinstance(application_kwargs, dict):
+                raise ValueError(
+                    "application_kwargs must be a dictionary of keyword arguments."
+                )
+            # Ensure all values are dictionaries
+            for key, value in application_kwargs.items():
+                if not isinstance(value, dict):
                     raise ValueError(
-                        "application_kwargs must be a dictionary of keyword arguments."
+                        f"Value for '{key}' in application_kwargs must be a dictionary."
                     )
-                # Ensure all values are dictionaries
-                for key, value in application_kwargs.items():
-                    if not isinstance(value, dict):
-                        raise ValueError(
-                            f"Value for '{key}' in application_kwargs must be a dictionary."
-                        )
 
-                kwargs_str = ", ".join(
-                    f"{deployment_class}("
-                    + ", ".join(
-                        [f"{key}={value!r}" for key, value in deployment_kwargs.items()]
-                    )
-                    + ")"
-                    for deployment_class, deployment_kwargs in application_kwargs.items()
+            kwargs_str = ", ".join(
+                f"{deployment_class}("
+                + ", ".join(
+                    [f"{key}={value!r}" for key, value in deployment_kwargs.items()]
                 )
-            else:
-                application_kwargs = {}
-                kwargs_str = "None"
+                + ")"
+                for deployment_class, deployment_kwargs in application_kwargs.items()
+            ) if application_kwargs else "None"
 
-            if application_env_vars is not None:
-                # Validate application_env_vars
-                if not isinstance(application_env_vars, dict):
+            # Validate application_env_vars
+            if not isinstance(application_env_vars, dict):
+                raise ValueError(
+                    "application_env_vars must be a dictionary of environment variables."
+                )
+            for key, value in application_env_vars.items():
+                if not isinstance(value, dict):
                     raise ValueError(
-                        "application_env_vars must be a dictionary of environment variables."
+                        f"Value for '{key}' in application_env_vars must be a dictionary."
                     )
-                for key, value in application_env_vars.items():
-                    if not isinstance(value, dict):
-                        raise ValueError(
-                            f"Value for '{key}' in application_env_vars must be a dictionary."
-                        )
 
-                # Construct the environment variables string, hide secret env vars starting with underscore as *****
-                env_vars_str = ", ".join(
-                    f"{deployment_class}: "
-                    + " ".join(
-                        [
-                            f"{key}={value!r}"
-                            for key, value in env_vars.items()
-                            if not key.startswith("_")
-                        ]
-                    )
-                    + " ".join(
-                        [
-                            f'{key}="*****"'
-                            for key in env_vars.keys()
-                            if key.startswith("_")
-                        ]
-                    )
-                    for deployment_class, env_vars in application_env_vars.items()
+            # Construct the environment variables string, hide secret env vars starting with underscore as *****
+            env_vars_str = ", ".join(
+                f"{deployment_class}: "
+                + " ".join(
+                    [
+                        f"{key}={value!r}"
+                        for key, value in env_vars.items()
+                        if not key.startswith("_")
+                    ]
                 )
-            else:
-                application_env_vars = {}
-                env_vars_str = "None"
+                + " ".join(
+                    [
+                        f'{key}="*****"'
+                        for key in env_vars.keys()
+                        if key.startswith("_")
+                    ]
+                )
+                for deployment_class, env_vars in application_env_vars.items()
+            ) if application_env_vars else "None"
 
-            if application_id not in self._deployed_applications:
-                # Create a new application if application_id is not provided
-                self.logger.info(
-                    f"User '{user_id}' is deploying new application '{application_id}' from artifact '{artifact_id}', "
-                    f"version '{version}'; kwargs: {kwargs_str}; env_vars: {env_vars_str}"
-                )
-            else:
+            if is_update:
                 # If already deployed, cancel the existing deployment task to update deployment in a new task
                 self.logger.info(
                     f"User '{user_id}' is updating existing application '{application_id}' from artifact '{artifact_id}', "
                     f"version '{version}'; kwargs: {kwargs_str}; env_vars: {env_vars_str}"
                 )
                 await self._cancel_deployment_process(application_id=application_id)
+            else:
+                # Create a new application
+                self.logger.info(
+                    f"User '{user_id}' is deploying new application '{application_id}' from artifact '{artifact_id}', "
+                    f"version '{version}'; kwargs: {kwargs_str}; env_vars: {env_vars_str}"
+                )
 
             # Build the application first to validate format and catch errors early
             app = await self.app_builder.build(
@@ -1265,7 +1305,7 @@ class AppsManager:
                 required_resources=app.metadata["resources"],
             )
 
-            current_time = time.time()
+            # Store deployment state with proper timestamps
             self._deployed_applications[application_id] = {
                 "display_name": app.metadata["name"],
                 "description": app.metadata["description"],
@@ -1279,8 +1319,8 @@ class AppsManager:
                 "application_resources": app.metadata["resources"],
                 "authorized_users": app.metadata["authorized_users"],
                 "available_methods": app.metadata["available_methods"],
-                "start_time": current_time,
-                "last_updated_at": current_time,
+                "started_at": started_at,  # Preserved from original deployment or set for new deployment
+                "last_updated_at": last_updated_at,  # Same as started_at for new, current time for updates
                 "last_updated_by": user_id,
                 "built_app": app,
                 "auto_redeploy": auto_redeploy,

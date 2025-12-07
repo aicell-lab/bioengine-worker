@@ -271,7 +271,7 @@ class AppsManager:
         self.logger.debug(
             f"Checking resources for application '{application_id}': {required_resources}"
         )
-        
+
         # Check if this is an update - if so, account for resources that will be freed
         current_resources = {"num_cpus": 0, "num_gpus": 0, "memory": 0}
         if application_id in self._deployed_applications:
@@ -282,7 +282,7 @@ class AppsManager:
                 f"Application '{application_id}' is being updated. "
                 f"Current resources: {current_resources}, New resources: {required_resources}"
             )
-        
+
         # Check if the required resources are available
         insufficient_resources = True
 
@@ -291,10 +291,16 @@ class AppsManager:
 
         for node_resource in self.ray_cluster.status["nodes"].values():
             # For updates, add back the resources that will be freed
-            available_cpu = node_resource["available_cpu"] + current_resources["num_cpus"]
-            available_gpu = node_resource["available_gpu"] + current_resources["num_gpus"]
-            available_memory = node_resource["available_memory"] + current_resources["memory"]
-            
+            available_cpu = (
+                node_resource["available_cpu"] + current_resources["num_cpus"]
+            )
+            available_gpu = (
+                node_resource["available_gpu"] + current_resources["num_gpus"]
+            )
+            available_memory = (
+                node_resource["available_memory"] + current_resources["memory"]
+            )
+
             if (
                 available_cpu >= required_resources["num_cpus"]
                 and available_gpu >= required_resources["num_gpus"]
@@ -1208,13 +1214,13 @@ class AppsManager:
 
             # Check if this is an update to an existing application
             is_update = application_id in self._deployed_applications
-            
+
             # For updates, preserve original creation time and inherit unspecified parameters
             if is_update:
                 existing_app = self._deployed_applications[application_id]
                 started_at = existing_app["started_at"]
                 last_updated_at = time.time()  # Update time for updates
-                
+
                 # Inherit previous parameters if not specified
                 if version is None:
                     version = existing_app["version"]
@@ -1234,7 +1240,7 @@ class AppsManager:
                 # For new deployments, set creation time and default values
                 started_at = time.time()
                 last_updated_at = started_at  # Same as started_at for new deployments
-                
+
                 # Set default values for None parameters
                 if application_kwargs is None:
                     application_kwargs = {}
@@ -1259,14 +1265,18 @@ class AppsManager:
                         f"Value for '{key}' in application_kwargs must be a dictionary."
                     )
 
-            kwargs_str = ", ".join(
-                f"{deployment_class}("
-                + ", ".join(
-                    [f"{key}={value!r}" for key, value in deployment_kwargs.items()]
+            kwargs_str = (
+                ", ".join(
+                    f"{deployment_class}("
+                    + ", ".join(
+                        [f"{key}={value!r}" for key, value in deployment_kwargs.items()]
+                    )
+                    + ")"
+                    for deployment_class, deployment_kwargs in application_kwargs.items()
                 )
-                + ")"
-                for deployment_class, deployment_kwargs in application_kwargs.items()
-            ) if application_kwargs else "None"
+                if application_kwargs
+                else "None"
+            )
 
             # Validate application_env_vars
             if not isinstance(application_env_vars, dict):
@@ -1280,24 +1290,28 @@ class AppsManager:
                     )
 
             # Construct the environment variables string, hide secret env vars starting with underscore as *****
-            env_vars_str = ", ".join(
-                f"{deployment_class}: "
-                + " ".join(
-                    [
-                        f"{key}={value!r}"
-                        for key, value in env_vars.items()
-                        if not key.startswith("_")
-                    ]
+            env_vars_str = (
+                ", ".join(
+                    f"{deployment_class}: "
+                    + " ".join(
+                        [
+                            f"{key}={value!r}"
+                            for key, value in env_vars.items()
+                            if not key.startswith("_")
+                        ]
+                    )
+                    + " ".join(
+                        [
+                            f'{key}="*****"'
+                            for key in env_vars.keys()
+                            if key.startswith("_")
+                        ]
+                    )
+                    for deployment_class, env_vars in application_env_vars.items()
                 )
-                + " ".join(
-                    [
-                        f'{key}="*****"'
-                        for key in env_vars.keys()
-                        if key.startswith("_")
-                    ]
-                )
-                for deployment_class, env_vars in application_env_vars.items()
-            ) if application_env_vars else "None"
+                if application_env_vars
+                else "None"
+            )
 
             if is_update:
                 # If already deployed, cancel the existing deployment task to update deployment in a new task

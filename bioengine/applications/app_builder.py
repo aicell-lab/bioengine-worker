@@ -1326,8 +1326,12 @@ class AppBuilder:
                     "Expected format is 'filename:ClassName' (without .py extension)."
                 )
 
+            # Get or create deployment environment variables dictionary
+            if class_name not in application_env_vars:
+                application_env_vars[class_name] = {}
+            deployment_env_vars = application_env_vars[class_name]
+            
             # Add user provided Hypha token as secret environment variable
-            deployment_env_vars = application_env_vars.get(class_name, {})
             if hypha_token is not None:
                 deployment_env_vars["_HYPHA_TOKEN"] = hypha_token
 

@@ -34,9 +34,12 @@ import os
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Union
+import logging
 
 from hypha_rpc.utils.schema import schema_method
 from ray import serve
+
+logger = logging.getLogger("ray.serve")
 
 
 @serve.deployment(
@@ -63,6 +66,7 @@ class DemoDeployment:
     def __init__(self):
         """Initialize the application."""
         self.start_time = time.time()
+        self.fail_health_check = False
 
     # === BioEngine App Methods - will be called when the deployment is started ===
 
@@ -104,17 +108,17 @@ class DemoDeployment:
 
         # Test BioEngine datasets
         available_datasets = await self.bioengine_datasets.list_datasets()
-        print(f"Available datasets: {list(available_datasets.keys())}")
+        logger.info(f"Available datasets: {list(available_datasets.keys())}")
 
-        for dataset_name in available_datasets:
-            file_names = await self.bioengine_datasets.list_files(dataset_name)
-            print(f"Files in dataset {dataset_name}: {file_names}")
+        for dataset_id in available_datasets:
+            file_names = await self.bioengine_datasets.list_files(dataset_id)
+            logger.info(f"Files in dataset {dataset_id}: {file_names}")
             for file_name in file_names:
                 data_file = await self.bioengine_datasets.get_file(
-                    dataset_name, file_name
+                    dataset_id, file_name
                 )
-                print(
-                    f"Successfully loaded data file {file_name} from dataset {dataset_name}"
+                logger.info(
+                    f"Successfully loaded data file {file_name} from dataset {dataset_id}"
                 )
 
     # === Internal Methods ===
@@ -135,10 +139,22 @@ class DemoDeployment:
         number of models per replica (default is 3).
         """
         # Mock model loading logic
-        print(f"Loading model with ID: {model_id}")
+        logger.info(f"Loading model with ID: {model_id}")
         model = None
 
         return model
+
+    async def check_health(self) -> None:
+        """
+        An optional method to check the health of the deployment. If defined, it will be called
+        periodically by Ray Serve to monitor the health of the deployment.
+
+        Requirements:
+        - Must be an async method.
+        - Must not accept any arguments.
+        """
+        if self.fail_health_check:
+            raise Exception("Simulated health check failure.")
 
     # === Exposed BioEngine App Methods - all methods decorated with @schema_method will be exposed as API endpoints ===
     # Note: Parameter type hints and docstrings will be used to generate the API documentation.
@@ -184,3 +200,10 @@ class DemoDeployment:
             """|================================================================================================|""",
         ]
         return ascii_art
+
+    @schema_method
+    async def set_fail_health_check(self) -> None:
+        """
+        Set the deployment to fail the health check.
+        """
+        self.fail_health_check = True

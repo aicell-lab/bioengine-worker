@@ -59,7 +59,7 @@ class HttpZarrStore(Store):
     retrieval for improved performance with array-based data access patterns.
 
     Attributes:
-        dataset_name (str): Name of the dataset being accessed
+        dataset_id (str): Name of the dataset being accessed
         service_url (str): Base URL for the dataset service
         token (str): Authentication token for access control
         http_client (httpx.AsyncClient): HTTP client for service communication
@@ -67,7 +67,7 @@ class HttpZarrStore(Store):
         supports_* (bool): Capability flags for the Zarr API
     """
 
-    dataset_name: str
+    dataset_id: str
     zarr_path: str
     _read_only: bool = True
 
@@ -79,7 +79,7 @@ class HttpZarrStore(Store):
     def __init__(
         self,
         service_url: str,
-        dataset_name: str,
+        dataset_id: str,
         zarr_path: str,
         token: str,
         max_chunk_cache_size: int = int(
@@ -94,13 +94,13 @@ class HttpZarrStore(Store):
 
         Args:
             service_url: Base URL for the dataset service API
-            dataset_name: Name of the dataset to access through this store
+            dataset_id: Name of the dataset to access through this store
             zarr_path: Path within the dataset to the Zarr store (must end with .zarr)
             token: Authentication token for access control
         """
         super().__init__(read_only=True)
         self.service_url = service_url.rstrip("/")
-        self.dataset_name = dataset_name
+        self.dataset_id = dataset_id
         self.zarr_path = zarr_path[1:] if zarr_path.startswith("/") else zarr_path
         self.token = token
         self.http_client = None
@@ -127,7 +127,7 @@ class HttpZarrStore(Store):
 
     def _get_url_cache_key(self, file_path: str) -> str:
         """Generate a cache key for the presigned URL based on file path."""
-        return f"{self.dataset_name}:{file_path}"
+        return f"{self.dataset_id}:{file_path}"
 
     def _is_cache_expired(self, timestamp: float) -> bool:
         """Check if a cached URL has expired."""
@@ -174,7 +174,7 @@ class HttpZarrStore(Store):
         self._set_http_client()
         url = await get_presigned_url(
             data_service_url=self.service_url,
-            dataset_name=self.dataset_name,
+            dataset_id=self.dataset_id,
             file_path=file_path,
             token=self.token,
             http_client=self.http_client,
@@ -190,7 +190,7 @@ class HttpZarrStore(Store):
     def _get_chunk_cache_key(self, key: str, byte_range: ByteRequest | None) -> str:
         """Generate a cache key for chunk data based on key and byte range."""
         if byte_range is None:
-            return f"chunk:{self.dataset_name}:{key}"
+            return f"chunk:{self.dataset_id}:{key}"
         else:
             # Create a unique representation of the byte range
             if isinstance(byte_range, RangeByteRequest):
@@ -201,7 +201,7 @@ class HttpZarrStore(Store):
                 range_str = f"suffix:{byte_range.suffix}"
             else:
                 range_str = f"other:{str(byte_range)}"
-            return f"chunk:{self.dataset_name}:{key}:{range_str}"
+            return f"chunk:{self.dataset_id}:{key}:{range_str}"
 
     def _evict_oldest_chunks(self, required_size: int) -> None:
         """Evict least recently used chunks until we have enough space for required_size bytes."""
@@ -252,7 +252,7 @@ class HttpZarrStore(Store):
         return all(
             isinstance(other, HttpZarrStore)
             and self.service_url == other.service_url
-            and self.dataset_name == other.dataset_name
+            and self.dataset_id == other.dataset_id
             and self.zarr_path == other.zarr_path
             and self.token == other.token
         )

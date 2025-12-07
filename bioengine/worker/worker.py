@@ -94,7 +94,6 @@ class BioEngineWorker:
           apps_manager (AppsManager): Application deployment management component
           data_server_url (Optional[str]): URL of the detected dataset server
           data_service_url (Optional[str]): Full URL to the dataset service endpoint
-          data_server_workspace (str): Workspace name for dataset service
           start_time (float): Timestamp when worker was started
           is_ready (asyncio.Event): Event signaling worker initialization completion
           logger (logging.Logger): Structured logger for worker operations
@@ -272,9 +271,6 @@ class BioEngineWorker:
 
         # Dataset server configuration
         self.data_server_url: Optional[str] = None
-        self.data_server_workspace = os.getenv(
-            "BIOENGINE_DATA_SERVER_WORKSPACE", "public"
-        )
         self.data_service_url: Optional[str] = None
         self.available_datasets = {}
 
@@ -325,7 +321,6 @@ class BioEngineWorker:
                 ray_cluster=self.ray_cluster,
                 apps_cache_dir=apps_cache_dir,
                 data_server_url=self.data_server_url,
-                data_server_workspace="public",
                 startup_applications=startup_applications,
                 log_file=log_file,
                 debug=debug,
@@ -418,7 +413,9 @@ class BioEngineWorker:
 
         # Set server URL and service URL
         self.data_server_url = data_server_url
-        self.data_service_url = f"{self.data_server_url}/{self.data_server_workspace}/services/bioengine-datasets"
+        self.data_service_url = (
+            f"{self.data_server_url}/public/services/bioengine-datasets"
+        )
         self.logger.info(f"Detected dataset server at: {self.data_server_url}")
 
         # Try to ping the dataset server
@@ -426,9 +423,7 @@ class BioEngineWorker:
             with httpx.Client(timeout=10) as client:
                 response = client.get(f"{self.data_service_url}/ping")
                 response.raise_for_status()
-                self.logger.info(
-                    f"Successfully reached dataset server in workspace '{self.data_server_workspace}'."
-                )
+                self.logger.info(f"Successfully reached dataset server.")
         except Exception as e:
             self.logger.error(f"Error occurred while pinging dataset server: {e}")
             self.logger.info("Clearing dataset server configuration.")
@@ -756,7 +751,7 @@ class BioEngineWorker:
                     # Run cluster monitoring
                     await self.ray_cluster.monitor_cluster()
 
-                    # Run BioEngine Apps monitoring
+                    # Run BioEngine Applications monitoring
                     await self.apps_manager.monitor_applications()
 
                     # Run BioEngine Datasets monitoring

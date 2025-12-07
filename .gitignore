@@ -1,3 +1,5 @@
+cellpose-*/
+famous-fish/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -161,6 +163,9 @@ cython_debug/
 # Copilot
 .github/instructions/
 *summary.md
+
+# Ray (https://github.com/ray-project/ray/archive/refs/tags/ray-2.33.0.zip)
+ray-2.33.0/
 
 # BioEngine
 .bioengine*

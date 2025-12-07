@@ -1068,6 +1068,9 @@ class AppBuilder:
             local_path = None
             try:
                 # Get download URL for the file
+                self.logger.debug(
+                    f"Downloading deployment code from artifact: {artifact_id}, file: {python_file}"
+                )
                 download_url = await self.artifact_manager.get_file(
                     artifact_id=artifact_id,
                     version=version,

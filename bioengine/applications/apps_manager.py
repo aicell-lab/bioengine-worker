@@ -246,11 +246,16 @@ class AppsManager:
         requirements for CPU, GPU, and memory. For SLURM clusters, also considers
         the ability to scale up by adding additional worker nodes.
 
+        When updating an existing application, the resources currently used by that
+        application are accounted for (as they will be freed during the update), so
+        only the net change in resources is validated.
+
         Resource Validation Process:
         1. Waits for Ray cluster to be ready and connected
         2. Checks each node for sufficient available resources
-        3. For SLURM mode: Evaluates if new workers can be spawned if needed
-        4. For external clusters: Issues warning but allows deployment
+        3. For updates: Adds currently allocated resources to available pool
+        4. For SLURM mode: Evaluates if new workers can be spawned if needed
+        5. For external clusters: Issues warning but allows deployment
 
         Args:
             application_id: ID of the application being deployed (for logging)
@@ -263,6 +268,21 @@ class AppsManager:
             External clusters are assumed to have autoscaling capabilities, so only
             warnings are issued rather than blocking deployment.
         """
+        self.logger.debug(
+            f"Checking resources for application '{application_id}': {required_resources}"
+        )
+        
+        # Check if this is an update - if so, account for resources that will be freed
+        current_resources = {"num_cpus": 0, "num_gpus": 0, "memory": 0}
+        if application_id in self._deployed_applications:
+            current_resources = self._deployed_applications[application_id][
+                "application_resources"
+            ]
+            self.logger.debug(
+                f"Application '{application_id}' is being updated. "
+                f"Current resources: {current_resources}, New resources: {required_resources}"
+            )
+        
         # Check if the required resources are available
         insufficient_resources = True
 
@@ -270,10 +290,15 @@ class AppsManager:
         await self.ray_cluster.is_ready.wait()
 
         for node_resource in self.ray_cluster.status["nodes"].values():
+            # For updates, add back the resources that will be freed
+            available_cpu = node_resource["available_cpu"] + current_resources["num_cpus"]
+            available_gpu = node_resource["available_gpu"] + current_resources["num_gpus"]
+            available_memory = node_resource["available_memory"] + current_resources["memory"]
+            
             if (
-                node_resource["available_cpu"] >= required_resources["num_cpus"]
-                and node_resource["available_gpu"] >= required_resources["num_gpus"]
-                and node_resource["available_memory"] >= required_resources["memory"]
+                available_cpu >= required_resources["num_cpus"]
+                and available_gpu >= required_resources["num_gpus"]
+                and available_memory >= required_resources["memory"]
             ):
                 insufficient_resources = False
 
@@ -297,6 +322,10 @@ class AppsManager:
 
         if insufficient_resources:
             if self.ray_cluster.mode != "external-cluster":
+                self.logger.error(
+                    f"Insufficient resources for application '{application_id}'. "
+                    f"Requested: {required_resources}"
+                )
                 raise ValueError(
                     f"Insufficient resources for application '{application_id}'. "
                     f"Requested: {required_resources}"
@@ -1297,9 +1326,6 @@ class AppsManager:
             )
 
             # Check resources before creating deployment task
-            self.logger.debug(
-                f"Checking resources for application '{application_id}': {app.metadata['resources']}"
-            )
             await self._check_resources(
                 application_id=application_id,
                 required_resources=app.metadata["resources"],

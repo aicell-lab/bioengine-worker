@@ -767,7 +767,7 @@ class AppsManager:
                 }
             )
 
-            # Deploy the startup applications
+            # Initialize deployment of each startup application
             application_ids = []
             for app_config in self.startup_applications:
                 if not isinstance(app_config, dict):
@@ -792,12 +792,6 @@ class AppsManager:
                     context=admin_context,
                 )
                 application_ids.append(application_id)
-
-            # Wait for all startup applications to be deployed
-            for application_id in application_ids:
-                app_info = self._deployed_applications.get(application_id)
-                if app_info:
-                    await app_info["is_deployed"].wait()
 
     async def monitor_applications(self) -> None:
         """

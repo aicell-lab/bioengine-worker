@@ -268,7 +268,9 @@ async def create_dataset_artifact(
         return None, None
 
 
-async def parse_token(token: str, cached_user_info: Dict[str, dict]) -> Dict[str, str]:
+async def parse_token(
+    token: Union[str, None], cached_user_info: Dict[str, dict]
+) -> Dict[str, str]:
     global AUTHENTICATION_SERVER_URL
 
     if token is not None:
@@ -300,7 +302,7 @@ async def list_datasets(
     """List all datasets in the artifact manager."""
     # No checks for user authentication for listing datasets
 
-    dataset_artifacts = await artifact_manager.list(collection_id)
+    dataset_artifacts = await artifact_manager.list(parent_id=collection_id)
     return {
         artifact.alias: await asyncio.to_thread(yaml.safe_load, artifact.manifest)
         for artifact in dataset_artifacts
@@ -308,45 +310,48 @@ async def list_datasets(
 
 
 async def list_files(
-    dataset_name: str,
-    token: str,
+    dataset_id: str,
+    dir_path: Union[str, None],
+    token: Union[str, None],
     cached_user_info: Dict[str, dict],
     authorized_users_collection: Dict[str, List[str]],
     artifact_manager: ObjectProxy,
 ) -> List[str]:
     """List all files in a dataset."""
-    if dataset_name not in authorized_users_collection:
-        raise ValueError(f"Dataset '{dataset_name}' does not exist")
+    if dataset_id not in authorized_users_collection:
+        raise ValueError(f"Dataset '{dataset_id}' does not exist")
 
     user_info = await parse_token(
         token=token,
         cached_user_info=cached_user_info,
     )
 
-    authorized_users = authorized_users_collection[dataset_name]
+    authorized_users = authorized_users_collection[dataset_id]
     check_permissions(
         context={"user": user_info},
         authorized_users=authorized_users,
-        resource_name=f"list files in the dataset '{dataset_name}'",
+        resource_name=f"list files in the dataset '{dataset_id}'",
     )
 
-    # TODO: list folders recursively, but not .zarr
-    files = await artifact_manager.list_files(f"public/{dataset_name}")
+    files = await artifact_manager.list_files(
+        artifact_id=f"public/{dataset_id}",
+        dir_path=dir_path,
+    )
     return [file.name for file in files]
 
 
 async def get_presigned_url(
-    dataset_name: str,
+    dataset_id: str,
     file_path: str,
-    token: str,
+    token: Union[str, None],
     cached_user_info: Dict[str, dict],
     authorized_users_collection: Dict[str, List[str]],
     artifact_manager: ObjectProxy,
     logger: logging.Logger,
 ) -> Union[str, None]:
     """Get a pre-signed URL for a dataset artifact."""
-    if dataset_name not in authorized_users_collection:
-        raise ValueError(f"Dataset '{dataset_name}' does not exist")
+    if dataset_id not in authorized_users_collection:
+        raise ValueError(f"Dataset '{dataset_id}' does not exist")
 
     user_info = await parse_token(
         token=token,
@@ -355,17 +360,17 @@ async def get_presigned_url(
     user_id = user_info["id"]
     user_email = user_info["email"]
 
-    authorized_users = authorized_users_collection[dataset_name]
+    authorized_users = authorized_users_collection[dataset_id]
     check_permissions(
         context={"user": user_info},
         authorized_users=authorized_users,
-        resource_name=f"access '{file_path}' in the dataset '{dataset_name}'",
+        resource_name=f"access '{file_path}' in the dataset '{dataset_id}'",
     )
 
     start_time = asyncio.get_event_loop().time()
     try:
         url = await artifact_manager.get_file(
-            artifact_id=f"public/{dataset_name}",
+            artifact_id=f"public/{dataset_id}",
             file_path=file_path,
         )
         time_taken = asyncio.get_event_loop().time() - start_time
@@ -420,15 +425,15 @@ async def create_bioengine_datasets(server: RemoteService):
         ]
         authorized_users_collection = {}
         for dataset_dir in datasets:
-            dataset_name, authorized_users = await create_dataset_artifact(
+            dataset_id, authorized_users = await create_dataset_artifact(
                 artifact_manager=artifact_manager,
                 parent_id=collection_id,
                 dataset_dir=dataset_dir,
                 minio_config=MINIO_CONFIG,
                 logger=logger,
             )
-            if dataset_name is not None:
-                authorized_users_collection[dataset_name] = authorized_users
+            if dataset_id is not None:
+                authorized_users_collection[dataset_id] = authorized_users
 
         logger.info(f"Available datasets: {list(authorized_users_collection.keys())}")
 

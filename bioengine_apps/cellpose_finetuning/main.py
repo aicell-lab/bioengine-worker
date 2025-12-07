@@ -2548,6 +2548,18 @@ BSD-3-Clause (Cellpose license)
             await artifact_manager.commit(artifact_id)
             logger.info(f"Successfully exported model: {artifact_id}")
 
+            # Update artifact with training dataset ID (stored in artifact config, not in rdf.yaml)
+            training_dataset_id = training_params.get("artifact_id")
+            if training_dataset_id:
+                try:
+                    await artifact_manager.edit(
+                        artifact_id,
+                        config={"training_dataset_id": training_dataset_id}
+                    )
+                    logger.info(f"Added training_dataset_id: {training_dataset_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to add training_dataset_id: {e}")
+
             # Construct URLs
             base_url = training_params.get("server_url", "https://hypha.aicell.io")
             artifact_url = f"{base_url}/{workspace}/artifacts/{artifact_id.split('/')[-1]}"
@@ -2584,6 +2596,106 @@ BSD-3-Clause (Cellpose license)
                 logger.info(f"Cleaned up export directory: {export_dir}")
             except Exception as e:
                 logger.warning(f"Failed to clean up export directory: {e}")
+
+    @schema_method
+    async def list_models_by_dataset(
+        self,
+        dataset_id: str = Field(
+            description="Dataset artifact ID to find models trained on it"
+        ),
+        collection: str = Field(
+            "bioimage-io/colab-annotations",
+            description="Collection to search in (format: workspace/collection)"
+        ),
+    ) -> list[dict]:
+        """List all models trained on a specific dataset.
+
+        This function queries the artifact manager to find all model artifacts
+        that were trained on the specified dataset by checking the
+        training_dataset_id in the artifact config.
+
+        Args:
+            dataset_id: ID of the dataset artifact
+            collection: Collection to search in
+
+        Returns:
+            List of model artifacts, each containing:
+                - id: Model artifact ID
+                - name: Model name
+                - created_at: Creation timestamp
+                - url: URL to view the model
+
+        Raises:
+            RuntimeError: If query fails
+        """
+        import os
+        from hypha_rpc import connect_to_server
+
+        logger.info(f"Listing models trained on dataset: {dataset_id}")
+
+        try:
+            # Get workspace from collection
+            workspace = collection.split("/")[0]
+
+            # Connect to hypha
+            token = os.environ.get("HYPHA_TOKEN")
+            if not token:
+                raise RuntimeError(
+                    "HYPHA_TOKEN environment variable not set. "
+                    "Cannot query artifact manager."
+                )
+
+            server = await connect_to_server({
+                "server_url": "https://hypha.aicell.io",
+                "workspace": workspace,
+                "token": token,
+            })
+
+            artifact_manager = await server.get_service("public/artifact-manager")
+
+            # Get the collection ID
+            collection_alias = collection.split("/")[1] if "/" in collection else collection
+            collection_id_str = f"{workspace}/{collection_alias}"
+
+            try:
+                collection_info = await artifact_manager.read(collection_id_str)
+                collection_id = collection_info["id"]
+            except Exception as e:
+                logger.error(f"Collection {collection_id_str} not found: {e}")
+                raise ValueError(
+                    f"Collection '{collection_id_str}' does not exist."
+                )
+
+            # List all artifacts in the collection
+            artifacts = await artifact_manager.list(
+                parent_id=collection_id,
+                filters={"type": "model"}
+            )
+
+            # Filter models by training_dataset_id
+            matching_models = []
+            for artifact in artifacts:
+                config = artifact.get("config", {})
+                if config.get("training_dataset_id") == dataset_id:
+                    # Build model info
+                    model_id = artifact["id"]
+                    model_alias = artifact.get("alias", model_id.split("/")[-1])
+                    base_url = "https://hypha.aicell.io"
+                    artifact_url = f"{base_url}/{workspace}/artifacts/{model_id.split('/')[-1]}"
+
+                    matching_models.append({
+                        "id": model_id,
+                        "name": model_alias,
+                        "created_at": artifact.get("created_at"),
+                        "url": artifact_url,
+                    })
+
+            logger.info(f"Found {len(matching_models)} models trained on {dataset_id}")
+            return matching_models
+
+        except Exception as e:
+            logger.error(f"Error listing models by dataset: {e}")
+            raise RuntimeError(f"Failed to list models by dataset: {e}") from e
 
     @schema_method(arbitrary_types_allowed=True)
     async def infer(

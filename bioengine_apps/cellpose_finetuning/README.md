@@ -262,7 +262,36 @@ The exported model includes 7 files in BioImage.IO format:
 7. `doc.md` - Documentation with training details
 
 **Model Lineage:**
-The RDF YAML includes a `parent` field that tracks the base model used for fine-tuning (e.g., "cpsam"). This enables tracking of model provenance and allows you to trace the lineage of fine-tuned models.
+The RDF YAML includes a `parent` field that tracks the base model used for fine-tuning (e.g., "cpsam"). Additionally, each exported model stores the `training_dataset_id` in its artifact config, enabling you to find all models trained on a specific dataset.
+
+### `list_models_by_dataset()`
+
+List all models trained on a specific dataset.
+
+**Parameters:**
+- `dataset_id` (str): Dataset artifact ID to find models trained on it
+- `collection` (str): Collection to search in (default: "bioimage-io/colab-annotations")
+
+**Returns:** List of dicts, each containing:
+- `id` (str): Model artifact ID
+- `name` (str): Model name
+- `created_at` (int): Creation timestamp
+- `url` (str): URL to view the model
+
+**Example:**
+```python
+# Find all models trained on a specific dataset
+models = await cellpose_service.list_models_by_dataset(
+    dataset_id="bioimage-io/your-dataset",
+    collection="bioimage-io/colab-annotations"
+)
+
+for model in models:
+    print(f"Model: {model['name']}")
+    print(f"  ID: {model['id']}")
+    print(f"  URL: {model['url']}")
+    print(f"  Created: {model['created_at']}")
+```
 
 ### `list_pretrained_models()`
 

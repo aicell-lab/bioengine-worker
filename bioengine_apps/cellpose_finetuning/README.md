@@ -253,13 +253,16 @@ print(f"Download: {export_result['download_url']}")
 
 **Exported Files:**
 The exported model includes 7 files in BioImage.IO format:
-1. `rdf.yaml` - Model metadata and specification
+1. `rdf.yaml` - Model metadata and specification (includes `parent` field for lineage tracking)
 2. `model.py` - Model architecture wrapper
 3. `model_weights.pth` - Trained weights
 4. `input_sample.npy` - Sample input for testing
 5. `output_sample.npy` - Sample output for testing
 6. `cover.png` - Visualization showing input and segmentation
 7. `doc.md` - Documentation with training details
+
+**Model Lineage:**
+The RDF YAML includes a `parent` field that tracks the base model used for fine-tuning (e.g., "cpsam"). This enables tracking of model provenance and allows you to trace the lineage of fine-tuned models.
 
 ### `list_pretrained_models()`
 

@@ -583,6 +583,29 @@ class AppsManager:
 
         return deployments_info
 
+    def _filter_secret_env_vars(
+        self, application_env_vars: Dict[str, Dict[str, str]]
+    ) -> Dict[str, Dict[str, str]]:
+        """
+        Filter out secret environment variables from application_env_vars.
+
+        Secret environment variables are those that start with an underscore (_).
+        They are replaced with "*****" to hide their values in status responses.
+
+        Args:
+            application_env_vars: Dictionary of environment variables for each deployment class
+
+        Returns:
+            Filtered dictionary with secret values replaced with "*****"
+        """
+        filtered_env_vars = {}
+        for deployment_class, env_vars in application_env_vars.items():
+            filtered_env_vars[deployment_class] = {
+                key: "*****" if key.startswith("_") else value
+                for key, value in env_vars.items()
+            }
+        return filtered_env_vars
+
     async def _get_application_service_ids(
         self, application_id: str
     ) -> List[Dict[str, Optional[str]]]:
@@ -670,9 +693,9 @@ class AppsManager:
             "message": message,
             "deployments": deployments,
             "application_kwargs": application_info["application_kwargs"],
-            "application_env_vars": application_info[
-                "application_env_vars"
-            ],  # TODO: hide secrets
+            "application_env_vars": self._filter_secret_env_vars(
+                application_info["application_env_vars"]
+            ),
             "gpu_enabled": not application_info["disable_gpu"],
             "application_resources": application_info["application_resources"],
             "authorized_users": application_info["authorized_users"],
@@ -769,12 +792,38 @@ class AppsManager:
 
             # Initialize deployment of each startup application
             application_ids = []
+
+            # Valid keys for app_config
+            valid_keys = {
+                "artifact_id",
+                "version",
+                "application_id",
+                "application_kwargs",
+                "application_env_vars",
+                "hypha_token",
+                "disable_gpu",
+                "max_ongoing_requests",
+                "auto_redeploy",
+            }
+
             for app_config in self.startup_applications:
                 if not isinstance(app_config, dict):
-                    raise ValueError("Each app_config must be a dictionary.")
+                    raise ValueError(
+                        "Each startup application config must be a dictionary."
+                    )
 
                 if "artifact_id" not in app_config:
-                    raise ValueError("Each app_config must contain an 'artifact_id'.")
+                    raise ValueError(
+                        "Each startup application config must contain an 'artifact_id'."
+                    )
+
+                # Check for invalid keys
+                invalid_keys = set(app_config.keys()) - valid_keys
+                if invalid_keys:
+                    raise ValueError(
+                        f"Invalid keys in startup application config for artifact '{app_config.get('artifact_id', 'unknown')}': "
+                        f"{', '.join(sorted(invalid_keys))}. Valid keys are: {', '.join(sorted(valid_keys))}"
+                    )
 
                 if "hypha_token" not in app_config:
                     app_config["hypha_token"] = startup_applications_token
@@ -786,9 +835,9 @@ class AppsManager:
                     application_kwargs=app_config.get("application_kwargs"),
                     application_env_vars=app_config.get("application_env_vars"),
                     hypha_token=app_config.get("hypha_token"),
-                    disable_gpu=app_config.get("disable_gpu", False),
-                    max_ongoing_requests=app_config.get("max_ongoing_requests", 10),
-                    auto_redeploy=app_config.get("auto_redeploy", False),
+                    disable_gpu=app_config.get("disable_gpu"),
+                    max_ongoing_requests=app_config.get("max_ongoing_requests"),
+                    auto_redeploy=app_config.get("auto_redeploy"),
                     context=admin_context,
                 )
                 application_ids.append(application_id)

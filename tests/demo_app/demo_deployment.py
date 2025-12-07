@@ -63,7 +63,7 @@ logger = logging.getLogger("ray.serve")
     }
 )
 class DemoDeployment:
-    def __init__(self):
+    def __init__(self, test_param: str = "default_value") -> None:
         """Initialize the application."""
         self.start_time = time.time()
         self.fail_health_check = False

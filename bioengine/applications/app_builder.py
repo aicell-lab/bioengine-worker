@@ -489,7 +489,8 @@ class AppBuilder:
 
             # Initialize deployment states
             self._deployment_initialized = False
-            self._deployment_tested = False
+            self._deployment_test_failed = False
+            self._test_task = None  # Background task for test_deployment
 
             # Create a health check lock to synchronize health checks
             self._health_check_lock = asyncio.Lock()
@@ -575,6 +576,7 @@ class AppBuilder:
                 self.logger.info(
                     f"✅ Async initialization completed successfully in {elapsed_time:.2f}s"
                 )
+
             except Exception as e:
                 elapsed_time = time.time() - start_time
                 self.logger.error(
@@ -642,13 +644,14 @@ class AppBuilder:
 
                 # Mark the deployment as tested
                 elapsed_time = time.time() - start_time
-                self._deployment_tested = True
+                self._deployment_test_failed = False
                 self.logger.info(
                     f"✅ Deployment test completed successfully in {elapsed_time:.2f}s"
                 )
 
             except Exception as e:
                 elapsed_time = time.time() - start_time
+                self._deployment_test_failed = True
                 self.logger.error(
                     f"❌ Deployment test failed after {elapsed_time:.2f}s: {e}"
                 )
@@ -701,9 +704,18 @@ class AppBuilder:
                 if not self._deployment_initialized:
                     await self.async_init()
 
-                # Ensure deployment testing has completed
-                if not self._deployment_tested:
-                    await self.test_deployment()
+                # Launch test_deployment in the background if not already started
+                if self._test_task is None:
+                    self.logger.info(
+                        "🚀 Launching deployment test in the background..."
+                    )
+                    self._test_task = asyncio.create_task(self.test_deployment())
+
+                # Check if the background test task failed
+                if self._deployment_test_failed:
+                    raise RuntimeError(
+                        "Deployment test failed - deployment is unhealthy"
+                    )
 
                 worker_service_id = os.getenv("BIOENGINE_WORKER_SERVICE_ID")
                 if (

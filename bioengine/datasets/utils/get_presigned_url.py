@@ -5,7 +5,7 @@ import httpx
 
 async def get_presigned_url(
     data_service_url: str,
-    dataset_name: str,
+    dataset_id: str,
     file_path: str,
     token: str,
     http_client: Optional[httpx.AsyncClient] = None,
@@ -18,7 +18,7 @@ async def get_presigned_url(
 
     Args:
         data_service_url: URL of the data service endpoint
-        dataset_name: Name of the dataset containing the file
+        dataset_id: Name of the dataset containing the file
         file_path: Path to the file within the dataset
         token: Authentication token for the data service
         http_client: Optional httpx AsyncClient instance for making the request
@@ -30,7 +30,7 @@ async def get_presigned_url(
         httpx.HTTPStatusError: If the request fails for reasons other than file not found
     """
     query_url = (
-        f"{data_service_url}/get_presigned_url?dataset_name={dataset_name}&"
+        f"{data_service_url}/get_presigned_url?dataset_id={dataset_id}&"
         f"file_path={file_path}&token={token}"
     )
 

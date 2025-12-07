@@ -40,10 +40,6 @@ from typing import Any, Dict, List, Optional, Union
 
 import uvicorn
 import yaml
-from hypha.server import create_application, get_argparser
-from hypha_rpc import connect_to_server
-from hypha_rpc.rpc import ObjectProxy, RemoteService
-
 from bioengine import __version__
 from bioengine.utils import (
     acquire_free_port,
@@ -52,6 +48,9 @@ from bioengine.utils import (
     get_internal_ip,
 )
 from bioengine.utils.permissions import check_permissions
+from hypha.server import create_application, get_argparser
+from hypha_rpc import connect_to_server
+from hypha_rpc.rpc import ObjectProxy, RemoteService
 
 BIOENGINE_DATA_DIR: Path
 MINIO_CONFIG = {
@@ -401,7 +400,6 @@ async def create_bioengine_datasets(server: RemoteService):
                 f"Expected workspace to be 'public', but got '{workspace}'"
             )
 
-        # * Note: server_url does not match the specified <ip>:<port>
         logger.info(
             f"Creating BioEngine datasets artifacts at '{server_url}' in workspace 'public'"
         )
@@ -598,8 +596,11 @@ def start_proxy_server(
         # Set Hypha server configuration
         hypha_parser = get_argparser()
         hypha_args = hypha_parser.parse_args([])  # use default values
+        hypha_args.public_base_url = server_url
 
+        # Minio configuration
         hypha_args.start_minio_server = True
+        hypha_args.enable_s3_proxy = True
         hypha_args.executable_path = executable_path
         hypha_args.minio_workdir = minio_workdir
         hypha_args.minio_port = free_minio_port
@@ -636,7 +637,7 @@ def start_proxy_server(
         # Start the server
         uvicorn.run(
             hypha_app,
-            host=server_ip,
+            host="0.0.0.0",
             port=free_server_port,
             log_config=log_config,
             log_level="info",

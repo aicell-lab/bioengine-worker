@@ -1055,62 +1055,62 @@ class ModelRunner:
 
     # === BioEngine App Method - will be called when the deployment is started ===
 
-    async def test_deployment(
-        self,
-        model_id: str = "ambitious-ant",
-    ) -> None:
-        """Comprehensive test of all public endpoints using a known working model (that should pass all checks)."""
-        print(f"🧪 [{self.replica_id}] Starting deployment test with model: {model_id}")
+    # async def test_deployment(
+    #     self,
+    #     model_id: str = "ambitious-ant",
+    # ) -> None:
+    #     """Comprehensive test of all public endpoints using a known working model (that should pass all checks)."""
+    #     print(f"🧪 [{self.replica_id}] Starting deployment test with model: {model_id}")
 
-        # Test 1: Get model RDF for validation
-        print(f"🔍 [{self.replica_id}] Test 1/5: Getting model RDF...")
-        rdf_start = time.time()
-        model_rdf = await self.get_model_rdf(model_id=model_id, stage=False)
-        rdf_duration = time.time() - rdf_start
-        print(f"✅ [{self.replica_id}] RDF retrieval successful ({rdf_duration:.2f}s)")
+    #     # Test 1: Get model RDF for validation
+    #     print(f"🔍 [{self.replica_id}] Test 1/5: Getting model RDF...")
+    #     rdf_start = time.time()
+    #     model_rdf = await self.get_model_rdf(model_id=model_id, stage=False)
+    #     rdf_duration = time.time() - rdf_start
+    #     print(f"✅ [{self.replica_id}] RDF retrieval successful ({rdf_duration:.2f}s)")
 
-        # Test 2: Validate the RDF
-        print(f"🔬 [{self.replica_id}] Test 2/5: Validating RDF...")
-        val_start = time.time()
-        validation_result = await self.validate(rdf_dict=model_rdf)
-        val_duration = time.time() - val_start
-        print(
-            f"✅ [{self.replica_id}] Validation {'passed' if validation_result['success'] else 'failed'} ({val_duration:.2f}s)"
-        )
+    #     # Test 2: Validate the RDF
+    #     print(f"🔬 [{self.replica_id}] Test 2/5: Validating RDF...")
+    #     val_start = time.time()
+    #     validation_result = await self.validate(rdf_dict=model_rdf)
+    #     val_duration = time.time() - val_start
+    #     print(
+    #         f"✅ [{self.replica_id}] Validation {'passed' if validation_result['success'] else 'failed'} ({val_duration:.2f}s)"
+    #     )
 
-        # Test 3: Test the model
-        print(f"🧩 [{self.replica_id}] Test 3/5: Testing model...")
-        test1_start = time.time()
-        _ = await self.test(model_id=model_id, stage=False)
-        test1_duration = time.time() - test1_start
-        print(f"✅ [{self.replica_id}] Model test completed ({test1_duration:.2f}s)")
+    #     # Test 3: Test the model
+    #     print(f"🧩 [{self.replica_id}] Test 3/5: Testing model...")
+    #     test1_start = time.time()
+    #     _ = await self.test(model_id=model_id, stage=False)
+    #     test1_duration = time.time() - test1_start
+    #     print(f"✅ [{self.replica_id}] Model test completed ({test1_duration:.2f}s)")
 
-        # Test 4: Test with skip_cache=True
-        print(f"🔄 [{self.replica_id}] Test 4/5: Testing with cache skip...")
-        test2_start = time.time()
-        _ = await self.test(model_id=model_id, stage=False, skip_cache=True)
-        test2_duration = time.time() - test2_start
-        print(
-            f"✅ [{self.replica_id}] Skip cache test completed ({test2_duration:.2f}s)"
-        )
+    #     # Test 4: Test with skip_cache=True
+    #     print(f"🔄 [{self.replica_id}] Test 4/5: Testing with cache skip...")
+    #     test2_start = time.time()
+    #     _ = await self.test(model_id=model_id, stage=False, skip_cache=True)
+    #     test2_duration = time.time() - test2_start
+    #     print(
+    #         f"✅ [{self.replica_id}] Skip cache test completed ({test2_duration:.2f}s)"
+    #     )
 
-        # Test 5: Test inference (published)
-        print(f"🤖 [{self.replica_id}] Test 5/5: Running inference...")
+    #     # Test 5: Test inference (published)
+    #     print(f"🤖 [{self.replica_id}] Test 5/5: Running inference...")
 
-        # Get the model package to load test image
-        local_package = await self.model_cache.get_model_package(
-            model_id=model_id, stage=False, allow_unpublished=False, skip_cache=False
-        )
-        async with local_package:
-            test_input_source = model_rdf["test_inputs"][0]
-            test_image_path = local_package.package_path / test_input_source
-            test_image = np.load(test_image_path).astype("float32")
+    #     # Get the model package to load test image
+    #     local_package = await self.model_cache.get_model_package(
+    #         model_id=model_id, stage=False, allow_unpublished=False, skip_cache=False
+    #     )
+    #     async with local_package:
+    #         test_input_source = model_rdf["test_inputs"][0]
+    #         test_image_path = local_package.package_path / test_input_source
+    #         test_image = np.load(test_image_path).astype("float32")
 
-        # Run inference test
-        infer_start = time.time()
-        _ = await self.infer(model_id=model_id, inputs=test_image)
-        infer_duration = time.time() - infer_start
-        print(f"✅ [{self.replica_id}] Inference completed ({infer_duration:.2f}s)")
+    #     # Run inference test
+    #     infer_start = time.time()
+    #     _ = await self.infer(model_id=model_id, inputs=test_image)
+    #     infer_duration = time.time() - infer_start
+    #     print(f"✅ [{self.replica_id}] Inference completed ({infer_duration:.2f}s)")
 
     # === Exposed BioEngine App Methods - all methods decorated with @schema_method will be exposed as API endpoints ===
     # Note: Parameter type hints and docstrings will be used to generate the API documentation.

@@ -1,6 +1,8 @@
 import re
+import time
 from dataclasses import asdict
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple
+import logging
 
 import ray
 from ray._private.state import GlobalState
@@ -13,6 +15,8 @@ from ray.util.state.common import (
     StateResource,
 )
 from ray.util.state.exception import RayStateApiException
+
+logger = logging.getLogger("ray")
 
 
 @ray.remote(
@@ -54,11 +58,11 @@ class BioEngineProxyActor:
             check_pending_resources: Include pending jobs/actors/tasks in cluster state reports
         """
         # Get the GCS address using ray._private.worker
-        gcs_address = ray._private.worker.global_worker.gcs_client.address
+        self.gcs_address = ray._private.worker.global_worker.gcs_client.address
 
         # Create GCS client options
         gcs_options = GcsClientOptions.create(
-            gcs_address,
+            self.gcs_address,
             None,
             allow_cluster_id_nil=True,
             fetch_cluster_id_if_nil=False,
@@ -72,14 +76,24 @@ class BioEngineProxyActor:
         self.global_state._check_connected()
 
         # Initialize the state API client for querying states
-        self.state_api_client = StateApiClient(gcs_address)
+        self.state_api_client = StateApiClient(self.gcs_address)
         self.exclude_head_node = exclude_head_node
         self.check_pending_resources = check_pending_resources
 
-        print("ClusterState initialized with GCS address:", gcs_address)
+        # Initialize per application actor ID tracking
+        # Structure: {app_id: {deployment_name: {replica_id: (timestamp, actor_id)}}}
+        self.application_replicas: Dict[
+            str, Dict[str, Dict[str, Tuple[float, str]]]
+        ] = {}
 
-    def _get_pending_jobs(self) -> int:
-        """Get list of jobs waiting to start in the cluster."""
+        logger.info(f"ClusterState initialized with GCS address: {self.gcs_address}")
+
+    def _get_pending_jobs(self) -> List[Dict[str, Any]]:
+        """Get list of jobs waiting to start in the cluster.
+
+        Returns:
+            List of dictionaries containing job information for pending jobs.
+        """
         pending_jobs = self.state_api_client.list(
             resource=StateResource.JOBS,
             options=ListApiOptions(
@@ -93,8 +107,12 @@ class BioEngineProxyActor:
         )
         return [asdict(job) for job in pending_jobs]
 
-    def _get_pending_actors(self) -> int:
-        """Get list of actors waiting to be created in the cluster."""
+    def _get_pending_actors(self) -> List[Dict[str, Any]]:
+        """Get list of actors waiting to be created in the cluster.
+
+        Returns:
+            List of dictionaries containing actor information for pending actors.
+        """
         pending_actors = self.state_api_client.list(
             resource=StateResource.ACTORS,
             options=ListApiOptions(
@@ -108,8 +126,13 @@ class BioEngineProxyActor:
         )
         return [asdict(actor) for actor in pending_actors]
 
-    def _get_pending_tasks(self) -> int:
-        """Get list of tasks waiting for node assignment in the cluster."""
+    def _get_pending_tasks(self) -> List[Dict[str, Any]]:
+        """Get list of tasks waiting for node assignment in the cluster.
+
+        Returns:
+            List of dictionaries containing task information for pending tasks.
+            Excludes actor creation tasks to avoid duplicates with _get_pending_actors.
+        """
         pending_tasks = self.state_api_client.list(
             resource=StateResource.TASKS,
             options=ListApiOptions(
@@ -128,7 +151,14 @@ class BioEngineProxyActor:
         return [asdict(task) for task in pending_tasks]
 
     def _get_node_ip(self, resources: Dict[str, float]) -> Optional[str]:
-        """Extract the IP address from a node's resource dictionary."""
+        """Extract the IP address from a node's resource dictionary.
+
+        Args:
+            resources: Node resource dictionary with resource names as keys.
+
+        Returns:
+            IP address string if found (e.g., "192.168.1.1"), None otherwise.
+        """
         ip_pattern = r"^node:(\d+\.\d+\.\d+\.\d+)$"
         for resource_name in resources:
             if resource_name.startswith("node:"):
@@ -138,19 +168,33 @@ class BioEngineProxyActor:
                 if match:
                     return match.group(1)
 
-    def _get_accelerator_type(self, resources: Dict[str, float]) -> str:
-        """Extract the GPU/accelerator type from a node's resource dictionary."""
+    def _get_accelerator_type(self, resources: Dict[str, float]) -> Optional[str]:
+        """Extract the GPU/accelerator type from a node's resource dictionary.
+
+        Args:
+            resources: Node resource dictionary with resource names as keys.
+
+        Returns:
+            Accelerator type string if found (e.g., "NVIDIA-A100"), None otherwise.
+        """
         for resource_name in resources:
             if resource_name.startswith("accelerator_type:"):
                 return resource_name.split(":")[-1]
 
-    def _get_slurm_job_id(self, resources: Dict[str, float]) -> str:
-        """Extract the SLURM job ID from a node's resource dictionary."""
+    def _get_slurm_job_id(self, resources: Dict[str, float]) -> Optional[str]:
+        """Extract the SLURM job ID from a node's resource dictionary.
+
+        Args:
+            resources: Node resource dictionary with resource names as keys.
+
+        Returns:
+            SLURM job ID string if found, None otherwise.
+        """
         for resource_name in resources:
             if resource_name.startswith("slurm_job_id:"):
                 return resource_name.split(":")[-1]
 
-    def get_cluster_state(self) -> Dict[str, Union[float, int, str]]:
+    def get_cluster_state(self) -> Dict[str, Any]:
         """
         Get comprehensive cluster resource information including per-node breakdown.
 
@@ -159,12 +203,40 @@ class BioEngineProxyActor:
         capacity planning and resource allocation decisions.
 
         Returns:
-            Dictionary with 'cluster' totals and 'nodes' breakdown containing:
-            - CPU/GPU cores and availability
-            - Memory and object store memory (in bytes)
-            - Node IP addresses and accelerator types
-            - SLURM job IDs (if applicable)
-            - Pending resources (if enabled)
+            Dictionary with the following structure:
+            {
+                "cluster": {
+                    "total_cpu": float,
+                    "available_cpu": float,
+                    "total_gpu": float,
+                    "available_gpu": float,
+                    "total_memory": float,  # in bytes
+                    "available_memory": float,  # in bytes
+                    "total_object_store_memory": float,  # in bytes
+                    "available_object_store_memory": float,  # in bytes
+                    "pending_resources": {  # if check_pending_resources=True
+                        "actors": List[Dict],
+                        "jobs": List[Dict],
+                        "tasks": List[Dict],
+                        "total": int
+                    }
+                },
+                "nodes": {
+                    node_id: {
+                        "node_ip": Optional[str],
+                        "total_cpu": float,
+                        "available_cpu": float,
+                        "total_gpu": float,
+                        "available_gpu": float,
+                        "total_memory": float,
+                        "available_memory": float,
+                        "total_object_store_memory": float,
+                        "available_object_store_memory": float,
+                        "accelerator_type": Optional[str],
+                        "slurm_job_id": Optional[str]
+                    }
+                }
+            }
         """
         total_resources_per_node = self.global_state.total_resources_per_node()
         available_resources_per_node = self.global_state.available_resources_per_node()
@@ -234,21 +306,26 @@ class BioEngineProxyActor:
 
         return cluster_state
 
-    def get_deployment_replica(self, app_name: str, deployment_name: str) -> List[str]:
+    def get_deployment_replicas(
+        self, application_id: str, deployment_name: str
+    ) -> Dict[str, str]:
         """
         Get the list of active replica IDs for a specific Ray Serve deployment.
 
-        Useful for monitoring deployment health and scaling status.
+        Queries the Ray cluster for all ALIVE replicas of the specified deployment
+        and returns their replica IDs mapped to actor IDs. Useful for monitoring
+        deployment health and scaling status.
 
         Args:
-            app_name: Name of the Ray Serve application
-            deployment_name: Name of the specific deployment within the app
+            application_id: Name of the Ray Serve application.
+            deployment_name: Name of the specific deployment within the app.
 
         Returns:
-            List of replica ID strings for replicas currently in ALIVE state
+            Mapping of replica ID strings to their actor IDs for replicas
+            currently in ALIVE state. Example: {"replica_1": "actor_abc123"}.
         """
-        class_name = f"ServeReplica:{app_name}:{deployment_name}"
-        replica_actors = self.state_api_client.list(
+        class_name = f"ServeReplica:{application_id}:{deployment_name}"
+        deployment_actors = self.state_api_client.list(
             resource=StateResource.ACTORS,
             options=ListApiOptions(
                 limit=DEFAULT_LIMIT,
@@ -259,70 +336,235 @@ class BioEngineProxyActor:
             ),
             raise_on_missing_output=True,
         )
-        replica = {
-            actor.name.split("#")[-1]: actor.actor_id for actor in replica_actors
+        replica_info = {
+            actor.name.split("#")[-1]: actor.actor_id for actor in deployment_actors
         }
-        return replica
+        return replica_info
+
+    def register_serve_replica(
+        self,
+        application_id: str,
+        deployment_name: str,
+        replica_id: str,
+    ) -> None:
+        """
+        Register a Ray Serve replica for tracking and log retrieval.
+
+        Registers a replica's actor ID and timestamp for later log retrieval,
+        especially useful for accessing logs from replicas that have died.
+        Validates that the replica exists in the Ray cluster before registration.
+
+        Args:
+            application_id: Name of the Ray Serve application.
+            deployment_name: Name of the deployment within the application.
+            replica_id: Unique identifier for the replica (e.g., "replica_1").
+
+        Raises:
+            ValueError: If the replica is already registered, not found in the
+                       cluster, or if multiple actors with the same name exist.
+        """
+        registration_time = time.time()
+        self.application_replicas.setdefault(application_id, {})
+        self.application_replicas[application_id].setdefault(deployment_name, {})
+
+        # Check if the replica is already registered
+        if replica_id in self.application_replicas[application_id][deployment_name]:
+            registration_time, _ = self.application_replicas[application_id][
+                deployment_name
+            ][replica_id]
+            formatted_time = time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(registration_time)
+            )
+            raise ValueError(
+                f"Replica '{replica_id}' already registered for application "
+                f"'{application_id}', deployment '{deployment_name}' at {formatted_time}."
+            )
+
+        # Query Ray cluster for the actor ID using the naming convention
+        actor_name = f"SERVE_REPLICA::{application_id}#{deployment_name}#{replica_id}"
+        actor = self.state_api_client.list(
+            resource=StateResource.ACTORS,
+            options=ListApiOptions(
+                limit=DEFAULT_LIMIT,
+                timeout=DEFAULT_RPC_TIMEOUT,
+                filters=[("name", "=", actor_name)],
+                detail=False,
+                explain=False,
+            ),
+            raise_on_missing_output=True,
+        )
+        if len(actor) == 0:
+            raise ValueError(
+                f"Actor with name '{actor_name}' not found in Ray cluster."
+            )
+        if len(actor) > 1:
+            raise ValueError(
+                f"Multiple actors with name '{actor_name}' found in Ray cluster."
+            )
+        actor_id = actor[0].actor_id
+
+        # Register the replica with timestamp and actor ID
+        self.application_replicas[application_id][deployment_name][replica_id] = (
+            registration_time,
+            actor_id,
+        )
+        logger.info(
+            f"Registered replica '{replica_id}' for application '{application_id}', "
+            f"deployment '{deployment_name}' with actor ID '{actor_id}'."
+        )
+
+    def clear_application_replicas(self, application_id: str) -> None:
+        """
+        Clear all registered replicas for a specific application.
+
+        Removes all replica registration data for the given application,
+        typically called when an application is deleted or redeployed.
+
+        Args:
+            application_id: Name of the Ray Serve application to clear.
+        """
+        self.application_replicas.pop(application_id, None)
+        logger.info(
+            f"Cleared all registered replicas for application '{application_id}'."
+        )
+
+    def get_actor_logs(
+        self,
+        actor_id: str,
+        tail: int = 100,
+    ) -> Dict[str, List[str]]:
+        """
+        Get logs for a specific Ray actor by its actor ID.
+
+        Retrieves both stdout and stderr logs from the specified actor.
+        This is useful for debugging actor issues and monitoring behavior.
+        Error messages are returned in place of logs if retrieval fails.
+
+        Args:
+            actor_id: Ray actor ID to retrieve logs from.
+            tail: Number of lines to retrieve from the end of each log.
+                  Use -1 to get the entire log. Default is 100.
+
+        Returns:
+            Dictionary with "stdout" and "stderr" keys, each containing
+            a list of log lines as strings. Example:
+            {
+                "stdout": ["line1", "line2", ...],
+                "stderr": ["error1", ...]
+            }
+        """
+        logs = {}
+
+        try:
+            stdout = next(
+                get_log(
+                    address=self.gcs_address,
+                    actor_id=actor_id,
+                    tail=tail,
+                    timeout=DEFAULT_RPC_TIMEOUT,
+                    suffix="out",
+                )
+            )
+            logs["stdout"] = stdout.splitlines()
+        except RayStateApiException as e:
+            logs["stdout"] = [f"Error retrieving stdout logs: {str(e)}"]
+
+        try:
+            stderr = next(
+                get_log(
+                    address=self.gcs_address,
+                    actor_id=actor_id,
+                    tail=tail,
+                    timeout=DEFAULT_RPC_TIMEOUT,
+                    suffix="err",
+                )
+            )
+            logs["stderr"] = stderr.splitlines()
+        except RayStateApiException as e:
+            logs["stderr"] = [f"Error retrieving stderr logs: {str(e)}"]
+
+        return logs
 
     def get_deployment_logs(
         self,
-        app_name: str,
+        application_id: str,
         deployment_name: str,
-        tail: int = 1000,
-    ) -> str:
+        n_previous_replica: int = 0,
+        tail: int = 100,
+    ) -> Dict[str, Dict[str, List[str]]]:
         """
-        Get logs for a specific Ray Serve deployment.
+        Get logs for all replicas of a Ray Serve deployment.
 
-        Retrieves the stdout or stderr logs from a deployment replica actor.
-        This is useful for debugging deployment issues and monitoring
-        application behavior.
+        Retrieves stdout and stderr logs from all active replicas and optionally
+        from recently terminated replicas. This provides a comprehensive view of
+        deployment behavior across all instances.
 
         Args:
-            app_name: Name of the Ray Serve application
-            deployment_name: Name of the specific deployment within the app
-            tail: Number of lines to retrieve from the end of the log.
-                  Use -1 to get the entire log. Default is -1.
+            application_id: Name of the Ray Serve application.
+            deployment_name: Name of the deployment within the application.
+            n_previous_replica: Number of most recent dead replicas to include.
+                               Set to 0 to only get logs from active replicas.
+                               Default is 0.
+            tail: Number of lines to retrieve from the end of each log.
+                  Use -1 to get the entire log. Default is 100.
 
         Returns:
-            String containing the log content, or an error message if the
-            replica is not found.
+            Dictionary mapping replica IDs to their log dictionaries:
+            {
+                "replica_1": {
+                    "stdout": ["line1", "line2", ...],
+                    "stderr": ["error1", ...]
+                },
+                "replica_2": {...}
+            }
+            Error messages are included in stderr if log retrieval fails.
         """
-        replica = self.get_deployment_replica(app_name, deployment_name)
-        if not replica:
-            return f"No active replicas found for deployment '{deployment_name}' in app '{app_name}'."
+        logs = {}
 
-        deployment_logs = {}
-        for replica_id, actor_id in replica.items():
-            deployment_logs[replica_id] = {"stdout": [], "stderr": []}
+        # Get active replicas from Ray Serve
+        active_replicas = self.get_deployment_replicas(
+            application_id=application_id, deployment_name=deployment_name
+        )
 
+        # Logs of active replicas
+        for replica_id, actor_id in active_replicas.items():
             try:
-                stdout = next(
-                    get_log(
-                        actor_id=actor_id,
-                        tail=tail,
-                        timeout=DEFAULT_RPC_TIMEOUT,
-                        suffix="out",
-                    )
+                actor_logs = self.get_actor_logs(
+                    actor_id=actor_id,
+                    tail=tail,
                 )
-                deployment_logs[replica_id]["stdout"] = stdout.splitlines()
-            except RayStateApiException as e:
-                deployment_logs[replica_id]["stdout"] = [
-                    f"Error retrieving stdout logs: {str(e)}"
-                ]
+                logs[replica_id] = actor_logs
+            except Exception as e:
+                logs[replica_id] = {
+                    "stdout": [],
+                    "stderr": [f"Error retrieving logs: {str(e)}"],
+                }
 
+        if n_previous_replica == 0:
+            return logs
+
+        # Logs of previously registered replicas
+        registered_replicas = self.application_replicas.get(application_id, {}).get(
+            deployment_name, {}
+        )
+        dead_replica_ids = [
+            replica_id
+            for replica_id in registered_replicas.keys()
+            if replica_id not in active_replicas
+        ]
+        # Add logs of the n most recent dead replicas
+        for replica_id in dead_replica_ids[::-1][:n_previous_replica]:
+            _, actor_id = registered_replicas[replica_id]
             try:
-                stderr = next(
-                    get_log(
-                        actor_id=actor_id,
-                        tail=tail,
-                        timeout=DEFAULT_RPC_TIMEOUT,
-                        suffix="err",
-                    )
+                actor_logs = self.get_actor_logs(
+                    actor_id=actor_id,
+                    tail=tail,
                 )
-                deployment_logs[replica_id]["stderr"] = stderr.splitlines()
-            except RayStateApiException as e:
-                deployment_logs[replica_id]["stderr"] = [
-                    f"Error retrieving stderr logs: {str(e)}"
-                ]
+                logs[replica_id] = actor_logs
+            except Exception as e:
+                logs[replica_id] = {
+                    "stdout": [],
+                    "stderr": [f"Error retrieving logs: {str(e)}"],
+                }
 
-        return deployment_logs
+        return logs

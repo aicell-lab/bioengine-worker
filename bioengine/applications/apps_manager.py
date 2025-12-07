@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -9,6 +10,7 @@ from hypha_rpc.rpc import RemoteService
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 from ray import serve
+from ray.serve.schema import ApplicationDetails, ServeStatus
 
 from bioengine import __version__
 from bioengine.applications.app_builder import AppBuilder
@@ -79,7 +81,6 @@ class AppsManager:
         ray_cluster: RayCluster,
         apps_cache_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine/apps",
         data_server_url: Optional[str] = None,
-        data_server_workspace: str = "public",
         startup_applications: Optional[List[dict]] = None,
         # Logger
         log_file: Optional[str] = None,
@@ -101,7 +102,6 @@ class AppsManager:
             ray_cluster: Ray cluster manager instance for compute resource management
             apps_cache_dir: Directory for caching application artifacts and build files
             data_server_url: URL for the data server
-            data_server_workspace: Workspace on the data server (default: "public")
             startup_applications: List of application configurations to deploy automatically
                                  when the manager initializes
             log_file: Optional path to log file for deployment operations
@@ -127,7 +127,6 @@ class AppsManager:
         self.app_builder = AppBuilder(
             apps_cache_dir=apps_cache_dir,
             data_server_url=data_server_url,
-            data_server_workspace=data_server_workspace,
             log_file=log_file,
             debug=debug,
         )
@@ -368,23 +367,6 @@ class AppsManager:
                 blocking=False,
             )
 
-            # Update application metadata in the internal state
-            self._deployed_applications[application_id]["display_name"] = app.metadata[
-                "name"
-            ]
-            self._deployed_applications[application_id]["description"] = app.metadata[
-                "description"
-            ]
-            self._deployed_applications[application_id]["application_resources"] = (
-                app.metadata["resources"]
-            )
-            self._deployed_applications[application_id]["authorized_users"] = (
-                app.metadata["authorized_users"]
-            )
-            self._deployed_applications[application_id]["available_methods"] = (
-                app.metadata["available_methods"]
-            )
-
             # Track the application in the internal state
             self.logger.info(
                 f"Successfully completed deployment of application '{application_id}' from "
@@ -421,30 +403,250 @@ class AppsManager:
                     f"Failed to get Ray Serve status for application '{application_id}': {status_error}"
                 )
         finally:
-            # Signal other processes to stop waiting for this deployment
-            self._deployed_applications[application_id]["is_deployed"].set()
+            # Signal other processes to stop waiting for this deployment to be ready
+            # Check if application still exists (might have been removed during undeployment)
+            if application_id in self._deployed_applications:
+                self._deployed_applications[application_id]["is_deployed"].set()
+                # Signal that the deployment task is no longer active
+                self._deployed_applications[application_id]["deployment_task"] = None
 
-            # Cleanup: Remove from Ray Serve and update tracking
-            if self._deployed_applications[application_id]["remove_on_exit"]:
-                try:
-                    await asyncio.to_thread(serve.delete, application_id)
-                    self.logger.debug(
-                        f"Deleted Ray Serve application '{application_id}'."
-                    )
-                except Exception as delete_err:
-                    self.logger.error(
-                        f"Error deleting Ray Serve application '{application_id}': {delete_err}"
-                    )
+    async def _cancel_deployment_process(
+        self,
+        application_id: str,
+    ) -> None:
+        """
+        Cancel an ongoing deployment task for an application.
 
-                # Remove from deployment tracking
-                self._deployed_applications.pop(application_id, None)
-                self.logger.debug(
-                    f"Removed application '{application_id}' from deployment tracking."
+        Cancels the deployment task and waits for it to finish (with timeout).
+        This is used when updating an existing deployment or during undeployment.
+
+        Args:
+            application_id: The application whose deployment task should be cancelled
+
+        Note:
+            If no deployment task is active, this method does nothing.
+            Uses a 60-second timeout for cancellation to complete.
+        """
+        deployment_task = self._deployed_applications[application_id]["deployment_task"]
+        if not deployment_task:
+            # No active deployment task to cancel
+            return
+
+        self.logger.info(
+            f"Cancelling deployment task of application '{application_id}'..."
+        )
+        deployment_task.cancel()
+        timeout = 60
+        try:
+            # Wait for the task itself to complete (handles CancelledError internally)
+            await asyncio.wait_for(deployment_task, timeout=timeout)
+        except asyncio.CancelledError:
+            # Expected - task was cancelled successfully
+            pass
+        except asyncio.TimeoutError:
+            self.logger.warning(
+                f"Cancellation of existing deployment task for application '{application_id}' "
+                f"did not finish in time ({timeout} seconds). Proceeding anyway."
+            )
+        except Exception as e:
+            # Unexpected error during cancellation
+            self.logger.warning(
+                f"Error while cancelling deployment task for '{application_id}': {e}. "
+                "Proceeding anyway."
+            )
+
+    async def _undeploy_application(
+        self,
+        application_id: str,
+        user_id: str,
+    ) -> None:
+        """
+        Execute the complete undeployment process for an application.
+
+        Performs the actual undeployment by:
+        1. Cancelling the deployment task if active
+        2. Deleting the application from Ray Serve
+        3. Clearing replica history from the proxy actor
+        4. Removing the application from internal tracking
+
+        Args:
+            application_id: The application to undeploy
+            user_id: ID of the user initiating the undeployment (for logging)
+
+        Note:
+            This method handles errors gracefully and logs failures.
+            The application is removed from _deployed_applications even if
+            some cleanup steps fail.
+        """
+        start_time = time.time()
+        self.logger.info(
+            f"User '{user_id}' is starting undeployment of application '{application_id}'..."
+        )
+        await self._cancel_deployment_process(application_id=application_id)
+
+        try:
+            await asyncio.to_thread(
+                serve.delete, application_id
+            )  # Note: Doesn't throw an error if app doesn't exist
+            self.logger.info(
+                f"Deleted Ray Serve application '{application_id}' in {time.time() - start_time:.2f} seconds."
+            )
+        except Exception as delete_err:
+            self.logger.error(
+                f"Error deleting Ray Serve application '{application_id}' "
+                f"after {time.time() - start_time:.2f} seconds: {delete_err}"
+            )
+
+        try:
+            await self.ray_cluster.proxy_actor_handle.clear_application_replicas.remote(
+                application_id
+            )
+            self.logger.info(
+                f"Cleared application replica history for '{application_id}'."
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Error clearing application replica history for '{application_id}': {e}"
+            )
+
+        # Remove from internal tracking after all cleanup operations complete
+        self._deployed_applications.pop(application_id, None)
+        self.logger.info(f"Undeployment of application '{application_id}' completed.")
+
+    async def _get_deployment_status(
+        self,
+        application_id: str,
+        application_status: ApplicationDetails,
+        n_previous_replica: int,
+        tail: int,
+    ) -> Dict[str, Dict[str, Any]]:
+        deployments_info = {}
+        for deployment_name, deployment_info in application_status.deployments.items():
+            deployments_info[deployment_name] = {
+                "status": deployment_info.status.value,
+                "message": deployment_info.message,
+                "replica_states": deployment_info.replica_states,
+                "logs": None,
+            }
+
+            # Collect logs for all tracked actor IDs
+            try:
+                deployment_logs = await self.ray_cluster.proxy_actor_handle.get_deployment_logs.remote(
+                    application_id=application_id,
+                    deployment_name=deployment_name,
+                    n_previous_replica=n_previous_replica,
+                    tail=tail,
                 )
-
-                self.logger.info(
-                    f"Undeployment of application '{application_id}' completed."
+                deployments_info[deployment_name]["logs"] = deployment_logs
+            except Exception as e:
+                self.logger.error(
+                    f"Error retrieving logs for application '{application_id}', deployment '{deployment_name}': {e}"
                 )
+                deployments_info[deployment_name]["logs"] = {
+                    "error": f"Error retrieving logs: {str(e)}"
+                }
+
+        return deployments_info
+
+    async def _get_application_service_ids(
+        self, application_id: str
+    ) -> List[Dict[str, Optional[str]]]:
+        # Construct the service IDs for the application using the replica IDs
+        replica_ids = (
+            await self.ray_cluster.proxy_actor_handle.get_deployment_replicas.remote(
+                application_id=application_id,
+                deployment_name="BioEngineProxyDeployment",
+            )
+        )
+        if replica_ids:
+            workspace = self.server.config.workspace
+            worker_client_id = self.server.config.client_id
+            service_ids = [
+                {
+                    "websocket_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}",
+                    "webrtc_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}-rtc",
+                }
+                for replica_id in replica_ids
+            ]
+        else:
+            service_ids = [
+                {
+                    "websocket_service_id": None,
+                    "webrtc_service_id": None,
+                }
+            ]
+        return service_ids
+
+    async def _get_application_status(
+        self,
+        application_id: str,
+        serve_status: ServeStatus,
+        n_previous_replica: int,
+        tail: int,
+    ) -> Dict[str, Any]:
+        """
+        Application States: [NOT_STARTED, DEPLOYING, DEPLOY_FAILED, RUNNING, UNHEALTHY, DELETING]
+        Deployment States: [UPDATING, HEALTHY, UNHEALTHY, UPSCALING, DOWNSCALING]
+        Replica States: [STARTING, UPDATING, RECOVERING, RUNNING, STOPPING, PENDING_MIGRATION]
+        """
+        # Check if application is in tracked applications
+        if application_id not in self._deployed_applications:
+            # Application is not running, return simplified status
+            return {
+                "status": "NOT_RUNNING",
+                "message": f"Application '{application_id}' is not currently deployed. "
+                f"To deploy this application, call run_application(application_id='{application_id}', ...) "
+                f"with the appropriate artifact_id and parameters.",
+            }
+
+        # Get application info from tracked applications
+        application_info = self._deployed_applications[application_id]
+        application_status = serve_status.applications.get(application_id)
+
+        if application_status:
+            status = application_status.status.value
+            message = application_status.message
+
+            deployments = await self._get_deployment_status(
+                application_id=application_id,
+                application_status=application_status,
+                n_previous_replica=n_previous_replica,
+                tail=tail,
+            )
+        else:
+            if application_info["is_deployed"].is_set():
+                status = "UNHEALTHY"
+                message = f"Application '{application_id}' is marked as deployed but not found in Ray Serve status."
+                self.logger.warning(
+                    f"Application '{application_id}' for artifact '{application_info['artifact_id']}' "
+                    "is marked as deployed but not found in Ray Serve status."
+                )
+            else:
+                status = "NOT_STARTED"
+                message = f"Application '{application_id}' has not been deployed yet."
+            deployments = {}
+
+        return {
+            "display_name": application_info["display_name"],
+            "description": application_info["description"],
+            "artifact_id": application_info["artifact_id"],
+            "version": application_info["version"] or "latest",
+            "status": status,
+            "message": message,
+            "deployments": deployments,
+            "application_kwargs": application_info["application_kwargs"],
+            "application_env_vars": application_info[
+                "application_env_vars"
+            ],  # TODO: hide secrets
+            "gpu_enabled": not application_info["disable_gpu"],
+            "application_resources": application_info["application_resources"],
+            "authorized_users": application_info["authorized_users"],
+            "available_methods": application_info["available_methods"],
+            "service_ids": await self._get_application_service_ids(application_id),
+            "start_time": application_info["started_at"],
+            "last_updated_at": application_info["last_updated_at"],
+            "last_updated_by": application_info["last_updated_by"],
+        }
 
     async def initialize(
         self, server: RemoteService, admin_users: List[str], worker_service_id: str
@@ -510,6 +712,7 @@ class AppsManager:
             artifact_manager=self.artifact_manager,
             worker_service_id=worker_service_id,
             serve_http_url=self.ray_cluster.serve_http_url,
+            proxy_actor_name=self.ray_cluster.proxy_actor_name,
         )
 
         # Deploy any startup applications if provided
@@ -550,6 +753,7 @@ class AppsManager:
                     hypha_token=app_config.get("hypha_token"),
                     disable_gpu=app_config.get("disable_gpu", False),
                     max_ongoing_requests=app_config.get("max_ongoing_requests", 10),
+                    auto_redeploy=app_config.get("auto_redeploy", False),
                     context=admin_context,
                 )
                 application_ids.append(application_id)
@@ -585,17 +789,20 @@ class AppsManager:
         Raises:
             Exception: If monitoring process encounters unrecoverable errors
         """
-        if not self._deployed_applications:
+        apps_to_redeploy = [
+            app_id
+            for app_id, app_info in self._deployed_applications.items()
+            if app_info["auto_redeploy"]
+        ]
+        if not apps_to_redeploy:
             return
 
         try:
-
             # Get status of actively running deployments
             await self.ray_cluster.check_connection()
             serve_status = await asyncio.to_thread(serve.status)
 
-            application_ids = list(self._deployed_applications.keys())
-            for application_id in application_ids:
+            for application_id in apps_to_redeploy:
                 application_info = self._deployed_applications.get(application_id)
                 if not application_info:
                     # Application no longer tracked, skip monitoring
@@ -606,32 +813,14 @@ class AppsManager:
 
                 # Get the application status from Ray Serve
                 application = serve_status.applications.get(application_id)
-                if not application:
-                    # Application not found in Ray Serve, increment failure count and clear is_deployed
-                    application_info["consecutive_failures"] += 1
-                elif application.status.value == "DEPLOY_FAILED":
-                    # If the application deployment failed, increment failure count
-                    # Allow application to recover from transient issues (UNHEALTHY -> HEALTHY)
-                    application_info["consecutive_failures"] += 1
-                else:
-                    # Reset consecutive failures if the application is healthy
-                    application_info["consecutive_failures"] = 0
-
-                if application_info["consecutive_failures"] > 3:
-                    # Application has failed multiple times, undeploy and remove from tracking
-                    self.logger.warning(
-                        f"Application '{application_id}' for artifact '{application_info['artifact_id']}', "
-                        f"version '{application_info['version']}' has failed multiple times. It will be "
-                        "undeployed and removed from tracking."
-                    )
-                    application_info["deployment_task"].cancel()
-                    self._deployed_applications.pop(application_id, None)
-
-                elif application_info["consecutive_failures"] > 0:
+                if not application or application.status.value in [
+                    "DEPLOY_FAILED",
+                    "UNHEALTHY",
+                ]:
                     # Application is experiencing issues, trigger redeployment
                     self.logger.warning(
                         f"Application '{application_id}' for artifact '{application_info['artifact_id']}' "
-                        f"is experiencing issues. Consecutive failures: {application_info['consecutive_failures']}"
+                        f"is experiencing issues. Triggering redeployment..."
                     )
 
                     # Re-deploy the application
@@ -916,6 +1105,10 @@ class AppsManager:
             10,
             description="Maximum number of concurrent requests this application instance can handle simultaneously. Higher values allow more parallelism but use more memory.",
         ),
+        auto_redeploy: bool = Field(
+            False,
+            description="If set to true, the application will be automatically redeployed if it becomes unhealthy.",
+        ),
         context: Dict[str, Any] = Field(
             ...,
             description="Authentication context containing user information, automatically provided by Hypha during service calls.",
@@ -1045,23 +1238,11 @@ class AppsManager:
                 )
             else:
                 # If already deployed, cancel the existing deployment task to update deployment in a new task
-                application_info = self._deployed_applications[application_id]
                 self.logger.info(
                     f"User '{user_id}' is updating existing application '{application_id}' from artifact '{artifact_id}', "
                     f"version '{version}'; kwargs: {kwargs_str}; env_vars: {env_vars_str}"
                 )
-                application_info["remove_on_exit"] = False
-                application_info["deployment_task"].cancel()
-                timeout = 60
-                try:
-                    await asyncio.wait_for(
-                        application_info["is_deployed"].wait(), timeout=timeout
-                    )
-                except asyncio.TimeoutError:
-                    self.logger.warning(
-                        f"Cancellation of existing deployment task for application '{application_id}' "
-                        f"did not finish in time ({timeout} seconds). Proceeding with new deployment."
-                    )
+                await self._cancel_deployment_process(application_id=application_id)
 
             # Build the application first to validate format and catch errors early
             app = await self.app_builder.build(
@@ -1084,6 +1265,7 @@ class AppsManager:
                 required_resources=app.metadata["resources"],
             )
 
+            current_time = time.time()
             self._deployed_applications[application_id] = {
                 "display_name": app.metadata["name"],
                 "description": app.metadata["description"],
@@ -1097,12 +1279,14 @@ class AppsManager:
                 "application_resources": app.metadata["resources"],
                 "authorized_users": app.metadata["authorized_users"],
                 "available_methods": app.metadata["available_methods"],
+                "start_time": current_time,
+                "last_updated_at": current_time,
                 "last_updated_by": user_id,
-                "deployment_task": None,  # Track the deployment task
-                "is_deployed": asyncio.Event(),  # Track if the deployment has been started
-                "remove_on_exit": not self.debug,  # Remove on exit unless in debug mode
-                "consecutive_failures": 0,  # Track consecutive failures for monitoring
-                "built_app": app,  # Store the pre-built app to avoid duplicate builds
+                "built_app": app,
+                "auto_redeploy": auto_redeploy,
+                "deployment_task": None,  # Control task for app deployment
+                "is_deployed": asyncio.Event(),  # Track the deployment process
+                "undeployment_task": None,  # Control task for app undeployment
             }
 
             # Create and start the deployment task
@@ -1174,19 +1358,28 @@ class AppsManager:
         # Check if application is currently deployed
         if application_id not in self._deployed_applications:
             raise RuntimeError(
-                f"Application '{application_id}' is currently not deployed."
+                f"Application '{application_id}' is not currently deployed. "
+                "Applications started outside of BioEngine cannot be stopped using this method."
             )
 
-        self.logger.info(
-            f"User '{user_id}' is starting undeployment of application '{application_id}'..."
+        # Start the undeployment in the background
+        undeployment_task = asyncio.create_task(
+            self._undeploy_application(
+                application_id=application_id,
+                user_id=user_id,
+            )
         )
-        # Ensure the application will be removed on exit
-        self._deployed_applications[application_id]["remove_on_exit"] = True
-        self._deployed_applications[application_id]["deployment_task"].cancel()
+        self._deployed_applications[application_id][
+            "undeployment_task"
+        ] = undeployment_task
 
     @schema_method
     async def stop_all_applications(
         self,
+        timeout_seconds: int = Field(
+            180,
+            description="Timeout in seconds to wait for each application to undeploy gracefully.",
+        ),
         context: Dict[str, Any] = Field(
             ...,
             description="Authentication context containing user information, automatically provided by Hypha during service calls.",
@@ -1240,26 +1433,38 @@ class AppsManager:
 
         self.logger.info(f"User '{user_id}' is starting cleanup of all deployments...")
 
+        deployed_artifact_ids = list(self._deployed_applications.keys())
+
         # Cancel all deployment tasks
-        for artifact_id in list(self._deployed_applications.keys()):
+        for artifact_id in deployed_artifact_ids:
             await self.stop_application(artifact_id, context)
 
-        # Wait for all undeployment tasks to complete
-        failed_attempts = 0
-        for artifact_id in list(self._deployed_applications.keys()):
-            deployment_info = self._deployed_applications.get(artifact_id)
-            if deployment_info:
-                try:
+        async def undeploy_and_track(artifact_id: str) -> bool:
+            try:
+                deployment_info = self._deployed_applications.get(artifact_id)
+                if deployment_info:
                     await asyncio.wait_for(
-                        deployment_info["deployment_task"],
-                        timeout=60,
+                        deployment_info["undeployment_task"], timeout=timeout_seconds
                     )
-                except asyncio.TimeoutError:
-                    failed_attempts += 1
-                    self.logger.error(
-                        f"Deletion of deployment task for artifact '{artifact_id}' did not finish in time."
-                    )
+                return True
+            except asyncio.TimeoutError:
+                self.logger.error(
+                    f"Timeout after {timeout_seconds} seconds during undeployment of artifact '{artifact_id}'."
+                )
+                return False
+            except Exception as e:
+                self.logger.error(
+                    f"Error during undeployment of artifact '{artifact_id}': {e}"
+                )
+                return False
 
+        # Wait for all undeployment tasks to complete
+        undeployment_tasks = [
+            undeploy_and_track(artifact_id) for artifact_id in deployed_artifact_ids
+        ]
+        results = await asyncio.gather(*undeployment_tasks)
+
+        failed_attempts = len(deployed_artifact_ids) - sum(results)
         if failed_attempts != 0:
             self.logger.warning(
                 f"Failed to clean up all deployments, {failed_attempts} remaining."
@@ -1271,6 +1476,14 @@ class AppsManager:
         application_ids: Optional[List[str]] = Field(
             None,
             description="List of application IDs to retrieve status for. If not provided, status for all deployed applications will be returned. If a list with only one application ID is provided, only that application's status is returned directly (not nested in a dictionary).",
+        ),
+        logs_tail: int = Field(
+            30,
+            description="Number of log lines to retrieve for each deployment replica. If set to -1, retrieves all available logs.",
+        ),
+        n_previous_replica: int = Field(
+            0,
+            description="Number of previous replicas to include in the status for each deployment.",
         ),
         context: Dict[str, Any] = Field(
             ...,
@@ -1333,141 +1546,40 @@ class AppsManager:
             app = await get_application_status(application_ids=["app1"])
             # Returns: {...} (single app status, not {"app1": {...}})
         """
-        output = {}
-
         # Determine which applications to check
         if application_ids is None:
             # Return status for all tracked applications
-            if not self._deployed_applications:
-                return output
             apps_to_check = list(self._deployed_applications.keys())
+            if not apps_to_check:
+                return {}
         else:
             # Return status for specified applications
             if not isinstance(application_ids, list):
                 raise ValueError("application_ids must be a list of strings or None")
+            if len(application_ids) == 0:
+                raise ValueError("application_ids list cannot be empty")
             apps_to_check = application_ids
 
-        # Get status of actively running deployments if we have tracked applications
-        serve_status = None
-        workspace = None
-        worker_client_id = None
-
-        if self._deployed_applications:
-            await self.ray_cluster.check_connection()
-            serve_status = await asyncio.to_thread(serve.status)
-            workspace = self.server.config.workspace
-            worker_client_id = self.server.config.client_id
+        # Get Ray Serve status
+        await self.ray_cluster.check_connection()
+        serve_status = await asyncio.to_thread(serve.status)
 
         # Iterate over applications to check
-        for application_id in apps_to_check:
-            # Check if application is in tracked applications
-            if application_id not in self._deployed_applications:
-                # Application is not running, return simplified status
-                output[application_id] = {
-                    "status": "NOT_RUNNING",
-                    "message": f"Application '{application_id}' is not currently deployed. "
-                    f"To deploy this application, call run_application(application_id='{application_id}', ...) "
-                    f"with the appropriate artifact_id and parameters.",
-                }
-                continue
-
-            # Get application info from tracked applications
-            application_info = self._deployed_applications[application_id]
-            application = serve_status.applications.get(application_id)
-
-            if application:
-                start_time = application.last_deployed_time_s
-                status = application.status.value
-                message = application.message
-                deployments = {
-                    class_name: {
-                        "status": deployment_info.status.value,
-                        "message": deployment_info.message,
-                        "replica_states": deployment_info.replica_states,
-                    }
-                    for class_name, deployment_info in application.deployments.items()
-                }
-
-            else:
-                start_time = None
-                if application_info["is_deployed"].is_set():
-                    status = "UNHEALTHY"
-                    message = f"Application '{application_id}' is marked as deployed but not found in Ray Serve status."
-                    self.logger.warning(
-                        f"Application '{application_id}' for artifact '{application_info['artifact_id']}' "
-                        "is marked as deployed but not found in Ray Serve status."
-                    )
-                else:
-                    status = "NOT_STARTED"
-                    message = (
-                        f"Application '{application_id}' has not been deployed yet."
-                    )
-                deployments = {}
-
-            # Construct the service IDs for the application using the replica IDs
-            replica_ids = (
-                await self.ray_cluster.proxy_actor_handle.get_deployment_replica.remote(
-                    app_name=application_id, deployment_name="BioEngineProxyDeployment"
-                )
+        status_tasks = [
+            self._get_application_status(
+                application_id=application_id,
+                serve_status=serve_status,
+                n_previous_replica=n_previous_replica,
+                tail=logs_tail,
             )
-            if replica_ids:
-                service_ids = [
-                    {
-                        "websocket_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}",
-                        "webrtc_service_id": f"{workspace}/{worker_client_id}-{replica_id}:{application_id}-rtc",
-                    }
-                    for replica_id in replica_ids
-                ]
-            else:
-                service_ids = [
-                    {
-                        "websocket_service_id": None,
-                        "webrtc_service_id": None,
-                    }
-                ]
+            for application_id in apps_to_check
+        ]
+        status_results = await asyncio.gather(*status_tasks)
 
-            # class ApplicationStatus(str, Enum):
-            #     NOT_STARTED = "NOT_STARTED"
-            #     DEPLOYING = "DEPLOYING"
-            #     DEPLOY_FAILED = "DEPLOY_FAILED"
-            #     RUNNING = "RUNNING"
-            #     UNHEALTHY = "UNHEALTHY"
-            #     DELETING = "DELETING"
-
-            # class DeploymentStatus(str, Enum):
-            #     UPDATING = "UPDATING"
-            #     HEALTHY = "HEALTHY"
-            #     UNHEALTHY = "UNHEALTHY"
-            #     UPSCALING = "UPSCALING"
-            #     DOWNSCALING = "DOWNSCALING"
-
-            # class ReplicaState(str, Enum):
-            #     STARTING = "STARTING"
-            #     UPDATING = "UPDATING"
-            #     RECOVERING = "RECOVERING"
-            #     RUNNING = "RUNNING"
-            #     STOPPING = "STOPPING"
-            #     PENDING_MIGRATION = "PENDING_MIGRATION"
-
-            output[application_id] = {
-                "display_name": application_info["display_name"],
-                "description": application_info["description"],
-                "artifact_id": application_info["artifact_id"],
-                "version": application_info["version"] or "latest",
-                "start_time": start_time,
-                "status": status,
-                "message": message,
-                "deployments": deployments,
-                "consecutive_failures": application_info["consecutive_failures"],
-                "application_kwargs": application_info["application_kwargs"],
-                "application_env_vars": application_info["application_env_vars"],
-                "gpu_enabled": application_info["disable_gpu"],
-                "application_resources": application_info["application_resources"],
-                "authorized_users": application_info["authorized_users"],
-                "available_methods": application_info["available_methods"],
-                "service_ids": service_ids,
-                "last_updated_by": application_info["last_updated_by"],
-            }
+        output = {
+            application_id: status
+            for application_id, status in zip(apps_to_check, status_results)
+        }
 
         # If only one application was requested, return just its status
         if application_ids is not None and len(application_ids) == 1:

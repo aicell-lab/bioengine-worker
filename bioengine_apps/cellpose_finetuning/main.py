@@ -1812,6 +1812,7 @@ def generate_rdf_yaml(
             "Segmentation",
             "Fine-tuned",
         ],
+        "parent": training_params.get("model", "cpsam"),  # Track model lineage
         "version": "0.1.0",
         "format_version": "0.5.6",
         "type": "model",

@@ -388,6 +388,8 @@ class SessionStatus(TypedDict, total=False):
     elapsed_seconds: float  # Elapsed time in seconds
     current_batch: int  # Current batch number within epoch (0-indexed)
     total_batches: int  # Total number of batches per epoch
+    exported_artifact_id: str  # Artifact ID if model has been exported
+    model_modified: bool  # Flag indicating if model was modified since last export
 
 
 class SessionStatusWithId(TypedDict):
@@ -1066,6 +1068,15 @@ def run_blocking_task(
         total_epochs=training_params["n_epochs"],
         elapsed_seconds=elapsed,
     )
+
+    # Mark model as modified (needs re-export if previously exported)
+    status_path = get_status_path(session_id)
+    with status_path.open("r+", encoding="utf-8") as f:
+        status_data = json.load(f)
+        status_data["model_modified"] = True
+        f.seek(0)
+        f.write(json.dumps(status_data))
+        f.truncate()
 
     append_info(
         session_id,
@@ -2344,6 +2355,35 @@ class CellposeFinetune:
 
         training_params = json.loads(training_params_path.read_text())
 
+        # Check if model was already exported and hasn't been modified
+        if status.get("exported_artifact_id") and not status.get("model_modified", True):
+            logger.info(f"Model already exported as {status['exported_artifact_id']}, returning cached result")
+
+            # Reconstruct the result from stored info
+            artifact_id = status["exported_artifact_id"]
+            workspace = collection.split("/")[0]
+            base_url = training_params.get("server_url", "https://hypha.aicell.io")
+            artifact_url = f"{base_url}/{workspace}/artifacts/{artifact_id.split('/')[-1]}"
+            download_url = f"{artifact_url}/create-zip-file"
+
+            return {
+                "artifact_id": artifact_id,
+                "model_name": artifact_id.split('/')[-1],
+                "status": "exported",
+                "artifact_url": artifact_url,
+                "download_url": download_url,
+                "files": [
+                    "model_weights.pth",
+                    "model.py",
+                    "input_sample.npy",
+                    "output_sample.npy",
+                    "cover.png",
+                    "doc.md",
+                    "rdf.yaml",
+                ],
+                "cached": True,
+            }
+
         # Determine model name
         if model_name is None:
             model_name = f"cellpose-{session_id[:8]}"
@@ -2581,6 +2621,31 @@ BSD-3-Clause (Cellpose license)
                     "rdf.yaml",
                 ],
             }
+
+            # Update status with export info and mark model as not modified
+            current_status = get_status(session_id)
+            update_status(
+                session_id,
+                current_status["status_type"],
+                current_status["message"],
+                train_losses=current_status.get("train_losses"),
+                test_losses=current_status.get("test_losses"),
+                n_train=current_status.get("n_train"),
+                n_test=current_status.get("n_test"),
+                start_time=current_status.get("start_time"),
+                current_epoch=current_status.get("current_epoch"),
+                total_epochs=current_status.get("total_epochs"),
+                elapsed_seconds=current_status.get("elapsed_seconds"),
+            )
+            # Save export info directly to status file
+            status_path = get_status_path(session_id)
+            with status_path.open("r+", encoding="utf-8") as f:
+                status_data = json.load(f)
+                status_data["exported_artifact_id"] = artifact_id
+                status_data["model_modified"] = False
+                f.seek(0)
+                f.write(json.dumps(status_data))
+                f.truncate()
 
             logger.info(f"Model export completed: {result}")
             return result

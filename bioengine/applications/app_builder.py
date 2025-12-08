@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict, Union, get_origin
 
 import httpx
+import ray
 import yaml
 from hypha_rpc import connect_to_server
 from hypha_rpc.rpc import RemoteService
@@ -148,6 +149,7 @@ class AppBuilder:
         self.artifact_manager: Optional[ObjectProxy] = None
         self.worker_service_id: Optional[str] = None
         self.serve_http_url: Optional[str] = None
+        self.proxy_actor_name: Optional[str] = None
 
     def complete_initialization(
         self,
@@ -155,6 +157,7 @@ class AppBuilder:
         artifact_manager: ObjectProxy,
         worker_service_id: str,
         serve_http_url: str,
+        proxy_actor_name: str,
     ) -> None:
         """
         Connect the AppBuilder to external services required for operation.
@@ -191,6 +194,7 @@ class AppBuilder:
         self.artifact_manager = artifact_manager
         self.worker_service_id = worker_service_id
         self.serve_http_url = serve_http_url
+        self.proxy_actor_name = proxy_actor_name
 
     async def _load_manifest(
         self, artifact_id: str, version: Optional[str] = None
@@ -375,7 +379,10 @@ class AppBuilder:
         return updated_deployment
 
     def _update_init(
-        self, deployment: serve.Deployment, secret_env_vars: Dict[str, str]
+        self,
+        application_id: str,
+        deployment: serve.Deployment,
+        secret_env_vars: Dict[str, str],
     ) -> serve.Deployment:
         """
         Wrap the deployment's __init__ method to set up the BioEngine execution environment.
@@ -413,17 +420,61 @@ class AppBuilder:
 
         orig_init = getattr(deployment.func_or_class, "__init__")
 
-        # Stream zarr dataset either from public or locally started server
-        # Example for a local hypha server: "http://localhost:9527"
         data_server_url = self.data_server_url
+        proxy_actor_name = self.proxy_actor_name
 
         @wraps(orig_init)
         def wrapped_init(self, *args, **kwargs):
-            # Get replica identifier for logging
+            # TODO: check level of logging
+            self.logger = logging.getLogger("ray.serve")
+
+            # Register this serve replica with the BioEngineProxyActor for tracking
+            proxy_actor_handle = None
             try:
-                self.replica_id = serve.get_replica_context().replica_tag
-            except Exception:
-                self.replica_id = "unknown"
+                proxy_actor_handle = ray.get_actor(
+                    name=proxy_actor_name, namespace="bioengine"
+                )
+                self.logger.debug(
+                    f"✅ Successfully retrieved BioEngineProxyActor '{proxy_actor_name}'"
+                )
+            except ValueError as e:
+                self.logger.error(
+                    f"❌ BioEngineProxyActor '{proxy_actor_name}' not found: {e}"
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"❌ Unexpected error getting BioEngineProxyActor '{proxy_actor_name}': {e}",
+                    exc_info=True,
+                )
+
+            if proxy_actor_handle:
+                try:
+                    replica_context = serve.get_replica_context()
+                    deployment_name = replica_context.deployment
+                    replica_id = replica_context.replica_tag
+                    self.logger.debug(
+                        f"Retrieved replica context: tag={replica_id}, "
+                        f"deployment={replica_context.deployment}, "
+                        f"app={replica_context.app_name}"
+                    )
+
+                    proxy_actor_handle.register_serve_replica.remote(
+                        application_id=application_id,
+                        deployment_name=deployment_name,
+                        replica_id=replica_id,
+                    )
+                    self.logger.info(
+                        f"✅ Registered replica '{replica_id}' with BioEngineProxyActor."
+                    )
+                except ValueError as e:
+                    self.logger.error(
+                        f"❌ Invalid replica registration parameters: {e}"
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        f"❌ Unable to register replica with BioEngineProxyActor: {e}",
+                        exc_info=True,
+                    )
 
             # Ensure the current working directory is set to the application working directory
             workdir = (
@@ -434,11 +485,12 @@ class AppBuilder:
             )  # Update the HOME environment variable with resolved path
             workdir.mkdir(parents=True, exist_ok=True)
             os.chdir(workdir)
-            print(f"📁 [{self.replica_id}] Working directory: {workdir}/")
+            self.logger.info(f"📁 Working directory: {workdir}/")
 
             # Initialize deployment states
             self._deployment_initialized = False
-            self._deployment_tested = False
+            self._deployment_test_failed = False
+            self._test_task = None  # Background task for test_deployment
 
             # Create a health check lock to synchronize health checks
             self._health_check_lock = asyncio.Lock()
@@ -500,7 +552,7 @@ class AppBuilder:
                 async def async_init(self):
                     # This will be wrapped and tracked automatically
                     self.model = await load_large_model()
-                    print("Model loaded successfully")
+                    self.logger.info("Model loaded successfully")
             ```
         """
         orig_async_init = getattr(
@@ -510,9 +562,7 @@ class AppBuilder:
         @wraps(orig_async_init)
         async def wrapped_async_init(self):
             start_time = time.time()
-            print(
-                f"⚡ [{self.replica_id}] Running async initialization for '{self.__class__.__name__}'..."
-            )
+            self.logger.info(f"⚡ Starting async initialization...")
 
             try:
                 # Check if the original async_init method is async
@@ -523,13 +573,14 @@ class AppBuilder:
 
                 elapsed_time = time.time() - start_time
                 self._deployment_initialized = True
-                print(
-                    f"✅ [{self.replica_id}] Deployment '{self.__class__.__name__}' async initialized successfully in {elapsed_time:.2f}s"
+                self.logger.info(
+                    f"✅ Async initialization completed successfully in {elapsed_time:.2f}s"
                 )
+
             except Exception as e:
                 elapsed_time = time.time() - start_time
-                print(
-                    f"❌ [{self.replica_id}] Async initialization failed for '{self.__class__.__name__}' after {elapsed_time:.2f}s: {e}"
+                self.logger.error(
+                    f"❌ Async initialization failed after {elapsed_time:.2f}s: {e}"
                 )
                 raise
 
@@ -572,7 +623,7 @@ class AppBuilder:
                     # This will be wrapped and tracked automatically
                     result = self.predict_sample_input()
                     assert result is not None, "Model prediction failed"
-                    print("Deployment test passed!")
+                    self.logger.info("Deployment test passed!")
             ```
         """
         orig_test_deployment = getattr(
@@ -582,9 +633,7 @@ class AppBuilder:
         @wraps(orig_test_deployment)
         async def wrapped_test_deployment(self):
             start_time = time.time()
-            print(
-                f"🧪 [{self.replica_id}] Running deployment test for '{self.__class__.__name__}'..."
-            )
+            self.logger.info(f"🧪 Starting deployment test...")
 
             try:
                 # Check if the original test_deployment method is async
@@ -595,19 +644,18 @@ class AppBuilder:
 
                 # Mark the deployment as tested
                 elapsed_time = time.time() - start_time
-                self._deployment_tested = True
-                print(
-                    f"✅ [{self.replica_id}] Deployment '{self.__class__.__name__}' tested successfully in {elapsed_time:.2f}s"
+                self._deployment_test_failed = False
+                self.logger.info(
+                    f"✅ Deployment test completed successfully in {elapsed_time:.2f}s"
                 )
 
             except Exception as e:
                 elapsed_time = time.time() - start_time
-                print(
-                    f"❌ [{self.replica_id}] Deployment test failed for '{self.__class__.__name__}' after {elapsed_time:.2f}s: {e}"
+                self._deployment_test_failed = True
+                self.logger.error(
+                    f"❌ Deployment test failed after {elapsed_time:.2f}s: {e}"
                 )
-                raise RuntimeError(
-                    f"Deployment test failed for '{self.__class__.__name__}': {e}"
-                )
+                raise RuntimeError(f"Deployment test failed: {e}")
 
         setattr(deployment.func_or_class, "test_deployment", wrapped_test_deployment)
         return deployment
@@ -656,9 +704,18 @@ class AppBuilder:
                 if not self._deployment_initialized:
                     await self.async_init()
 
-                # Ensure deployment testing has completed
-                if not self._deployment_tested:
-                    await self.test_deployment()
+                # Launch test_deployment in the background if not already started
+                if self._test_task is None:
+                    self.logger.info(
+                        "🚀 Launching deployment test in the background..."
+                    )
+                    self._test_task = asyncio.create_task(self.test_deployment())
+
+                # Check if the background test task failed
+                if self._deployment_test_failed:
+                    raise RuntimeError(
+                        "Deployment test failed - deployment is unhealthy"
+                    )
 
                 worker_service_id = os.getenv("BIOENGINE_WORKER_SERVICE_ID")
                 if (
@@ -686,8 +743,8 @@ class AppBuilder:
                                 worker_service_id
                             )
                         )
-                        print(
-                            f"✅ [{self.replica_id}] Successfully connected to BioEngine "
+                        self.logger.info(
+                            f"✅ Successfully connected to BioEngine "
                             f"worker service with ID '{worker_service_id}'."
                         )
 
@@ -702,13 +759,13 @@ class AppBuilder:
                         self.bioengine_worker_service = None
                         if "Service not found:" in str(e):
                             # The service is not (yet) available
-                            print(
-                                f"⚠️ [{self.replica_id}] BioEngine worker service with ID "
+                            self.logger.warning(
+                                f"⚠️ BioEngine worker service with ID "
                                 f"'{worker_service_id}' is currently not available."
                             )
                         else:
-                            print(
-                                f"❌ [{self.replica_id}] Connection to BioEngine worker service failed: {e}"
+                            self.logger.error(
+                                f"❌ Connection to BioEngine worker service failed: {e}"
                             )
                             raise e
 
@@ -719,17 +776,15 @@ class AppBuilder:
                         self._hypha_token_is_admin_user = is_admin
 
                         if not is_admin:
-                            print(
-                                f"⚠️ [{self.replica_id}] Application token is not authorized "
+                            self.logger.warning(
+                                f"⚠️ Application token is not authorized "
                                 f"to access the BioEngine worker service with ID '{worker_service_id}'."
                             )
                             # If the token cannot access the BioEngine worker service, reset the service connection (and don't try to reconnect again)
                             self.bioengine_worker_service = None
 
                     except Exception as e:
-                        print(
-                            f"❌ [{self.replica_id}] BioEngine worker service failed: {e}"
-                        )
+                        self.logger.error(f"❌ BioEngine worker service failed: {e}")
                         # Reset service connection to trigger re-connection on next call
                         self.bioengine_worker_service = None
                         raise RuntimeError("BioEngine worker service connection failed")
@@ -745,9 +800,7 @@ class AppBuilder:
                         await asyncio.to_thread(orig_health_check, self)
 
                 except Exception as e:
-                    print(
-                        f"❌ [{self.replica_id}] Health check failed for '{self.__class__.__name__}': {e}"
-                    )
+                    self.logger.error(f"❌ Health check failed: {e}")
                     raise
 
         # Add the updated health check method to the deployment class
@@ -1027,6 +1080,9 @@ class AppBuilder:
             local_path = None
             try:
                 # Get download URL for the file
+                self.logger.debug(
+                    f"Downloading deployment code from artifact: {artifact_id}, file: {python_file}"
+                )
                 download_url = await self.artifact_manager.get_file(
                     artifact_id=artifact_id,
                     version=version,
@@ -1081,7 +1137,7 @@ class AppBuilder:
             )
 
             # Update the deployment class methods
-            deployment = self._update_init(deployment, secret_env_vars)
+            deployment = self._update_init(application_id, deployment, secret_env_vars)
             deployment = self._update_async_init(deployment)
             deployment = self._update_test_deployment(deployment)
             deployment = self._update_health_check(deployment)
@@ -1270,8 +1326,12 @@ class AppBuilder:
                     "Expected format is 'filename:ClassName' (without .py extension)."
                 )
 
+            # Get or create deployment environment variables dictionary
+            if class_name not in application_env_vars:
+                application_env_vars[class_name] = {}
+            deployment_env_vars = application_env_vars[class_name]
+            
             # Add user provided Hypha token as secret environment variable
-            deployment_env_vars = application_env_vars.get(class_name, {})
             if hypha_token is not None:
                 deployment_env_vars["_HYPHA_TOKEN"] = hypha_token
 
@@ -1373,6 +1433,7 @@ class AppBuilder:
             proxy_service_token=proxy_service_token,
             authorized_users=manifest["authorized_users"],
             serve_http_url=self.serve_http_url,
+            proxy_actor_name=self.proxy_actor_name,
         )
 
         # Create application metadata

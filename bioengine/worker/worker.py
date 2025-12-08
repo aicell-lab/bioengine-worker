@@ -413,7 +413,9 @@ class BioEngineWorker:
 
         # Set server URL and service URL
         self.data_server_url = data_server_url
-        self.data_service_url = f"{self.data_server_url}/public/services/bioengine-datasets"
+        self.data_service_url = (
+            f"{self.data_server_url}/public/services/bioengine-datasets"
+        )
         self.logger.info(f"Detected dataset server at: {self.data_server_url}")
 
         # Try to ping the dataset server
@@ -421,9 +423,7 @@ class BioEngineWorker:
             with httpx.Client(timeout=10) as client:
                 response = client.get(f"{self.data_service_url}/ping")
                 response.raise_for_status()
-                self.logger.info(
-                    f"Successfully reached dataset server."
-                )
+                self.logger.info(f"Successfully reached dataset server.")
         except Exception as e:
             self.logger.error(f"Error occurred while pinging dataset server: {e}")
             self.logger.info("Clearing dataset server configuration.")
@@ -750,6 +750,9 @@ class BioEngineWorker:
 
                     # Run cluster monitoring
                     await self.ray_cluster.monitor_cluster()
+
+                    # Run BioEngine Applications monitoring
+                    await self.apps_manager.monitor_applications()
 
                     # Run BioEngine Datasets monitoring
                     # await self.dataset_manager.monitor_datasets()

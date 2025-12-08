@@ -305,6 +305,113 @@ async def test_deployment(self) -> None:
 
 > **Note**: GPU allocation is managed by BioEngine. The `disable_gpu=True` parameter in `run_application()` will override GPU requests to force CPU-only execution.
 
+### Logging in Applications
+
+#### Recommended Logging Approach
+
+Use the Ray Serve logger for all logging in your BioEngine applications:
+
+```python
+import logging
+from ray import serve
+from hypha_rpc.utils.schema import schema_method
+from pydantic import Field
+from typing import Dict, Any
+
+# Initialize logger at module level (outside the class)
+# This allows use in helper functions and class methods
+logger = logging.getLogger("ray.serve")
+
+# Helper function with logging
+def preprocess_data(data: str) -> str:
+    """Helper function that can use the logger."""
+    logger.info(f"Preprocessing data of length {len(data)}")
+    processed = data.upper()
+    logger.debug(f"Preprocessing complete")
+    return processed
+
+@serve.deployment(ray_actor_options={"num_cpus": 1})
+class MyDeployment:
+    def __init__(self):
+        logger.info("Initializing MyDeployment")
+        self.initialized = False
+        
+    async def async_init(self) -> None:
+        """Async initialization with logging."""
+        logger.info("Starting async initialization")
+        # Perform async setup
+        self.initialized = True
+        logger.info("Async initialization complete")
+        
+    @schema_method
+    async def process(self, data: str = Field(..., description="Input data")) -> Dict[str, Any]:
+        """Process data with detailed logging."""
+        logger.info(f"Processing request with data length: {len(data)}")
+        
+        try:
+            # Use helper function
+            result = preprocess_data(data)
+            logger.info("Request processed successfully")
+            return {"result": result, "status": "success"}
+        except Exception as e:
+            logger.error(f"Error processing request: {e}", exc_info=True)
+            return {"error": str(e), "status": "failed"}
+```
+
+#### Logging Best Practices
+
+**Log Levels:**
+- **`logger.debug()`**: Detailed diagnostic information (e.g., variable values, execution flow)
+- **`logger.info()`**: General informational messages (e.g., request received, processing complete)
+- **`logger.warning()`**: Warning messages for potentially problematic situations
+- **`logger.error()`**: Error messages for failures that don't crash the application
+- **`logger.critical()`**: Critical errors that may cause application failure
+
+**Usage Guidelines:**
+```python
+# Good: Informative, structured logging
+logger.info(f"Model inference completed in {elapsed_time:.2f}s for batch size {batch_size}")
+
+# Good: Include context in error logs
+try:
+    result = model.predict(data)
+except Exception as e:
+    logger.error(f"Prediction failed for input shape {data.shape}: {e}", exc_info=True)
+    raise
+
+# Avoid: Too verbose for production
+logger.debug(f"Variable x = {x}, y = {y}, z = {z}")  # Use sparingly
+
+# Avoid: Not enough context
+logger.error("Error occurred")  # What error? Where?
+```
+
+#### Viewing Application Logs
+
+Logs are accessible through the `get_application_status()` method:
+
+```python
+# Get application status with logs
+status = await bioengine_worker_service.get_application_status(
+    application_ids=["my-app-id"],
+    logs_tail=50,           # Get last 50 log lines per replica
+    n_previous_replica=1,   # Include logs from 1 previous replica
+)
+
+# Access logs for each deployment
+for deployment_name, deployment_info in status["deployments"].items():
+    print(f"Logs for {deployment_name}:")
+    print(deployment_info["logs"])
+```
+
+**Log Parameters:**
+- **`logs_tail`**: Number of most recent log lines to retrieve per replica (default: 30)
+  - Set to `-1` to retrieve all available logs
+  - Higher values may slow down status requests
+- **`n_previous_replica`**: Number of previous (stopped) replicas to include logs from (default: 0)
+  - Useful for debugging deployments that failed and restarted
+  - Includes logs from replicas that are no longer running
+
 ## Environment Variables and Built-in Classes
 
 ### Available Environment Variables
@@ -609,12 +716,18 @@ The web interface provides a user-friendly way to manage your applications witho
 Deploy your application using the BioEngine worker service:
 
 ```python
-# Basic deployment
+# Basic deployment - creates a new application with auto-generated ID
 application_id = await bioengine_worker_service.run_application(
     artifact_id="workspace/my-app"
 )
 
-# Advanced deployment with configuration
+# Deployment with custom application ID
+application_id = await bioengine_worker_service.run_application(
+    artifact_id="workspace/my-app",
+    application_id="my-custom-id",      # Specify your own ID
+)
+
+# Advanced deployment with full configuration
 application_id = await bioengine_worker_service.run_application(
     artifact_id="workspace/my-app",
     version=None,                       # Latest version
@@ -635,6 +748,69 @@ application_id = await bioengine_worker_service.run_application(
 )
 ```
 
+#### Updating Existing Applications
+
+You can update a running application by calling `run_application` with the **same `application_id`** but a **different `artifact_id`** (or version). This allows you to:
+- Deploy a newer version of your application
+- Switch to a completely different artifact while keeping the same application ID
+- Update configuration parameters while keeping others unchanged
+
+**How Updates Work:**
+- **Application ID**: Must match the existing application you want to update (cannot be changed)
+- **Artifact ID**: Can be changed to deploy from a different artifact
+- **Parameters**: Any unspecified parameters are inherited from the currently running application
+- **Specified parameters**: Override the current values
+- **Timestamps**: Original creation time (`started_at`) is preserved, `last_updated_at` is updated
+
+```python
+# Initial deployment
+app_id = await bioengine_worker_service.run_application(
+    artifact_id="workspace/my-app-v1",
+    application_id="my-app",
+    disable_gpu=False,
+    max_ongoing_requests=10,
+)
+
+# Update to a newer artifact version - keeps all other settings
+await bioengine_worker_service.run_application(
+    artifact_id="workspace/my-app-v2",  # New artifact
+    application_id="my-app",             # Same app ID = update
+    # All other parameters inherited from current deployment
+)
+
+# Update specific parameters only - keeps artifact and other settings
+await bioengine_worker_service.run_application(
+    artifact_id="workspace/my-app-v2",  # Can keep same or change
+    application_id="my-app",             # Same app ID = update
+    max_ongoing_requests=20,             # Update this parameter
+    # Other parameters (disable_gpu, etc.) inherited
+)
+
+# Update with new configuration
+await bioengine_worker_service.run_application(
+    artifact_id="workspace/my-app-v2",
+    application_id="my-app",
+    application_kwargs={                 # New initialization parameters
+        "MainDeployment": {
+            "model_path": "/new/path/to/model"
+        }
+    },
+    hypha_token="new_token",            # Updated authentication
+    # version, disable_gpu, etc. inherited if not specified
+)
+```
+
+**Update Behavior:**
+- The existing deployment is gracefully stopped
+- A new deployment is created with the updated configuration
+- Original creation timestamp is preserved
+- Update timestamp and user are recorded
+- Service IDs may change as replicas are recreated
+
+**When to Update vs. Redeploy:**
+- **Update** (same `application_id`): When you want to maintain the same logical application but with updated code/config
+- **New deployment** (different `application_id`): When you want to run multiple versions simultaneously or create a completely separate instance
+
 ### Deploy Application Parameters
 
 The `run_application` method supports these parameters:
@@ -647,6 +823,45 @@ The `run_application` method supports these parameters:
 - **`hypha_token`** *(optional)*: Authentication token for user permissions
 - **`disable_gpu`** *(optional)*: Force CPU-only execution (default: False)
 - **`max_ongoing_requests`** *(optional)*: Concurrent request limit (default: 10)
+
+#### Secret Environment Variables
+
+Environment variables that start with an underscore (`_`) are treated as secrets:
+
+```python
+application_env_vars={
+    "MainDeployment": {
+        "API_URL": "https://api.example.com",  # Normal env var - visible in status
+        "_API_KEY": "secret-key-value",        # Secret env var - hidden in status
+        "_DATABASE_PASSWORD": "db-password",   # Secret env var - hidden in status
+    }
+}
+```
+
+**Key differences:**
+
+- **Normal variables**: Visible in application status and logs
+- **Secret variables** (prefixed with `_`): 
+  - Values are hidden in application status (shown as `*****`)
+  - Values are hidden in Ray actor configuration logs
+  - The underscore prefix is automatically removed when set as environment variables
+  - Access in code without the underscore: `os.environ["API_KEY"]` not `os.environ["_API_KEY"]`
+
+**Example usage in deployment code:**
+
+```python
+import os
+
+@serve.deployment(ray_actor_options={"num_cpus": 1})
+class MyDeployment:
+    def __init__(self):
+        # Access normal env var
+        self.api_url = os.environ["API_URL"]
+        
+        # Access secret env var (without underscore prefix)
+        self.api_key = os.environ["API_KEY"]  # Not "_API_KEY"
+        self.db_password = os.environ["DATABASE_PASSWORD"]  # Not "_DATABASE_PASSWORD"
+```
 
 ### Accessing Deployed Applications
 
@@ -706,13 +921,69 @@ result = await webrtc_service.process_data(
 # Start application
 app_id = await bioengine_worker_service.run_application("workspace/my-app")
 
-# Monitor application status
+# Monitor application status (basic)
 app_status = await bioengine_worker_service.get_application_status(
     application_ids=[app_id]
 )
 
+# Monitor with detailed logs
+app_status = await bioengine_worker_service.get_application_status(
+    application_ids=[app_id],
+    logs_tail=100,           # Get last 100 log lines per replica
+    n_previous_replica=2,    # Include logs from 2 previous replicas
+)
+
+# Access deployment logs
+for deployment_name, deployment_info in app_status["deployments"].items():
+    print(f"Status: {deployment_info['status']}")
+    print(f"Message: {deployment_info['message']}")
+    print(f"Logs:\n{deployment_info['logs']}")
+
 # Stop application when done
 await bioengine_worker_service.stop_application(app_id)
+```
+
+#### Monitoring Application Status
+
+The `get_application_status()` method provides comprehensive information about your deployed applications:
+
+**Parameters:**
+- **`application_ids`** *(optional)*: List of application IDs to check. If `None`, returns all deployed applications. If a single-item list, returns status directly (not wrapped in a dictionary).
+- **`logs_tail`** *(optional, default: 30)*: Number of recent log lines to retrieve per replica. Set to `-1` for all logs.
+- **`n_previous_replica`** *(optional, default: 0)*: Number of previous (stopped/failed) replicas to include logs from.
+
+**Returned Information:**
+- Application metadata (name, description, artifact details)
+- Current status (RUNNING, DEPLOYING, UNHEALTHY, etc.)
+- Resource allocation and usage
+- Service IDs for WebSocket/WebRTC connections
+- Deployment details and replica states
+- **Logs from active and previous replicas**
+
+**Example: Debugging a Failed Deployment**
+
+```python
+# Get detailed status with extended logs
+status = await bioengine_worker_service.get_application_status(
+    application_ids=["my-failing-app"],
+    logs_tail=-1,            # Get all available logs
+    n_previous_replica=3,    # Check logs from last 3 replica attempts
+)
+
+# Check deployment status
+if status["status"] == "UNHEALTHY":
+    print(f"Application unhealthy: {status['message']}")
+    
+    # Examine logs for errors
+    for deployment_name, deployment_info in status["deployments"].items():
+        print(f"\nDeployment: {deployment_name}")
+        print(f"Status: {deployment_info['status']}")
+        print(f"Replica states: {deployment_info['replica_states']}")
+        
+        # Print logs to identify the issue
+        if deployment_info["logs"]:
+            print("\nLogs:")
+            print(deployment_info["logs"])
 ```
 
 ---

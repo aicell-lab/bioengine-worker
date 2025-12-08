@@ -1,10 +1,12 @@
 import asyncio
+import logging
 import os
 import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
+import ray
 from httpx import AsyncClient, HTTPStatusError, RequestError
 from hypha_rpc import connect_to_server, register_rtc_service
 from hypha_rpc.rpc import RemoteService
@@ -16,6 +18,8 @@ from ray.serve.handle import DeploymentHandle
 from starlette.requests import Request
 
 from bioengine.utils import get_pip_requirements
+
+logger = logging.getLogger("ray.serve")
 
 
 @deployment(
@@ -91,6 +95,7 @@ class BioEngineProxyDeployment:
         worker_client_id: str,
         authorized_users: List[str],
         serve_http_url: str,
+        proxy_actor_name: str,
     ):
         """
         Initialize the BioEngine proxy deployment.
@@ -131,20 +136,61 @@ class BioEngineProxyDeployment:
                             to deny all access.
 
             serve_http_url: URL for Ray Serve HTTP endpoint used for autoscaling coordination.
+            proxy_actor_name: Actor name of the BioEngineProxyActor for replica registration.
         """
-        # Get replica identifier for logging
-        try:
-            self.replica_id = get_replica_context().replica_tag
-        except Exception:
-            self.replica_id = f"uuid-{str(uuid.uuid4())[:8]}"
-
-        print(
-            f"🚀 [{self.replica_id}] Initializing BioEngineProxyDeployment for application: '{application_id}'"
+        logger.info(
+            f"🚀 Initializing BioEngineProxyDeployment for application: '{application_id}'"
         )
-        print(f"🔗 [{self.replica_id}] Server URL: {server_url}")
-        print(f"🏢 [{self.replica_id}] Workspace: '{workspace}'")
-        print(f"👥 [{self.replica_id}] Authorized users: {authorized_users}")
-        print(f"⚙️ [{self.replica_id}] Max ongoing requests: {max_ongoing_requests}")
+        logger.info(f"🔗 Server URL: {server_url}")
+        logger.info(f"🏢 Workspace: '{workspace}'")
+        logger.info(f"👥 Authorized users: {authorized_users}")
+        logger.info(f"⚙️ Max ongoing requests: {max_ongoing_requests}")
+
+        # Register this serve replica with the BioEngineProxyActor for tracking
+        proxy_actor_handle = None
+        replica_id = None
+
+        try:
+            proxy_actor_handle = ray.get_actor(
+                name=proxy_actor_name, namespace="bioengine"
+            )
+            logger.debug(
+                f"✅ Successfully retrieved BioEngineProxyActor '{proxy_actor_name}'"
+            )
+        except ValueError as e:
+            logger.error(f"❌ BioEngineProxyActor '{proxy_actor_name}' not found: {e}")
+        except Exception as e:
+            logger.error(
+                f"❌ Unexpected error getting BioEngineProxyActor '{proxy_actor_name}': {e}",
+                exc_info=True,
+            )
+
+        if proxy_actor_handle:
+            try:
+                replica_context = get_replica_context()
+                deployment_name = replica_context.deployment
+                replica_id = replica_context.replica_tag
+                logger.debug(
+                    f"Retrieved replica context: tag={replica_id}, "
+                    f"deployment={replica_context.deployment}, "
+                    f"app={replica_context.app_name}"
+                )
+
+                proxy_actor_handle.register_serve_replica.remote(
+                    application_id=application_id,
+                    deployment_name=deployment_name,
+                    replica_id=replica_id,
+                )
+                logger.info(
+                    f"✅ Registered replica '{replica_id}' with BioEngineProxyActor."
+                )
+            except ValueError as e:
+                logger.error(f"❌ Invalid replica registration parameters: {e}")
+            except Exception as e:
+                logger.error(
+                    f"❌ Unable to register replica with BioEngineProxyActor: {e}",
+                    exc_info=True,
+                )
 
         # BioEngine application metadata
         self.application_id = application_id
@@ -159,7 +205,16 @@ class BioEngineProxyDeployment:
         self.server_url = server_url
         self.workspace = workspace
         self.proxy_service_token = proxy_service_token
-        self.client_id = f"{worker_client_id}-{self.replica_id}"
+
+        if replica_id:
+            self.client_id = f"{worker_client_id}-{replica_id}"
+        else:
+            # Fallback to generating a UUID-based ID for hypha client_id
+            uuid_str = f"uuid-{str(uuid.uuid4())[:8]}"
+            self.client_id = f"{worker_client_id}-{uuid_str}"
+            logger.warning(
+                f"⚠️ Using fallback client_id '{self.client_id}' due to missing replica ID."
+            )
 
         # Store entry deployment readiness
         self.entry_deployment_ready = False
@@ -201,14 +256,14 @@ class BioEngineProxyDeployment:
         Returns:
             Dictionary with completion status and request ID
         """
-        print(
-            f"🌐 [{self.replica_id}] Received '{request.method}' request to BioEngineProxyDeployment"
+        logger.info(
+            f"🌐 Received '{request.method}' request to BioEngineProxyDeployment"
         )
 
         # Only accept POST requests for mimic coordination
         if request.method != "POST":
-            print(
-                f"❌ [{self.replica_id}] Method '{request.method}' not supported - only POST allowed"
+            logger.error(
+                f"❌ Method '{request.method}' not supported - only POST allowed"
             )
             return {
                 "status": "error",
@@ -217,13 +272,13 @@ class BioEngineProxyDeployment:
 
         request_id = request.headers.get("X-Request-ID")
         if not request_id:
-            print(f"❌ [{self.replica_id}] Missing X-Request-ID header in request")
+            logger.error(f"❌ Missing X-Request-ID header in request")
             return {
                 "status": "error",
                 "message": "Missing X-Request-ID header",
             }
 
-        print(f"⏳ [{self.replica_id}] Waiting for request: {request_id}")
+        logger.info(f"⏳ Waiting for request: {request_id}")
         # Wait for the corresponding request event
         event_data = self._request_events.get(request_id)
         if event_data:
@@ -231,18 +286,16 @@ class BioEngineProxyDeployment:
                 await asyncio.wait_for(
                     event_data["event"].wait(), timeout=3600
                 )  # free after 1 hour
-                print(f"✅ [{self.replica_id}] Request completed: {request_id}")
+                logger.info(f"✅ Request completed: {request_id}")
                 return {"status": "completed", "request_id": request_id}
             except asyncio.TimeoutError:
-                print(
-                    f"⏱️ [{self.replica_id}] Request timed out after 1 hour: {request_id}"
-                )
+                logger.info(f"⏱️ Request timed out after 1 hour: {request_id}")
                 return {"status": "timeout", "request_id": request_id}
             finally:
                 # Always remove the event to prevent memory leaks
                 self._request_events.pop(request_id, None)
         else:
-            print(f"⚠️ [{self.replica_id}] Request not found: {request_id}")
+            logger.error(f"❌ Request not found: {request_id}")
             # Request may have already completed
             return {"status": "not_found", "request_id": request_id}
 
@@ -274,17 +327,15 @@ class BioEngineProxyDeployment:
         Raises:
             PermissionError: If user is not authorized or context is invalid
         """
-        print(
-            f"🔒 [{self.replica_id}] Checking permissions for application: {self.application_id}"
-        )
+        logger.info(f"🔒 Checking permissions for application: {self.application_id}")
 
         if not isinstance(context, dict) or "user" not in context:
-            print(f"❌ [{self.replica_id}] Invalid context without user information")
+            logger.error(f"❌ Invalid context without user information")
             raise PermissionError("Invalid context without user information")
 
         user = context["user"]
         if not isinstance(user, dict) or ("id" not in user and "email" not in user):
-            print(f"❌ [{self.replica_id}] Invalid user information in context")
+            logger.error(f"❌ Invalid user information in context")
             raise PermissionError("Invalid user information in context")
 
         # Check authorization
@@ -292,14 +343,14 @@ class BioEngineProxyDeployment:
         user_email = user["email"]
 
         if "*" in self.authorized_users:
-            print(f"✅ [{self.replica_id}] Wildcard access granted for user: {user_id}")
+            logger.info(f"✅ Wildcard access granted for user: {user_id}")
             return
 
         if user_id in self.authorized_users or user_email in self.authorized_users:
-            print(f"✅ [{self.replica_id}] User authorized: {user_id} ({user_email})")
+            logger.info(f"✅ User authorized: {user_id} ({user_email})")
             return
 
-        print(f"❌ [{self.replica_id}] User not authorized: {user_id} ({user_email})")
+        logger.error(f"❌ User not authorized: {user_id} ({user_email})")
         raise PermissionError(
             f"User '{user_id}' ({user_email}) is not authorized to access application '{self.application_id}'"
         )
@@ -319,9 +370,7 @@ class BioEngineProxyDeployment:
         Args:
             request_id: Unique identifier for correlating with the RPC call
         """
-        print(
-            f"📡 [{self.replica_id}] Sending autoscaling trigger for request: {request_id}"
-        )
+        logger.info(f"📡 Sending autoscaling trigger for request: {request_id}")
 
         try:
             timeout = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0)
@@ -333,14 +382,14 @@ class BioEngineProxyDeployment:
                     json={"mimic_request": True},
                 )
 
-            print(
-                f"✅ [{self.replica_id}] Autoscaling trigger sent successfully for request: {request_id}"
+            logger.info(
+                f"✅ Autoscaling trigger sent successfully for request: {request_id}"
             )
 
         except Exception as e:
             # Log but don't fail the user request
-            print(
-                f"⚠️ [{self.replica_id}] Failed to send autoscaling trigger for '{self.application_id}' request {request_id}: {e}"
+            logger.error(
+                f"❌ Failed to send autoscaling trigger for '{self.application_id}' request {request_id}: {e}"
             )
             # Clean up orphaned event since HTTP request failed
             self._request_events.pop(request_id, None)
@@ -366,17 +415,17 @@ class BioEngineProxyDeployment:
                         orphaned_ids.append(request_id)
 
                 if orphaned_ids:
-                    print(
-                        f"🧹 [{self.replica_id}] Cleaning up {len(orphaned_ids)} orphaned events older than 2 hours"
+                    logger.info(
+                        f"🧹 Cleaning up {len(orphaned_ids)} orphaned events older than 2 hours"
                     )
                     for request_id in orphaned_ids:
                         self._request_events.pop(request_id, None)
 
             except asyncio.CancelledError:
-                print(f"🛑 [{self.replica_id}] Cleanup task cancelled")
+                logger.info(f"🛑 Cleanup task cancelled")
                 break
             except Exception as e:
-                print(f"⚠️ [{self.replica_id}] Error in cleanup task: {e}")
+                logger.error(f"❌ Error in cleanup task: {e}")
 
     def _create_deployment_function(
         self, method_schema: Dict[str, Any]
@@ -418,15 +467,15 @@ class BioEngineProxyDeployment:
                     # Log the method call
                     user_info = context.get("user", {}) if context else {}
                     user_id = user_info.get("id", "unknown")
-                    print(
-                        f"🎯 [{self.replica_id}] User '{user_id}' calling method '{method_name}' on app '{self.application_id}'"
+                    logger.info(
+                        f"🎯 User '{user_id}' calling method '{method_name}' on app '{self.application_id}'"
                     )
 
                     # Get the method from the entry deployment handle
                     method = getattr(self.entry_deployment_handle, method_name, None)
                     if method is None:
-                        print(
-                            f"❌ [{self.replica_id}] Method '{method_name}' not found on entry deployment"
+                        logger.error(
+                            f"❌ Method '{method_name}' not found on entry deployment"
                         )
                         raise AttributeError(
                             f"Method '{method_name}' not found on entry deployment"
@@ -445,8 +494,8 @@ class BioEngineProxyDeployment:
                     # Add error handling for the mimic task (optional - runs in background)
                     def handle_mimic_error(task):
                         if task.exception():
-                            print(
-                                f"⚠️ [{self.replica_id}] Mimic request task failed for '{self.application_id}' request ID {request_id}: {task.exception()}"
+                            logger.error(
+                                f"❌ Mimic request task failed for '{self.application_id}' request ID {request_id}: {task.exception()}"
                             )
                             # Clean up orphaned event if mimic request failed
                             self._request_events.pop(request_id, None)
@@ -456,33 +505,31 @@ class BioEngineProxyDeployment:
                     # Forward the request to the actual deployment
                     try:
                         result = await method.remote(*args, **kwargs)
-                        print(
-                            f"✅ [{self.replica_id}] Successfully executed method '{method_name}' for user {user_id}"
+                        logger.info(
+                            f"✅ Successfully executed method '{method_name}' for user {user_id}"
                         )
                         return result
                     except RayTaskError as e:
-                        print(
-                            f"❌ [{self.replica_id}] Ray task error in method '{method_name}': {e}"
+                        logger.error(
+                            f"❌ Ray task error in method '{method_name}': {e}"
                         )
                         raise
                     except Exception as e:
-                        print(
-                            f"❌ [{self.replica_id}] Unexpected error in method '{method_name}': {e}"
+                        logger.error(
+                            f"❌ Unexpected error in method '{method_name}': {e}"
                         )
                         raise
 
                 except PermissionError as e:
-                    print(
-                        f"⚠️ [{self.replica_id}] Permission denied for method '{method_name}': {e}"
+                    logger.warning(
+                        f"⚠️ Permission denied for method '{method_name}': {e}"
                     )
                     # Clean up event if created before permission error
                     if event_created:
                         self._request_events.pop(request_id, None)
                     raise
                 except Exception as e:
-                    print(
-                        f"❌ [{self.replica_id}] Error in proxy function '{method_name}': {e}"
-                    )
+                    logger.error(f"❌ Error in proxy function '{method_name}': {e}")
                     # Clean up event if created before error
                     if event_created:
                         self._request_events.pop(request_id, None)
@@ -535,8 +582,8 @@ class BioEngineProxyDeployment:
             connection_id = str(uuid.uuid4())
             current_time = time.time()
 
-            print(
-                f"🔗 [{self.replica_id}] WebRTC peer connection initialized for '{self.application_id}' "
+            logger.info(
+                f"🔗 WebRTC peer connection initialized for '{self.application_id}' "
                 f"(Connection ID: {connection_id[:8]}...)"
             )
 
@@ -551,8 +598,8 @@ class BioEngineProxyDeployment:
             @peer_connection.on("connectionstatechange")
             def on_connection_state_change():
                 state = peer_connection.connectionState
-                print(
-                    f"🔄 [{self.replica_id}] WebRTC connection state changed to '{state}' "
+                logger.info(
+                    f"🔄 WebRTC connection state changed to '{state}' "
                     f"for '{self.application_id}' (Connection ID: {connection_id[:8]}...)"
                 )
 
@@ -562,23 +609,23 @@ class BioEngineProxyDeployment:
 
                     # Remove connection if it's closed or failed
                     if state in ["closed", "failed"]:
-                        print(
-                            f"🚫 [{self.replica_id}] Removing WebRTC connection '{connection_id[:8]}...' "
+                        logger.info(
+                            f"🚫 Removing WebRTC connection '{connection_id[:8]}...' "
                             f"for '{self.application_id}' (State: {state})"
                         )
                         del self._active_peer_connections[connection_id]
 
-                        print(
-                            f"📊 [{self.replica_id}] Active WebRTC connections: {len(self._active_peer_connections)}"
+                        logger.info(
+                            f"📊 Active WebRTC connections: {len(self._active_peer_connections)}"
                         )
 
-            print(
-                f"📊 [{self.replica_id}] Active WebRTC connections: {len(self._active_peer_connections)}"
+            logger.info(
+                f"📊 Active WebRTC connections: {len(self._active_peer_connections)}"
             )
 
         except Exception as e:
-            print(
-                f"❌ [{self.replica_id}] Failed to initialize WebRTC connection for '{self.application_id}': {e}"
+            logger.error(
+                f"❌ Failed to initialize WebRTC connection for '{self.application_id}': {e}"
             )
 
     async def _fetch_ice_servers(self) -> Optional[List[Dict[str, Any]]]:
@@ -611,25 +658,25 @@ class BioEngineProxyDeployment:
                 )
                 response.raise_for_status()
                 ice_servers = response.json()
-                print(
-                    f"✅ [{self.replica_id}] Successfully fetched ICE servers for {self.application_id}"
+                logger.info(
+                    f"✅ Successfully fetched ICE servers for {self.application_id}"
                 )
                 return ice_servers
         except HTTPStatusError as e:
-            print(
-                f"❌ [{self.replica_id}] HTTP error fetching ICE servers for {self.application_id}: {e}"
+            logger.error(
+                f"❌ HTTP error fetching ICE servers for {self.application_id}: {e}"
             )
         except RequestError as e:
-            print(
-                f"❌ [{self.replica_id}] Request error fetching ICE servers for {self.application_id}: {e}"
+            logger.error(
+                f"❌ Request error fetching ICE servers for {self.application_id}: {e}"
             )
         except Exception as e:
-            print(
-                f"❌ [{self.replica_id}] Unexpected error fetching ICE servers for {self.application_id}: {e}"
+            logger.error(
+                f"❌ Unexpected error fetching ICE servers for {self.application_id}: {e}"
             )
 
-        print(
-            f"⚠️ [{self.replica_id}] Falling back to default ICE servers for {self.application_id}"
+        logger.warning(
+            f"⚠️ Falling back to default ICE servers for {self.application_id}"
         )
         return None
 
@@ -663,10 +710,6 @@ class BioEngineProxyDeployment:
         active_requests = total_slots - available_slots
         load = active_requests / total_slots
 
-        print(
-            f"📊 [{self.replica_id}] Service load for '{self.application_id}': {load:.2f} ({active_requests}/{total_slots} active requests)"
-        )
-
         return min(1.0, max(0.0, load))  # Ensure load is between 0 and 1
 
     @schema_method
@@ -695,10 +738,6 @@ class BioEngineProxyDeployment:
             int: Number of currently active WebRTC peer connections (0 or positive integer)
         """
         num_connections = len(self._active_peer_connections)
-
-        print(
-            f"📊 [{self.replica_id}] Active WebRTC connections for '{self.application_id}': {num_connections}"
-        )
 
         return num_connections
 
@@ -768,14 +807,14 @@ class BioEngineProxyDeployment:
                 raise RuntimeError(
                     f"Client ID mismatch: expected '{self.client_id}', got '{registered_client_id}'"
                 )
-            print(
-                f"✅ [{self.replica_id}] Successfully connected to Hypha server as client "
+            logger.info(
+                f"✅ Successfully connected to Hypha server as client "
                 f"'{self.client_id}' for '{self.application_id}'"
             )
         except Exception as e:
             self.server = None
-            print(
-                f"❌ [{self.replica_id}] Error connecting to Hypha server for '{self.application_id}': {e}"
+            logger.error(
+                f"❌ Error connecting to Hypha server for '{self.application_id}': {e}"
             )
             raise
 
@@ -815,15 +854,15 @@ class BioEngineProxyDeployment:
                 raise RuntimeError(
                     f"Service ID mismatch: expected '{self.websocket_service_id}', got '{websocket_service_info['id']}'"
                 )
-            print(
-                f"✅ [{self.replica_id}] Successfully registered WebSocket service for '{self.application_id}' "
+            logger.info(
+                f"✅ Successfully registered WebSocket service for '{self.application_id}' "
                 f"with ID: {self.websocket_service_id}"
             )
 
         except Exception as e:
             self.service_id = None
-            print(
-                f"❌ [{self.replica_id}] Error registering WebSocket service for '{self.application_id}': {e}"
+            logger.error(
+                f"❌ Error registering WebSocket service for '{self.application_id}': {e}"
             )
             raise
 
@@ -856,19 +895,19 @@ class BioEngineProxyDeployment:
                 raise RuntimeError(
                     f"RTC Service ID mismatch: expected '{self.rtc_service_id}', got '{rtc_service_info['id']}'"
                 )
-            print(
-                f"✅ [{self.replica_id}] Registered WebRTC service for '{self.application_id}' with ID: {self.rtc_service_id}"
+            logger.info(
+                f"✅ Registered WebRTC service for '{self.application_id}' with ID: {self.rtc_service_id}"
             )
 
         except Exception as e:
-            print(
-                f"⚠️ [{self.replica_id}] Warning: Failed to register WebRTC service for '{self.application_id}': {e}"
+            logger.warning(
+                f"⚠️ Warning: Failed to register WebRTC service for '{self.application_id}': {e}"
             )
             # Don't fail the entire deployment if WebRTC registration fails
 
         # Log registered service functions
-        print(
-            f"📋 [{self.replica_id}] Service functions registered: {list(service_functions.keys())}"
+        logger.info(
+            f"📋 Service functions registered: {list(service_functions.keys())}"
         )
 
     # ===== Ray Serve Health Check =====
@@ -913,8 +952,8 @@ class BioEngineProxyDeployment:
         try:
             await self.server.echo("ping")
         except Exception as e:
-            print(
-                f"❌ [{self.replica_id}] Hypha server connection failed for '{self.application_id}': {e}"
+            logger.error(
+                f"❌ Hypha server connection failed for '{self.application_id}': {e}"
             )
             # Reset server connection to trigger re-connection on next call
             self.server = None
@@ -928,8 +967,8 @@ class BioEngineProxyDeployment:
             await websocket_service.get_load()
             await websocket_service.get_num_pcs()
         except Exception as e:
-            print(
-                f"❌ [{self.replica_id}] WebSocket service connection failed for '{self.application_id}': {e}"
+            logger.error(
+                f"❌ WebSocket service connection failed for '{self.application_id}': {e}"
             )
             # Reset service ID to trigger re-registration on next call
             self.websocket_service_id = None

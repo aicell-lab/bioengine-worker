@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union
@@ -7,6 +8,8 @@ from typing import Dict, List, Literal, Optional, Union
 import numpy as np
 import ray
 from ray import serve
+
+logger = logging.getLogger("ray.serve")
 
 # Deployment default runtime environment
 requirements = [
@@ -67,7 +70,7 @@ class RuntimeDeployment:
 
             return test_result
         except Exception as e:
-            print(f"❌ Model test failed: {str(e)}")
+            logger.error(f"❌ Model test failed: {str(e)}")
             raise
 
     async def test(
@@ -77,7 +80,7 @@ class RuntimeDeployment:
         additional_packages = []
         if additional_requirements:
             if not isinstance(additional_requirements, list):
-                print("❌ additional_requirements must be a list of strings")
+                logger.error("❌ additional_requirements must be a list of strings")
                 raise ValueError("additional_requirements must be a list of strings.")
 
             for ad_req in additional_requirements:
@@ -92,7 +95,7 @@ class RuntimeDeployment:
                     additional_packages.append(ad_req)
 
         if additional_packages:
-            print(f"🚀 Running test with additional packages: {additional_packages}")
+            logger.info(f"🚀 Running test with additional packages: {additional_packages}")
             # Execute remotely and return the result reference (will be awaited by DeploymentHandle)
             remote_function = ray.remote(self._test.__func__)
             remote_function = remote_function.options(
@@ -102,7 +105,7 @@ class RuntimeDeployment:
                 runtime_env={"pip": requirements + additional_packages},
             )
             result_ref = remote_function.remote(None, rdf_path)
-            print(f"📋 Submitted remote test job")
+            logger.info(f"📋 Submitted remote test job")
             return result_ref
         else:
             # Run execution in this deployment without additional packages
@@ -146,11 +149,10 @@ class RuntimeDeployment:
         from bioimageio.core import create_prediction_pipeline, load_model_description
 
         # TODO: log CPU and GPU memory usage
-
         # Get model source and create_kwargs using the cache key
         pipeline_kwargs = self._kwargs_cache.get(cache_key)
         if not pipeline_kwargs:
-            print(f"❌ No pipeline kwargs found for cache key: {cache_key}")
+            logger.error(f"❌ No pipeline kwargs found for cache key: {cache_key}")
             raise ValueError(f"No pipeline kwargs found for cache key: {cache_key}")
 
         rdf_path = pipeline_kwargs["rdf_path"]
@@ -163,11 +165,11 @@ class RuntimeDeployment:
             # Load the pipeline (this loads the model weights into memory/GPU)
             pipeline.load()
 
-            print(f"✅ Created and loaded prediction pipeline for model at {rdf_path}")
+            logger.info(f"✅ Created and loaded prediction pipeline for model at {rdf_path}")
 
             return pipeline
         except Exception as e:
-            print(f"❌ Failed to create prediction pipeline: {str(e)}")
+            logger.error(f"❌ Failed to create prediction pipeline: {str(e)}")
             raise
         finally:
             # Clean up the cache entry after use
@@ -219,7 +221,7 @@ class RuntimeDeployment:
             return outputs
 
         except Exception as e:
-            print(f"❌ Prediction failed: {str(e)}")
+            logger.error(f"❌ Prediction failed: {str(e)}")
             raise e
 
 

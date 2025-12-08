@@ -41,6 +41,7 @@ from ray import serve
 
 logger = logging.getLogger("ray.serve")
 
+
 @serve.deployment(
     ray_actor_options={
         # Number of CPUs to allocate for the deployment
@@ -62,9 +63,10 @@ logger = logging.getLogger("ray.serve")
     }
 )
 class DemoDeployment:
-    def __init__(self):
+    def __init__(self, test_param: str = "default_value") -> None:
         """Initialize the application."""
         self.start_time = time.time()
+        self.fail_health_check = False
 
     # === BioEngine App Methods - will be called when the deployment is started ===
 
@@ -142,6 +144,18 @@ class DemoDeployment:
 
         return model
 
+    async def check_health(self) -> None:
+        """
+        An optional method to check the health of the deployment. If defined, it will be called
+        periodically by Ray Serve to monitor the health of the deployment.
+
+        Requirements:
+        - Must be an async method.
+        - Must not accept any arguments.
+        """
+        if self.fail_health_check:
+            raise Exception("Simulated health check failure.")
+
     # === Exposed BioEngine App Methods - all methods decorated with @schema_method will be exposed as API endpoints ===
     # Note: Parameter type hints and docstrings will be used to generate the API documentation.
 
@@ -186,3 +200,10 @@ class DemoDeployment:
             """|================================================================================================|""",
         ]
         return ascii_art
+
+    @schema_method
+    async def set_fail_health_check(self) -> None:
+        """
+        Set the deployment to fail the health check.
+        """
+        self.fail_health_check = True

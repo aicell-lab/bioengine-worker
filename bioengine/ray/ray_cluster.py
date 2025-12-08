@@ -158,6 +158,7 @@ class RayCluster:
         self.address = None
         self.serve_http_url = None
         self.proxy_actor_handle = None
+        self.proxy_actor_name = None
         self.cluster_status_history = OrderedDict()
         self.max_status_history_length = 100
         self.is_ready = asyncio.Event()
@@ -696,6 +697,7 @@ class RayCluster:
             context = await asyncio.to_thread(
                 ray.init,
                 address=self.address,
+                namespace="bioengine",
                 logging_format=stream_logging_format,
                 # Upload bioengine package to GCS storage (does not install dependencies)
                 runtime_env={
@@ -709,8 +711,11 @@ class RayCluster:
             check_pending_resources = self.mode == "slurm"
 
             # Generate a unique name for the proxy actor
-            proxy_actor_name = f"BIOENGINE_PROXY_ACTOR-{uuid.uuid4()}"
-            proxy_actor = BioEngineProxyActor.options(name=proxy_actor_name)
+            self.proxy_actor_name = f"BIOENGINE_PROXY_ACTOR-{uuid.uuid4()}"
+            proxy_actor = BioEngineProxyActor.options(
+                name=self.proxy_actor_name,
+                namespace="bioengine",
+            )
             self.proxy_actor_handle = proxy_actor.remote(
                 exclude_head_node=exclude_head_node,
                 check_pending_resources=check_pending_resources,

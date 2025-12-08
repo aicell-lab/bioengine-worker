@@ -553,7 +553,7 @@ class AppsManager:
         application_id: str,
         application_status: ApplicationDetails,
         n_previous_replica: int,
-        tail: int,
+        logs_tail: int,
     ) -> Dict[str, Dict[str, Any]]:
         deployments_info = {}
         for deployment_name, deployment_info in application_status.deployments.items():
@@ -570,7 +570,7 @@ class AppsManager:
                     application_id=application_id,
                     deployment_name=deployment_name,
                     n_previous_replica=n_previous_replica,
-                    tail=tail,
+                    tail=logs_tail,
                 )
                 deployments_info[deployment_name]["logs"] = deployment_logs
             except Exception as e:
@@ -640,7 +640,7 @@ class AppsManager:
         application_id: str,
         serve_status: ServeStatus,
         n_previous_replica: int,
-        tail: int,
+        logs_tail: int,
     ) -> Dict[str, Any]:
         """
         Application States: [NOT_STARTED, DEPLOYING, DEPLOY_FAILED, RUNNING, UNHEALTHY, DELETING]
@@ -669,7 +669,7 @@ class AppsManager:
                 application_id=application_id,
                 application_status=application_status,
                 n_previous_replica=n_previous_replica,
-                tail=tail,
+                logs_tail=logs_tail,
             )
         else:
             if application_info["is_deployed"].is_set():
@@ -1606,7 +1606,7 @@ class AppsManager:
         ),
         n_previous_replica: int = Field(
             0,
-            description="Number of previous replicas to include in the status for each deployment.",
+            description="Number of previous replicas to include in the status for each deployment. Set to -1 to retrieve all previous replicas.",
         ),
         context: Dict[str, Any] = Field(
             ...,
@@ -1693,7 +1693,7 @@ class AppsManager:
                 application_id=application_id,
                 serve_status=serve_status,
                 n_previous_replica=n_previous_replica,
-                tail=logs_tail,
+                logs_tail=logs_tail,
             )
             for application_id in apps_to_check
         ]

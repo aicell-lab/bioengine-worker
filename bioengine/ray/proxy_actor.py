@@ -490,7 +490,7 @@ class BioEngineProxyActor:
         application_id: str,
         deployment_name: str,
         n_previous_replica: int = 0,
-        tail: int = 100,
+        tail: int = 30,
     ) -> Dict[str, Dict[str, List[str]]]:
         """
         Get logs for all replicas of a Ray Serve deployment.
@@ -504,9 +504,10 @@ class BioEngineProxyActor:
             deployment_name: Name of the deployment within the application.
             n_previous_replica: Number of most recent dead replicas to include.
                                Set to 0 to only get logs from active replicas.
+                               Set to -1 to get logs from all dead replicas.
                                Default is 0.
             tail: Number of lines to retrieve from the end of each log.
-                  Use -1 to get the entire log. Default is 100.
+                  Use -1 to get the entire log. Default is 30.
 
         Returns:
             Dictionary mapping replica IDs to their log dictionaries:
@@ -552,8 +553,13 @@ class BioEngineProxyActor:
             for replica_id in registered_replicas.keys()
             if replica_id not in active_replicas
         ]
-        # Add logs of the n most recent dead replicas
-        for replica_id in dead_replica_ids[::-1][:n_previous_replica]:
+        # Add logs of the n most recent dead replicas (or all if n_previous_replica is -1)
+        dead_replicas_to_fetch = (
+            dead_replica_ids[::-1]
+            if n_previous_replica == -1
+            else dead_replica_ids[::-1][:n_previous_replica]
+        )
+        for replica_id in dead_replicas_to_fetch:
             _, actor_id = registered_replicas[replica_id]
             try:
                 actor_logs = self.get_actor_logs(

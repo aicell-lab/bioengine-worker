@@ -5,7 +5,8 @@ import os
 import subprocess
 import tempfile
 import time
-from typing import Dict, List, Optional, Set
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Union
 
 import ray
 
@@ -57,7 +58,7 @@ class SlurmWorkers:
         scale_down_threshold_seconds: int = 300,  # 5 minutes of idleness before scale down
         grace_period: int = 60,  # Grace period for job cancellation
         # Logger configuration
-        log_file: Optional[str] = None,
+        log_file: Optional[Union[str, Path]] = None,
         debug: bool = False,
     ):
         """

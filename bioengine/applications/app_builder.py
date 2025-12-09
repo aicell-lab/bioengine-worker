@@ -495,12 +495,6 @@ class AppBuilder:
             # Create a health check lock to synchronize health checks
             self._health_check_lock = asyncio.Lock()
 
-            # Initialize BioEngine datasets
-            self.bioengine_datasets = BioEngineDatasets(
-                data_server_url=data_server_url,
-                hypha_token=secret_env_vars.get("HYPHA_TOKEN"),
-            )
-
             # Initialize a BioEngine Hypha client and worker service
             self.bioengine_hypha_client = None
             self.bioengine_worker_service = None
@@ -511,6 +505,12 @@ class AppBuilder:
             # Update secret environment variable with real value (previously set to "*****")
             for env_var, value in secret_env_vars.items():
                 os.environ[env_var] = value
+
+            # Initialize BioEngine datasets
+            self.bioengine_datasets = BioEngineDatasets(
+                data_server_url=data_server_url,
+                hypha_token=os.getenv("HYPHA_TOKEN"),
+            )
 
             # Call the original __init__ method
             orig_init(self, *args, **kwargs)
@@ -1312,9 +1312,6 @@ class AppBuilder:
                 "Expected a non-empty list of deployment import paths."
             )
 
-        application_kwargs = application_kwargs or {}
-        application_env_vars = application_env_vars or {}
-
         deployments = []
         for import_path in deployment_import_paths:
             try:
@@ -1330,7 +1327,7 @@ class AppBuilder:
             if class_name not in application_env_vars:
                 application_env_vars[class_name] = {}
             deployment_env_vars = application_env_vars[class_name]
-            
+
             # Add user provided Hypha token as secret environment variable
             if hypha_token is not None:
                 deployment_env_vars["_HYPHA_TOKEN"] = hypha_token
@@ -1367,7 +1364,9 @@ class AppBuilder:
             )
 
         # Get kwargs for the entry deployment
-        entry_deployment_kwargs = application_kwargs.get(class_name, {}).copy()
+        if class_name not in application_kwargs:
+            application_kwargs[class_name] = {}
+        entry_deployment_kwargs = application_kwargs[class_name].copy()
         entry_init_params = self._get_init_param_info(entry_deployment)
         self._check_params(entry_init_params, entry_deployment_kwargs)
 
@@ -1445,6 +1444,8 @@ class AppBuilder:
             "available_methods": [
                 method_schema["name"] for method_schema in method_schemas
             ],
+            "application_kwargs": application_kwargs,
+            "application_env_vars": application_env_vars,
         }
 
         self.logger.info(

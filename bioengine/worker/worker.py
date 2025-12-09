@@ -230,19 +230,20 @@ class BioEngineWorker:
         # Initialize structured logging
         if log_file == "off":
             # Disable file logging, only console output
-            log_file = None
-
+            self.log_file = None
         elif log_file is None:
             # Create a timestamped log file in the cache directory
             log_dir = self.cache_dir / "logs"
-            log_file = (
+            self.log_file = (
                 log_dir / f"bioengine_worker_{time.strftime('%Y%m%d_%H%M%S')}.log"
             )
+        else:
+            self.log_file = Path(log_file)
 
         self.logger = create_logger(
             name="BioEngineWorker",
             level=logging.DEBUG if debug else logging.INFO,
-            log_file=log_file,
+            log_file=self.log_file,
         )
         self.logger.info(
             f"Initializing BioEngineWorker v{__version__} with mode '{mode}'"
@@ -299,7 +300,7 @@ class BioEngineWorker:
             self._set_parameter(
                 ray_cluster_config, "ray_temp_dir", self.cache_dir / "ray"
             )
-            self._set_parameter(ray_cluster_config, "log_file", log_file)
+            self._set_parameter(ray_cluster_config, "log_file", self.log_file)
             self._set_parameter(ray_cluster_config, "debug", debug)
 
             # Initialize Ray cluster manager
@@ -322,13 +323,13 @@ class BioEngineWorker:
                 apps_cache_dir=apps_cache_dir,
                 data_server_url=self.data_server_url,
                 startup_applications=startup_applications,
-                log_file=log_file,
+                log_file=self.log_file,
                 debug=debug,
             )
 
             self.code_executor = CodeExecutor(
                 ray_cluster=self.ray_cluster,
-                log_file=log_file,
+                log_file=self.log_file,
                 debug=debug,
             )
 
@@ -555,6 +556,7 @@ class BioEngineWorker:
             "get_status": self.get_status,
             "stop_worker": self.stop,  # Requires admin permissions
             "check_access": self.check_access,
+            "get_logs": self.get_logs,  # Requires admin permissions
             # 📦 Dataset management
             "list_datasets": self.list_datasets,
             "refresh_datasets": self.refresh_datasets,  # Requires admin permissions
@@ -570,7 +572,7 @@ class BioEngineWorker:
             "stop_all_applications": self.apps_manager.stop_all_applications,  # Requires admin permissions
             "get_application_status": self.apps_manager.get_application_status,
         }
-        # TODO: return more informative error messages, e.g. by returning error instead of raising it
+        # TODO: return more informative error messages, e.g. include traceback
         service_info = await self.server.register_service(
             {
                 "id": self.service_id,
@@ -939,6 +941,61 @@ class BioEngineWorker:
             return True
         except PermissionError:
             return False
+
+    @schema_method
+    async def get_logs(
+        self,
+        tail: int = Field(
+            100,
+            description="Number of lines to retrieve from the end of the log file. Default is 100 lines.",
+        ),
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
+    ) -> List[str]:
+        """Retrieve the worker logs from the current log file.
+
+        This method reads and returns the contents of the worker's log file. Only users with
+        admin permissions can access the logs.
+
+        Args:
+            tail: Number of lines to retrieve from the end of the log file.
+                  Set to None or 0 to retrieve the entire file.
+            context: Authentication context (automatically provided by Hypha)
+
+        Returns:
+            List[str]: List of log entry lines (last tail lines)
+
+        Raises:
+            PermissionError: If the user is not authorized to access logs
+            RuntimeError: If log file is not enabled or cannot be read
+        """
+        check_permissions(
+            context=context,
+            authorized_users=self.admin_users,
+            resource_name="accessing BioEngine Worker logs",
+        )
+
+        if not self.log_file:
+            raise RuntimeError(
+                "Log file is not enabled. The worker was started with log_file='off'. "
+                "Cannot retrieve logs."
+            )
+
+        if not self.log_file.exists():
+            raise RuntimeError(
+                f"Log file does not exist: {self.log_file}. "
+                "The file may have been deleted or not yet created."
+            )
+
+        try:
+            with open(self.log_file, "r") as f:
+                # Read all lines and return the last tail lines
+                lines = f.readlines()
+                return lines[-tail:]
+        except Exception as e:
+            raise RuntimeError(f"Failed to read log file {self.log_file}: {e}")
 
     @schema_method
     async def get_status(

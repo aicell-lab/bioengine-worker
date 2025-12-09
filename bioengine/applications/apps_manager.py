@@ -83,7 +83,7 @@ class AppsManager:
         data_server_url: Optional[str] = None,
         startup_applications: Optional[List[dict]] = None,
         # Logger
-        log_file: Optional[str] = None,
+        log_file: Optional[Union[str, Path]] = None,
         debug: bool = False,
     ):
         """
@@ -591,19 +591,30 @@ class AppsManager:
 
         Secret environment variables are those that start with an underscore (_).
         They are replaced with "*****" to hide their values in status responses.
+        The underscore prefix is removed from the key names, and all environment
+        variables are sorted alphabetically.
 
         Args:
             application_env_vars: Dictionary of environment variables for each deployment class
 
         Returns:
-            Filtered dictionary with secret values replaced with "*****"
+            Filtered dictionary with secret values replaced with "*****", secret keys
+            without underscore prefix, and all keys sorted alphabetically
         """
         filtered_env_vars = {}
         for deployment_class, env_vars in application_env_vars.items():
-            filtered_env_vars[deployment_class] = {
-                key: "*****" if key.startswith("_") else value
-                for key, value in env_vars.items()
-            }
+            # Process environment variables: remove _ prefix from secret vars and mask values
+            processed_vars = {}
+            for key, value in env_vars.items():
+                if key.startswith("_"):
+                    # Remove the underscore prefix and mask the value
+                    new_key = key[1:]  # Remove first character (_)
+                    processed_vars[new_key] = "*****"
+                else:
+                    processed_vars[key] = value
+
+            # Sort alphabetically by key
+            filtered_env_vars[deployment_class] = dict(sorted(processed_vars.items()))
         return filtered_env_vars
 
     async def _get_application_service_ids(
@@ -700,10 +711,12 @@ class AppsManager:
             "application_resources": application_info["application_resources"],
             "authorized_users": application_info["authorized_users"],
             "available_methods": application_info["available_methods"],
+            "max_ongoing_requests": application_info["max_ongoing_requests"],
             "service_ids": await self._get_application_service_ids(application_id),
             "start_time": application_info["started_at"],
             "last_updated_at": application_info["last_updated_at"],
             "last_updated_by": application_info["last_updated_by"],
+            "auto_redeploy": application_info["auto_redeploy"],
         }
 
     async def initialize(
@@ -1394,8 +1407,8 @@ class AppsManager:
                 "description": app.metadata["description"],
                 "artifact_id": artifact_id,
                 "version": version,
-                "application_kwargs": application_kwargs,
-                "application_env_vars": application_env_vars,
+                "application_kwargs": app.metadata["application_kwargs"],
+                "application_env_vars": app.metadata["application_env_vars"],
                 "hypha_token": hypha_token,
                 "disable_gpu": disable_gpu,
                 "max_ongoing_requests": max_ongoing_requests,

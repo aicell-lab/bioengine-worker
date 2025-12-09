@@ -94,7 +94,7 @@ class RayCluster:
         scale_down_check_interval_seconds: int = 60,
         scale_down_threshold_seconds: int = 300,
         # Logger configuration
-        log_file: Optional[str] = None,
+        log_file: Optional[Union[str, Path]] = None,
         debug: bool = False,
     ):
         """Initialize cluster manager with networking and resource configurations.

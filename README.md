@@ -26,7 +26,7 @@ This assumes the following directories in the current working directory for moun
 A token for the Hypha workspace can either be added using the tag `--token` or provided in the `.env` file as `HYPHA_TOKEN`. Otherwise, you will be prompted to login when starting the worker.
 The default workspace can be changed using the tag `--workspace`.
 
-By default, the BioEngine worker will start a local Ray cluster with the provided resources `--head_num_gpus` and `--head_num_cpus`. To connect to a running Ray cluster, change the tag `--mode` to `"external-cluster"`.
+By default, the BioEngine worker will start a local Ray cluster with the provided resources `--head-num-gpus` and `--head-num-cpus`. To connect to a running Ray cluster, change the tag `--mode` to `"external-cluster"`.
 
 An overview of all tags for the BioEngine worker can be accessed via:
 ```bash
@@ -63,7 +63,7 @@ The script will pull the latest BioEngine worker docker image and convert it int
 
 To avoid interactive login to Hypha, pass the token with the tag `--token` or save it to `HYPHA_TOKEN` in the `.env` file in the root directory of the project. The script will automatically load the token from the `.env` file if it exists.
 
-The directory `.bioengine` will be automatically created in the user's home directory if the respective tag `--workspace_dir` is not specified.
+The directory `.bioengine` will be automatically created in the user's home directory if the respective tag `--workspace-dir` is not specified.
 
 #### BioEngine worker with different base images
 
@@ -135,8 +135,10 @@ The status contains information about the:
 The BioEngine worker deploys models from the Hypha artifact manager. To create a deployment artifact, run the following script:
 
 ```bash
-python scripts/manage_artifact.py --deployment_dir <path_to_your_deployment_dir>
+python scripts/save_application.py --directory /path/to/app/directory
 ```
+
+Use the tags `--server-url`, `--workspace`, and `--token` to specify the target Hypha server, workspace, and authentication token, respectively.
 
 A deployment requires a `manifest.yaml` file and a python script defining the deployment model.
 

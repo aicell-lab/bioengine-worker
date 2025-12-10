@@ -148,12 +148,12 @@ fi
 # === Load BioEngine image ===
 
 # Get the BioEngine workspace directory
-WORKSPACE_DIR=$(get_arg_value "--workspace_dir" "${HOME}/.bioengine")
+WORKSPACE_DIR=$(get_arg_value "--workspace-dir" "${HOME}/.bioengine")
 WORKSPACE_DIR=$(realpath $WORKSPACE_DIR)
 
-IMAGE_CACHEDIR=$(get_arg_value "--apptainer_cachedir")
+IMAGE_CACHEDIR=$(get_arg_value "--apptainer-cachedir")
 if [[ -z "$IMAGE_CACHEDIR" ]]; then
-    IMAGE_CACHEDIR=$(get_arg_value "--singularity_cachedir" "$WORKSPACE_DIR/images")
+    IMAGE_CACHEDIR=$(get_arg_value "--singularity-cachedir" "$WORKSPACE_DIR/images")
 fi
 IMAGE_CACHEDIR=$(realpath $IMAGE_CACHEDIR)
 mkdir -p $IMAGE_CACHEDIR
@@ -215,12 +215,12 @@ fi
 # WORKSPACE_DIR is needed by the BioEngine worker -> container path
 mkdir -p $WORKSPACE_DIR
 add_bind $WORKSPACE_DIR "${HOME}/.bioengine"
-set_arg_value "--workspace_dir" "${HOME}/.bioengine"
+set_arg_value "--workspace-dir" "${HOME}/.bioengine"
 
-# Pass the real workspace_dir to the SLURM worker node via --worker_workspace_dir
-WORKER_WORKSPACE_DIR=$(get_arg_value "--worker_workspace_dir" $WORKSPACE_DIR)
+# Pass the real workspace_dir to the SLURM worker node via --worker-workspace-dir
+WORKER_WORKSPACE_DIR=$(get_arg_value "--worker-workspace-dir" $WORKSPACE_DIR)
 WORKER_WORKSPACE_DIR=$(realpath $WORKER_WORKSPACE_DIR)
-set_arg_value "--worker_workspace_dir" $WORKER_WORKSPACE_DIR
+set_arg_value "--worker-workspace-dir" $WORKER_WORKSPACE_DIR
 
 # Check if the flag `--debug` is set
 DEBUG_MODE=$(get_arg_value "--debug" "false")

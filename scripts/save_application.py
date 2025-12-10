@@ -103,7 +103,7 @@ if __name__ == "__main__":
         help="Path to the deployment directory",
     )
     parser.add_argument(
-        "--server_url",
+        "--server-url",
         default="https://hypha.aicell.io",
         type=str,
         help="URL of the Hypha server",

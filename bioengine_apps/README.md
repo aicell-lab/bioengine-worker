@@ -621,7 +621,7 @@ This command will:
 A token can be obtained from the Hypha server web interface at [hypha.aicell.io](https://hypha.aicell.io/).
 
 In addition to authentication, you can specify the Hypha server URL and workspace using command-line arguments:
-- `--server_url`: Hypha server URL (default: `https://hypha.aicell.io`)
+- `--server-url`: Hypha server URL (default: `https://hypha.aicell.io`)
 - `--workspace`: Target workspace for the artifact (default: your default workspace)
 
 
@@ -629,7 +629,7 @@ In addition to authentication, you can specify the Hypha server URL and workspac
 ```bash
 python scripts/save_application.py \
     --directory "bioengine_apps/model_runner" \
-    --server_url "https://hypha.aicell.io" \
+    --server-url "https://hypha.aicell.io" \
     --workspace "bioimage-io" \
     --token "$HYPHA_TOKEN"
 ```

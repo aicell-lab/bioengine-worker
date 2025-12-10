@@ -33,8 +33,8 @@ services:
     command: [
       "python", "-m", "bioengine.worker",
       "--mode", "single-machine",
-      "--head_num_gpus", "1",
-      "--head_num_cpus", "4",
+      "--head-num-gpus", "1",
+      "--head-num-cpus", "4",
     ]
     deploy:
       resources:

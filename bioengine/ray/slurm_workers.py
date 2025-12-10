@@ -94,7 +94,7 @@ class SlurmWorkers:
 
         if worker_workspace_dir is None:
             raise ValueError(
-                "Mountable worker workspace directory ('--worker_workspace_dir') must be set in 'SLURM' mode"
+                "Mountable worker workspace directory ('--worker-workspace-dir') must be set in 'SLURM' mode"
             )
 
         self.ray_cluster = ray_cluster

@@ -21,19 +21,19 @@ Key Features:
 - Hypha server integration with authentication management
 
 Usage:
-    python -m bioengine.worker --mode slurm --admin_users admin@institution.edu
+    python -m bioengine.worker --mode slurm --admin-users admin@institution.edu
     python -m bioengine.worker --mode single-machine --debug
-    python -m bioengine.worker --mode external-cluster --server_url https://custom.hypha.io
+    python -m bioengine.worker --mode external-cluster --server-url https://custom.hypha.io
 
 Example Deployment:
     # SLURM HPC environment with custom configuration
     python -m bioengine.worker \\
         --mode slurm \\
-        --admin_users admin@institution.edu researcher@institution.edu \\
-        --workspace_dir /shared/bioengine/workspace \\  # Will auto-detect data server here
-        --max_workers 20 \\
-        --default_num_gpus 2 \\
-        --server_url https://hypha.aicell.io
+        --admin-users admin@institution.edu researcher@institution.edu \\
+        --workspace-dir /shared/bioengine/workspace \\  # Will auto-detect data server here
+        --max-workers 20 \\
+        --default-num-gpus 2 \\
+        --server-url https://hypha.aicell.io
         
     # To use with a dataset server (started separately)
     # 1. Start a datasets server in one terminal:
@@ -78,13 +78,13 @@ def create_parser() -> argparse.ArgumentParser:
         epilog="""
 Examples:
   # SLURM HPC deployment with autoscaling
-  %(prog)s --mode slurm --max_workers 10 --admin_users admin@institution.edu
+  %(prog)s --mode slurm --max-workers 10 --admin-users admin@institution.edu
 
   # Single-machine development deployment  
-  %(prog)s --mode single-machine --debug --workspace_dir ./workspace
+  %(prog)s --mode single-machine --debug --workspace-dir ./workspace
 
   # Connect to existing Ray cluster
-  %(prog)s --mode external-cluster --head_node_address 10.0.0.100
+  %(prog)s --mode external-cluster --head-node-address 10.0.0.100
 
 For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worker
 """,
@@ -103,7 +103,7 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "to an existing Ray cluster",
     )
     core_group.add_argument(
-        "--admin_users",
+        "--admin-users",
         type=str,
         nargs="+",
         metavar="EMAIL",
@@ -111,7 +111,7 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "If not specified, defaults to the authenticated user from Hypha login.",
     )
     core_group.add_argument(
-        "--workspace_dir",
+        "--workspace-dir",
         type=str,
         metavar="PATH",
         help="Directory for worker workspace, temporary files, and Ray data storage. "
@@ -119,16 +119,16 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "Should be accessible across worker nodes in distributed deployments.",
     )
     core_group.add_argument(
-        "--ray_workspace_dir",
+        "--ray-workspace-dir",
         type=str,
         metavar="PATH",
         help="Directory for Ray cluster workspace when connecting to an external Ray cluster. "
         "Only used in 'external-cluster' mode. This allows the remote Ray cluster to use "
         "a different workspace directory than the local machine. If not specified, uses the "
-        "same directory as --workspace_dir. Not applicable for 'single-machine' or 'slurm' modes.",
+        "same directory as --workspace-dir. Not applicable for 'single-machine' or 'slurm' modes.",
     )
     core_group.add_argument(
-        "--startup_applications",
+        "--startup-applications",
         type=str,
         nargs="+",
         metavar="JSON",
@@ -137,20 +137,20 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         'Example: \'{"artifact_id": "my_model", "application_id": "my_app"}\'',
     )
     core_group.add_argument(
-        "--monitoring_interval_seconds",
+        "--monitoring-interval-seconds",
         type=int,
         metavar="SECONDS",
         help="Interval in seconds for worker status monitoring and health checks. "
         "Lower values provide faster response but increase overhead.",
     )
     core_group.add_argument(
-        "--dashboard_url",
+        "--dashboard-url",
         type=str,
         metavar="URL",
         help="Base URL of the BioEngine dashboard for worker management interfaces.",
     )
     core_group.add_argument(
-        "--log_file",
+        "--log-file",
         type=str,
         metavar="PATH",
         help="Path to the log file. If set to 'off', logging will only go to console. "
@@ -163,7 +163,7 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "Increases log verbosity significantly.",
     )
     core_group.add_argument(
-        "--graceful_shutdown_timeout",
+        "--graceful-shutdown-timeout",
         type=int,
         metavar="SECONDS",
         help="Timeout in seconds for graceful shutdown operations.",
@@ -174,7 +174,7 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "Hypha Options", "Server connection and authentication"
     )
     hypha_group.add_argument(
-        "--server_url",
+        "--server-url",
         type=str,
         metavar="URL",
         help="URL of the Hypha server for service registration and remote access. "
@@ -196,7 +196,7 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "Recommend using a long-lived token for production deployments.",
     )
     hypha_group.add_argument(
-        "--client_id",
+        "--client-id",
         type=str,
         metavar="ID",
         help="Unique client identifier for Hypha connection. If not specified, "
@@ -208,7 +208,7 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "Ray Cluster Options", "Cluster networking and resource configuration"
     )
     ray_cluster_group.add_argument(
-        "--head_node_address",
+        "--head-node-address",
         type=str,
         metavar="ADDRESS",
         help="IP address of the Ray head node. For external-cluster mode, this specifies "
@@ -216,91 +216,91 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "system IP address.",
     )
     ray_cluster_group.add_argument(
-        "--head_node_port",
+        "--head-node-port",
         type=int,
         metavar="PORT",
         help="Port for Ray head node and GCS (Global Control Service) server. "
         "Must be accessible from all worker nodes.",
     )
     ray_cluster_group.add_argument(
-        "--node_manager_port",
+        "--node-manager-port",
         type=int,
         metavar="PORT",
         help="Port for Ray node manager services. Used for inter-node communication "
         "and coordination.",
     )
     ray_cluster_group.add_argument(
-        "--object_manager_port",
+        "--object-manager-port",
         type=int,
         metavar="PORT",
         help="Port for Ray object manager service. Handles distributed object storage "
         "and transfer between nodes.",
     )
     ray_cluster_group.add_argument(
-        "--redis_shard_port",
+        "--redis-shard-port",
         type=int,
         metavar="PORT",
         help="Port for Redis sharding in Ray's internal metadata storage. "
         "Used for cluster state management.",
     )
     ray_cluster_group.add_argument(
-        "--serve_port",
+        "--serve-port",
         type=int,
         metavar="PORT",
         help="Port for Ray Serve HTTP endpoint serving deployed models and applications. "
         "This is where model inference requests are handled.",
     )
     ray_cluster_group.add_argument(
-        "--dashboard_port",
+        "--dashboard-port",
         type=int,
         metavar="PORT",
         help="Port for Ray dashboard web interface. Provides cluster monitoring "
         "and debugging capabilities.",
     )
     ray_cluster_group.add_argument(
-        "--client_server_port",
+        "--client-server-port",
         type=int,
         metavar="PORT",
         help="Port for Ray client server connections. Used by external Ray clients "
         "to connect to the cluster.",
     )
     ray_cluster_group.add_argument(
-        "--redis_password",
+        "--redis-password",
         type=str,
         metavar="PASSWORD",
         help="Password for Ray cluster Redis authentication. If not specified, "
         "a secure random password will be generated automatically.",
     )
     ray_cluster_group.add_argument(
-        "--head_num_cpus",
+        "--head-num-cpus",
         type=int,
         metavar="COUNT",
         help="Number of CPU cores allocated to the head node for task execution. "
         "Set to 0 to reserve head node for coordination only.",
     )
     ray_cluster_group.add_argument(
-        "--head_num_gpus",
+        "--head-num-gpus",
         type=int,
         metavar="COUNT",
         help="Number of GPU devices allocated to the head node for task execution. "
         "Typically 0 to reserve GPUs for worker nodes.",
     )
     ray_cluster_group.add_argument(
-        "--head_memory_in_gb",
+        "--head-memory-in-gb",
         type=int,
         metavar="GB",
         help="Memory allocation in GB for head node task execution. "
         "If not specified, Ray will auto-detect available memory.",
     )
     ray_cluster_group.add_argument(
-        "--runtime_env_pip_cache_size_gb",
+        "--runtime-env-pip-cache-size-gb",
         type=int,
         metavar="GB",
         help="Size limit in GB for Ray runtime environment pip package cache. "
         "Larger cache improves environment setup time.",
     )
     ray_cluster_group.add_argument(
-        "--no_ray_cleanup",
+        "--no-ray-cleanup",
         action="store_false",
         dest="force_clean_up",
         help="Skip cleanup of previous Ray cluster processes and data. "
@@ -319,42 +319,42 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         f"dependencies and be accessible on compute nodes.",
     )
     slurm_job_group.add_argument(
-        "--worker_workspace_dir",
+        "--worker-workspace-dir",
         type=str,
         metavar="PATH",
         help="Workspace directory path mounted to worker containers in SLURM jobs. "
         "Must be accessible from compute nodes. Required for SLURM mode.",
     )
     slurm_job_group.add_argument(
-        "--default_num_gpus",
+        "--default-num-gpus",
         type=int,
         metavar="COUNT",
         help="Default number of GPU devices to request per SLURM worker job. "
         "Can be overridden per deployment.",
     )
     slurm_job_group.add_argument(
-        "--default_num_cpus",
+        "--default-num-cpus",
         type=int,
         metavar="COUNT",
         help="Default number of CPU cores to request per SLURM worker job. "
         "Should match typical model inference requirements.",
     )
     slurm_job_group.add_argument(
-        "--default_mem_in_gb_per_cpu",
+        "--default-mem-in-gb-per-cpu",
         type=int,
         metavar="GB",
         help="Default memory allocation in GB per CPU core for SLURM workers. "
         "Total memory = num_cpus * mem_per_cpu.",
     )
     slurm_job_group.add_argument(
-        "--default_time_limit",
+        "--default-time-limit",
         type=str,
         metavar="TIME",
         help='Default time limit for SLURM worker jobs in "HH:MM:SS" format. '
         "Jobs will be terminated after this duration.",
     )
     slurm_job_group.add_argument(
-        "--further_slurm_args",
+        "--further-slurm-args",
         type=str,
         nargs="+",
         metavar="ARG",
@@ -367,35 +367,35 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "Ray Autoscaler Options", "Automatic worker scaling behavior"
     )
     ray_autoscaling_group.add_argument(
-        "--min_workers",
+        "--min-workers",
         type=int,
         metavar="COUNT",
         help="Minimum number of worker nodes to maintain in the cluster. "
         "Workers below this threshold will be started immediately.",
     )
     ray_autoscaling_group.add_argument(
-        "--max_workers",
+        "--max-workers",
         type=int,
         metavar="COUNT",
         help="Maximum number of worker nodes allowed in the cluster. "
         "Prevents unlimited scaling and controls costs.",
     )
     ray_autoscaling_group.add_argument(
-        "--scale_up_cooldown_seconds",
+        "--scale-up-cooldown-seconds",
         type=int,
         metavar="SECONDS",
         help="Cooldown period in seconds between scaling up operations. "
         "Prevents rapid scaling oscillations.",
     )
     ray_autoscaling_group.add_argument(
-        "--scale_down_check_interval_seconds",
+        "--scale-down-check-interval-seconds",
         type=int,
         metavar="SECONDS",
         help="Interval in seconds between checks for scaling down idle workers. "
         "More frequent checks enable faster response to load changes.",
     )
     ray_autoscaling_group.add_argument(
-        "--scale_down_threshold_seconds",
+        "--scale-down-threshold-seconds",
         type=int,
         metavar="SECONDS",
         help="Time threshold in seconds before scaling down idle worker nodes. "

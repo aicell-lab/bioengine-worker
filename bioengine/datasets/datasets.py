@@ -5,8 +5,6 @@ from typing import Dict, List, Optional, Union
 
 import httpx
 
-from bioengine.datasets.utils import get_presigned_url
-
 logger = logging.getLogger("ray.serve")
 
 
@@ -261,6 +259,8 @@ class BioEngineDatasets:
                 token=token,
             )
         else:
+            from bioengine.datasets.utils import get_presigned_url
+
             presigned_url = await get_presigned_url(
                 data_service_url=self.service_url,
                 dataset_id=dataset_id,

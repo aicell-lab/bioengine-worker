@@ -425,8 +425,7 @@ class AppBuilder:
 
         @wraps(orig_init)
         def wrapped_init(self, *args, **kwargs):
-            # TODO: check level of logging
-            self.logger = logging.getLogger("ray.serve")
+            logger = logging.getLogger("ray.serve")
 
             # Register this serve replica with the BioEngineProxyActor for tracking
             proxy_actor_handle = None
@@ -434,15 +433,15 @@ class AppBuilder:
                 proxy_actor_handle = ray.get_actor(
                     name=proxy_actor_name, namespace="bioengine"
                 )
-                self.logger.debug(
+                logger.debug(
                     f"✅ Successfully retrieved BioEngineProxyActor '{proxy_actor_name}'"
                 )
             except ValueError as e:
-                self.logger.error(
+                logger.error(
                     f"❌ BioEngineProxyActor '{proxy_actor_name}' not found: {e}"
                 )
             except Exception as e:
-                self.logger.error(
+                logger.error(
                     f"❌ Unexpected error getting BioEngineProxyActor '{proxy_actor_name}': {e}",
                     exc_info=True,
                 )
@@ -452,11 +451,11 @@ class AppBuilder:
                     replica_context = serve.get_replica_context()
                     deployment_name = replica_context.deployment
                     replica_id = replica_context.replica_tag
-                    
+
                     # Get timezone at replica level
                     replica_timezone = time.strftime("%Z")
-                    
-                    self.logger.debug(
+
+                    logger.debug(
                         f"Retrieved replica context: tag={replica_id}, "
                         f"deployment={replica_context.deployment}, "
                         f"app={replica_context.app_name}, "
@@ -469,44 +468,33 @@ class AppBuilder:
                         replica_id=replica_id,
                         timezone=replica_timezone,
                     )
-                    self.logger.info(
+                    logger.info(
                         f"✅ Registered replica '{replica_id}' with BioEngineProxyActor."
                     )
                 except ValueError as e:
-                    self.logger.error(
-                        f"❌ Invalid replica registration parameters: {e}"
-                    )
+                    logger.error(f"❌ Invalid replica registration parameters: {e}")
                 except Exception as e:
-                    self.logger.error(
+                    logger.error(
                         f"❌ Unable to register replica with BioEngineProxyActor: {e}",
                         exc_info=True,
                     )
 
             # Ensure the current working directory is set to the application working directory
-            workdir = (
-                Path.home().resolve()
-            )  # Home directory is set to the apps_workdir
+            workdir = Path.home().resolve()  # Home directory is set to the apps_workdir
             os.environ["HOME"] = str(
                 workdir
             )  # Update the HOME environment variable with resolved path
             workdir.mkdir(parents=True, exist_ok=True)
             os.chdir(workdir)
-            self.logger.info(f"📁 Working directory: {workdir}/")
+            logger.info(f"📁 Working directory: {workdir}/")
 
             # Initialize deployment states
-            self._deployment_initialized = False
-            self._deployment_test_failed = False
-            self._test_task = None  # Background task for test_deployment
+            self._bioengine_replica_initialized = False
+            self._bioengine_replica_test_failed = False
+            self._bioengine_test_task = None  # Background task for test_deployment
 
             # Create a health check lock to synchronize health checks
-            self._health_check_lock = asyncio.Lock()
-
-            # Initialize a BioEngine Hypha client and worker service
-            self.bioengine_hypha_client = None
-            self.bioengine_worker_service = None
-
-            # By default, assume the token can be used to access the BioEngine worker service
-            self._hypha_token_is_admin_user = True
+            self._bioengine_health_check_lock = asyncio.Lock()
 
             # Update secret environment variable with real value (previously set to "*****")
             for env_var, value in secret_env_vars.items():
@@ -558,7 +546,7 @@ class AppBuilder:
                 async def async_init(self):
                     # This will be wrapped and tracked automatically
                     self.model = await load_large_model()
-                    self.logger.info("Model loaded successfully")
+                    logger.info("Model loaded successfully")
             ```
         """
         orig_async_init = getattr(
@@ -567,9 +555,10 @@ class AppBuilder:
 
         @wraps(orig_async_init)
         async def wrapped_async_init(self):
-            start_time = time.time()
-            self.logger.info(f"⚡ Starting async initialization...")
+            logger = logging.getLogger("ray.serve")
+            logger.info(f"⚡ Starting async initialization...")
 
+            start_time = time.time()
             try:
                 # Check if the original async_init method is async
                 if inspect.iscoroutinefunction(orig_async_init):
@@ -578,14 +567,14 @@ class AppBuilder:
                     await asyncio.to_thread(orig_async_init, self)
 
                 elapsed_time = time.time() - start_time
-                self._deployment_initialized = True
-                self.logger.info(
+                self._bioengine_replica_initialized = True
+                logger.info(
                     f"✅ Async initialization completed successfully in {elapsed_time:.2f}s"
                 )
 
             except Exception as e:
                 elapsed_time = time.time() - start_time
-                self.logger.error(
+                logger.error(
                     f"❌ Async initialization failed after {elapsed_time:.2f}s: {e}"
                 )
                 raise
@@ -629,7 +618,7 @@ class AppBuilder:
                     # This will be wrapped and tracked automatically
                     result = self.predict_sample_input()
                     assert result is not None, "Model prediction failed"
-                    self.logger.info("Deployment test passed!")
+                    logger.info("Deployment test passed!")
             ```
         """
         orig_test_deployment = getattr(
@@ -638,9 +627,10 @@ class AppBuilder:
 
         @wraps(orig_test_deployment)
         async def wrapped_test_deployment(self):
-            start_time = time.time()
-            self.logger.info(f"🧪 Starting deployment test...")
+            logger = logging.getLogger("ray.serve")
+            logger.info(f"🧪 Starting deployment test...")
 
+            start_time = time.time()
             try:
                 # Check if the original test_deployment method is async
                 if inspect.iscoroutinefunction(orig_test_deployment):
@@ -650,15 +640,15 @@ class AppBuilder:
 
                 # Mark the deployment as tested
                 elapsed_time = time.time() - start_time
-                self._deployment_test_failed = False
-                self.logger.info(
+                self._bioengine_replica_test_failed = False
+                logger.info(
                     f"✅ Deployment test completed successfully in {elapsed_time:.2f}s"
                 )
 
             except Exception as e:
                 elapsed_time = time.time() - start_time
-                self._deployment_test_failed = True
-                self.logger.error(
+                self._bioengine_replica_test_failed = True
+                logger.error(
                     f"❌ Deployment test failed after {elapsed_time:.2f}s: {e}"
                 )
                 raise RuntimeError(f"Deployment test failed: {e}")
@@ -705,95 +695,27 @@ class AppBuilder:
 
         @wraps(orig_health_check)
         async def check_health(self):
-            async with self._health_check_lock:
+            logger = logging.getLogger("ray.serve")
+
+            async with self._bioengine_health_check_lock:
                 # Ensure async initialization has completed
-                if not self._deployment_initialized:
+                if not self._bioengine_replica_initialized:
                     await self.async_init()
 
                 # Launch test_deployment in the background if not already started
-                if self._test_task is None:
-                    self.logger.info(
-                        "🚀 Launching deployment test in the background..."
+                if self._bioengine_test_task is None:
+                    logger.info("🚀 Launching deployment test in the background...")
+                    # Run test_deployment in thread pool executor to avoid blocking event loop
+                    loop = asyncio.get_event_loop()
+                    self._bioengine_test_task = loop.run_in_executor(
+                        None, lambda: asyncio.run(self.test_deployment())
                     )
-                    self._test_task = asyncio.create_task(self.test_deployment())
 
                 # Check if the background test task failed
-                if self._deployment_test_failed:
+                if self._bioengine_replica_test_failed:
                     raise RuntimeError(
                         "Deployment test failed - deployment is unhealthy"
                     )
-
-                worker_service_id = os.getenv("BIOENGINE_WORKER_SERVICE_ID")
-                if (
-                    self._hypha_token_is_admin_user
-                    and self.bioengine_worker_service is None
-                ):
-
-                    # Try to (re)connect to the worker service
-                    try:
-                        if self.bioengine_hypha_client is not None:
-                            try:
-                                await self.bioengine_hypha_client.disconnect()
-                            except:
-                                pass
-                            self.bioengine_hypha_client = None
-
-                        self.bioengine_hypha_client = await connect_to_server(
-                            {
-                                "server_url": os.getenv("HYPHA_SERVER_URL"),
-                                "token": os.getenv("HYPHA_TOKEN"),
-                            }
-                        )
-                        self.bioengine_worker_service = (
-                            await self.bioengine_hypha_client.get_service(
-                                worker_service_id
-                            )
-                        )
-                        self.logger.info(
-                            f"✅ Successfully connected to BioEngine "
-                            f"worker service with ID '{worker_service_id}'."
-                        )
-
-                    except Exception as e:
-                        if self.bioengine_hypha_client is not None:
-                            try:
-                                await self.bioengine_hypha_client.disconnect()
-                            except:
-                                pass
-                            self.bioengine_hypha_client = None
-
-                        self.bioengine_worker_service = None
-                        if "Service not found:" in str(e):
-                            # The service is not (yet) available
-                            self.logger.warning(
-                                f"⚠️ BioEngine worker service with ID "
-                                f"'{worker_service_id}' is currently not available."
-                            )
-                        else:
-                            self.logger.error(
-                                f"❌ Connection to BioEngine worker service failed: {e}"
-                            )
-                            raise e
-
-                # Try to access the BioEngine worker service
-                if self.bioengine_worker_service is not None:
-                    try:
-                        is_admin = await self.bioengine_worker_service.check_access()
-                        self._hypha_token_is_admin_user = is_admin
-
-                        if not is_admin:
-                            self.logger.warning(
-                                f"⚠️ Application token is not authorized "
-                                f"to access the BioEngine worker service with ID '{worker_service_id}'."
-                            )
-                            # If the token cannot access the BioEngine worker service, reset the service connection (and don't try to reconnect again)
-                            self.bioengine_worker_service = None
-
-                    except Exception as e:
-                        self.logger.error(f"❌ BioEngine worker service failed: {e}")
-                        # Reset service connection to trigger re-connection on next call
-                        self.bioengine_worker_service = None
-                        raise RuntimeError("BioEngine worker service connection failed")
 
                 try:
                     # Ensure data server can be reached
@@ -806,7 +728,7 @@ class AppBuilder:
                         await asyncio.to_thread(orig_health_check, self)
 
                 except Exception as e:
-                    self.logger.error(f"❌ Health check failed: {e}")
+                    logger.error(f"❌ Health check failed: {e}")
                     raise
 
         # Add the updated health check method to the deployment class
@@ -1348,6 +1270,11 @@ class AppBuilder:
                 env_vars=deployment_env_vars,
             )
             deployments.append(deployment)
+
+            # Extract complete runtime environment variables from the deployment
+            application_env_vars[class_name] = deployment.ray_actor_options[
+                "runtime_env"
+            ]["env_vars"]
 
         # Calculate the total number of required resources
         proxy_deployment = BioEngineProxyDeployment

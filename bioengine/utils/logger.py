@@ -4,7 +4,7 @@ from typing import Optional, Union
 
 stream_logging_format = "\033[36m%(asctime)s\033[0m - \033[32m%(name)s\033[0m - \033[1;33m%(levelname)s\033[0m - %(message)s"
 file_logging_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-date_format = "%Y-%m-%d %H:%M:%S"
+date_format = "%Y-%m-%d %H:%M:%S %Z"
 
 
 def create_logger(

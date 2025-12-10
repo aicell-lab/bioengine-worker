@@ -17,6 +17,7 @@ from ray.util.state.common import (
 from ray.util.state.exception import RayStateApiException
 
 logger = logging.getLogger("ray")
+date_format = "%Y-%m-%d %H:%M:%S %Z"
 
 
 @ray.remote(
@@ -81,9 +82,9 @@ class BioEngineProxyActor:
         self.check_pending_resources = check_pending_resources
 
         # Initialize per application actor ID tracking
-        # Structure: {app_id: {deployment_name: {replica_id: (timestamp, actor_id)}}}
+        # Structure: {app_id: {deployment_name: {replica_id: (actor_id, timestamp, timezone)}}}
         self.application_replicas: Dict[
-            str, Dict[str, Dict[str, Tuple[float, str]]]
+            str, Dict[str, Dict[str, Tuple[str, float, str]]]
         ] = {}
 
         logger.info(f"ClusterState initialized with GCS address: {self.gcs_address}")
@@ -346,11 +347,12 @@ class BioEngineProxyActor:
         application_id: str,
         deployment_name: str,
         replica_id: str,
+        timezone: str,
     ) -> None:
         """
         Register a Ray Serve replica for tracking and log retrieval.
 
-        Registers a replica's actor ID and timestamp for later log retrieval,
+        Registers a replica's actor ID, timestamp, and timezone for later log retrieval,
         especially useful for accessing logs from replicas that have died.
         Validates that the replica exists in the Ray cluster before registration.
 
@@ -358,6 +360,7 @@ class BioEngineProxyActor:
             application_id: Name of the Ray Serve application.
             deployment_name: Name of the deployment within the application.
             replica_id: Unique identifier for the replica (e.g., "replica_1").
+            timezone: Timezone string for the replica (e.g., "Europe/Stockholm").
 
         Raises:
             ValueError: If the replica is already registered, not found in the
@@ -369,11 +372,11 @@ class BioEngineProxyActor:
 
         # Check if the replica is already registered
         if replica_id in self.application_replicas[application_id][deployment_name]:
-            registration_time, _ = self.application_replicas[application_id][
+            actor_id, registration_time, _ = self.application_replicas[application_id][
                 deployment_name
             ][replica_id]
             formatted_time = time.strftime(
-                "%Y-%m-%d %H:%M:%S", time.localtime(registration_time)
+                date_format, time.localtime(registration_time)
             )
             raise ValueError(
                 f"Replica '{replica_id}' already registered for application "
@@ -403,14 +406,15 @@ class BioEngineProxyActor:
             )
         actor_id = actor[0].actor_id
 
-        # Register the replica with timestamp and actor ID
+        # Register the replica with timestamp, actor ID, and timezone
         self.application_replicas[application_id][deployment_name][replica_id] = (
-            registration_time,
             actor_id,
+            registration_time,
+            timezone,
         )
         logger.info(
             f"Registered replica '{replica_id}' for application '{application_id}', "
-            f"deployment '{deployment_name}' with actor ID '{actor_id}'."
+            f"deployment '{deployment_name}' with actor ID '{actor_id}' (replica timezone: {timezone})."
         )
 
     def clear_application_replicas(self, application_id: str) -> None:
@@ -432,7 +436,9 @@ class BioEngineProxyActor:
         self,
         actor_id: str,
         tail: int = 100,
-    ) -> Dict[str, List[str]]:
+        timezone: Optional[str] = None,
+        creation_timestamp: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """
         Get logs for a specific Ray actor by its actor ID.
 
@@ -444,16 +450,28 @@ class BioEngineProxyActor:
             actor_id: Ray actor ID to retrieve logs from.
             tail: Number of lines to retrieve from the end of each log.
                   Use -1 to get the entire log. Default is 100.
+            timezone: Optional timezone string for the replica.
+            creation_timestamp: Optional Unix timestamp when the replica was created.
 
         Returns:
-            Dictionary with "stdout" and "stderr" keys, each containing
-            a list of log lines as strings. Example:
+            Dictionary with log information. Always includes "stdout" and "stderr" keys.
+            If timezone is provided, also includes "timezone" key.
+            If creation_timestamp is provided, also includes "creation_timestamp" key.
+            Example:
             {
+                "creation_timestamp": 1234567890.123,  # if provided
+                "timezone": "Europe/Stockholm",  # if provided
                 "stdout": ["line1", "line2", ...],
-                "stderr": ["error1", ...]
+                "stderr": ["error1", ...],
             }
         """
         logs = {}
+
+        # Add optional metadata
+        if creation_timestamp is not None:
+            logs["creation_timestamp"] = creation_timestamp
+        if timezone is not None:
+            logs["timezone"] = timezone
 
         try:
             stdout = next(
@@ -530,9 +548,21 @@ class BioEngineProxyActor:
         # Logs of active replicas
         for replica_id, actor_id in active_replicas.items():
             try:
+                # Get replica metadata for timezone and creation timestamp
+                replica_info = self.application_replicas.get(application_id, {}).get(
+                    deployment_name, {}
+                ).get(replica_id)
+                replica_tz = None
+                replica_creation = None
+                if replica_info:
+                    # Unpack: (actor_id, timestamp, timezone)
+                    _, replica_creation, replica_tz = replica_info
+
                 actor_logs = self.get_actor_logs(
                     actor_id=actor_id,
                     tail=tail,
+                    timezone=replica_tz,
+                    creation_timestamp=replica_creation,
                 )
                 logs[replica_id] = actor_logs
             except Exception as e:
@@ -560,11 +590,13 @@ class BioEngineProxyActor:
             else dead_replica_ids[::-1][:n_previous_replica]
         )
         for replica_id in dead_replicas_to_fetch:
-            _, actor_id = registered_replicas[replica_id]
+            actor_id, replica_creation, replica_tz = registered_replicas[replica_id]
             try:
                 actor_logs = self.get_actor_logs(
                     actor_id=actor_id,
                     tail=tail,
+                    timezone=replica_tz,
+                    creation_timestamp=replica_creation,
                 )
                 logs[replica_id] = actor_logs
             except Exception as e:

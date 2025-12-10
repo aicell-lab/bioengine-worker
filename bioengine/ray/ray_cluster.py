@@ -19,6 +19,7 @@ from bioengine.ray.slurm_workers import SlurmWorkers
 from bioengine.utils import (
     acquire_free_port,
     create_logger,
+    date_format,
     get_internal_ip,
     stream_logging_format,
 )
@@ -704,6 +705,11 @@ class RayCluster:
                     "py_modules": [os.path.dirname(bioengine.__file__)],
                 },
             )
+
+            # Update Ray's logger formatters to use timezone-aware date format
+            for handler in logging.getLogger("ray").handlers:
+                if handler.formatter:
+                    handler.formatter.datefmt = date_format
 
             # Create BioEngineProxy to access cluster state
             # TODO: Check 'exclude_head_node' setting when head cpus and gpus are set

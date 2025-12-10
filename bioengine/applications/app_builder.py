@@ -452,16 +452,22 @@ class AppBuilder:
                     replica_context = serve.get_replica_context()
                     deployment_name = replica_context.deployment
                     replica_id = replica_context.replica_tag
+                    
+                    # Get timezone at replica level
+                    replica_timezone = time.strftime("%Z")
+                    
                     self.logger.debug(
                         f"Retrieved replica context: tag={replica_id}, "
                         f"deployment={replica_context.deployment}, "
-                        f"app={replica_context.app_name}"
+                        f"app={replica_context.app_name}, "
+                        f"timezone={replica_timezone}"
                     )
 
                     proxy_actor_handle.register_serve_replica.remote(
                         application_id=application_id,
                         deployment_name=deployment_name,
                         replica_id=replica_id,
+                        timezone=replica_timezone,
                     )
                     self.logger.info(
                         f"✅ Registered replica '{replica_id}' with BioEngineProxyActor."

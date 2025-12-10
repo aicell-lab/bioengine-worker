@@ -221,6 +221,147 @@ async def process_data(self, data: str) -> Dict:
     return {"shape": df.shape}
 ```
 
+#### Why Import Inside Methods?
+
+BioEngine loads your deployment script as a string, executes it in a sandbox environment, and extracts only the Ray Serve deployment class. This class is then serialized and sent to the Ray cluster for deployment.
+
+**Key constraints:**
+- **Sandbox environment**: Only packages available in the BioEngine worker environment can be imported during script loading
+- **Ray cluster**: Only packages in the Ray cluster's `runtime_env` can be deserialized and used at runtime
+- **Serialization**: External packages imported at the top level may fail to serialize or deserialize
+
+**Solution**: Import additional packages inside your methods where they're actually used, and specify them in `runtime_env`:
+
+```python
+@serve.deployment(
+    ray_actor_options={
+        "num_cpus": 1,
+        "runtime_env": {
+            "pip": ["pandas==2.0.0", "scikit-learn==1.3.0"],
+        },
+    }
+)
+class MyDeployment:
+    @schema_method
+    async def analyze(self, data: list) -> Dict:
+        # Import inside the method
+        import pandas as pd
+        from sklearn.preprocessing import StandardScaler
+        
+        df = pd.DataFrame(data)
+        scaler = StandardScaler()
+        scaled = scaler.fit_transform(df)
+        return {"result": scaled.tolist()}
+```
+
+### Handling Blocking Operations
+
+Ray Serve deployments should handle requests asynchronously to maximize throughput. If you have blocking operations (I/O, CPU-intensive tasks), run them in a thread pool executor to prevent blocking other requests to the same replica:
+
+```python
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from ray import serve
+from hypha_rpc.utils.schema import schema_method
+
+@serve.deployment(
+    ray_actor_options={"num_cpus": 2},
+    max_ongoing_requests=10,  # Allow multiple simultaneous requests
+)
+class MyDeployment:
+    def __init__(self):
+        # Create a thread pool for blocking operations
+        self.executor = ThreadPoolExecutor(max_workers=4)
+        
+    def _blocking_operation(self, data):
+        """A blocking CPU-intensive or I/O operation."""
+        # Blocking operation here (e.g., heavy computation, file I/O)
+        import time
+        time.sleep(2)  # Simulated blocking work
+        return f"Processed: {data}"
+    
+    @schema_method
+    async def process(self, data: str) -> Dict:
+        """Process data without blocking other requests."""
+        # Run blocking operation in thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            self.executor, 
+            self._blocking_operation, 
+            data
+        )
+        return {"result": result}
+```
+
+**When to use thread pool executors:**
+- CPU-intensive computations (without releasing GIL)
+- Synchronous I/O operations (file reading, database queries)
+- Calls to blocking libraries without async support
+- Any operation that would otherwise block the event loop
+
+**Benefits:**
+- Multiple requests can be processed simultaneously by the same replica
+- Better resource utilization
+- Improved throughput and response times
+
+### Local Development and Testing
+
+When developing and testing your deployment locally, use `DeploymentClass.func_or_class()` to get the underlying class without Ray Serve infrastructure:
+
+```python
+if __name__ == "__main__":
+    import asyncio
+    
+    # Get the deployment class for local testing
+    deployment_instance = MyDeployment.func_or_class()
+    
+    # Test initialization
+    deployment_instance.__init__()
+    
+    # Test async_init if it exists
+    if hasattr(deployment_instance, "async_init"):
+        asyncio.run(deployment_instance.async_init())
+    
+    # Test your methods
+    result = asyncio.run(deployment_instance.process("test_data"))
+    print(f"Result: {result}")
+```
+
+**Example from model_runner application:**
+
+See [`bioengine_apps/model_runner/runtime_deployment.py`](model_runner/runtime_deployment.py) for a complete example:
+
+```python
+if __name__ == "__main__":
+    import asyncio
+    from pathlib import Path
+    
+    # Reproduce BioEngine app environment
+    app_workdir = Path.home() / ".bioengine" / "apps" / "model-runner"
+    app_workdir.mkdir(parents=True, exist_ok=True)
+    os.environ["TMPDIR"] = str(app_workdir)
+    os.environ["HOME"] = str(app_workdir)
+    
+    # Get the deployment class for testing
+    model_runner = RuntimeDeployment.func_or_class()
+    
+    # Test the deployment methods
+    test_result = asyncio.run(
+        model_runner.test(str(rdf_path), additional_requirements=["torch==2.5.1"])
+    )
+    print("Model testing completed successfully")
+    
+    # Run prediction test
+    result = asyncio.run(model_runner.predict(str(rdf_path), inputs=test_image))
+    print(f"Model prediction result: {result}")
+```
+
+**Benefits of local testing:**
+- Fast iteration without deploying to Ray cluster
+- Easy debugging with standard Python tools
+- Test individual methods in isolation
+- Verify logic before deployment
+
 ### Multi-Deployment Composition
 
 For applications with multiple deployments, use `DeploymentHandle` parameters:
@@ -510,40 +651,6 @@ file_content = await self.bioengine_datasets.get_file(
 
 For accessing datasets with restricted access a token is required for user authentication. `BioEngineDatasets` will default to the token that is provided during application deployment. It is also possible to provide a different token when calling the methods.
 
-#### `self.bioengine_hypha_client`
-
-Maintained connection to Hypha server:
-
-```python
-@schema_method  
-async def call_hypha_service(self, service_id: str) -> Dict:
-    """Call other Hypha services."""
-    
-    # Get service reference
-    service = await self.bioengine_hypha_client.get_service(service_id)
-    
-    # Call service methods
-    result = await service.some_method("parameter")
-    
-    return {"result": result}
-```
-
-#### `self.bioengine_worker_service`
-
-Access to the BioEngine worker (if token provided):
-
-```python
-@schema_method
-async def get_worker_status(self) -> Dict:
-    """Get BioEngine worker status."""
-    
-    if self.bioengine_worker_service:
-        status = await self.bioengine_worker_service.get_status()
-        return status
-    else:
-        return {"error": "No worker access - token required"}
-```
-
 ### Schema Methods
 
 Use `@schema_method` to expose API methods:
@@ -713,6 +820,30 @@ The web interface provides a user-friendly way to manage your applications witho
 
 ### Deploying Applications
 
+First, connect to the Hypha server and get the BioEngine worker service:
+
+```python
+from hypha_rpc import connect_to_server, login
+
+# Authenticate with Hypha server
+token = await login({"server_url": "https://hypha.aicell.io"})
+
+# Connect to Hypha server
+hypha_client = await connect_to_server(
+    {
+        "server_url": "https://hypha.aicell.io",
+        "token": token,
+    }
+)
+
+# Get BioEngine worker service
+workspace = hypha_client.config.workspace
+bioengine_worker_service_id = f"{workspace}/bioengine-worker"
+bioengine_worker_service = await hypha_client.get_service(bioengine_worker_service_id)
+```
+
+Be aware that there can be multiple BioEngine worker services in a workspace. If this is the case, ensure you are using the full service ID of the desired worker, including client ID (format: "<workspace>/<client-id>:bioengine-worker").
+
 Deploy your application using the BioEngine worker service:
 
 ```python
@@ -820,7 +951,7 @@ The `run_application` method supports these parameters:
 - **`application_id`** *(optional)*: Custom instance ID for deployment
 - **`application_kwargs`** *(optional)*: Initialization parameters per deployment
 - **`application_env_vars`** *(optional)*: Environment variables per deployment  
-- **`hypha_token`** *(optional)*: Authentication token for user permissions
+- **`hypha_token`** *(optional)*: Authentication token for user permissions. Use this to run the application with specific user credentials, which determines access to datasets and other resources. Can be obtained from `await login()` or from the [Hypha dashboard](https://hypha.aicell.io/) (Login → Profile Picture → My Workspace → Development tab → Generate Token).
 - **`disable_gpu`** *(optional)*: Force CPU-only execution (default: False)
 - **`max_ongoing_requests`** *(optional)*: Concurrent request limit (default: 10)
 

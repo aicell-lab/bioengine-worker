@@ -1,221 +1,248 @@
-# BioEngine Worker
+<div align="center">
+  <img src="docs/assets/bioengine-icon.svg" alt="BioEngine Logo" width="200"/>
+  
+  # BioEngine Worker
+  
+  **Cloud-powered AI for simplified bioimage analysis**
+  
+  [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue)](https://github.com/orgs/aicell-lab/packages/container/package/bioengine-worker)
+  [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+  [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+  
+  [🚀 Try It Now](#-quick-start) • [📚 Documentation](#-documentation) • [🎯 Examples](#-use-cases) • [💬 Community](https://github.com/aicell-lab/bioengine-worker/discussions)
+  
+</div>
 
-Manages Ray cluster lifecycle BioEngine Apps and Datasets on HPC systems, single machine Ray instances or pre-existing Ray environments.
+---
 
-Provides a Hypha service interface for streaming datasets, executing python code remotely or deploying models through Ray.
+## 🌟 What is BioEngine?
 
-The BioEngine worker comes in three modes:
-- `slurm`: Start a latent BioEngine worker service with very low resource consumption that activates upon usage and scales a Ray cluster by submitting SLURM jobs to recruit additional workers. An autoscaling system will handle up- and down-scaling.
-- `single-machine`: Start a local BioEngine worker with Ray running on a single machine.
-- `external-cluster`: Start a BioEngine worker with data access, but execute all computations on a remote Ray cluster.
+BioEngine is a **distributed AI platform** that brings the power of cloud computing to bioimage analysis. It enables researchers to:
 
-## Start your own BioEngine worker
+- 🔬 **Deploy AI models** for image analysis with automatic scaling
+- 📊 **Stream large datasets** efficiently with privacy-preserving access control
+- ⚡ **Run compute-intensive workflows** on HPC clusters or cloud infrastructure
+- 🔌 **Access resources remotely** through a unified API via [Hypha](https://ha.amun.ai/)
 
-The BioEngine worker comes in containerized form as Docker or Apptainer image.
+Built on [Ray](https://www.ray.io/) and [Ray Serve](https://docs.ray.io/en/latest/serve/index.html), BioEngine automatically manages resource allocation, scaling, and deployment across various computing environments.
 
-### Docker (for workstations or K8s)
+## 🎯 Use Cases
 
-A prebuilt Docker image is available under `ghcr.io/aicell-lab/bioengine-worker:latest` (see [all available versions](https://github.com/orgs/aicell-lab/packages/container/package/bioengine-worker) to use a specific version).
+### Try Models on the Public BioEngine
 
-To make use of the predefined settings, clone this Github repository and run `docker compose up`.
+Experience BioEngine instantly by testing AI models on the community instance:
 
-This assumes the following directories in the current working directory for mounting into the docker container:
-- `.bioengine`: A temporary directory for Ray (read and write)
-- `data`: A directory with datasets (available only as read-only)
+1. **Visit [BioImage.IO Model Zoo](https://bioimage.io/#/models)**
+2. **Select any model** from the collection
+3. **Click "TEST RUN MODEL"** to execute on the public BioEngine worker (`bioimage-io/bioengine-worker`)
+4. **See results** powered by cloud infrastructure—no setup required!
 
-A token for the Hypha workspace can either be added using the tag `--token` or provided in the `.env` file as `HYPHA_TOKEN`. Otherwise, you will be prompted to login when starting the worker.
-The default workspace can be changed using the tag `--workspace`.
+### Deploy Your Own Applications
 
-By default, the BioEngine worker will start a local Ray cluster with the provided resources `--head-num-gpus` and `--head-num-cpus`. To connect to a running Ray cluster, change the tag `--mode` to `"external-cluster"`.
+Create custom AI-powered analysis services:
 
-An overview of all tags for the BioEngine worker can be accessed via:
+- **Model Inference Services**: Deploy ML models for real-time predictions
+- **Training Pipelines**: Run distributed model training workflows  
+- **Data Exploration Tools**: Build interactive analysis and visualization services
+- **Custom Workflows**: Design specialized processing pipelines
+
+**👉 Learn more**: [BioEngine Applications Guide](bioengine_apps/README.md)
+
+### Share Scientific Datasets
+
+Serve large datasets with streaming and access control:
+
+- **Privacy-preserving**: Fine-grained user permissions
+- **Efficient streaming**: Partial data access for Zarr datasets
+- **Easy sharing**: HTTP-based access through Hypha
+
+**👉 Learn more**: [BioEngine Datasets Guide](bioengine/datasets/README.md)
+
+## 🚀 Quick Start
+
+### Try the BioEngine Dashboard
+
+The easiest way to get started is through the web interface:
+
+**🌐 Visit [bioimage.io/#/bioengine](https://bioimage.io/#/bioengine)**
+
+The dashboard provides:
+- 📋 **Interactive Configuration Wizard**: Generate deployment commands for your environment
+- 🖥️ **Instance Management**: View and control BioEngine workers
+- 📊 **Resource Monitoring**: Track cluster resources and application status
+- 🎮 **Application Deployment**: Deploy and manage AI applications
+
+### Run Locally with Docker
+
+Start a local BioEngine worker on your workstation:
+
 ```bash
-docker run --rm ghcr.io/aicell-lab/bioengine-worker:latest python -m bioengine.worker --help
-```
+# Clone the repository
+git clone https://github.com/aicell-lab/bioengine-worker.git
+cd bioengine-worker
 
-To run as your own user, the variables `UID` and `GID` are required. If not set, `export` them before running docker compose with `export UID=$(id -u)` and `export GID=$(id -g)` or add them to your `.env` file.
+# Create required directories
+mkdir -p .bioengine data
 
-As a shortcut, you can also run:
-
-```bash
+# Start with Docker Compose
 UID=$(id -u) GID=$(id -g) docker compose up
 ```
 
-### Apptainer (for HPC)
+**What happens:**
+- Starts a local Ray cluster with your machine's resources
+- Registers as a Hypha service for remote access
+- Mounts `.bioengine/` for workspace and `data/` for datasets
 
-The bash script [`start_hpc_worker.sh`](scripts/start_hpc_worker.sh) helps to start a BioEngine worker in Apptainer. Either clone this Github repository to run the script:
+**Configuration:**
+- Add `HYPHA_TOKEN` to `.env` file (or you'll be prompted to login)
+- Customize resources via `--head-num-cpus` and `--head-num-gpus`
+- See all options: `docker run --rm ghcr.io/aicell-lab/bioengine-worker:latest python -m bioengine.worker --help`
 
-```bash
-bash scripts/start_hpc_worker.sh
-```
+**💡 Pro Tip**: Visit the [BioEngine Dashboard](https://bioimage.io/#/bioengine) to generate custom deployment commands for your environment!
 
-or access the script directly from Github like this:
-```bash
-bash <(curl -s https://raw.githubusercontent.com/aicell-lab/bioengine-worker/main/scripts/start_hpc_worker.sh)
-```
+## 📚 Documentation
 
-An overview of all tags for the BioEngine worker can be accessed via:
-```bash
-bash scripts/start_hpc_worker.sh --help
-```
+### Core Guides
 
-The script will pull the latest BioEngine worker docker image and convert it into Singularity Image Format (SIF) using Apptainer. These Apptainer images will be saved to the directory `./images/`. 
+- **[🚀 BioEngine Applications](bioengine_apps/README.md)** - Deploy AI models and create custom services
+- **[📊 BioEngine Datasets](bioengine/datasets/README.md)** - Share and stream large scientific datasets
+- **[🎮 BioEngine Dashboard](https://bioimage.io/#/bioengine)** - Web-based configuration and management
 
-To avoid interactive login to Hypha, pass the token with the tag `--token` or save it to `HYPHA_TOKEN` in the `.env` file in the root directory of the project. The script will automatically load the token from the `.env` file if it exists.
+### Deployment Modes
 
-The directory `.bioengine` will be automatically created in the user's home directory if the respective tag `--workspace-dir` is not specified.
+BioEngine supports three deployment modes to fit your infrastructure:
 
-#### BioEngine worker with different base images
+| Mode | Description | Best For |
+|------|-------------|----------|
+| **single-machine** | Local Ray cluster on one machine | Workstations, development, small-scale analysis |
+| **external-cluster** | Connect to existing Ray cluster | Kubernetes, pre-configured HPC environments |
+| **slurm** | Auto-scaling via SLURM jobs | HPC clusters with SLURM scheduler |
 
-The default image `ghcr.io/aicell-lab/bioengine-worker` only has a minimal list of Python packages installed. All additional Python packages need to be installed via a separate pip runtime environment when executing python code on or deploying a model to the BioEngine worker.
+## 🔧 Advanced Usage
 
-It is possible to start a BioEngine worker with a different base image, provided that `bioengine` is installed. All installations will be available when executing python code on or deploying a model.
+### Programmatic Access
 
-Here are two examples of how this can be done, from a remote docker image:
-```bash
-bash scripts/start_hpc_worker.sh --image <remote_docker_image>
-```
-
-or from a local Apptainer image file:
-```bash
-bash scripts/start_hpc_worker.sh --image <path_to_apptainer_image>.sif
-```
-
-Note: When a Ray runtime environment is provided, it is not possible to access installations from the base image anymore.
-
-## How to use the BioEngine worker
-
-The BioEngine worker is based on Hypha and registers different services once started.
-
-### Services of the BioEngine worker
-
-Once a BioEngine worker is started, you can access it remotely through Hypha:
+Once a BioEngine worker is running, access it remotely via Python:
 
 ```python
-from hypha_rpc import connect_to_server
+from hypha_rpc import connect_to_server, login
 
-server = await connect_to_server(
-    {
-        "server_url": server_url,
-        "workspace": workspace,
-        "token": token,
-    }
-)
-worker_service = await server.get_service("<workspace>/<service_id>")
-```
+# Authenticate and connect
+token = await login({"server_url": "https://hypha.aicell.io"})
+server = await connect_to_server({
+    "server_url": "https://hypha.aicell.io",
+    "token": token,
+})
 
-The default `service_id` is `bioengine_worker`.
+# Get the BioEngine worker service
+workspace = server.config.workspace
+worker_service = await server.get_service(f"{workspace}/bioengine-worker")
 
-The worker service provides the following functions:
-- `get_status()`
-- `stop_worker()`
-- `check_access()`
-- `list_datasets()`
-- `refresh_datasets()`
-- `execute_python_code(...)`
-- `save_application(files)`
-- `list_applications()`
-- `get_application_manifest(application_id)`
-- `delete_application(application_id)`
-- `run_application(artifact_id, ...)`
-- `stop_application(application_id)`
-- `get_application_status()`
-
-As an example, the worker status can be called like this:
-```python
+# Check worker status
 status = await worker_service.get_status()
+print(f"Ray cluster: {status['ray_cluster']}")
+
+# Deploy an application
+app_id = await worker_service.run_application(
+    artifact_id="workspace/my-app",
+    application_id="my-instance",
+)
+
+# Get application status
+app_status = await worker_service.get_application_status(
+    application_ids=[app_id]
+)
 ```
 
-The status contains information about the:
-- Hypha service (`service`)
-- Ray cluster (`ray_cluster`)
+### Available Service Methods
 
-### Deploying models to the BioEngine worker
+The BioEngine worker service provides comprehensive functionality:
 
-The BioEngine worker deploys models from the Hypha artifact manager. To create a deployment artifact, run the following script:
+**Resource Management:**
+- `get_status()` - Get worker and cluster status
+- `stop_worker()` - Shut down the worker
 
-```bash
-python scripts/save_application.py --directory /path/to/app/directory
+**Dataset Operations:**
+- `list_datasets()` - List available datasets
+- `refresh_datasets()` - Reload dataset manifests
+
+**Application Management:**
+- `run_application(artifact_id, ...)` - Deploy an application
+- `stop_application(application_id)` - Stop a running application
+- `get_application_status(application_ids)` - Get application status
+- `list_applications()` - List all deployed applications
+
+**Development:**
+- `execute_python_code(code, ...)` - Execute Python code remotely
+- `check_access()` - Verify user permissions
+
+See the [Applications Guide](bioengine_apps/README.md) for detailed usage examples.
+
+## 🏗️ Architecture
+
+BioEngine consists of three main components:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Hypha Server                         │
+│            (RPC & Service Discovery)                    │
+└────────────┬────────────────────────────────────────────┘
+             │
+             │ Remote Access
+             │
+┌────────────▼────────────────────────────────────────────┐
+│              BioEngine Worker                           │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  Ray Cluster (Distributed Computing)             │  │
+│  │  • Ray Serve (Model Deployment)                  │  │
+│  │  • Auto-scaling Worker Management                │  │
+│  └──────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  Applications Manager                            │  │
+│  │  • Deploy & manage AI services                   │  │
+│  │  • Resource allocation                           │  │
+│  └──────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  Datasets Manager                                │  │
+│  │  • HTTP streaming with access control            │  │
+│  │  • Zarr store for efficient data access          │  │
+│  └──────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
 ```
 
-Use the tags `--server-url`, `--workspace`, and `--token` to specify the target Hypha server, workspace, and authentication token, respectively.
+## 🤝 Contributing
 
-A deployment requires a `manifest.yaml` file and a python script defining the deployment model.
+We welcome contributions! Whether you're fixing bugs, adding features, or improving documentation:
 
-The `manifest.yaml` requires at minimum the following fields:
-- `name`
-- `description`
-- `type`
-- `class_name`
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
-With the field `deployment_config`, you can define required resources (e.g., `num_cpus` and `num_gpus`), a pip runtime environment, and more.
+## 📄 License
 
-The field `python_file` defines the python script name, by default `main.py`. This python script must define the model class. The name of the model class needs to be specified in the `class_name` field. The model class requires the `__call__` method. Also note that all imports must be made within the class!
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-An example deployment can be found in [`bioengine_apps/example_deployment`](bioengine_apps/example_deployment).
+## 🙏 Acknowledgments
 
-### Streaming datasets with the BioEngine worker
+BioEngine is built on top of several excellent open-source projects:
+- [Ray](https://www.ray.io/) - Distributed computing framework
+- [Hypha](https://ha.amun.ai/) - Service orchestration and RPC
+- [Zarr](https://zarr.readthedocs.io/) - Chunked array storage
 
-A dataset consists of a folder in the specified data directory containing a manifest file and the corresponding zarr files.
+## 📞 Support
 
-#### Dataset Structure
-```
-example_dataset/
-├── data_file_1.zarr/
-│   └── ...
-├── data_file_2.zarr/
-│   └── ...
-└── manifest.yaml
-```
+- 💬 [GitHub Discussions](https://github.com/aicell-lab/bioengine-worker/discussions) - Ask questions and share ideas
+- 🐛 [Issue Tracker](https://github.com/aicell-lab/bioengine-worker/issues) - Report bugs or request features
+- 📧 Contact: [bioimage.io](https://bioimage.io)
 
-#### Manifest File Format
-The `manifest.yaml` file defines the dataset metadata and files:
-```yaml
-description: "This is an example dataset"
-files:
-  data_file_1.zarr:  # Note: filename must match actual file
-    description: "Example file 1"
-    version: "1.0.0"
-  data_file_2.zarr:
-    description: "Example file 2"
-    version: "1.0.0"
-```
+---
 
-#### Working with Datasets
+<div align="center">
+  
+**Made with ❤️ by the BioImage.IO community**
 
-1. **Load the dataset** by calling `load_dataset` from the worker service:
-   ```python
-   dataset_id = "example_dataset"
-   await worker_service.load_dataset(dataset_id)
-   ```
-   
-   This registers an ASGI app that enables streaming the dataset using the `HttpZarrStore`.
+[Website](https://bioimage.io) • [Dashboard](https://bioimage.io/#/bioengine) • [GitHub](https://github.com/aicell-lab/bioengine-worker)
 
-2. **Access the dataset** in your code using the provided HTTP interface.
-
-3. **Release resources** when finished:
-   ```python
-   await worker_service.close_dataset(dataset_id)
-   ```
-
-### Accessing other datasets
-
-All other files that are not zarr and have no manifest.yaml file will be accessible under `/data` from `execute_python_code` or from deployed models.
-
-
-### Build a multi-arch docker image
-
-To build a multi-arch docker image, you can use the `buildx` command. This requires Docker Buildx to be installed and set up on your system.
-```bash
-docker buildx create --use --name multiarch-builder
-docker buildx inspect multiarch-builder --bootstrap
-```
-This ensures you're using a builder that supports multiple platforms.
-
-To build the image, run the following command:
-```bash
-docker buildx build \
-    --platform linux/amd64,linux/arm64 \
-    -t ghcr.io/aicell-lab/bioengine-worker:latest \
-    --push .
-```
+</div>

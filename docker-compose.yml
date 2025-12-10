@@ -64,6 +64,6 @@ services:
     command: [
       "python", "-m", "bioengine.datasets",
       "--data-dir", "/data",
-      "--cache-dir", "${HOME}/.bioengine",
+      "--workspace-dir", "${HOME}/.bioengine",
       "--server-port", "9527",
     ]

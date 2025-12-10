@@ -87,7 +87,7 @@ class AppBuilder:
     6. Build final application with proxy for external communication
 
     Configuration:
-        apps_cache_dir: Where to store downloaded artifacts and working directories
+        apps_workdir: Where to store downloaded artifacts and working directories
         server: Hypha RPC server connection for authentication and artifact access
         artifact_manager: Service for downloading deployment code and manifests
         serve_http_url: Base URL where Ray Serve exposes HTTP endpoints
@@ -101,7 +101,7 @@ class AppBuilder:
 
     def __init__(
         self,
-        apps_cache_dir: Union[str, Path],
+        apps_workdir: Union[str, Path],
         data_server_url: Optional[str] = None,
         log_file: Optional[str] = None,
         debug: bool = False,
@@ -113,14 +113,14 @@ class AppBuilder:
         Call initialize() after construction to establish connections to Hypha and artifact services.
 
         Directory Setup:
-        • apps_cache_dir: Creates isolated workspaces for each deployed application
+        • apps_workdir: Creates isolated workspaces for each deployed application
 
         Logging Configuration:
         • debug=True: Enables verbose output for troubleshooting deployment issues
         • log_file: Redirects output to file instead of console (useful for production)
 
         Args:
-            apps_cache_dir: Directory for storing downloaded code and temporary files
+            apps_workdir: Directory for storing downloaded code and temporary files
             data_server_url: URL for the data server (None = no data server)
             log_file: Optional file path for logging output (None = console only)
             debug: Whether to enable detailed debug logging for troubleshooting
@@ -128,7 +128,7 @@ class AppBuilder:
         Example:
             ```python
             builder = AppBuilder(
-                apps_cache_dir=f"{os.environ['HOME']}/apps",
+                apps_workdir=f"{os.environ['HOME']}/apps",
                 data_server_url="http://127.0.0.1:9527",
                 debug=True
             )
@@ -142,7 +142,7 @@ class AppBuilder:
         )
 
         # Store parameters
-        self.apps_cache_dir = Path(apps_cache_dir)
+        self.apps_workdir = Path(apps_workdir)
         self.data_server_url = data_server_url
         self.bioengine_package_alias = "bioengine-package"
         self.server: Optional[RemoteService] = None
@@ -306,8 +306,8 @@ class AppBuilder:
 
         Technical Details:
         The working directory structure created is:
-        - apps_cache_dir/application_id/ (main workspace)
-        - apps_cache_dir/application_id/tmp/ (temporary files)
+        - apps_workdir/application_id/ (main workspace)
+        - apps_workdir/application_id/tmp/ (temporary files)
         """
         ray_actor_options = deployment.ray_actor_options.copy()
 
@@ -344,7 +344,7 @@ class AppBuilder:
         env_vars.update(hidden_secret_env_vars)
 
         # Add BioEngine environment variables
-        app_work_dir = self.apps_cache_dir / application_id
+        app_work_dir = self.apps_workdir / application_id
         env_vars["HOME"] = str(app_work_dir)
 
         tmp_dir = str(app_work_dir / "tmp")
@@ -479,7 +479,7 @@ class AppBuilder:
             # Ensure the current working directory is set to the application working directory
             workdir = (
                 Path.home().resolve()
-            )  # Home directory is set to the apps_cache_dir
+            )  # Home directory is set to the apps_workdir
             os.environ["HOME"] = str(
                 workdir
             )  # Update the HOME environment variable with resolved path
@@ -1464,7 +1464,7 @@ if __name__ == "__main__":
     base_dir = Path(__file__).parent.parent.parent
     os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"] = str(base_dir / "tests")
 
-    apps_cache_dir = Path.home() / ".bioengine" / "apps"
+    apps_workdir = Path.home() / ".bioengine" / "apps"
 
     async def test_app_builder():
         server = await connect_to_server({"server_url": server_url, "token": token})
@@ -1472,7 +1472,7 @@ if __name__ == "__main__":
 
         app_builder = AppBuilder(
             token=token,
-            apps_cache_dir=apps_cache_dir,
+            apps_workdir=apps_workdir,
             log_file=None,
             debug=True,
         )

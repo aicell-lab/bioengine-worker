@@ -40,7 +40,7 @@ Integration Points:
 Usage:
     python -m bioengine.datasets --data-dir /shared/data
     python -m bioengine.datasets --data-dir /shared/data --server-ip 0.0.0.0 --server-port 8080
-    python -m bioengine.datasets --data-dir /shared/data --cache-dir /shared/bioengine/cache
+    python -m bioengine.datasets --data-dir /shared/data --workspace-dir /shared/bioengine/workspace
 
 The module can be used both as a library for accessing datasets from within BioEngine
 applications and as a standalone service for dataset management and distribution.
@@ -93,11 +93,11 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         help="Root directory for dataset storage and access by the dataset manager.",
     )
     parser.add_argument(
-        "--cache-dir",
+        "--workspace-dir",
         type=str,
         metavar="PATH",
-        dest="bioengine_cache_dir",
-        help="Directory for worker cache, temporary files, and Ray data storage. "
+        dest="bioengine_workspace_dir",
+        help="Directory for worker workspace, temporary files, and Ray data storage. "
         "Should be accessible across worker nodes in distributed deployments.",
     )
     parser.add_argument(
@@ -123,7 +123,7 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         type=str,
         metavar="PATH",
         help="Path to the log file. If set to 'off', logging will only go to console. "
-        "If not specified (None), a log file will be created in '<cache_dir>/logs'. ",
+        "If not specified (None), a log file will be created in '<workspace_dir>/logs'. ",
     )
 
     return parser

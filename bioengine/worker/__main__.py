@@ -30,16 +30,16 @@ Example Deployment:
     python -m bioengine.worker \\
         --mode slurm \\
         --admin_users admin@institution.edu researcher@institution.edu \\
-        --cache_dir /shared/bioengine/cache \\  # Will auto-detect data server here
+        --workspace_dir /shared/bioengine/workspace \\  # Will auto-detect data server here
         --max_workers 20 \\
         --default_num_gpus 2 \\
         --server_url https://hypha.aicell.io
         
     # To use with a dataset server (started separately)
     # 1. Start a datasets server in one terminal:
-    #    python -m bioengine.datasets --data-dir /path/to/datasets --cache-dir /shared/bioengine/cache
-    # 2. Start the worker with the same cache directory to auto-detect the server:
-    #    python -m bioengine.worker --mode single-machine --cache-dir /shared/bioengine/cache
+    #    python -m bioengine.datasets --data-dir /path/to/datasets --workspace-dir /shared/bioengine/workspace
+    # 2. Start the worker with the same workspace directory to auto-detect the server:
+    #    python -m bioengine.worker --mode single-machine --workspace-dir /shared/bioengine/workspace
 
 Author: BioEngine Development Team
 License: MIT
@@ -81,7 +81,7 @@ Examples:
   %(prog)s --mode slurm --max_workers 10 --admin_users admin@institution.edu
 
   # Single-machine development deployment  
-  %(prog)s --mode single-machine --debug --cache_dir ./cache
+  %(prog)s --mode single-machine --debug --workspace_dir ./workspace
 
   # Connect to existing Ray cluster
   %(prog)s --mode external-cluster --head_node_address 10.0.0.100
@@ -111,21 +111,21 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "If not specified, defaults to the authenticated user from Hypha login.",
     )
     core_group.add_argument(
-        "--cache_dir",
+        "--workspace_dir",
         type=str,
         metavar="PATH",
-        help="Directory for worker cache, temporary files, and Ray data storage. "
+        help="Directory for worker workspace, temporary files, and Ray data storage. "
         "Also used to detect running data servers for dataset access. "
         "Should be accessible across worker nodes in distributed deployments.",
     )
     core_group.add_argument(
-        "--ray_cache_dir",
+        "--ray_workspace_dir",
         type=str,
         metavar="PATH",
-        help="Directory for Ray cluster cache when connecting to an external Ray cluster. "
+        help="Directory for Ray cluster workspace when connecting to an external Ray cluster. "
         "Only used in 'external-cluster' mode. This allows the remote Ray cluster to use "
-        "a different cache directory than the local machine. If not specified, uses the "
-        "same directory as --cache_dir. Not applicable for 'single-machine' or 'slurm' modes.",
+        "a different workspace directory than the local machine. If not specified, uses the "
+        "same directory as --workspace_dir. Not applicable for 'single-machine' or 'slurm' modes.",
     )
     core_group.add_argument(
         "--startup_applications",
@@ -154,7 +154,7 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         type=str,
         metavar="PATH",
         help="Path to the log file. If set to 'off', logging will only go to console. "
-        "If not specified (None), a log file will be created in '<cache_dir>/logs'. ",
+        "If not specified (None), a log file will be created in '<workspace_dir>/logs'. ",
     )
     core_group.add_argument(
         "--debug",
@@ -319,10 +319,10 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         f"dependencies and be accessible on compute nodes.",
     )
     slurm_job_group.add_argument(
-        "--worker_cache_dir",
+        "--worker_workspace_dir",
         type=str,
         metavar="PATH",
-        help="Cache directory path mounted to worker containers in SLURM jobs. "
+        help="Workspace directory path mounted to worker containers in SLURM jobs. "
         "Must be accessible from compute nodes. Required for SLURM mode.",
     )
     slurm_job_group.add_argument(

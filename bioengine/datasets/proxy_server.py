@@ -480,7 +480,7 @@ async def create_bioengine_datasets(server: RemoteService):
 
 def start_proxy_server(
     data_dir: Union[str, Path],
-    bioengine_cache_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine",
+    bioengine_workspace_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine",
     server_ip: Optional[str] = None,
     server_port: int = 9527,
     minio_port: int = 10000,
@@ -514,7 +514,7 @@ def start_proxy_server(
         data_dir: Root directory containing dataset folders with manifest.yaml files
                 Each dataset folder should have a manifest.yaml with metadata and
                 access control configuration.
-        bioengine_cache_dir: Directory for cache files, logs, and temporary storage
+        bioengine_workspace_dir: Directory for cache files, logs, and temporary storage
                            Must be writable by the service process.
         server_ip: IP address for the service to listen on. If None, automatically
                  determined based on network configuration.
@@ -529,23 +529,23 @@ def start_proxy_server(
     global AUTHENTICATION_SERVER_URL
 
     BIOENGINE_DATA_DIR = Path(data_dir).resolve()
-    bioengine_cache_dir = Path(bioengine_cache_dir).resolve()
-    datasets_cache_dir = bioengine_cache_dir / "datasets"
-    current_server_file = datasets_cache_dir / "bioengine_current_server"
+    bioengine_workspace_dir = Path(bioengine_workspace_dir).resolve()
+    datasets_dir = bioengine_workspace_dir / "datasets"
+    current_server_file = datasets_dir / "bioengine_current_server"
     executable_path = Path(
-        os.getenv("MINIO_EXECUTABLE_PATH") or datasets_cache_dir / "bin"
+        os.getenv("MINIO_EXECUTABLE_PATH") or datasets_dir / "bin"
     )
-    minio_workdir = datasets_cache_dir / "s3"
-    minio_config_dir = datasets_cache_dir / "config"
+    minio_workdir = datasets_dir / "s3"
+    minio_config_dir = datasets_dir / "config"
 
     AUTHENTICATION_SERVER_URL = authentication_server_url
 
     # Initialize logging
     if log_file != "off":
         if log_file is None:
-            # Create a timestamped log file in the cache directory
+            # Create a timestamped log file in the workspace directory
             log_file = (
-                bioengine_cache_dir
+                bioengine_workspace_dir
                 / "logs"
                 / f"bioengine_datasets_{time.strftime('%Y%m%d_%H%M%S')}.log"
             )
@@ -560,8 +560,8 @@ def start_proxy_server(
     try:
         logger.info(f"Starting BioEngine Datasets proxy server v{__version__}")
 
-        # Create the datasets cache directory
-        datasets_cache_dir.mkdir(parents=True, exist_ok=True)
+        # Create the datasets workspace directory
+        datasets_dir.mkdir(parents=True, exist_ok=True)
 
         # Set internal IP and ports
         server_ip = server_ip or get_internal_ip()

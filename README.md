@@ -63,7 +63,7 @@ The script will pull the latest BioEngine worker docker image and convert it int
 
 To avoid interactive login to Hypha, pass the token with the tag `--token` or save it to `HYPHA_TOKEN` in the `.env` file in the root directory of the project. The script will automatically load the token from the `.env` file if it exists.
 
-The directory `.bioengine` will be automatically created in the current working directory if the respective tag `--cache_dir` is not specified.
+The directory `.bioengine` will be automatically created in the user's home directory if the respective tag `--workspace_dir` is not specified.
 
 #### BioEngine worker with different base images
 

@@ -60,7 +60,7 @@ class AppsManager:
     Attributes:
         ray_cluster (RayCluster): Ray cluster manager instance
         admin_users (List[str]): List of user emails with admin permissions
-        apps_cache_dir (Path): Cache directory for deployment artifacts
+        apps_workdir (Path): Working directory for deployment artifacts
         server: Hypha server connection
         artifact_manager: Hypha artifact manager service proxy
         app_builder (AppBuilder): Application builder instance
@@ -79,7 +79,7 @@ class AppsManager:
     def __init__(
         self,
         ray_cluster: RayCluster,
-        apps_cache_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine/apps",
+        apps_workdir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine/apps",
         data_server_url: Optional[str] = None,
         startup_applications: Optional[List[dict]] = None,
         # Logger
@@ -100,7 +100,7 @@ class AppsManager:
 
         Args:
             ray_cluster: Ray cluster manager instance for compute resource management
-            apps_cache_dir: Directory for caching application artifacts and build files
+            apps_workdir: Working directory for application artifacts and build files
             data_server_url: URL for the data server
             startup_applications: List of application configurations to deploy automatically
                                  when the manager initializes
@@ -125,7 +125,7 @@ class AppsManager:
         self.ray_cluster = ray_cluster
 
         self.app_builder = AppBuilder(
-            apps_cache_dir=apps_cache_dir,
+            apps_workdir=apps_workdir,
             data_server_url=data_server_url,
             log_file=log_file,
             debug=debug,

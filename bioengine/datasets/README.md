@@ -94,7 +94,7 @@ authorized_users:
 ### From Python
 
 ```bash
-python -m bioengine.datasets --data-dir /path/to/data --cache-dir $HOME/.bioengine
+python -m bioengine.datasets --data-dir /path/to/data --workspace-dir $HOME/.bioengine
 ```
 
 ### From Docker
@@ -105,7 +105,7 @@ docker run -it --rm \
     -v $HOME/.bioengine:/.bioengine \
     -v /path/to/data:/data \
     ghcr.io/aicell-lab/bioengine-worker:latest \
-    python -m bioengine.datasets --data-dir /data --cache-dir /.bioengine --server-port 9527
+    python -m bioengine.datasets --data-dir /data --workspace-dir /.bioengine --server-port 9527
 ```
 
 ### Command-Line Options
@@ -113,7 +113,7 @@ docker run -it --rm \
 | Option | Description |
 |--------|-------------|
 | `--data-dir PATH` | **Required.** Root directory containing datasets |
-| `--cache-dir PATH` | Directory for cache and temporary files |
+| `--workspace-dir PATH` | Directory for workspace and temporary files |
 | `--server-ip IP` | IP address for the proxy server (default: localhost) |
 | `--server-port PORT` | Port for the proxy server |
 | `--minio-port PORT` | Port for the MinIO S3 backend |

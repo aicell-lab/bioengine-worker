@@ -81,7 +81,7 @@ class RayCluster:
         force_clean_up: bool = True,
         # SLURM Worker Configuration parameters
         image: str = f"ghcr.io/aicell-lab/bioengine-worker:{bioengine.__version__}",
-        worker_cache_dir: Optional[str] = None,
+        worker_workspace_dir: Optional[str] = None,
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
         default_mem_in_gb_per_cpu: int = 16,
@@ -120,7 +120,7 @@ class RayCluster:
             runtime_env_pip_cache_size_gb: Size of pip cache for runtime environments in GB. Default 30.
             force_clean_up: Force cleanup of previous Ray cluster on start. Default True.
             image: Container image for workers (SLURM mode). Default bioengine-worker.
-            worker_cache_dir: Cache directory mounted to worker containers (SLURM mode).
+            worker_workspace_dir: Workspace directory mounted to worker containers (SLURM mode).
             default_num_gpus: Default GPU count per worker. Default 1.
             default_num_cpus: Default CPU count per worker. Default 8.
             default_mem_in_gb_per_cpu: Default memory per CPU in GB. Default 16.
@@ -234,14 +234,14 @@ class RayCluster:
             if self.mode == "slurm":
                 self._check_slurm_available()
 
-                if worker_cache_dir is None:
+                if worker_workspace_dir is None:
                     raise ValueError(
-                        "worker_cache_dir must be provided when mode is 'slurm'"
+                        "worker_workspace_dir must be provided when mode is 'slurm'"
                     )
                 self.ray_cluster_config["slurm"].update(
                     {
                         "image": image,
-                        "worker_cache_dir": str(worker_cache_dir),
+                        "worker_workspace_dir": str(worker_workspace_dir),
                         "default_num_gpus": int(default_num_gpus),
                         "default_num_cpus": int(default_num_cpus),
                         "default_mem_in_gb_per_cpu": int(default_mem_in_gb_per_cpu),

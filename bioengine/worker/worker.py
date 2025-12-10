@@ -80,7 +80,7 @@ class BioEngineWorker:
 
      Attributes:
           admin_users (List[str]): List of user IDs/emails authorized for admin operations
-          cache_dir (Path): Directory for temporary files, Ray data, and worker state
+          workspace_dir (Path): Directory for temporary files, Ray data, and worker state
           dashboard_url (str): URL of the BioEngine dashboard for worker management
           monitoring_interval_seconds (int): Interval for status monitoring and health checks
           log_file (Optional[str]): Path to log file for structured logging output
@@ -104,7 +104,7 @@ class BioEngineWorker:
         worker = BioEngineWorker(
             mode="slurm",
             admin_users=["admin@institution.edu"],
-            cache_dir=f"{os.environ['HOME']}/.bioengine",  # Will check for data server here
+            workspace_dir=f"{os.environ['HOME']}/.bioengine",  # Will check for data server here
             server_url="https://hypha.aicell.io",
             startup_applications=[
                 {"artifact_id": "<my-workspace>/<my_artifact>", "application_id": "my_custom_name"},
@@ -135,8 +135,8 @@ class BioEngineWorker:
         self,
         mode: Literal["single-machine", "slurm", "external-cluster"],
         admin_users: Optional[List[str]] = None,
-        cache_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine",
-        ray_cache_dir: Optional[Union[str, Path]] = None,
+        workspace_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine",
+        ray_workspace_dir: Optional[Union[str, Path]] = None,
         startup_applications: Optional[List[dict]] = None,
         monitoring_interval_seconds: int = 10,
         # Hypha server connection configuration
@@ -180,12 +180,12 @@ class BioEngineWorker:
                   - 'external-cluster': Connect to existing Ray cluster
             admin_users: List of user IDs/emails authorized for administrative operations.
                         Auto-includes the authenticated user from Hypha connection.
-            cache_dir: Directory path for temporary files, Ray data storage, and worker state.
+            workspace_dir: Directory path for temporary files, Ray data storage, and worker state.
                       Must be accessible and have sufficient space for Ray operations.
-            ray_cache_dir: Directory path for Ray cluster cache when connecting to an external
+            ray_workspace_dir: Directory path for Ray cluster workspace when connecting to an external
                           Ray cluster. Only used in 'external-cluster' mode. This allows the
-                          remote Ray cluster to use a different cache directory than the local
-                          machine. If not specified, uses the same directory as cache_dir.
+                          remote Ray cluster to use a different workspace directory than the local
+                          machine. If not specified, uses the same directory as workspace_dir.
                           Not applicable for 'single-machine' or 'slurm' modes.
             startup_applications: List of application configuration dictionaries to deploy
                                  automatically during worker startup. Each dictionary should contain
@@ -222,8 +222,8 @@ class BioEngineWorker:
         """
         # Store configuration parameters
         self.admin_users = admin_users or []
-        self.cache_dir = Path(cache_dir)
-        self.ray_cache_dir = Path(ray_cache_dir) if ray_cache_dir else None
+        self.workspace_dir = Path(workspace_dir)
+        self.ray_workspace_dir = Path(ray_workspace_dir) if ray_workspace_dir else None
         self.dashboard_url = dashboard_url.rstrip("/")
         self.monitoring_interval_seconds = monitoring_interval_seconds
 
@@ -232,8 +232,8 @@ class BioEngineWorker:
             # Disable file logging, only console output
             self.log_file = None
         elif log_file is None:
-            # Create a timestamped log file in the cache directory
-            log_dir = self.cache_dir / "logs"
+            # Create a timestamped log file in the workspace directory
+            log_dir = self.workspace_dir / "logs"
             self.log_file = (
                 log_dir / f"bioengine_worker_{time.strftime('%Y%m%d_%H%M%S')}.log"
             )
@@ -298,7 +298,7 @@ class BioEngineWorker:
             # Set core parameters with precedence for explicit values
             self._set_parameter(ray_cluster_config, "mode", mode)
             self._set_parameter(
-                ray_cluster_config, "ray_temp_dir", self.cache_dir / "ray"
+                ray_cluster_config, "ray_temp_dir", self.workspace_dir / "ray"
             )
             self._set_parameter(ray_cluster_config, "log_file", self.log_file)
             self._set_parameter(ray_cluster_config, "debug", debug)
@@ -309,18 +309,18 @@ class BioEngineWorker:
             # Check for running data server
             self._discover_data_server()
 
-            # Determine the apps cache directory based on mode
-            # For external-cluster mode, use ray_cache_dir if provided, otherwise use cache_dir
-            # For single-machine and slurm modes, always use cache_dir
-            if mode == "external-cluster" and self.ray_cache_dir:
-                apps_cache_dir = self.ray_cache_dir / "apps"
+            # Determine the apps workspace directory based on mode
+            # For external-cluster mode, use ray_workspace_dir if provided, otherwise use workspace_dir
+            # For single-machine and slurm modes, always use workspace_dir
+            if mode == "external-cluster" and self.ray_workspace_dir:
+                apps_workdir = self.ray_workspace_dir / "apps"
             else:
-                apps_cache_dir = self.cache_dir / "apps"
+                apps_workdir = self.workspace_dir / "apps"
 
             # Initialize component managers with enhanced configuration
             self.apps_manager = AppsManager(
                 ray_cluster=self.ray_cluster,
-                apps_cache_dir=apps_cache_dir,
+                apps_workdir=apps_workdir,
                 data_server_url=self.data_server_url,
                 startup_applications=startup_applications,
                 log_file=self.log_file,
@@ -379,12 +379,12 @@ class BioEngineWorker:
         Check for a running data server and configure connection details.
 
         Detects the presence of a running dataset server by checking for a server URL file
-        in the BioEngine cache directory. If found, establishes connection parameters and
+        in the BioEngine workspace directory. If found, establishes connection parameters and
         verifies server accessibility through a ping request. This enables deployed
         applications to access datasets via HTTP streaming.
 
         Data Server Detection Process:
-        1. Checks for existence of server URL file in cache directory
+        1. Checks for existence of server URL file in workspace directory
         2. Reads and validates server URL
         3. Constructs service URL with workspace information
         4. Verifies server connection with ping request
@@ -395,7 +395,7 @@ class BioEngineWorker:
         """
         # Check for the presence of the current data server file
         current_data_server_file = (
-            self.cache_dir / "datasets" / "bioengine_current_server"
+            self.workspace_dir / "datasets" / "bioengine_current_server"
         )
         if not current_data_server_file.exists():
             self.logger.info("No current data server found.")

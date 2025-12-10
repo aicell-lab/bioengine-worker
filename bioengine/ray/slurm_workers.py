@@ -43,7 +43,7 @@ class SlurmWorkers:
         self,
         ray_cluster,
         # Slurm job configuration parameters
-        worker_cache_dir: str,
+        worker_workspace_dir: str,
         image: str = f"ghcr.io/aicell-lab/bioengine-worker:{__version__}",
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
@@ -66,7 +66,7 @@ class SlurmWorkers:
 
         Args:
             ray_cluster: Ray cluster manager instance
-            worker_cache_dir: Cache directory mounted to the container when starting a worker
+            worker_workspace_dir: Workspace directory mounted to the container when starting a worker
             image: BioEngine remote docker image or path to the image file
             default_num_gpus: Default number of GPUs to allocate per worker
             default_num_cpus: Default number of CPUs to allocate per worker
@@ -83,7 +83,7 @@ class SlurmWorkers:
             debug: Enable debug logging
 
         Raises:
-            ValueError: If worker_cache_dir is None
+            ValueError: If worker_workspace_dir is None
         """
         # Set up logging
         self.logger = create_logger(
@@ -92,9 +92,9 @@ class SlurmWorkers:
             log_file=log_file,
         )
 
-        if worker_cache_dir is None:
+        if worker_workspace_dir is None:
             raise ValueError(
-                "Mountable worker cache directory ('--worker_cache_dir') must be set in 'SLURM' mode"
+                "Mountable worker workspace directory ('--worker-workspace-dir') must be set in 'SLURM' mode"
             )
 
         self.ray_cluster = ray_cluster
@@ -106,7 +106,7 @@ class SlurmWorkers:
             else image
         )
         self.job_name = "ray_worker"
-        self.worker_cache_dir = str(worker_cache_dir)
+        self.worker_workspace_dir = str(worker_workspace_dir)
         self.default_num_gpus = default_num_gpus
         self.default_num_cpus = default_num_cpus
         self.default_mem_in_gb_per_cpu = default_mem_in_gb_per_cpu
@@ -162,10 +162,10 @@ class SlurmWorkers:
                 "--cleanenv "
                 "--env=SLURM_JOB_ID='${SLURM_JOB_ID}' "
                 "--pwd /app "
-                f"--bind {self.worker_cache_dir}:${{HOME}}/.bioengine"
+                f"--bind {self.worker_workspace_dir}:${{HOME}}/.bioengine"
             )
             self.logger.info(
-                f"Binding cache directory '{self.worker_cache_dir}' to container directory '{os.environ['HOME']}/.bioengine'"
+                f"Binding workspace directory '{self.worker_workspace_dir}' to container directory '{os.environ['HOME']}/.bioengine'"
             )
 
             # Define the Ray worker command that will run inside the container and add it to the command
@@ -198,9 +198,9 @@ class SlurmWorkers:
             #SBATCH --cpus-per-task={num_cpus}
             #SBATCH --mem-per-cpu={mem_in_gb_per_cpu}G
             #SBATCH --time={time_limit}
-            #SBATCH --chdir={self.worker_cache_dir}
-            #SBATCH --output={self.worker_cache_dir}/slurm_logs/%x_%j.out
-            #SBATCH --error={self.worker_cache_dir}/slurm_logs/%x_%j.err
+            #SBATCH --chdir={self.worker_workspace_dir}
+            #SBATCH --output={self.worker_workspace_dir}/slurm_logs/%x_%j.out
+            #SBATCH --error={self.worker_workspace_dir}/slurm_logs/%x_%j.err
             {further_slurm_args}
 
             # Print some diagnostic information
@@ -221,15 +221,15 @@ class SlurmWorkers:
             fi
 
             # Create the log directory if it doesn't exist
-            mkdir -p {self.worker_cache_dir}/slurm_logs
+            mkdir -p {self.worker_workspace_dir}/slurm_logs
 
             # Reset bound in paths in case of submission from a container
             APPTAINER_BIND=
             SINGULARITY_BIND=
 
             # Set the cache directory for Apptainer
-            export APPTAINER_CACHEDIR="{self.worker_cache_dir}/images"
-            export SINGULARITY_CACHEDIR="{self.worker_cache_dir}/images"
+            export APPTAINER_CACHEDIR="{self.worker_workspace_dir}/images"
+            export SINGULARITY_CACHEDIR="{self.worker_workspace_dir}/images"
 
             {apptainer_cmd}
 

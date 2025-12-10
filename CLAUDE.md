@@ -6,7 +6,7 @@ We have a deployed version of the BioEngine at https://hypha.aicell.io in worksp
 ```
 python scripts/save_application.py \
     --directory "bioengine_apps/$app" \
-    --server_url "https://hypha.aicell.io" \
+    --server-url "https://hypha.aicell.io" \
     --workspace "bioimage-io" \
     --token "$HYPHA_TOKEN"
     ```

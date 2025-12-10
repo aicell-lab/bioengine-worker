@@ -78,7 +78,7 @@ def memory_in_gb() -> int:
 async def bioengine_worker_service_id(
     monkeypatch: pytest.MonkeyPatch,
     worker_mode: str,
-    cache_dir: Path,
+    workspace_dir: Path,
     startup_applications: List[Dict],
     monitoring_interval_seconds: int,
     server_url: str,
@@ -108,7 +108,7 @@ async def bioengine_worker_service_id(
     bioengine_worker = BioEngineWorker(
         mode=worker_mode,
         admin_users=None,
-        cache_dir=cache_dir,
+        workspace_dir=workspace_dir,
         startup_applications=startup_applications,
         monitoring_interval_seconds=monitoring_interval_seconds,
         server_url=server_url,

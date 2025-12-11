@@ -173,16 +173,6 @@ class MyDeployment:
     def __init__(self):
         """Initialize your deployment."""
         self.model = None
-        
-    async def async_init(self) -> None:
-        """Optional async initialization called on startup."""
-        # Perform async setup here
-        pass
-        
-    async def test_deployment(self) -> None:
-        """Optional deployment health test."""
-        # Perform health checks here
-        pass
 
     @schema_method
     async def my_api_method(
@@ -313,14 +303,9 @@ if __name__ == "__main__":
     import asyncio
     
     # Get the deployment class for local testing
-    deployment_instance = MyDeployment.func_or_class()
-    
-    # Test initialization
-    deployment_instance.__init__()
-    
-    # Test async_init if it exists
-    if hasattr(deployment_instance, "async_init"):
-        asyncio.run(deployment_instance.async_init())
+    deployment_class = MyDeployment.func_or_class
+
+    deployment_instance = deployment_class()
     
     # Test your methods
     result = asyncio.run(deployment_instance.process("test_data"))
@@ -400,26 +385,6 @@ deployments:
   - "model_deployment:ModelDeployment"      # Another sub-deployment
 ```
 
-### Lifecycle Methods
-
-#### `async_init()` - Optional
-```python
-async def async_init(self) -> None:
-    """Called once during deployment startup."""
-    # Load models, initialize connections, etc.
-    self.model = await self.load_model()
-```
-
-#### `test_deployment()` - Optional  
-```python
-async def test_deployment(self) -> None:
-    """Test deployment health before marking as ready."""
-    # Test your deployment functionality
-    test_input = "test"
-    result = self.model.predict(test_input)
-    assert "expected_output" in result
-```
-
 ### Resource Configuration
 
 #### GPU Usage
@@ -475,14 +440,7 @@ def preprocess_data(data: str) -> str:
 class MyDeployment:
     def __init__(self):
         logger.info("Initializing MyDeployment")
-        self.initialized = False
-        
-    async def async_init(self) -> None:
-        """Async initialization with logging."""
-        logger.info("Starting async initialization")
-        # Perform async setup
         self.initialized = True
-        logger.info("Async initialization complete")
         
     @schema_method
     async def process(self, data: str = Field(..., description="Input data")) -> Dict[str, Any]:
@@ -576,11 +534,17 @@ worker_service_id = os.environ["BIOENGINE_WORKER_SERVICE_ID"]  # Worker service 
 token = os.environ.get("HYPHA_TOKEN")            # User authentication token
 ```
 
-### Built-in Classes and Methods
+### Built-in Dataset Access
 
-Every deployment automatically has access to these built-in attributes:
+Every deployment automatically has access to the BioEngine datasets manager:
 
 #### `self.bioengine_datasets`
+
+```python
+from bioengine.datasets import BioEngineDatasets
+
+self.bioengine_datasets: BioEngineDatasets
+```
 
 Access BioEngine datasets with streaming support for zarr files:
 
@@ -650,6 +614,56 @@ file_content = await self.bioengine_datasets.get_file(
 ```
 
 For accessing datasets with restricted access a token is required for user authentication. `BioEngineDatasets` will default to the token that is provided during application deployment. It is also possible to provide a different token when calling the methods.
+
+### BioEngine Lifecycle Methods
+
+BioEngine provides optional lifecycle methods for deployment initialization and testing. The initialization order is:
+
+1. **`__init__()`**: Synchronous initialization
+2. **`async_init()`**: Asynchronous initialization (optional)
+3. **`test_deployment()`**: Started as a background task (optional)
+
+If `test_deployment()` fails, the deployment will be marked as unhealthy on the next `check_health()` call.
+
+#### `async_init()` - Optional Async Initialization
+
+```python
+async def async_init(self) -> None:
+    """Called after __init__() for async initialization."""
+    # Load models, initialize connections, etc.
+    self.model = await self.load_model()
+    self.database = await self.connect_to_database()
+```
+
+#### `test_deployment()` - Optional Health Check
+
+```python
+async def test_deployment(self) -> None:
+    """Runs once as a background task after async_init() to test deployment functionality."""
+    # Verify deployment functionality
+    test_input = "test"
+    result = await self.model.predict(test_input)
+    assert "expected_output" in result, "Deployment test failed"
+```
+
+### Ray Serve Built-in Methods
+
+Ray Serve provides additional lifecycle methods:
+
+#### `check_health()` - Health Check Endpoint
+
+```python
+def check_health(self) -> None:
+    """
+    Called by Ray Serve to verify deployment health.
+    Raises an exception if the deployment is unhealthy.
+    """
+    # Perform health checks
+    if not self.model_loaded:
+        raise RuntimeError("Model not loaded")
+```
+
+This method is called periodically by Ray Serve. If it raises an exception, the replica is marked as unhealthy and may be restarted. Frequency and timeouts of health checks can be configured in Ray Serve Deployment (`@ray.serve.deployment`) parameters.
 
 ### Schema Methods
 

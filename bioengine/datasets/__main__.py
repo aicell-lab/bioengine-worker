@@ -38,9 +38,9 @@ Integration Points:
 - AnnData for scientific data format compatibility
 
 Usage:
-    python -m bioengine.datasets --data-dir /shared/data
-    python -m bioengine.datasets --data-dir /shared/data --server-ip 0.0.0.0 --server-port 8080
-    python -m bioengine.datasets --data-dir /shared/data --workspace-dir /shared/bioengine/workspace
+    python -m bioengine.datasets --data-import-dir /path/to/data
+    python -m bioengine.datasets --data-import-dir /path/to/data --server-ip 0.0.0.0 --server-port 8080
+    python -m bioengine.datasets --data-import-dir /path/to/data --workspace-dir /shared/bioengine/workspace
 
 The module can be used both as a library for accessing datasets from within BioEngine
 applications and as a standalone service for dataset management and distribution.
@@ -73,24 +73,24 @@ def create_parser() -> argparse.ArgumentParser:
         epilog="""
 Examples:
   # Start datasets service with default settings
-  %(prog)s --data-dir /shared/data
+  %(prog)s --data-import-dir /shared/data
   
   # Start with custom server and port configuration
-  %(prog)s --data-dir /shared/data --server-ip 0.0.0.0 --server-port 8080
+  %(prog)s --data-import-dir /shared/data --server-ip 0.0.0.0 --server-port 8080
   
   # Configure custom cache directory for logs and temporary files
-  %(prog)s --data-dir /shared/data --cache-dir /shared/bioengine/cache
+  %(prog)s --data-import-dir /shared/data --cache-dir /shared/bioengine/cache
 
 For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worker
 """,
     )
 
     parser.add_argument(
-        "--data-dir",
+        "--data-import-dir",
         type=str,
-        required=True,
         metavar="PATH",
-        help="Root directory for dataset storage and access by the dataset manager.",
+        help="Directory containing datasets to import once into S3-compatible storage in workspace-dir. "
+        "If not provided, the proxy server starts without importing any datasets.",
     )
     parser.add_argument(
         "--workspace-dir",

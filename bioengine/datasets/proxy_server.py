@@ -311,11 +311,11 @@ async def list_datasets(
 
 async def list_files(
     dataset_id: str,
-    dir_path: Union[str, None],
-    token: Union[str, None],
     cached_user_info: Dict[str, dict],
     authorized_users_collection: Dict[str, List[str]],
     artifact_manager: ObjectProxy,
+    dir_path: Optional[str] = None,
+    token: Optional[str] = None,
 ) -> List[str]:
     """List all files in a dataset."""
     if dataset_id not in authorized_users_collection:
@@ -343,11 +343,11 @@ async def list_files(
 async def get_presigned_url(
     dataset_id: str,
     file_path: str,
-    token: Union[str, None],
     cached_user_info: Dict[str, dict],
     authorized_users_collection: Dict[str, List[str]],
     artifact_manager: ObjectProxy,
     logger: logging.Logger,
+    token: Optional[str] = None,
 ) -> Union[str, None]:
     """Get a pre-signed URL for a dataset artifact."""
     if dataset_id not in authorized_users_collection:
@@ -532,9 +532,7 @@ def start_proxy_server(
     bioengine_workspace_dir = Path(bioengine_workspace_dir).resolve()
     datasets_dir = bioengine_workspace_dir / "datasets"
     current_server_file = datasets_dir / "bioengine_current_server"
-    executable_path = Path(
-        os.getenv("MINIO_EXECUTABLE_PATH") or datasets_dir / "bin"
-    )
+    executable_path = Path(os.getenv("MINIO_EXECUTABLE_PATH") or datasets_dir / "bin")
     minio_workdir = datasets_dir / "s3"
     minio_config_dir = datasets_dir / "config"
 

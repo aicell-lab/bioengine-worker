@@ -549,9 +549,11 @@ class BioEngineProxyActor:
         for replica_id, actor_id in active_replicas.items():
             try:
                 # Get replica metadata for timezone and creation timestamp
-                replica_info = self.application_replicas.get(application_id, {}).get(
-                    deployment_name, {}
-                ).get(replica_id)
+                replica_info = (
+                    self.application_replicas.get(application_id, {})
+                    .get(deployment_name, {})
+                    .get(replica_id)
+                )
                 replica_tz = None
                 replica_creation = None
                 if replica_info:

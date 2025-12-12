@@ -40,6 +40,10 @@ from typing import Any, Dict, List, Optional, Union
 
 import uvicorn
 import yaml
+from hypha.server import create_application, get_argparser
+from hypha_rpc import connect_to_server
+from hypha_rpc.rpc import ObjectProxy, RemoteService
+
 from bioengine import __version__
 from bioengine.utils import (
     acquire_free_port,
@@ -48,11 +52,8 @@ from bioengine.utils import (
     get_internal_ip,
 )
 from bioengine.utils.permissions import check_permissions
-from hypha.server import create_application, get_argparser
-from hypha_rpc import connect_to_server
-from hypha_rpc.rpc import ObjectProxy, RemoteService
 
-BIOENGINE_DATA_DIR: Path
+DATA_IMPORT_DIR: Path
 MINIO_CONFIG = {
     "mc_exe": str,
     "minio_port": int,
@@ -159,13 +160,15 @@ async def create_datasets_collection(
     return collection_id
 
 
-async def mirror_dataset_to_artifact(
+async def sync_dataset_to_artifact(
     artifact_s3_id: str,
     artifact_alias: str,
     dataset_dir: Path,
     minio_config: Dict[str, Union[str, int]],
     logger: logging.Logger,
+    artifact_manager: ObjectProxy,
 ) -> None:
+    """Sync dataset to artifact by adding new files and removing deleted files."""
     try:
         mc_exe = minio_config["mc_exe"]
         port = minio_config["minio_port"]
@@ -179,26 +182,76 @@ async def mirror_dataset_to_artifact(
             "MC_HOST_local": f"http://{root_user}:{root_password}@localhost:{port}",
         }
 
-        # Filesystem path to all files except manifest.yaml (already handled separately)
-        all_files = [
-            f
-            for f in await asyncio.to_thread(lambda: list(dataset_dir.iterdir()))
-            if (f.is_file() and f.name != "manifest.yaml") or f.is_dir()
-        ]
-        for data_file in all_files:
+        # Get current files in the dataset directory (except manifest.yaml)
+        current_files = set()
+        all_files = []
+        for f in await asyncio.to_thread(lambda: list(dataset_dir.iterdir())):
+            if f.name != "manifest.yaml":
+                current_files.add(f.name)
+                if f.is_file() or f.is_dir():
+                    all_files.append(f)
 
-            # Path to the artifact directory in MinIO
+        # Get existing files in the artifact
+        try:
+            existing_files_objs = await artifact_manager.list_files(
+                artifact_id=artifact_id,
+                dir_path="",
+            )
+            existing_files = {f.name for f in existing_files_objs}
+        except Exception:
+            # If artifact doesn't exist or is empty, existing_files is empty
+            existing_files = set()
+
+        # Files to remove (exist in artifact but not in dataset directory)
+        files_to_remove = existing_files - current_files
+
+        # Remove deleted files from artifact
+        for file_name in files_to_remove:
+            s3_path = f"local/hypha-workspaces/public/artifacts/{artifact_s3_id}/v0/{file_name}"
+            logger.info(f"Removing {file_name} from artifact '{artifact_id}'")
+            args = [str(mc_exe), "rm", "-r", "--force", s3_path]
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            await proc.communicate()
+            # Don't fail if removal fails - file might not exist
+
+        # Sync all current files (mirror handles updates automatically)
+        for data_file in all_files:
             s3_dest = f"local/hypha-workspaces/public/artifacts/{artifact_s3_id}/v0/{data_file.name}"
 
             logger.info(
-                f"Copying {dataset_dir}/{data_file.name} to artifact '{artifact_id}'"
+                f"Syncing {dataset_dir}/{data_file.name} to artifact '{artifact_id}'"
             )
 
-            # Use 'cp' for files and 'mirror' for directories
+            # Use 'cp' for files (overwrites by default) and 'mirror' for directories
             if data_file.is_file():
+                # For files, remove first then copy to ensure clean overwrite
+                rm_args = [str(mc_exe), "rm", "--force", s3_dest]
+                proc = await asyncio.create_subprocess_exec(
+                    *rm_args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+                await proc.communicate()
+                # Ignore errors from rm - file might not exist
+
+                # Now copy the file
                 args = [str(mc_exe), "cp", str(data_file), s3_dest]
             else:  # directory
-                args = [str(mc_exe), "mirror", str(data_file), s3_dest]
+                args = [
+                    str(mc_exe),
+                    "mirror",
+                    "--overwrite",
+                    "--remove",
+                    str(data_file),
+                    s3_dest,
+                ]
+
             proc = await asyncio.create_subprocess_exec(
                 *args,
                 stdout=asyncio.subprocess.PIPE,
@@ -215,22 +268,20 @@ async def mirror_dataset_to_artifact(
 
     except Exception as e:
         logger.error(
-            f"Error mirroring dataset '{dataset_dir.name}' to artifact '{artifact_id}': {e}"
+            f"Error syncing dataset '{dataset_dir.name}' to artifact '{artifact_id}': {e}"
         )
         raise e
 
 
-async def create_dataset_artifact(
+async def create_or_update_dataset_artifact(
     artifact_manager: ObjectProxy,
     parent_id: str,
     dataset_dir: Path,
     minio_config: Dict[str, Union[str, int]],
     logger: logging.Logger,
-) -> None:
+) -> bool:
+    """Create a new dataset artifact or update an existing one. Returns True if successful."""
     try:
-        artifact = None
-        logger.info(f"Creating dataset from folder '{dataset_dir}/'")
-
         dataset_manifest_content = (dataset_dir / "manifest.yaml").read_text()
         dataset_manifest = await asyncio.to_thread(
             yaml.safe_load, dataset_manifest_content
@@ -239,33 +290,83 @@ async def create_dataset_artifact(
         if not authorized_users or not any(len(user) > 0 for user in authorized_users):
             raise ValueError("Manifest does not have any authorized users specified.")
 
-        artifact = await artifact_manager.create(
-            type="dataset",
-            parent_id=parent_id,
-            alias=dataset_manifest["id"],
-            manifest=dataset_manifest_content,
-            stage=True,
-        )
+        dataset_id = dataset_manifest["id"]
+        artifact_id = f"public/{dataset_id}"
 
-        await mirror_dataset_to_artifact(
-            artifact_s3_id=artifact._id,
-            artifact_alias=artifact.alias,
-            dataset_dir=dataset_dir,
-            minio_config=minio_config,
-            logger=logger,
-        )
+        # Check if artifact already exists
+        try:
+            existing_artifact = await artifact_manager.read(artifact_id)
+            logger.info(
+                f"Artifact '{artifact_id}' exists. Updating dataset from folder '{dataset_dir}/'"
+            )
 
-        await artifact_manager.commit(artifact.id)
-        logger.info(f"Created artifact with id '{artifact.id}'")
+            # Update manifest if changed
+            await artifact_manager.edit(
+                artifact_id=artifact_id,
+                manifest=dataset_manifest_content,
+                stage=True,
+            )
 
-        return dataset_manifest["id"], authorized_users
+            # Sync data files (add new, update existing, remove deleted)
+            await sync_dataset_to_artifact(
+                artifact_s3_id=existing_artifact._id,
+                artifact_alias=dataset_id,
+                dataset_dir=dataset_dir,
+                minio_config=minio_config,
+                logger=logger,
+                artifact_manager=artifact_manager,
+            )
+
+            await artifact_manager.commit(artifact_id)
+            logger.info(f"Updated artifact '{artifact_id}'")
+
+            return True
+
+        except Exception:
+            # Artifact doesn't exist, create new one
+            logger.info(f"Creating new dataset artifact from folder '{dataset_dir}/'")
+            artifact = None
+
+            try:
+                artifact = await artifact_manager.create(
+                    type="dataset",
+                    parent_id=parent_id,
+                    alias=dataset_id,
+                    manifest=dataset_manifest_content,
+                    stage=True,
+                )
+
+                # Initial sync of all files
+                await sync_dataset_to_artifact(
+                    artifact_s3_id=artifact._id,
+                    artifact_alias=artifact.alias,
+                    dataset_dir=dataset_dir,
+                    minio_config=minio_config,
+                    logger=logger,
+                    artifact_manager=artifact_manager,
+                )
+
+                await artifact_manager.commit(artifact.id)
+                logger.info(f"Created artifact with id '{artifact.id}'")
+
+                return True
+
+            except Exception as create_error:
+                # Delete the artifact if creation failed
+                logger.error(
+                    f"Failed to create dataset from folder '{dataset_dir}/': {create_error}"
+                )
+                if artifact:
+                    try:
+                        await artifact_manager.delete(artifact.id)
+                    except Exception:
+                        pass
+                return False
 
     except Exception as e:
-        # Delete the artifact if creation failed; don't raise exception to not affect other datasets
-        logger.error(f"Failed to create dataset from folder '{dataset_dir}/': {e}")
-        if artifact:
-            await artifact_manager.delete(artifact.id)
-        return None, None
+        # Don't raise exception to not affect other datasets
+        logger.error(f"Failed to process dataset from folder '{dataset_dir}/': {e}")
+        return False
 
 
 async def parse_token(
@@ -392,7 +493,7 @@ async def create_bioengine_datasets(server: RemoteService):
     Args:
         server (RemoteService): The server instance to register the tools with.
     """
-    global BIOENGINE_DATA_DIR
+    global DATA_IMPORT_DIR
     global MINIO_CONFIG
 
     logger = logging.getLogger("ProxyServer")
@@ -417,23 +518,47 @@ async def create_bioengine_datasets(server: RemoteService):
             logger=logger,
         )
 
-        # Create an artifact for each dataset in the data directory
-        datasets = [
-            d
-            for d in BIOENGINE_DATA_DIR.iterdir()
-            if d.is_dir() and (d / "manifest.yaml").exists()
-        ]
-        authorized_users_collection = {}
-        for dataset_dir in datasets:
-            dataset_id, authorized_users = await create_dataset_artifact(
-                artifact_manager=artifact_manager,
-                parent_id=collection_id,
-                dataset_dir=dataset_dir,
-                minio_config=MINIO_CONFIG,
-                logger=logger,
+        # Create or update artifacts for each dataset in the data import directory
+        if DATA_IMPORT_DIR is not None:
+            logger.info("Processing datasets from data import directory.")
+            datasets = [
+                d
+                for d in DATA_IMPORT_DIR.iterdir()
+                if d.is_dir() and (d / "manifest.yaml").exists()
+            ]
+            for dataset_dir in datasets:
+                await create_or_update_dataset_artifact(
+                    artifact_manager=artifact_manager,
+                    parent_id=collection_id,
+                    dataset_dir=dataset_dir,
+                    minio_config=MINIO_CONFIG,
+                    logger=logger,
+                )
+        else:
+            logger.info(
+                "No data import directory provided. Using existing datasets from S3 storage."
             )
-            if dataset_id is not None:
-                authorized_users_collection[dataset_id] = authorized_users
+
+        # Build authorized_users_collection from all artifacts in the collection
+        authorized_users_collection = {}
+        try:
+            all_artifacts = await artifact_manager.list(parent_id=collection_id)
+            for artifact in all_artifacts:
+                try:
+                    manifest = await asyncio.to_thread(
+                        yaml.safe_load, artifact.manifest
+                    )
+                    authorized_users = manifest.get("authorized_users", [])
+                    if authorized_users and any(
+                        len(user) > 0 for user in authorized_users
+                    ):
+                        authorized_users_collection[artifact.alias] = authorized_users
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to load manifest for artifact '{artifact.alias}': {e}"
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to load datasets from artifact manager: {e}")
 
         logger.info(f"Available datasets: {list(authorized_users_collection.keys())}")
 
@@ -479,7 +604,7 @@ async def create_bioengine_datasets(server: RemoteService):
 
 
 def start_proxy_server(
-    data_dir: Union[str, Path],
+    data_import_dir: Optional[Union[str, Path]] = None,
     bioengine_workspace_dir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine",
     server_ip: Optional[str] = None,
     server_port: int = 9527,
@@ -497,25 +622,38 @@ def start_proxy_server(
 
     Service Components:
     - Hypha server with authentication and service registration
-    - MinIO S3-compatible object storage for data files
+    - MinIO S3-compatible object storage for data files (persisted across restarts)
     - Dataset discovery and manifest-based configuration
     - Access control with user-specific permissions
     - Presigned URL generation for secure data access
     - HTTP API for efficient data streaming and metadata access
+    - Incremental sync for updating existing datasets
 
     Deployment Process:
     1. Sets up cache directories and logging infrastructure
-    2. Initializes MinIO server for secure object storage
-    3. Registers datasets as artifacts in Hypha for discovery
-    4. Starts Hypha server with dataset service and authentication
-    5. Monitors service status and handles graceful shutdown
+    2. Initializes MinIO server (reuses existing S3 data if available)
+    3. If data_import_dir is provided:
+       - Creates new dataset artifacts or updates existing ones
+       - Syncs files: adds new files, updates modified files, removes deleted files
+    4. If data_import_dir is None:
+       - Loads existing datasets from S3 storage
+    5. Starts Hypha server with dataset service and authentication
+
+    Data Persistence:
+    - S3 data (minio_workdir) is preserved across server restarts
+    - MinIO configuration is preserved to maintain data consistency
+    - Only current_server_file is cleaned up on shutdown
 
     Args:
-        data_dir: Root directory containing dataset folders with manifest.yaml files
-                Each dataset folder should have a manifest.yaml with metadata and
-                access control configuration.
-        bioengine_workspace_dir: Directory for cache files, logs, and temporary storage
-                           Must be writable by the service process.
+        data_import_dir: Optional directory containing dataset folders to sync with S3 storage.
+                       Each dataset folder should have a manifest.yaml with metadata and
+                       access control configuration. When provided:
+                       - New datasets are created as artifacts
+                       - Existing datasets are updated (files added/updated/removed)
+                       If None, the proxy server loads existing datasets from S3 storage.
+        bioengine_workspace_dir: Directory for cache files, logs, and persistent S3 storage.
+                           Must be writable by the service process. S3 data persists across
+                           restarts in <workspace_dir>/datasets/s3/.
         server_ip: IP address for the service to listen on. If None, automatically
                  determined based on network configuration.
         server_port: Port for the Hypha server (default: 9527)
@@ -524,11 +662,11 @@ def start_proxy_server(
                 in the cache directory with timestamp-based filenames.
     """
     # Set paths
-    global BIOENGINE_DATA_DIR
+    global DATA_IMPORT_DIR
     global MINIO_CONFIG
     global AUTHENTICATION_SERVER_URL
 
-    BIOENGINE_DATA_DIR = Path(data_dir).resolve()
+    DATA_IMPORT_DIR = Path(data_import_dir).resolve() if data_import_dir else None
     bioengine_workspace_dir = Path(bioengine_workspace_dir).resolve()
     datasets_dir = bioengine_workspace_dir / "datasets"
     current_server_file = datasets_dir / "bioengine_current_server"
@@ -559,7 +697,7 @@ def start_proxy_server(
         logger.info(f"Starting BioEngine Datasets proxy server v{__version__}")
 
         # Create the datasets workspace directory
-        datasets_dir.mkdir(parents=True, exist_ok=True)
+        bioengine_datasets_dir.mkdir(parents=True, exist_ok=True)
 
         # Set internal IP and ports
         server_ip = server_ip or get_internal_ip()
@@ -650,20 +788,9 @@ def start_proxy_server(
         raise
 
     finally:
-        if minio_workdir.exists():
-            try:
-                shutil.rmtree(minio_workdir)
-            except Exception as e:
-                logger.warning(f"Failed to clean up MinIO workdir: {e}")
-
+        # Keep minio_workdir and minio_config_dir to persist S3 data across restarts
         if current_server_file.exists():
             try:
                 current_server_file.unlink()
             except Exception as e:
                 logger.warning(f"Failed to clean up current server file: {e}")
-
-        if minio_config_dir.exists():
-            try:
-                shutil.rmtree(minio_config_dir)
-            except Exception as e:
-                logger.warning(f"Failed to clean up MinIO config dir: {e}")

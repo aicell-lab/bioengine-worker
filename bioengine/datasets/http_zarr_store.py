@@ -2,7 +2,7 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass
-from typing import AsyncIterator, Iterable
+from typing import AsyncIterator, Iterable, Optional
 
 import httpx
 
@@ -81,7 +81,7 @@ class HttpZarrStore(Store):
         service_url: str,
         dataset_id: str,
         zarr_path: str,
-        token: str,
+        token: Optional[str] = None,
         max_chunk_cache_size: int = int(
             os.getenv("BIOENGINE_DATASETS_ZARR_STORE_CACHE_SIZE", 1024 * 1024 * 1024)
         ),  # 1 GiB default

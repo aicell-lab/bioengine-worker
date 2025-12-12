@@ -170,10 +170,10 @@ class BioEngineProxyDeployment:
                 replica_context = get_replica_context()
                 deployment_name = replica_context.deployment
                 replica_id = replica_context.replica_tag
-                
+
                 # Get timezone at replica level
                 replica_timezone = time.strftime("%Z")
-                
+
                 logger.debug(
                     f"Retrieved replica context: tag={replica_id}, "
                     f"deployment={replica_context.deployment}, "

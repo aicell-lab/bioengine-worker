@@ -137,7 +137,8 @@ class BioEngineDatasets:
             return {}
 
         start_time = asyncio.get_event_loop().time()
-        response = await self.http_client.get(f"{self.service_url}/list_datasets")
+        query_url = f"{self.service_url}/list_datasets"
+        response = await self.http_client.get(query_url)
         response.raise_for_status()
         datasets = response.json()
         end_time = asyncio.get_event_loop().time()
@@ -178,8 +179,16 @@ class BioEngineDatasets:
 
         start_time = asyncio.get_event_loop().time()
         token = token or self.default_token
-        query_url = f"{self.service_url}/list_files?dataset_id={dataset_id}&dir_path={dir_path}&token={token}"
-        response = await self.http_client.get(query_url)
+
+        # Build query URL, excluding None parameters
+        params = {"dataset_id": dataset_id}
+        if dir_path is not None:
+            params["dir_path"] = dir_path
+        if token is not None:
+            params["token"] = token
+
+        query_url = f"{self.service_url}/list_files"
+        response = await self.http_client.get(query_url, params=params)
         response.raise_for_status()
         files = response.json()
         end_time = asyncio.get_event_loop().time()

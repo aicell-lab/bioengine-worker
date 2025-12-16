@@ -371,6 +371,20 @@ class PredictionItemModel(TypedDict, total=False):
     flows: list[np.ndarray]  # Optional: [HSV flow, XY flows, cellprob, final positions]
 
 
+class ValidationMetrics(TypedDict, total=False):
+    """Validation performance metrics for a segmentation foreground mask.
+
+    Metrics are computed on Cellpose's cell-probability channel as a binary
+    foreground/background classification problem.
+    """
+
+    pixel_accuracy: float
+    precision: float
+    recall: float
+    f1: float
+    iou: float
+
+
 class SessionStatus(TypedDict, total=False):
     """Status and message for a background training session."""
 
@@ -378,6 +392,7 @@ class SessionStatus(TypedDict, total=False):
     message: str
     train_losses: list[float]
     test_losses: list[float]
+    test_metrics: list[ValidationMetrics | None]
     n_train: int  # Number of training samples
     n_test: int  # Number of test samples
     start_time: str  # Training start time (ISO format)
@@ -531,6 +546,7 @@ def update_status(
     message: str,
     train_losses: list[float] | None = None,
     test_losses: list[float] | None = None,
+    test_metrics: list[ValidationMetrics | None] | None = None,
     n_train: int | None = None,
     n_test: int | None = None,
     start_time: str | None = None,
@@ -554,6 +570,8 @@ def update_status(
             status_dict["train_losses"] = train_losses
         if test_losses is not None:
             status_dict["test_losses"] = test_losses
+        if test_metrics is not None:
+            status_dict["test_metrics"] = test_metrics
         if n_train is not None:
             status_dict["n_train"] = n_train
         if n_test is not None:
@@ -667,7 +685,9 @@ def train_seg_with_callbacks(
         net: The network model to train
         ... (all standard parameters same as cellpose.train.train_seg)
         epoch_callback: Optional callback function called after each epoch.
-            Signature: callback(epoch, train_loss, test_loss, elapsed_seconds)
+            Signature: callback(epoch, train_loss, test_loss, elapsed_seconds, val_metrics)
+            Where val_metrics is a dict with keys like precision/recall/f1, or None
+            when validation was not run for that epoch.
         batch_callback: Optional callback function called after each batch.
             Signature: callback(epoch, batch_idx, total_batches, batch_loss, elapsed_seconds)
 
@@ -798,6 +818,48 @@ def train_seg_with_callbacks(
     lavg, nsum = 0, 0
     train_losses, test_losses = np.zeros(n_epochs), np.zeros(n_epochs)
 
+    def _safe_div(n: float, d: float) -> float:
+        return float(n / d) if d != 0 else 0.0
+
+    def _compute_binary_metrics(
+        pred: "torch.Tensor",  # (B, H, W)
+        target: "torch.Tensor",  # (B, H, W)
+    ) -> ValidationMetrics:
+        """Compute basic binary foreground/background metrics.
+
+        Uses simple thresholds chosen based on value ranges.
+        """
+        # Choose thresholds robustly for both [0,1] and signed/logit-like ranges.
+        tmin = float(target.min().item())
+        tmax = float(target.max().item())
+        target_thr = 0.5 if (tmin >= 0.0 and tmax <= 1.0) else 0.0
+
+        pmin = float(pred.min().item())
+        pmax = float(pred.max().item())
+        pred_thr = 0.5 if (pmin >= 0.0 and pmax <= 1.0) else 0.0
+
+        gt = (target > target_thr).to(torch.bool).flatten()
+        pr = (pred > pred_thr).to(torch.bool).flatten()
+
+        tp = int(torch.sum(pr & gt).item())
+        fp = int(torch.sum(pr & ~gt).item())
+        fn = int(torch.sum(~pr & gt).item())
+        tn = int(torch.sum(~pr & ~gt).item())
+
+        precision = _safe_div(tp, tp + fp)
+        recall = _safe_div(tp, tp + fn)
+        f1 = _safe_div(2 * precision * recall, precision + recall)
+        pixel_accuracy = _safe_div(tp + tn, tp + tn + fp + fn)
+        iou = _safe_div(tp, tp + fp + fn)
+
+        return ValidationMetrics(
+            pixel_accuracy=pixel_accuracy,
+            precision=precision,
+            recall=recall,
+            f1=f1,
+            iou=iou,
+        )
+
     for iepoch in range(n_epochs):
         np.random.seed(iepoch)
         if nimg != nimg_per_epoch:
@@ -874,6 +936,7 @@ def train_seg_with_callbacks(
 
         # Compute test loss if appropriate
         lavgt = 0.0
+        val_metrics: ValidationMetrics | None = None
         if iepoch == 5 or iepoch % 10 == 0:
             if test_data is not None or test_files is not None:
                 np.random.seed(42)
@@ -885,6 +948,9 @@ def train_seg_with_callbacks(
                     )
                 else:
                     rperm = np.random.permutation(np.arange(0, nimg_test))
+
+                # Confusion counts for cellprob foreground/background
+                tp = fp = fn = tn = 0
 
                 for ibatch in range(0, len(rperm), batch_size):
                     with torch.no_grad():
@@ -924,6 +990,35 @@ def train_seg_with_callbacks(
                         if y.shape[1] > 3:
                             loss3 = _loss_fn_class(lbl, y, class_weights=class_weights)
                             loss += loss3
+
+                        # Validation performance on Cellpose cell-prob channel.
+                        # Channel layout is typically: [flow_y, flow_x, cellprob, ...]
+                        try:
+                            pred_cellprob = y[:, 2].detach().float().cpu()
+                            true_cellprob = lbl[:, 2].detach().float().cpu()
+                            batch_metrics = _compute_binary_metrics(
+                                pred_cellprob, true_cellprob
+                            )
+                            # Reconstruct confusion from metrics is lossy; instead
+                            # accumulate directly here for stability.
+                            # Use same thresholding logic as _compute_binary_metrics.
+                            tmin = float(true_cellprob.min().item())
+                            tmax = float(true_cellprob.max().item())
+                            target_thr = 0.5 if (tmin >= 0.0 and tmax <= 1.0) else 0.0
+                            pmin = float(pred_cellprob.min().item())
+                            pmax = float(pred_cellprob.max().item())
+                            pred_thr = 0.5 if (pmin >= 0.0 and pmax <= 1.0) else 0.0
+                            gt = (true_cellprob > target_thr).to(torch.bool).flatten()
+                            pr = (pred_cellprob > pred_thr).to(torch.bool).flatten()
+                            tp += int(torch.sum(pr & gt).item())
+                            fp += int(torch.sum(pr & ~gt).item())
+                            fn += int(torch.sum(~pr & gt).item())
+                            tn += int(torch.sum(~pr & ~gt).item())
+                            _ = batch_metrics  # keep for readability; not used further
+                        except Exception:
+                            # Metrics are best-effort; never fail training because of them.
+                            pass
+
                         test_loss = loss.item()
                         test_loss *= len(imgi)
                         lavgt += test_loss
@@ -931,16 +1026,42 @@ def train_seg_with_callbacks(
                 lavgt /= len(rperm)
                 test_losses[iepoch] = lavgt
 
+                # Finalize metrics if we collected any pixels.
+                if (tp + fp + fn + tn) > 0:
+                    precision = _safe_div(tp, tp + fp)
+                    recall = _safe_div(tp, tp + fn)
+                    f1 = _safe_div(2 * precision * recall, precision + recall)
+                    pixel_accuracy = _safe_div(tp + tn, tp + tn + fp + fn)
+                    iou = _safe_div(tp, tp + fp + fn)
+                    val_metrics = ValidationMetrics(
+                        pixel_accuracy=pixel_accuracy,
+                        precision=precision,
+                        recall=recall,
+                        f1=f1,
+                        iou=iou,
+                    )
+
             lavg /= nsum
-            train_logger.info(
-                f"{iepoch}, train_loss={lavg:.4f}, test_loss={lavgt:.4f}, LR={LR[iepoch]:.6f}, time {time.time()-t0:.2f}s"
-            )
+            if val_metrics is not None:
+                train_logger.info(
+                    f"{iepoch}, train_loss={lavg:.4f}, test_loss={lavgt:.4f}, "
+                    f"val_acc={val_metrics['pixel_accuracy']:.4f}, "
+                    f"val_p={val_metrics['precision']:.4f}, "
+                    f"val_r={val_metrics['recall']:.4f}, "
+                    f"val_f1={val_metrics['f1']:.4f}, "
+                    f"val_iou={val_metrics['iou']:.4f}, "
+                    f"LR={LR[iepoch]:.6f}, time {time.time()-t0:.2f}s"
+                )
+            else:
+                train_logger.info(
+                    f"{iepoch}, train_loss={lavg:.4f}, test_loss={lavgt:.4f}, LR={LR[iepoch]:.6f}, time {time.time()-t0:.2f}s"
+                )
             lavg, nsum = 0, 0
 
         # **CALLBACK: Report epoch progress**
         if epoch_callback is not None:
             elapsed = time.time() - t0
-            epoch_callback(iepoch + 1, train_losses[iepoch], lavgt, elapsed)
+            epoch_callback(iepoch + 1, train_losses[iepoch], lavgt, elapsed, val_metrics)
 
     # Save final model only (no intermediate snapshots)
     train_logger.info(f"saving final network parameters to {filename}")
@@ -993,6 +1114,7 @@ def run_blocking_task(
     # Lists to accumulate training metrics during epoch callbacks
     accumulated_train_losses: list[float] = []
     accumulated_test_losses: list[float] = []
+    accumulated_test_metrics: list[ValidationMetrics | None] = []
 
     # Define batch callback for within-epoch progress updates
     last_batch_update = [0]  # Use list to allow modification in nested function
@@ -1019,6 +1141,9 @@ def run_blocking_task(
                 test_losses=(
                     accumulated_test_losses.copy() if accumulated_test_losses else []
                 ),
+                test_metrics=(
+                    accumulated_test_metrics.copy() if accumulated_test_metrics else []
+                ),
                 n_train=n_train,
                 n_test=n_test,
                 start_time=start_time_str,
@@ -1032,12 +1157,17 @@ def run_blocking_task(
 
     # Define epoch callback for real-time progress updates
     def epoch_callback(
-        epoch: int, train_loss: float, test_loss: float, elapsed_seconds: float
+        epoch: int,
+        train_loss: float,
+        test_loss: float,
+        elapsed_seconds: float,
+        test_metrics: ValidationMetrics | None,
     ) -> None:
         """Update status after each epoch."""
         # Accumulate losses
         accumulated_train_losses.append(train_loss)
         accumulated_test_losses.append(test_loss)
+        accumulated_test_metrics.append(test_metrics)
 
         update_status(
             session_id,
@@ -1045,6 +1175,7 @@ def run_blocking_task(
             f"Training in progress (epoch {epoch}/{training_params['n_epochs']})",
             train_losses=accumulated_train_losses.copy(),
             test_losses=accumulated_test_losses.copy(),
+            test_metrics=accumulated_test_metrics.copy(),
             n_train=n_train,
             n_test=n_test,
             start_time=start_time_str,
@@ -1103,6 +1234,7 @@ def run_blocking_task(
         "Training completed successfully",
         train_losses=train_losses_list,
         test_losses=test_losses_list,
+        test_metrics=accumulated_test_metrics.copy(),
         n_train=n_train,
         n_test=n_test,
         start_time=start_time_str,
@@ -2264,7 +2396,6 @@ class CellposeFinetune:
         status = get_status(session_id)
         return SessionStatusWithId(**status, session_id=session_id)
 
-    # TODO: implement
     @schema_method(arbitrary_types_allowed=True)
     async def stop_training(
         self,
@@ -2726,6 +2857,7 @@ BSD-3-Clause (Cellpose license)
                 current_status["message"],
                 train_losses=current_status.get("train_losses"),
                 test_losses=current_status.get("test_losses"),
+                test_metrics=current_status.get("test_metrics"),
                 n_train=current_status.get("n_train"),
                 n_test=current_status.get("n_test"),
                 start_time=current_status.get("start_time"),

@@ -5,7 +5,7 @@ bioengine_apps/cellpose_finetuning/scripts/deploy_local_cellpose.py).
 
 Examples:
   export HYPHA_TOKEN=...
-  python bioengine_apps/cellpose_finetuning/scripts/test_service_deployed.py \
+  python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
     --dataset-artifact ri-scale/cellpose-test \
     --train-images 'train/*_image.ome.tif' \
     --train-annotations 'train/*_mask.ome.tif' \
@@ -13,14 +13,14 @@ Examples:
     --test-annotations 'test/*_mask.ome.tif'
 
 Resume monitoring an existing session:
-    python bioengine_apps/cellpose_finetuning/scripts/test_service_deployed.py \
+    python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
         --dataset-artifact ri-scale/cellpose-test \
         --train-images 'train/*_image.ome.tif' \
         --train-annotations 'train/*_mask.ome.tif' \
         --session <session-id>
 
 Export a completed session (and optionally download cover):
-    python bioengine_apps/cellpose_finetuning/scripts/test_service_deployed.py \
+    python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
         --dataset-artifact ri-scale/cellpose-test \
         --train-images 'train/*_image.ome.tif' \
         --train-annotations 'train/*_mask.ome.tif' \
@@ -340,9 +340,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--service-id",
         default=None,
-        help="Override service id (default: <workspace>/cellpose-finetuning)",
+        help="Override service id (default: <workspace>/cellpose-finetuning-test)",
     )
-    p.add_argument("--application-id", default="cellpose-finetuning")
+    p.add_argument("--application-id", default="cellpose-finetuning-test")
 
     p.add_argument(
         "--session",

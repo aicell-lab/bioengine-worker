@@ -937,7 +937,9 @@ def train_seg_with_callbacks(
         # Compute test loss if appropriate
         lavgt = 0.0
         val_metrics: ValidationMetrics | None = None
-        if iepoch == 5 or iepoch % 10 == 0:
+        # Validate at epoch 0 (first epoch), and then every 10 epochs (10, 20, 30...)
+        # iepoch is 0-indexed, so iepoch=9 corresponds to Epoch 10.
+        if iepoch == 0 or (iepoch + 1) % 10 == 0:
             if test_data is not None or test_files is not None:
                 np.random.seed(42)
                 if nimg_test != nimg_test_per_epoch:
@@ -995,7 +997,20 @@ def train_seg_with_callbacks(
                         # Channel layout is typically: [flow_y, flow_x, cellprob, ...]
                         try:
                             pred_cellprob = y[:, 2].detach().float().cpu()
-                            true_cellprob = lbl[:, 2].detach().float().cpu()
+                            
+                            # Handle different label formats (flows vs masks)
+                            if lbl.shape[1] >= 3:
+                                # Labels are flows: [flow_y, flow_x, cellprob, ...]
+                                true_cellprob = lbl[:, 2].detach().float().cpu()
+                            elif lbl.shape[1] == 1:
+                                # Labels are masks: [mask]
+                                # Create binary cellprob from mask (0 is background)
+                                true_cellprob = (lbl[:, 0] > 0).float().cpu()
+                            else:
+                                # Unexpected shape (e.g. 2 channels), skip metrics
+                                train_logger.warning(f"Skipping metrics: unexpected lbl shape {lbl.shape}")
+                                continue
+
                             batch_metrics = _compute_binary_metrics(
                                 pred_cellprob, true_cellprob
                             )
@@ -1015,8 +1030,9 @@ def train_seg_with_callbacks(
                             fn += int(torch.sum(~pr & gt).item())
                             tn += int(torch.sum(~pr & ~gt).item())
                             _ = batch_metrics  # keep for readability; not used further
-                        except Exception:
+                        except Exception as e:
                             # Metrics are best-effort; never fail training because of them.
+                            train_logger.warning(f"Failed to compute validation metrics: {e}")
                             pass
 
                         test_loss = loss.item()

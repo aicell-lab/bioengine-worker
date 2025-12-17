@@ -727,6 +727,20 @@ This command will:
 3. Upload the application to Hypha as an artifact
 4. Display the created artifact ID (e.g., `your-workspace/your-app`)
 
+**Using a BioEngine Worker for Upload (Recommended)**
+
+You can use the `--worker-service-id` flag to upload applications through a BioEngine worker service. This approach has several advantages:
+
+```bash
+python scripts/save_application.py \
+    --directory <path-to-your-app> \
+    --worker-service-id bioimage-io/bioengine-worker
+```
+
+**Advantages:**
+- **Personal authentication**: Use your own credentials via interactive login or token
+- **Workspace access**: Create/update artifacts in the worker's workspace (e.g., `bioimage-io`) if you're an authorized user
+- **Permission-based**: No need for direct workspace credentials - your user permissions determine access
 
 **Authentication**: You need to authenticate with Hypha to upload applications. You have three options:
 - **Environment variable**: Export your Hypha authentication token:
@@ -754,6 +768,16 @@ python scripts/save_application.py \
     --workspace "bioimage-io" \
     --token "$HYPHA_TOKEN"
 ```
+
+**Example with BioEngine Worker:**
+```bash
+python scripts/save_application.py \
+    --directory "bioengine_apps/model_runner" \
+    --server-url "https://hypha.aicell.io" \
+    --worker-service-id "bioimage-io/bioengine-worker"
+```
+
+This will authenticate you interactively and upload the application to the `bioimage-io` workspace through the worker service.
 
 #### What Happens During Upload
 

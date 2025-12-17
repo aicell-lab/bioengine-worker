@@ -938,6 +938,9 @@ class BioEngineProxyDeployment:
         """
         # Wait for the entry deployment to be ready and healthy
         if not self.entry_deployment_ready:
+            logger.info(
+                f"⏳ Waiting for entry deployment to complete initial health check for '{self.application_id}'"
+            )
             await self.entry_deployment_handle.check_health.remote()
             self.entry_deployment_ready = True
 

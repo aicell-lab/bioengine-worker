@@ -23,6 +23,7 @@ from pydantic import Field
 from ray import serve
 
 if TYPE_CHECKING:
+    import torch
     from cellpose.models import CellposeModel
     from hypha_artifact import AsyncHyphaArtifact
 
@@ -997,7 +998,7 @@ def train_seg_with_callbacks(
                         # Channel layout is typically: [flow_y, flow_x, cellprob, ...]
                         try:
                             pred_cellprob = y[:, 2].detach().float().cpu()
-                            
+
                             # Handle different label formats (flows vs masks)
                             if lbl.shape[1] >= 3:
                                 # Labels are flows: [flow_y, flow_x, cellprob, ...]
@@ -1008,7 +1009,9 @@ def train_seg_with_callbacks(
                                 true_cellprob = (lbl[:, 0] > 0).float().cpu()
                             else:
                                 # Unexpected shape (e.g. 2 channels), skip metrics
-                                train_logger.warning(f"Skipping metrics: unexpected lbl shape {lbl.shape}")
+                                train_logger.warning(
+                                    f"Skipping metrics: unexpected lbl shape {lbl.shape}"
+                                )
                                 continue
 
                             batch_metrics = _compute_binary_metrics(
@@ -1032,7 +1035,9 @@ def train_seg_with_callbacks(
                             _ = batch_metrics  # keep for readability; not used further
                         except Exception as e:
                             # Metrics are best-effort; never fail training because of them.
-                            train_logger.warning(f"Failed to compute validation metrics: {e}")
+                            train_logger.warning(
+                                f"Failed to compute validation metrics: {e}"
+                            )
                             pass
 
                         test_loss = loss.item()
@@ -1077,7 +1082,9 @@ def train_seg_with_callbacks(
         # **CALLBACK: Report epoch progress**
         if epoch_callback is not None:
             elapsed = time.time() - t0
-            epoch_callback(iepoch + 1, train_losses[iepoch], lavgt, elapsed, val_metrics)
+            epoch_callback(
+                iepoch + 1, train_losses[iepoch], lavgt, elapsed, val_metrics
+            )
 
     # Save final model only (no intermediate snapshots)
     train_logger.info(f"saving final network parameters to {filename}")

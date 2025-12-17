@@ -17,6 +17,7 @@ async def save_application(
     server_url: str,
     workspace: str = None,
     token: str = None,
+    worker_service_id: str = None,
 ) -> str:
     """
     Creates or updates a BioEngine application artifact in the Hypha artifact manager.
@@ -26,6 +27,7 @@ async def save_application(
         server_url: URL of the Hypha server
         workspace: Hypha workspace to connect to
         token: Authentication token for Hypha server
+        worker_service_id: Optional worker service ID to use creating/updating the artifact
 
     Returns:
         str: ID of the created artifact
@@ -74,19 +76,42 @@ async def save_application(
         logger.error(f"Failed to create file list from directory: {e}")
         raise
 
-    # Create or update the artifact using the utility function
-    try:
-        artifact_id = await create_application_from_files(
-            artifact_manager=artifact_manager,
-            files=files,
-            workspace=workspace,
-            user_id=user_id,
-            logger=logger,
-        )
-        return artifact_id
-    except Exception as e:
-        logger.error(f"Failed to create/update artifact: {e}")
-        raise
+    if worker_service_id is not None:
+        logger.info(f"Using worker service ID: {worker_service_id}")
+        try:
+            bioengine_service = await server.get_service(worker_service_id)
+        except KeyError:
+            logger.error(f"Worker service {worker_service_id} not found")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get worker service {worker_service_id}: {e}")
+            raise
+
+        # Create or update the artifact using the bioengine service
+        try:
+            artifact_id = await bioengine_service.save_application(files=files)
+            logger.info(
+                f"Successfully created/updated application artifact '{artifact_id}'."
+            )
+            return artifact_id
+        except Exception as e:
+            logger.error(f"Failed to create/update artifact: {e}")
+            raise
+
+    else:
+        # Create or update the artifact using the utility function
+        try:
+            artifact_id = await create_application_from_files(
+                artifact_manager=artifact_manager,
+                files=files,
+                workspace=workspace,
+                user_id=user_id,
+                logger=logger,
+            )
+            return artifact_id
+        except Exception as e:
+            logger.error(f"Failed to create/update artifact: {e}")
+            raise
 
 
 if __name__ == "__main__":
@@ -118,6 +143,11 @@ if __name__ == "__main__":
         type=str,
         help="Authentication token for Hypha server",
     )
+    parser.add_argument(
+        "--worker-service-id",
+        type=str,
+        help="Optional worker service ID to use creating/updating the artifact",
+    )
 
     args = parser.parse_args()
 
@@ -127,5 +157,6 @@ if __name__ == "__main__":
             server_url=args.server_url,
             workspace=args.workspace,
             token=args.token,
+            worker_service_id=args.worker_service_id,
         )
     )

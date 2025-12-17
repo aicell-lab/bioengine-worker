@@ -54,8 +54,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--artifact-id",
         type=str,
-        default="ri-scale/cellpose-finetuning-test",
-        help="Artifact ID to deploy (default: ri-scale/cellpose-finetuning-test)",
+        default="bioimage-io/cellpose-finetuning-test",
+        help="Artifact ID to deploy (default: bioimage-io/cellpose-finetuning-test)",
     )
     parser.add_argument(
         "--application-id",

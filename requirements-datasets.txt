@@ -1,3 +1,4 @@
 -r requirements.txt
+httpx[http2]==0.28.1
 hypha[s3]==0.21.23
 zarr==3.1.3

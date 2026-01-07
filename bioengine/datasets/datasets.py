@@ -75,7 +75,6 @@ class BioEngineDatasets:
             The client uses a unique replica_id for tracking access patterns in logs.
         """
         logger.info(f"🚀 Initializing {self.__class__.__name__}")
-        logger.info(f"🔗 Data server URL: {data_server_url}")
 
         if data_server_url == "auto":
             bioengine_dir = Path.home() / ".bioengine"
@@ -98,6 +97,8 @@ class BioEngineDatasets:
             self.service_url = None
 
         self.default_token = hypha_token
+
+        logger.info(f"🔗 Data server URL: {data_server_url}")
 
     async def ping_data_server(self):
         """

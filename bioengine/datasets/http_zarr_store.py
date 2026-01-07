@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+from asyncio import Semaphore
 from dataclasses import dataclass
 from typing import AsyncIterator, Iterable, Optional
 
@@ -85,6 +86,12 @@ class HttpZarrStore(Store):
         max_chunk_cache_size: int = int(
             os.getenv("BIOENGINE_DATASETS_ZARR_STORE_CACHE_SIZE", 1024 * 1024 * 1024)
         ),  # 1 GiB default
+        max_concurrent_requests: int = int(
+            os.getenv("BIOENGINE_DATASETS_ZARR_STORE_CONCURRENT_REQUESTS", 50)
+        ),
+        max_connections: int = int(
+            os.getenv("BIOENGINE_DATASETS_ZARR_STORE_CONNECTIONS", 100)
+        ),
     ):
         """
         Initialize the HTTP-based Zarr store for remote dataset access.
@@ -97,6 +104,9 @@ class HttpZarrStore(Store):
             dataset_id: Name of the dataset to access through this store
             zarr_path: Path within the dataset to the Zarr store (must end with .zarr)
             token: Authentication token for access control
+            max_chunk_cache_size: Maximum size of chunk cache in bytes (default 1GB)
+            max_concurrent_requests: Maximum number of concurrent HTTP requests (default 50)
+            max_connections: Maximum number of HTTP connections in pool (default 100)
         """
         super().__init__(read_only=True)
         self.service_url = service_url.rstrip("/")
@@ -104,6 +114,11 @@ class HttpZarrStore(Store):
         self.zarr_path = zarr_path[1:] if zarr_path.startswith("/") else zarr_path
         self.token = token
         self.http_client = None
+
+        # Concurrency control
+        self.max_concurrent_requests = max_concurrent_requests
+        self.max_connections = max_connections
+        self._request_semaphore = Semaphore(max_concurrent_requests)
 
         # Presigned URL cache (expires just under 1 hour for safety)
         # Cache expiry is set to 59 minutes to be safe with 60 minute URL expiry
@@ -123,7 +138,16 @@ class HttpZarrStore(Store):
 
     def _set_http_client(self) -> None:
         if self.http_client is None:
-            self.http_client = httpx.AsyncClient(timeout=120)  # seconds
+            # Configure HTTP/2 and connection pooling for optimal performance
+            limits = httpx.Limits(
+                max_connections=self.max_connections,
+                max_keepalive_connections=self.max_connections // 2,
+            )
+            self.http_client = httpx.AsyncClient(
+                timeout=60,  # seconds
+                limits=limits,
+                http2=True,  # Enable HTTP/2 for better multiplexing
+            )
 
     def _get_url_cache_key(self, file_path: str) -> str:
         """Generate a cache key for the presigned URL based on file path."""
@@ -293,30 +317,41 @@ class HttpZarrStore(Store):
             if cached_buffer is not None:
                 return cached_buffer
 
-        # Not in cache, fetch from remote
-        url = await self._get_and_cache_url(f"{self.zarr_path}/{key}")
-        if url is None:
-            return None
+        # Use semaphore to limit concurrent requests
+        async with self._request_semaphore:
+            # Not in cache, fetch from remote
+            url = await self._get_and_cache_url(f"{self.zarr_path}/{key}")
+            if url is None:
+                return None
 
-        headers = {}
-        if byte_range:
-            if isinstance(byte_range, RangeByteRequest):
-                headers["Range"] = f"bytes={byte_range.start}-{byte_range.end - 1}"
-            elif isinstance(byte_range, OffsetByteRequest):
-                headers["Range"] = f"bytes={byte_range.offset}-"
-            elif isinstance(byte_range, SuffixByteRequest):
-                headers["Range"] = f"bytes=-{byte_range.suffix}"
+            headers = {}
+            if byte_range:
+                if isinstance(byte_range, RangeByteRequest):
+                    headers["Range"] = f"bytes={byte_range.start}-{byte_range.end - 1}"
+                elif isinstance(byte_range, OffsetByteRequest):
+                    headers["Range"] = f"bytes={byte_range.offset}-"
+                elif isinstance(byte_range, SuffixByteRequest):
+                    headers["Range"] = f"bytes=-{byte_range.suffix}"
 
-        response = await self.http_client.get(url, headers=headers)
-        response.raise_for_status()
-        content = response.content
-        buffer = prototype.buffer.from_bytes(content)
+            # Retry logic for transient failures
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    response = await self.http_client.get(url, headers=headers)
+                    response.raise_for_status()
+                    content = response.content
+                    buffer = prototype.buffer.from_bytes(content)
 
-        # Cache the buffer for future use
-        if self._max_chunk_cache_size > 0:
-            self._cache_chunk(chunk_cache_key, buffer)
+                    # Cache the buffer for future use
+                    if self._max_chunk_cache_size > 0:
+                        self._cache_chunk(chunk_cache_key, buffer)
 
-        return buffer
+                    return buffer
+                except (httpx.TimeoutException, httpx.NetworkError) as e:
+                    if attempt == max_retries - 1:
+                        raise
+                    # Exponential backoff
+                    await asyncio.sleep(0.1 * (2**attempt))
 
     async def get_partial_values(
         self,

@@ -176,12 +176,17 @@ class ModelCache:
                     f"HTTP {response.status_code} - {response.text}"
                 )
 
-            manifest = await asyncio.to_thread(yaml.safe_load, response.text)
+            artifact = await asyncio.to_thread(yaml.safe_load, response.text)
             # Model is published if status is NOT "request-review"
-            return manifest["manifest"].get("status") != "request-review"
+            is_published = artifact["manifest"].get("status") != "request-review"
         except Exception as e:
             logger.error(f"❌ Error checking model '{model_id}' status: {e}")
-            return False
+            is_published = False
+
+        if not is_published:
+            raise ValueError(
+                f"Model '{model_id}' is not published. Only published models are allowed."
+            )
 
     async def _wait_for_download_completion(
         self, package_dir: Path, max_wait_time: int = 300
@@ -919,13 +924,7 @@ class ModelCache:
 
         # Check if model is published
         if not allow_unpublished:
-            is_published = await self._check_model_published_status(
-                model_id, stage=stage
-            )
-            if not is_published:
-                raise ValueError(
-                    f"Model '{model_id}' is not published. Only published models are allowed."
-                )
+            await self._check_model_published_status(model_id, stage=stage)
 
         # Force a complete re-download if skip_cache is True
         package_path = self.cache_dir / model_id

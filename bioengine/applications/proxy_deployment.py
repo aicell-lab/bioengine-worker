@@ -20,6 +20,7 @@ from starlette.requests import Request
 from bioengine.utils import get_pip_requirements
 
 logger = logging.getLogger("ray.serve")
+logger.setLevel("INFO")
 
 
 @deployment(
@@ -262,7 +263,7 @@ class BioEngineProxyDeployment:
         Returns:
             Dictionary with completion status and request ID
         """
-        logger.info(
+        logger.debug(
             f"🌐 Received '{request.method}' request to BioEngineProxyDeployment"
         )
 
@@ -284,7 +285,7 @@ class BioEngineProxyDeployment:
                 "message": "Missing X-Request-ID header",
             }
 
-        logger.info(f"⏳ Waiting for request: {request_id}")
+        logger.debug(f"⏳ Waiting for request: {request_id}")
         # Wait for the corresponding request event
         event_data = self._request_events.get(request_id)
         if event_data:
@@ -292,10 +293,10 @@ class BioEngineProxyDeployment:
                 await asyncio.wait_for(
                     event_data["event"].wait(), timeout=3600
                 )  # free after 1 hour
-                logger.info(f"✅ Request completed: {request_id}")
+                logger.debug(f"✅ Request completed: {request_id}")
                 return {"status": "completed", "request_id": request_id}
             except asyncio.TimeoutError:
-                logger.info(f"⏱️ Request timed out after 1 hour: {request_id}")
+                logger.error(f"⏱️ Request timed out after 1 hour: {request_id}")
                 return {"status": "timeout", "request_id": request_id}
             finally:
                 # Always remove the event to prevent memory leaks
@@ -333,7 +334,7 @@ class BioEngineProxyDeployment:
         Raises:
             PermissionError: If user is not authorized or context is invalid
         """
-        logger.info(f"🔒 Checking permissions for application: {self.application_id}")
+        logger.debug(f"🔒 Checking permissions for application: {self.application_id}")
 
         if not isinstance(context, dict) or "user" not in context:
             logger.error(f"❌ Invalid context without user information")
@@ -349,11 +350,11 @@ class BioEngineProxyDeployment:
         user_email = user["email"]
 
         if "*" in self.authorized_users:
-            logger.info(f"✅ Wildcard access granted for user: {user_id}")
+            logger.debug(f"✅ Wildcard access granted for user: {user_id}")
             return
 
         if user_id in self.authorized_users or user_email in self.authorized_users:
-            logger.info(f"✅ User authorized: {user_id} ({user_email})")
+            logger.debug(f"✅ User authorized: {user_id} ({user_email})")
             return
 
         logger.error(f"❌ User not authorized: {user_id} ({user_email})")
@@ -376,7 +377,7 @@ class BioEngineProxyDeployment:
         Args:
             request_id: Unique identifier for correlating with the RPC call
         """
-        logger.info(f"📡 Sending autoscaling trigger for request: {request_id}")
+        logger.debug(f"📡 Sending autoscaling trigger for request: {request_id}")
 
         try:
             timeout = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0)
@@ -388,7 +389,7 @@ class BioEngineProxyDeployment:
                     json={"mimic_request": True},
                 )
 
-            logger.info(
+            logger.debug(
                 f"✅ Autoscaling trigger sent successfully for request: {request_id}"
             )
 

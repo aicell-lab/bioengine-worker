@@ -18,6 +18,7 @@ from ray.exceptions import RayTaskError
 from ray.serve.handle import DeploymentHandle
 
 logger = logging.getLogger("ray.serve")
+logger.setLevel("INFO")
 
 
 class BioimageioPackage:
@@ -567,10 +568,7 @@ class ModelCache:
         all_files = await asyncio.to_thread(lambda: list(model_dir.glob("*")))
         local_files = set()
         for f in all_files:
-            if await asyncio.to_thread(f.is_file) and f.name not in [
-                ".last_access",
-                ".file_metadata.json",
-            ]:
+            if await asyncio.to_thread(f.is_file) and not f.name.startswith("."):
                 local_files.add(f.name)
 
         # Determine files to delete
@@ -704,10 +702,9 @@ class ModelCache:
                 )
                 local_files = set()
                 for f in all_local_files:
-                    if await asyncio.to_thread(f.is_file) and f.name not in [
-                        ".last_access",
-                        ".file_metadata.json",
-                    ]:
+                    if await asyncio.to_thread(f.is_file) and not f.name.startswith(
+                        "."
+                    ):
                         local_files.add(f.name)
                 remote_file_names = set(remote_files.keys())
                 files_to_delete = local_files - remote_file_names
@@ -951,7 +948,7 @@ class ModelCache:
         # "memory": 16 * 1024 * 1024 * 1024,  # 16GB RAM limit
         "runtime_env": {
             "pip": [
-                "bioimageio.core==0.9.0",
+                "bioimageio.core==0.9.5",
                 "numpy==1.26.4",
                 "tqdm>=4.64.0",
                 "aiofiles>=23.0.0",
@@ -1219,6 +1216,8 @@ class ModelRunner:
             This method delegates to the model_evaluation deployment for isolated testing
             in a controlled environment with the specified requirements.
         """
+        import aiofiles
+
         logger.info(
             f"🧪 Testing model '{model_id}' (stage={stage}, skip_cache={skip_cache})."
         )
@@ -1236,10 +1235,57 @@ class ModelRunner:
             async with package:
                 logger.info(f"📍 Model source for '{model_id}': {package.source}")
 
+                # Check for cached test results
+                test_results_path = package.package_path / ".test_results.json"
+
+                if not skip_cache and await asyncio.to_thread(test_results_path.exists):
+                    try:
+                        # Load cached test results
+                        async with aiofiles.open(test_results_path, "r") as f:
+                            content = await f.read()
+                            cached_data = await asyncio.to_thread(json.loads, content)
+
+                        # Check if model files have changed since last test
+                        cached_download_time = cached_data["latest_download"]
+
+                        if package.latest_download == cached_download_time:
+                            # Model hasn't changed, return cached results
+                            logger.info(
+                                f"💾 Model '{model_id}' unchanged since last test, using cached results."
+                            )
+                            return cached_data["test_result"]
+                        else:
+                            logger.info(
+                                f"🔄 Model '{model_id}' has been updated, re-running tests "
+                                f"(cached: {cached_download_time}, current: {package.latest_download})"
+                            )
+                    except (json.JSONDecodeError, KeyError, OSError, IOError) as e:
+                        logger.warning(
+                            f"⚠️ Failed to load cached test results for '{model_id}': {e}. Running fresh test."
+                        )
+
+                # Run the test
                 test_result = await self.runtime_deployment.test.remote(
                     rdf_path=package.source,
                     additional_requirements=additional_requirements,
                 )
+
+                # Save test results to cache if successful
+                try:
+                    cache_data = {
+                        "test_result": test_result,
+                        "latest_download": package.latest_download,
+                        "tested_at": time.time(),
+                        "additional_requirements": additional_requirements,
+                    }
+                    async with aiofiles.open(test_results_path, "w") as f:
+                        await f.write(json.dumps(cache_data, indent=2))
+                    logger.info(f"💾 Test results cached for model '{model_id}'")
+                except (OSError, IOError) as e:
+                    logger.warning(
+                        f"⚠️ Failed to cache test results for '{model_id}': {e}"
+                    )
+
         except RayTaskError as e:
             error_msg = f"Failed to run model test for '{model_id}': {e}"
             logger.error(f"❌ {error_msg}")
@@ -1373,6 +1419,9 @@ if __name__ == "__main__":
                 runtime_deployment=MockHandle(),
                 cache_size_in_gb=0.23,  # 230 MB cache for testing
             )
+
+            await model_runner.test(model_id="serious-lobster")
+            await model_runner.test(model_id="serious-lobster")
 
             await model_runner.test_deployment(model_id="ambitious-ant")
 

@@ -10,6 +10,7 @@ import ray
 from ray import serve
 
 logger = logging.getLogger("ray.serve")
+logger.setLevel("INFO")
 
 # Deployment default runtime environment
 requirements = [

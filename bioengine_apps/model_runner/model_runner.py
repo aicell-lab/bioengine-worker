@@ -154,21 +154,31 @@ class ModelCache:
                 )
 
     async def _check_model_published_status(self, model_id: str, stage: bool) -> bool:
-        """Check if a model is published by looking at its manifest status."""
-        stage_param = f"?stage={str(stage).lower()}"
-        artifact_url = (
-            f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}{stage_param}"
-        )
+        """
+        Check if a model is published by looking at its manifest status.
 
-        try:
+        Behavior:
+        - Retries with exponential backoff on transient errors.
+        - Falls back from stage=true to stage=false on 404.
+        - Only raises 'not published' if status == 'request-review'.
+        - Raises a RuntimeError if status could not be determined after retries.
+        """
+        base_url = "https://hypha.aicell.io/bioimage-io/artifacts"
+        max_attempts = 4
+        initial_backoff = 0.5  # seconds
+        max_backoff = 8.0
+
+        async def _fetch_manifest(stage_flag: bool) -> Optional[dict]:
+            stage_param = f"?stage={str(stage_flag).lower()}"
+            artifact_url = f"{base_url}/{model_id}{stage_param}"
+
             response = await self.client.get(artifact_url)
-            if response.status_code == 404 and stage:
-                # If staged version doesn't exist, try with stage=false
+
+            if response.status_code == 404 and stage_flag:
                 logger.warning(
                     f"⚠️ Staged version not found for model '{model_id}', trying committed version..."
                 )
-                stage_param = "?stage=false"
-                artifact_url = f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}{stage_param}"
+                artifact_url = f"{base_url}/{model_id}?stage=false"
                 response = await self.client.get(artifact_url)
 
             if response.status_code != 200:
@@ -177,17 +187,54 @@ class ModelCache:
                     f"HTTP {response.status_code} - {response.text}"
                 )
 
-            artifact = await asyncio.to_thread(yaml.safe_load, response.text)
-            # Model is published if status is NOT "request-review"
-            is_published = artifact["manifest"].get("status") != "request-review"
-        except Exception as e:
-            logger.error(f"❌ Error checking model '{model_id}' status: {e}")
-            is_published = False
+            return await asyncio.to_thread(yaml.safe_load, response.text)
 
-        if not is_published:
-            raise ValueError(
-                f"Model '{model_id}' is not published. Only published models are allowed."
-            )
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                artifact = await _fetch_manifest(stage)
+                status = artifact["manifest"].get("status")
+
+                # Explicit logic:
+                # - Only treat as not published if status == "request-review"
+                # - Any other status (including None) is considered published/acceptable
+                if status == "request-review":
+                    raise ValueError(
+                        f"Model '{model_id}' is not published (status='request-review'). "
+                        f"Only published models are allowed."
+                    )
+
+                # Successfully determined status and it is acceptable
+                return True
+
+            except ValueError:
+                # This is the intentional "not published" signal – do not retry
+                raise
+
+            except Exception as e:
+                last_error = e
+                if attempt >= max_attempts:
+                    break
+
+                # Exponential backoff with jitter
+                backoff = min(max_backoff, initial_backoff * (2 ** (attempt - 1)))
+                backoff = backoff * (0.8 + 0.4 * random.random())  # jitter ±20%
+                logger.warning(
+                    f"⚠️ Attempt {attempt}/{max_attempts} failed while checking model "
+                    f"'{model_id}' status: {e}. Retrying in {backoff:.2f}s..."
+                )
+                await asyncio.sleep(backoff)
+
+        # If we get here, all retries failed due to errors (network, transport, etc.)
+        logger.error(
+            f"❌ Failed to determine published status for model '{model_id}' after "
+            f"{max_attempts} attempts. Last error: {last_error}"
+        )
+        raise RuntimeError(
+            f"Could not determine published status for model '{model_id}' after "
+            f"{max_attempts} attempts. Last error: {last_error}"
+        )
 
     async def _wait_for_download_completion(
         self, package_dir: Path, max_wait_time: int = 300
@@ -1420,8 +1467,9 @@ if __name__ == "__main__":
                 cache_size_in_gb=0.23,  # 230 MB cache for testing
             )
 
-            await model_runner.test(model_id="serious-lobster")
-            await model_runner.test(model_id="serious-lobster")
+            # Test result caching of "test" method
+            await model_runner.test(model_id="fearless-deer")
+            await model_runner.test(model_id="fearless-deer")
 
             await model_runner.test_deployment(model_id="ambitious-ant")
 

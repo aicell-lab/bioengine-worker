@@ -15,7 +15,12 @@ from pydantic import Field
 from bioengine import __version__
 from bioengine.applications import AppsManager
 from bioengine.ray import RayCluster
-from bioengine.utils import check_permissions, create_context, create_logger
+from bioengine.utils import (
+    check_permissions,
+    create_context,
+    create_logger,
+    fetch_geo_location,
+)
 from bioengine.worker.code_executor import CodeExecutor
 
 
@@ -277,7 +282,7 @@ class BioEngineWorker:
 
         try:
             # Fetch geo location information
-            self.geo_info = self._fetch_geo_location()
+            self.geo_location = fetch_geo_location(logger=self.logger)
 
             # Attempt interactive login if no token provided
             if not self._token:
@@ -376,37 +381,6 @@ class BioEngineWorker:
         else:
             if key not in kwargs or kwargs[key] is None:
                 kwargs[key] = value
-
-    def _fetch_geo_location(self) -> Dict[str, Any]:
-        """
-        Fetch geo location information from ipinfo.io.
-
-        Attempts to retrieve geographical location data including country, region,
-        city, and timezone. This information is used for logging and status reporting.
-        If the request fails, logs a warning and continues with empty geo info.
-        """
-        geo_info = {
-            "city": "Unknown",
-            "region": "Unknown",
-            "country": "Unknown",
-            "loc": "Unknown",
-            "timezone": "Unknown",
-        }
-        try:
-            with httpx.Client(timeout=10) as client:
-                response = client.get("https://ipinfo.io/json")
-                response.raise_for_status()
-                geo_info.update(response.json())
-                self.logger.info(
-                    f"Geo location detected: {geo_info['city']}, "
-                    f"{geo_info['region']}, "
-                    f"{geo_info['country']} "
-                    f"(Timezone: {geo_info['timezone']})"
-                )
-        except Exception as e:
-            self.logger.warning(f"Failed to fetch geo location information: {e}")
-
-        return geo_info
 
     def _discover_data_server(self) -> None:
         """
@@ -1093,8 +1067,7 @@ class BioEngineWorker:
             "client_id": self.client_id,
             "ray_cluster": self.ray_cluster.status,
             "admin_users": self.admin_users,
-            "country": self.geo_info.get("country"),
-            "region": self.geo_info.get("region"),
+            "geo_location": self.geo_location,
             "is_ready": self.is_ready.is_set(),
         }
 

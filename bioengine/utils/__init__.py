@@ -4,6 +4,7 @@ from .artifact_utils import (
     ensure_applications_collection,
     validate_manifest,
 )
+from .geo_location import fetch_geo_location
 from .logger import (
     create_logger,
     date_format,

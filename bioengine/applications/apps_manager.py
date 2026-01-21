@@ -1717,8 +1717,4 @@ class AppsManager:
             for application_id, status in zip(apps_to_check, status_results)
         }
 
-        # If only one application was requested, return just its status
-        if application_ids is not None and len(application_ids) == 1:
-            output = output[application_ids[0]]
-
         return output

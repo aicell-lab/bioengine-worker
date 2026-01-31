@@ -8,7 +8,7 @@ on:
       - 'bioengine/**'
       - 'requirements*.txt'
       - 'pyproject.toml'
-      - 'Dockerfile'
+      - 'docker/**'
       - '.dockerignore'
   workflow_dispatch:
 

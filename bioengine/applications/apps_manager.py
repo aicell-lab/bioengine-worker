@@ -80,7 +80,6 @@ class AppsManager:
         self,
         ray_cluster: RayCluster,
         apps_workdir: Union[str, Path] = f"{os.environ['HOME']}/.bioengine/apps",
-        data_server_url: Optional[str] = None,
         startup_applications: Optional[List[dict]] = None,
         # Logger
         log_file: Optional[Union[str, Path]] = None,
@@ -101,7 +100,6 @@ class AppsManager:
         Args:
             ray_cluster: Ray cluster manager instance for compute resource management
             apps_workdir: Working directory for application artifacts and build files
-            data_server_url: URL for the data server
             startup_applications: List of application configurations to deploy automatically
                                  when the manager initializes
             log_file: Optional path to log file for deployment operations
@@ -126,7 +124,6 @@ class AppsManager:
 
         self.app_builder = AppBuilder(
             apps_workdir=apps_workdir,
-            data_server_url=data_server_url,
             log_file=log_file,
             debug=debug,
         )
@@ -719,7 +716,7 @@ class AppsManager:
             "auto_redeploy": application_info["auto_redeploy"],
         }
 
-    async def initialize(
+    async def complete_initialization(
         self, server: RemoteService, admin_users: List[str], worker_service_id: str
     ) -> None:
         """
@@ -769,14 +766,6 @@ class AppsManager:
             self.artifact_manager = None
             raise
 
-        # Ensure applications collection exists
-        workspace = self.server.config.workspace
-        await ensure_applications_collection(
-            artifact_manager=self.artifact_manager,
-            workspace=workspace,
-            logger=self.logger,
-        )
-
         # Initialize the AppBuilder with the server and artifact manager
         self.app_builder.complete_initialization(
             server=self.server,
@@ -786,13 +775,23 @@ class AppsManager:
             proxy_actor_name=self.ray_cluster.proxy_actor_name,
         )
 
+        # Ensure applications collection exists
+        workspace = self.server.config.workspace
+        await ensure_applications_collection(
+            artifact_manager=self.artifact_manager,
+            workspace=workspace,
+            logger=self.logger,
+        )
+
+    async def deploy_startup_applications(self) -> None:
+        """
+        Deploy any configured startup applications.
+        """
         # Deploy any startup applications if provided
         if self.startup_applications:
             self.logger.info(
                 f"Deploying {len(self.startup_applications)} startup application(s)..."
             )
-
-            admin_context = create_context(admin_users[0])
 
             # Pass the worker owner's token to the startup applications (if not already set)
             startup_applications_token = await self.server.generate_token(
@@ -840,6 +839,8 @@ class AppsManager:
 
                 if "hypha_token" not in app_config:
                     app_config["hypha_token"] = startup_applications_token
+
+                admin_context = create_context(self.admin_users[0])
 
                 application_id = await self.run_application(
                     artifact_id=app_config["artifact_id"],

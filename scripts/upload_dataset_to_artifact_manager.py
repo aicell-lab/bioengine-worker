@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import aiofiles
 import httpx
@@ -14,10 +14,6 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-# Configuration constants
-MAX_RETRIES = 3
-RETRY_DELAY = 1.0  # seconds
 
 
 async def ensure_collection(
@@ -131,8 +127,12 @@ async def upload_file_to_artifact_manager(
 
         logger.info(f"Uploading {relative_path} ({file_size_mb:.2f}MB)")
 
+        max_attempts = 4
+        backoff = 1.0  # backoff: 1.0s, 2.0s, 4.0s
+        backoff_multiplier = 2.0
+
         # Retry upload logic
-        for attempt in range(MAX_RETRIES):
+        for attempt in range(1, max_attempts + 1):
             try:
                 upload_url = await artifact_manager.put_file(
                     artifact_id, file_path=relative_path
@@ -157,24 +157,24 @@ async def upload_file_to_artifact_manager(
                 return True
 
             except Exception as e:
-                logger.warning(
-                    f"Upload attempt {attempt + 1}/{MAX_RETRIES} failed for {relative_path}: {e}"
-                )
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(
-                        RETRY_DELAY * (2**attempt)
-                    )  # Exponential backoff
+                # If this was the last attempt, don't wait
+                if attempt < max_attempts:
+                    logger.warning(
+                        f"⚠️ Upload attempt {attempt}/{max_attempts} failed for {relative_path}: {e}. "
+                        f"Retrying in {backoff:.2f}s..."
+                    )
+
+                    # Sleep with exponential backoff before retrying
+                    await asyncio.sleep(backoff)
+                    backoff *= backoff_multiplier
                 else:
                     logger.error(
-                        f"Failed to upload {relative_path} after {MAX_RETRIES} attempts"
+                        f"⚠️ Failed to upload {relative_path} after {max_attempts} attempts: {e}"
                     )
                     # Update progress bar even for failed uploads
                     if progress_bar:
                         progress_bar.update(1)
                         progress_bar.set_postfix_str(f"Failed: {relative_path}")
-                    return False
-
-        return False
 
 
 async def upload_zarr_dataset_batch(

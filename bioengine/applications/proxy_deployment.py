@@ -29,7 +29,7 @@ logger.setLevel("INFO")
         "runtime_env": {
             "pip": get_pip_requirements(
                 select=["aiortc", "httpx", "hypha-rpc", "pydantic"],
-                extras=["rtc"],
+                extras=["worker"],
             ),
         },
     },
@@ -140,7 +140,7 @@ class BioEngineProxyDeployment:
             proxy_actor_name: Actor name of the BioEngineProxyActor for replica registration.
         """
         logger.info(
-            f"🚀 Initializing BioEngineProxyDeployment for application: '{application_id}'"
+            f"🚀 Initializing {self.__class__.__name__} for application: '{application_id}'"
         )
         logger.info(f"🔗 Server URL: {server_url}")
         logger.info(f"🏢 Workspace: '{workspace}'")

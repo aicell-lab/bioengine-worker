@@ -28,17 +28,17 @@ ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
 WORKDIR /app
 
 # Copy requirements first
-COPY requirements.txt /app/
+COPY requirements-datasets.txt /app/
 
-# Install Python packages from requirements
-RUN pip install --no-cache-dir -U pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Install Python packages from requirements (covers datasets extra)
+RUN pip install -U pip && \
+    pip install -r requirements-datasets.txt
 
 # Copy the rest of the application code
 COPY bioengine/ /app/bioengine/
 COPY pyproject.toml README.md LICENSE /app/
 
 # Install the bioengine package
-RUN pip install --no-cache-dir .[datasets]
+RUN pip install .[datasets]
 
 CMD [ "/bin/bash" ]

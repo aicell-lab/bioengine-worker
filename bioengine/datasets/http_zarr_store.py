@@ -8,16 +8,13 @@ from typing import AsyncIterator, Iterable, Optional
 
 import httpx
 
-logger = logging.getLogger("ray.serve")
-logger.setLevel(logging.INFO)
-
 try:
     import zarr
 except ImportError as e:
-    raise ImportError("zarr>=3.0.0 is required") from e
+    raise ImportError("zarr>=3.0.8 is required") from e
 
-if zarr.__version__ < "3.0.0":
-    raise ImportError(f"zarr>=3.0.0 is required but found {zarr.__version__}")
+if zarr.__version__ < "3.0.8":
+    raise ImportError(f"zarr>=3.0.8 is required but found {zarr.__version__}")
 
 from zarr.abc.store import (
     ByteRequest,
@@ -28,7 +25,7 @@ from zarr.abc.store import (
 )
 from zarr.core.buffer import Buffer, BufferPrototype
 
-from bioengine.datasets.utils import get_presigned_url
+from bioengine.datasets.utils import get_presigned_url, get_url_with_retry
 
 
 @dataclass
@@ -96,6 +93,7 @@ class HttpZarrStore(Store):
         max_connections: int = int(
             os.getenv("BIOENGINE_DATASETS_ZARR_STORE_CONNECTIONS", 100)
         ),
+        logger: logging.Logger = logging.getLogger("HttpZarrStore"),
     ):
         """
         Initialize the HTTP-based Zarr store for remote dataset access.
@@ -111,18 +109,29 @@ class HttpZarrStore(Store):
             max_chunk_cache_size: Maximum size of chunk cache in bytes (default 1GB)
             max_concurrent_requests: Maximum number of concurrent HTTP requests (default 50)
             max_connections: Maximum number of HTTP connections in pool (default 100)
+            logger: Logger instance for logging messages
         """
         super().__init__(read_only=True)
         self.service_url = service_url.rstrip("/")
         self.dataset_id = dataset_id
         self.zarr_path = zarr_path[1:] if zarr_path.startswith("/") else zarr_path
         self.token = token
-        self.http_client = None
+        self.logger = logger
 
         # Concurrency control
         self.max_concurrent_requests = max_concurrent_requests
-        self.max_connections = max_connections
         self._request_semaphore = Semaphore(max_concurrent_requests)
+
+        # Configure HTTP/2 and connection pooling for optimal performance
+        limits = httpx.Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=max_connections // 2,
+        )
+        self.http_client = httpx.AsyncClient(
+            timeout=60,  # seconds
+            limits=limits,
+            http2=True,  # Enable HTTP/2 for better multiplexing
+        )
 
         # Presigned URL cache (expires just under 1 hour for safety)
         # Cache expiry is set to 59 minutes to be safe with 60 minute URL expiry
@@ -143,19 +152,6 @@ class HttpZarrStore(Store):
 
         if not self.zarr_path.endswith(".zarr"):
             raise ValueError("zarr_path must end with .zarr")
-
-    def _set_http_client(self) -> None:
-        if self.http_client is None:
-            # Configure HTTP/2 and connection pooling for optimal performance
-            limits = httpx.Limits(
-                max_connections=self.max_connections,
-                max_keepalive_connections=self.max_connections // 2,
-            )
-            self.http_client = httpx.AsyncClient(
-                timeout=60,  # seconds
-                limits=limits,
-                http2=True,  # Enable HTTP/2 for better multiplexing
-            )
 
     def _get_url_cache_key(self, file_path: str) -> str:
         """Generate a cache key for the presigned URL based on file path."""
@@ -180,11 +176,11 @@ class HttpZarrStore(Store):
         if cache_key in self._presigned_url_cache:
             url, timestamp = self._presigned_url_cache[cache_key]
             if not self._is_cache_expired(timestamp):
-                logger.debug(f"Presigned URL cache hit for {cache_key}")
+                self.logger.debug(f"Presigned URL cache hit for {cache_key}")
                 return url
             else:
                 # Remove expired entry
-                logger.debug(f"Presigned URL cache expired for {cache_key}")
+                self.logger.debug(f"Presigned URL cache expired for {cache_key}")
                 del self._presigned_url_cache[cache_key]
 
         return None
@@ -205,21 +201,21 @@ class HttpZarrStore(Store):
             return cached_url
 
         # Not in cache or expired, fetch new URL
-        self._set_http_client()
-        logger.debug(f"Fetching presigned URL for {self.dataset_id}/{file_path}")
+        self.logger.debug(f"Fetching presigned URL for {self.dataset_id}/{file_path}")
         url = await get_presigned_url(
             data_service_url=self.service_url,
             dataset_id=self.dataset_id,
             file_path=file_path,
             token=self.token,
             http_client=self.http_client,
+            logger=self.logger,
         )
 
         # Cache the URL if we got one
         if url is not None:
             cache_key = self._get_url_cache_key(file_path)
             self._presigned_url_cache[cache_key] = (url, time.time())
-            logger.debug(f"Cached presigned URL for {cache_key}")
+            self.logger.debug(f"Cached presigned URL for {cache_key}")
 
         return url
 
@@ -255,7 +251,7 @@ class HttpZarrStore(Store):
                 _, size = self._chunk_cache[oldest_key]
                 del self._chunk_cache[oldest_key]
                 self._chunk_cache_size -= size
-                logger.info(
+                self.logger.info(
                     f"Evicted chunk {oldest_key} (size={size} bytes). Cache "
                     f"{self._chunk_cache_size / self._max_chunk_cache_size * 100:.2f}% full after eviction. "
                     f"(dataset ID={self.dataset_id}, zarr_path={self.zarr_path})"
@@ -272,7 +268,7 @@ class HttpZarrStore(Store):
 
         # Don't cache if the chunk is larger than the entire cache
         if buffer_size > self._max_chunk_cache_size:
-            logger.warning(
+            self.logger.warning(
                 f"Chunk {cache_key} size {buffer_size} exceeds cache capacity {self._max_chunk_cache_size}, "
                 f"not caching (dataset ID={self.dataset_id}, zarr_path={self.zarr_path})"
             )
@@ -287,7 +283,7 @@ class HttpZarrStore(Store):
             self._chunk_cache[cache_key] = (buffer, buffer_size)
             self._chunk_cache_order.append(cache_key)
             self._chunk_cache_size += buffer_size
-            logger.info(
+            self.logger.info(
                 f"Cached chunk {cache_key} (size={buffer_size} bytes). Cache "
                 f"{self._chunk_cache_size / self._max_chunk_cache_size * 100:.2f}% full after caching. "
                 f"(dataset ID={self.dataset_id}, zarr_path={self.zarr_path})"
@@ -300,7 +296,7 @@ class HttpZarrStore(Store):
         """
         async with self._cache_lock:
             if cache_key not in self._chunk_cache:
-                logger.debug(f"Chunk cache miss: {cache_key}")
+                self.logger.debug(f"Chunk cache miss: {cache_key}")
                 return None
 
             buffer, size = self._chunk_cache[cache_key]
@@ -310,7 +306,7 @@ class HttpZarrStore(Store):
                 self._chunk_cache_order.remove(cache_key)
             self._chunk_cache_order.append(cache_key)
 
-            logger.debug(f"Chunk cache hit: {cache_key} (size={size} bytes)")
+            self.logger.debug(f"Chunk cache hit: {cache_key} (size={size} bytes)")
             return buffer
 
     def __eq__(self, other: object) -> bool:
@@ -374,28 +370,30 @@ class HttpZarrStore(Store):
                 elif isinstance(byte_range, SuffixByteRequest):
                     headers["Range"] = f"bytes=-{byte_range.suffix}"
 
-            # Retry logic for transient failures
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    response = await self.http_client.get(url, headers=headers)
-                    response.raise_for_status()
-                    content = response.content
-                    logger.debug(
-                        f"Fetched {len(content)} bytes for {key} (range={headers.get('Range')}) from {url}"
-                    )
-                    buffer = prototype.buffer.from_bytes(content)
+            try:
+                response = await get_url_with_retry(
+                    url=url,
+                    headers=headers,
+                    http_client=self.http_client,
+                    logger=self.logger,
+                )
+                content = response.content
+                self.logger.debug(
+                    f"Fetched {len(content)} bytes for {key} (range={headers.get('Range')}) from {url}"
+                )
+                buffer = prototype.buffer.from_bytes(content)
 
-                    # Cache the buffer for future use
-                    if self._max_chunk_cache_size > 0:
-                        await self._cache_chunk(chunk_cache_key, buffer)
+                # Cache the buffer for future use
+                if self._max_chunk_cache_size > 0:
+                    await self._cache_chunk(chunk_cache_key, buffer)
 
-                    return buffer
-                except (httpx.TimeoutException, httpx.NetworkError) as e:
-                    if attempt == max_retries - 1:
-                        raise
-                    # Exponential backoff
-                    await asyncio.sleep(0.1 * (2**attempt))
+                return buffer
+
+            except Exception as e:
+                self.logger.error(
+                    f"Failed to fetch {key} (range={headers.get('Range')}) from {url}: {e}"
+                )
+                raise e
 
     async def get_partial_values(
         self,
@@ -455,7 +453,6 @@ class HttpZarrStore(Store):
         raise NotImplementedError("Dir listing not supported")
 
     def close(self):
-        self.http_client = None
         # Clear both presigned URL cache and chunk cache when closing
         self._presigned_url_cache.clear()
         self._chunk_cache.clear()

@@ -106,20 +106,7 @@ class DemoDeployment:
 
         ascii_art_response = await self.ascii_art()
 
-        # Test BioEngine datasets
-        available_datasets = await self.bioengine_datasets.list_datasets()
-        logger.info(f"Available datasets: {list(available_datasets.keys())}")
-
-        for dataset_id in available_datasets:
-            file_names = await self.bioengine_datasets.list_files(dataset_id)
-            logger.info(f"Files in dataset {dataset_id}: {file_names}")
-            for file_name in file_names:
-                data_file = await self.bioengine_datasets.get_file(
-                    dataset_id, file_name
-                )
-                logger.info(
-                    f"Successfully loaded data file {file_name} from dataset {dataset_id}"
-                )
+        datasets = await self.list_datasets()
 
     # === Internal Methods ===
 
@@ -171,6 +158,7 @@ class DemoDeployment:
             "status": "ok",
             "message": "Hello from the DemoDeployment!",
             "timestamp": datetime.now().isoformat(),
+            "timezone": time.tzname[0],
             "uptime": time.time() - self.start_time,
         }
 
@@ -200,6 +188,26 @@ class DemoDeployment:
             """|================================================================================================|""",
         ]
         return ascii_art
+    
+    @schema_method
+    async def list_datasets(self) -> Dict[str, List[str]]:
+        """
+        List available datasets and their files from BioEngine Datasets.
+
+        Returns:
+            Dict[str, List[str]]: A dictionary with dataset IDs as keys and lists of file names as values.
+        """
+        # Test BioEngine datasets
+        available_datasets = await self.bioengine_datasets.list_datasets()
+        logger.info(f"Available datasets: {list(available_datasets.keys())}")
+
+        data_files = {}
+        for dataset_id in available_datasets.keys():
+            file_names = await self.bioengine_datasets.list_files(dataset_id)
+            data_files[dataset_id] = file_names
+            logger.info(f"Files in dataset {dataset_id}: {file_names}")
+
+        return data_files
 
     @schema_method
     async def set_fail_health_check(self) -> None:

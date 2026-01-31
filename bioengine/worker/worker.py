@@ -14,12 +14,13 @@ from pydantic import Field
 
 from bioengine import __version__
 from bioengine.applications import AppsManager
+from bioengine.datasets import BioEngineDatasets
 from bioengine.ray import RayCluster
 from bioengine.utils import (
     check_permissions,
     create_context,
     create_logger,
-    fetch_geo_location,
+    run_geolocation,
 )
 from bioengine.worker.code_executor import CodeExecutor
 
@@ -246,12 +247,12 @@ class BioEngineWorker:
             self.log_file = Path(log_file)
 
         self.logger = create_logger(
-            name="BioEngineWorker",
+            name=self.__class__.__name__,
             level=logging.DEBUG if debug else logging.INFO,
             log_file=self.log_file,
         )
         self.logger.info(
-            f"Initializing BioEngineWorker v{__version__} with mode '{mode}'"
+            f"Initializing {self.__class__.__name__} v{__version__} with mode '{mode}'"
         )
 
         # Hypha server configuration
@@ -276,14 +277,10 @@ class BioEngineWorker:
         self._admin_context = None
 
         # Dataset server configuration
-        self.data_server_url: Optional[str] = None
-        self.data_service_url: Optional[str] = None
+        self.data_server: Optional[BioEngineDatasets] = None
         self.available_datasets = {}
 
         try:
-            # Fetch geo location information
-            self.geo_location = fetch_geo_location(logger=self.logger)
-
             # Attempt interactive login if no token provided
             if not self._token:
                 self.logger.info(
@@ -300,6 +297,9 @@ class BioEngineWorker:
                 print("=" * 60, end="\n\n")
                 self.logger.info("Interactive login completed successfully")
 
+            # Fetch geo location information
+            self.geo_location = run_geolocation(logger=self.logger)
+
             # Configure Ray cluster with environment-specific parameters
             ray_cluster_config = ray_cluster_config or {}
 
@@ -314,9 +314,6 @@ class BioEngineWorker:
             # Initialize Ray cluster manager
             self.ray_cluster = RayCluster(**ray_cluster_config)
 
-            # Check for running data server
-            self._discover_data_server()
-
             # Determine the apps workspace directory based on mode
             # For external-cluster mode, use ray_workspace_dir if provided, otherwise use workspace_dir
             # For single-machine and slurm modes, always use workspace_dir
@@ -329,7 +326,6 @@ class BioEngineWorker:
             self.apps_manager = AppsManager(
                 ray_cluster=self.ray_cluster,
                 apps_workdir=apps_workdir,
-                data_server_url=self.data_server_url,
                 startup_applications=startup_applications,
                 log_file=self.log_file,
                 debug=debug,
@@ -382,7 +378,20 @@ class BioEngineWorker:
             if key not in kwargs or kwargs[key] is None:
                 kwargs[key] = value
 
-    def _discover_data_server(self) -> None:
+    async def _ping_data_server(self) -> None:
+        """Ping the dataset server with retries to verify connectivity."""
+        # No data server configured
+        if not self.data_server:
+            return
+
+        try:
+            await self.data_server.ping_data_server()
+        except Exception as e:
+            self.logger.error(f"Error while pinging dataset server: {e}")
+            self.logger.info("Clearing dataset server configuration.")
+            self.data_server = None
+
+    async def _discover_data_server(self) -> None:
         """
         Check for a running data server and configure connection details.
 
@@ -401,12 +410,15 @@ class BioEngineWorker:
             This method is called during initialization and periodically during monitoring
             to ensure continuous data server availability for deployed applications.
         """
+        # Keep existing data server if already configured
+        if self.data_server:
+            return
+
         # Check for the presence of the current data server file
         current_data_server_file = (
             self.workspace_dir / "datasets" / "bioengine_current_server"
         )
         if not current_data_server_file.exists():
-            self.logger.info("No current data server found.")
             return
 
         # Read the server URL from the file
@@ -416,46 +428,39 @@ class BioEngineWorker:
             self.logger.error(f"Failed to read current data server URL: {e}")
             return
 
-        if not data_server_url:
-            self.logger.info("No current data server found.")
-            return
-
-        # Set server URL and service URL
-        self.data_server_url = data_server_url
-        self.data_service_url = (
-            f"{self.data_server_url}/public/services/bioengine-datasets"
+        self.data_server = BioEngineDatasets(
+            data_server_url=data_server_url,
+            hypha_token=None,  # no token needed for pinging and dataset listing
+            logger=self.logger,
         )
-        self.logger.info(f"Detected dataset server at: {self.data_server_url}")
 
-        # Try to ping the dataset server
-        try:
-            with httpx.Client(timeout=10) as client:
-                response = client.get(f"{self.data_service_url}/ping")
-                response.raise_for_status()
-                self.logger.info(f"Successfully reached dataset server.")
-        except Exception as e:
-            self.logger.error(f"Error occurred while pinging dataset server: {e}")
-            self.logger.info("Clearing dataset server configuration.")
-            self.data_server_url = None
-            self.data_service_url = None
+        # Ping the data server to verify connectivity
+        await self._ping_data_server()
+
+        # Update AppsManager with data server URL
+        self.apps_manager.app_builder.update_data_server_url(data_server_url)
 
     async def _refresh_datasets(self) -> None:
         """Refresh the list of available datasets from the data server."""
-        if not self.data_service_url:
-            raise RuntimeError("No data server available")
+        if not self.data_server:
+            self.available_datasets = {}
+            return
 
         # Fetch available datasets from the data server
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.get(f"{self.data_service_url}/list_datasets")
-                response.raise_for_status()
-                self.available_datasets = response.json()
+            updated_datasets = await self.data_server.list_datasets()
+            if updated_datasets != self.available_datasets:
+                self.available_datasets = updated_datasets
                 self.logger.info(
-                    f"Successfully loaded available datasets from data server: {list(self.available_datasets.keys())}"
+                    f"Available datasets updated: {list(updated_datasets.keys())}"
                 )
         except Exception as e:
             self.logger.error(f"Error fetching datasets from data server: {e}")
+            self.logger.info("Clearing available datasets.")
             self.available_datasets = {}
+
+            # Ping the data server to check connectivity; clear if unreachable
+            await self._ping_data_server()
 
     async def _connect_to_server(self) -> None:
         """
@@ -538,7 +543,7 @@ class BioEngineWorker:
         self._admin_context = create_context(user_id, user_email)
 
         # Pass server connection and admin users to component managers
-        await self.apps_manager.initialize(
+        await self.apps_manager.complete_initialization(
             server=self.server,
             admin_users=self.admin_users,
             worker_service_id=self.full_service_id,
@@ -567,7 +572,6 @@ class BioEngineWorker:
             "get_logs": self.get_logs,  # Requires admin permissions
             # 📦 Dataset management
             "list_datasets": self.list_datasets,
-            "refresh_datasets": self.refresh_datasets,  # Requires admin permissions
             # 🧮 Code execution
             "execute_python_code": self.code_executor.execute_python_code,  # Requires admin permissions
             # 🚀 Application management
@@ -749,17 +753,32 @@ class BioEngineWorker:
 
                     self._last_monitoring = current_time
 
+                    # ===== 1. Hypha server connection check =====
                     # Check connection to Hypha server
                     await self._check_hypha_connection()
 
                     # Check token expiry
                     await self._check_token_expiry()
 
+                    # ===== 2. Ray cluster monitoring =====
                     # Check connection to Ray cluster
                     await self.ray_cluster.check_connection()
 
                     # Run cluster monitoring
                     await self.ray_cluster.monitor_cluster()
+
+                    # ===== 3. Data server monitoring =====
+
+                    # Ping the data server to verify connectivity
+                    await self._ping_data_server()
+
+                    # If not connected to a data server, attempt discovery
+                    await self._discover_data_server()
+
+                    # Refresh datasets if connected to data server
+                    await self._refresh_datasets()
+
+                    # ===== 4. Applications monitoring =====
 
                     # Run BioEngine Applications monitoring
                     await self.apps_manager.monitor_applications()
@@ -858,12 +877,18 @@ class BioEngineWorker:
             # Start the Ray cluster
             await self.ray_cluster.start()
 
-            # Load available datasets from the data server
-            if self.data_service_url:
-                await self._refresh_datasets()
-
             # Connect the BioEngine worker to the Hypha server
+            # Completes initialization of AppsManager and CodeExecutor
             await self._connect_to_server()
+
+            # Check for running data server
+            await self._discover_data_server()
+
+            # Load available datasets from the data server
+            await self._refresh_datasets()
+
+            # Deploy startup applications
+            await self.apps_manager.deploy_startup_applications()
 
             # Register the BioEngine worker service interface
             await self._register_bioengine_worker_service()
@@ -912,24 +937,6 @@ class BioEngineWorker:
         """List available datasets from connected BioEngine data server."""
         # No permission check needed for listing datasets
         return self.available_datasets
-
-    @schema_method
-    async def refresh_datasets(
-        self,
-        context: Dict[str, Any] = Field(
-            ...,
-            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
-        ),
-    ) -> None:
-        """Refresh connected BioEngine data server, then fetch and store available datasets from connected data server."""
-        check_permissions(
-            context=context,
-            authorized_users=self.admin_users,
-            resource_name="updating BioEngine Datasets",
-        )
-
-        # Refresh the list of available datasets
-        await self._refresh_datasets()
 
     @schema_method
     async def check_access(

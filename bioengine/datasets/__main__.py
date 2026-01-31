@@ -86,11 +86,12 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
     )
 
     parser.add_argument(
-        "--data-dir",
+        "--data-import-dir",
         type=str,
         required=True,
         metavar="PATH",
-        help="Root directory for dataset storage and access by the dataset manager.",
+        dest="data_dir",  # TODO: remove later
+        help="Source directory for importing datasets (used once at startup).",
     )
     parser.add_argument(
         "--workspace-dir",

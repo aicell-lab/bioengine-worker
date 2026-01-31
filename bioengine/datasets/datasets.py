@@ -5,8 +5,6 @@ from typing import Dict, List, Optional, Union
 
 import httpx
 
-logger = logging.getLogger("ray.serve")
-
 
 class BioEngineDatasets:
     """
@@ -58,6 +56,7 @@ class BioEngineDatasets:
         self,
         data_server_url: Optional[str] = "auto",  # set to None for no data server
         hypha_token: Optional[str] = None,
+        logger: logging.Logger = logging.getLogger("BioEngineDatasets"),
     ):
         """
         Initialize the BioEngineDatasets client for dataset access.
@@ -74,7 +73,8 @@ class BioEngineDatasets:
             When data_server_url is None, only local dataset access will be available.
             The client uses a unique replica_id for tracking access patterns in logs.
         """
-        logger.info(f"🚀 Initializing {self.__class__.__name__}")
+        self.logger = logger
+        self.logger.info(f"Initializing {self.__class__.__name__}")
 
         if data_server_url == "auto":
             bioengine_dir = Path.home() / ".bioengine"
@@ -82,23 +82,22 @@ class BioEngineDatasets:
                 bioengine_dir / "datasets" / "bioengine_current_server"
             )
             try:
-                data_server_url = current_server_file.read_text()
+                data_server_url = current_server_file.read_text().strip()
             except FileNotFoundError:
                 data_server_url = None
-                logger.info(
-                    f"⚠️ No current data server found at "
+                self.logger.warning(
+                    f"No current data server found at "
                     f"'{current_server_file}', proceeding without remote datasets"
                 )
 
+        self.service_url: Optional[str] = None
+        self.http_client: Optional[httpx.AsyncClient] = None
         if data_server_url is not None:
             self.service_url = f"{data_server_url}/public/services/bioengine-datasets"
             self.http_client = httpx.AsyncClient(timeout=20)  # seconds
-        else:
-            self.service_url = None
+            self.logger.info(f"Data server URL: {data_server_url}")
 
         self.default_token = hypha_token
-
-        logger.info(f"🔗 Data server URL: {data_server_url}")
 
     async def ping_data_server(self):
         """
@@ -111,13 +110,21 @@ class BioEngineDatasets:
         Raises:
             RuntimeError: If the connection to the data server fails for any reason
         """
-        if self.service_url is not None:
-            try:
-                # Try to ping dataset service
-                await self.http_client.get(f"{self.service_url}/ping")
-            except Exception as e:
-                logger.error(f"⚠️ Connection to data server failed: {e}")
-                raise RuntimeError("Connection to data server failed")
+        if self.service_url is None:
+            return
+
+        from bioengine.datasets.utils import get_url_with_retry
+
+        try:
+            # Try to ping dataset service
+            await get_url_with_retry(
+                url=f"{self.service_url}/ping",
+                http_client=self.http_client,
+                logger=self.logger,
+            )
+        except Exception as e:
+            self.logger.error(f"Connection to data server failed: {e}")
+            raise RuntimeError("Connection to data server failed")
 
     async def list_datasets(self) -> Dict[str, dict]:
         """
@@ -137,14 +144,18 @@ class BioEngineDatasets:
         if self.service_url is None:
             return {}
 
+        from bioengine.datasets.utils import get_url_with_retry
+
         start_time = asyncio.get_event_loop().time()
-        query_url = f"{self.service_url}/list_datasets"
-        response = await self.http_client.get(query_url)
-        response.raise_for_status()
+        response = await get_url_with_retry(
+            url=f"{self.service_url}/list_datasets",
+            http_client=self.http_client,
+            logger=self.logger,
+        )
         datasets = response.json()
         end_time = asyncio.get_event_loop().time()
-        logger.info(
-            f"🕒 Listed {len(datasets)} dataset(s) "
+        self.logger.debug(
+            f"Listed {len(datasets)} dataset(s) "
             f"in {end_time - start_time:.2f} seconds"
         )
 
@@ -176,7 +187,11 @@ class BioEngineDatasets:
             httpx.HTTPStatusError: If the request fails due to HTTP error
         """
         if self.service_url is None:
-            raise ValueError(f"Dataset '{dataset_id}' does not exist")
+            raise ValueError(
+                f"Dataset '{dataset_id}' could not be accessed. No connection to data server."
+            )
+
+        from bioengine.datasets.utils import get_url_with_retry
 
         start_time = asyncio.get_event_loop().time()
         token = token or self.default_token
@@ -188,13 +203,16 @@ class BioEngineDatasets:
         if token is not None:
             params["token"] = token
 
-        query_url = f"{self.service_url}/list_files"
-        response = await self.http_client.get(query_url, params=params)
-        response.raise_for_status()
+        response = await get_url_with_retry(
+            url=f"{self.service_url}/list_files",
+            params=params,
+            http_client=self.http_client,
+            logger=self.logger,
+        )
         files = response.json()
         end_time = asyncio.get_event_loop().time()
-        logger.info(
-            f"🕒 Listed {len(files)} file(s) in dataset "
+        self.logger.debug(
+            f"Listed {len(files)} file(s) in dataset "
             f"'{dataset_id}' in {end_time - start_time:.2f} seconds"
         )
 
@@ -203,7 +221,7 @@ class BioEngineDatasets:
     async def get_file(
         self,
         dataset_id: str,
-        file_name: Optional[str] = None,
+        file_name: str,
         token: Optional[str] = None,
     ) -> Union["HttpZarrStore", bytes]:
         """
@@ -217,20 +235,18 @@ class BioEngineDatasets:
         Dataset Access Process:
         1. Validates dataset existence through list_datasets
         2. Checks file availability through list_files
-        3. Auto-selects the file if only one is available
-        4. Creates and returns an HttpZarrStore for efficient streaming access
+        3. Creates and returns an HttpZarrStore for efficient streaming access
 
         Args:
             dataset_id: Name of the dataset to access
-            file_name: Optional specific file within the dataset to access.
-                 If None and only one file exists, that file is automatically selected.
+            file_name: Specific file within the dataset to access.
             token: Optional authentication token for accessing protected datasets
 
         Returns:
             Connected HttpZarrStore instance for the specified dataset file
 
         Raises:
-            ValueError: If dataset/file doesn't exist or ambiguous file selection
+            ValueError: If dataset/file doesn't exist
             RuntimeError: If connection to data server fails
         """
         start_time = asyncio.get_event_loop().time()
@@ -244,17 +260,8 @@ class BioEngineDatasets:
         if len(available_files) == 0:
             raise ValueError(f"No files found in dataset '{dataset_id}'")
 
-        if file_name is None:
-            if len(available_files) > 1:
-                raise ValueError(
-                    f"File not specified and multiple files found in dataset '{dataset_id}'"
-                )
-            file_name = available_files[0]
-        else:
-            if file_name not in available_files:
-                raise ValueError(
-                    f"File '{file_name}' not found in dataset '{dataset_id}'"
-                )
+        if file_name not in available_files:
+            raise ValueError(f"File '{file_name}' not found in dataset '{dataset_id}'")
 
         if file_name.endswith(".zarr"):
             try:
@@ -267,9 +274,10 @@ class BioEngineDatasets:
                 dataset_id=dataset_id,
                 zarr_path=file_name,
                 token=token,
+                logger=self.logger,
             )
         else:
-            from bioengine.datasets.utils import get_presigned_url
+            from bioengine.datasets.utils import get_presigned_url, get_url_with_retry
 
             presigned_url = await get_presigned_url(
                 data_service_url=self.service_url,
@@ -283,13 +291,16 @@ class BioEngineDatasets:
                     f"File '{file_name}' not found in dataset '{dataset_id}'"
                 )
 
-            response = await self.http_client.get(presigned_url)
-            response.raise_for_status()
+            response = await get_url_with_retry(
+                url=presigned_url,
+                http_client=self.http_client,
+                logger=self.logger,
+            )
             file_output = response.content
 
         end_time = asyncio.get_event_loop().time()
-        logger.info(
-            f"🕒 Time taken to get file '{file_name}' from dataset "
+        self.logger.debug(
+            f"Time taken to get file '{file_name}' from dataset "
             f"'{dataset_id}': {end_time - start_time:.2f} seconds"
         )
 
@@ -308,7 +319,6 @@ if __name__ == "__main__":
     import os
     from pathlib import Path
 
-    import numpy as np
     from anndata.experimental import read_lazy
 
     async def test_bioengine_datasets():

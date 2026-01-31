@@ -1014,6 +1014,7 @@ class AppBuilder:
             class from model_server.py file in the artifact.
         """
         code_content = None
+        local_path = None
 
         if os.environ.get("BIOENGINE_LOCAL_ARTIFACT_PATH"):
             # Try to load the file content from local path

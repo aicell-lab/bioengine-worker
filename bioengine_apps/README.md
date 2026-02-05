@@ -35,7 +35,7 @@ BioEngine applications require only a lightweight set of dependencies:
 
 - **Python**: ≥3.11 (must match Ray cluster version)
 - **Ray**: ≥2.33.0 with client and serve components
-- **Hypha-RPC**: ≥0.20.81
+- **Hypha-RPC**: ≥0.20.93
 - **Pydantic**: ≥2.11.0  
 - **HTTPx**: ≥0.28.1
 

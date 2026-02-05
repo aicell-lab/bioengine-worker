@@ -22,7 +22,7 @@ WORKDIR /app
 # Copy requirements first
 COPY requirements-worker.txt /app/
 
-# Install Python packages from requirements (covers worker and rtc extras)
+# Install Python packages from requirements (covers worker extra)
 RUN pip install -U pip && \
     pip install -r requirements-worker.txt
 
@@ -30,7 +30,7 @@ RUN pip install -U pip && \
 COPY bioengine/ /app/bioengine/
 COPY pyproject.toml README.md LICENSE /app/
 
-# Install the bioengine package
+# Install the bioengine package with worker extra
 RUN pip install .[worker]
 
 CMD [ "/bin/bash" ]

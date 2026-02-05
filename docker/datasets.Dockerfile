@@ -20,7 +20,7 @@ RUN curl -Lo /bin/minio.20240716T234641Z https://dl.min.io/server/minio/release/
 RUN curl -Lo /bin/mc.20250408T153949Z https://dl.min.io/client/mc/release/linux-amd64/archive/mc.RELEASE.2025-04-08T15-39-49Z && \
     chmod +x /bin/mc.20250408T153949Z
 
-# Set environment variables for Hypha
+# Set environment variables for Minio and Hypha
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     MINIO_EXECUTABLE_PATH=/bin
 
@@ -38,7 +38,7 @@ RUN pip install -U pip && \
 COPY bioengine/ /app/bioengine/
 COPY pyproject.toml README.md LICENSE /app/
 
-# Install the bioengine package
+# Install the bioengine package with datasets extra
 RUN pip install .[datasets]
 
 CMD [ "/bin/bash" ]

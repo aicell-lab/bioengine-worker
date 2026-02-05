@@ -1,6 +1,6 @@
 httpx[http2]==0.28.1
-hypha-rpc==0.20.86
-hypha[s3]==0.21.37
+hypha-rpc==0.20.93
+hypha[s3]==0.21.39
 numpy==1.26.4
 pyyaml==6.0.2
 zarr==3.0.8

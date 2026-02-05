@@ -1,8 +1,10 @@
+# Skip from worktree to keep local modifications: git update-index --skip-worktree docker-compose.yaml
+# Undo with: git update-index --no-skip-worktree docker-compose.yaml
 version: "3.8"
 
 services:
   data-server:
-    image: ghcr.io/aicell-lab/bioengine-worker:${BIOENGINE_VERSION:-latest}
+    image: ghcr.io/aicell-lab/bioengine-datasets:${BIOENGINE_VERSION:-latest}
     container_name: bioengine-data-server
     user: "${UID}:${GID}"
     volumes:
@@ -10,12 +12,14 @@ services:
       - ${DATA_DIR}:/data
     environment:
       - HOME=/home
+      - TZ=UTC
     command: >
       python -m bioengine.datasets
-      --data-dir /data
-      --cache-dir /home/.bioengine
+      --data-import-dir /data
+      --workspace-dir /home/.bioengine
       --server-port 9527
     restart: unless-stopped
+    stop_grace_period: 30s
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9527/health/liveness"]
       start_period: 60s
@@ -34,13 +38,15 @@ services:
     environment:
       - HOME=/home
       - HYPHA_TOKEN=${HYPHA_TOKEN}
+      - TZ=UTC
     command: >
       python -m bioengine.worker
       --mode single-machine
-      --head_num-cpus 4
-      --head_num-gpus 1
-      --head_memory-in-gb 30
+      --head-num-cpus 4
+      --head-num-gpus 1
+      --head-memory-in-gb 30
     restart: unless-stopped
+    stop_grace_period: 30s
     deploy:
       resources:
         reservations:
@@ -48,6 +54,3 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    depends_on:
-      data-server:
-        condition: service_healthy

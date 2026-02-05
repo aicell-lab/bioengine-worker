@@ -10,6 +10,7 @@ import ray
 from ray import serve
 
 logger = logging.getLogger("ray.serve")
+logger.setLevel("INFO")
 
 # Deployment default runtime environment
 requirements = [
@@ -95,7 +96,9 @@ class RuntimeDeployment:
                     additional_packages.append(ad_req)
 
         if additional_packages:
-            logger.info(f"🚀 Running test with additional packages: {additional_packages}")
+            logger.info(
+                f"🚀 Running test with additional packages: {additional_packages}"
+            )
             # Execute remotely and return the result reference (will be awaited by DeploymentHandle)
             remote_function = ray.remote(self._test.__func__)
             remote_function = remote_function.options(
@@ -165,7 +168,9 @@ class RuntimeDeployment:
             # Load the pipeline (this loads the model weights into memory/GPU)
             pipeline.load()
 
-            logger.info(f"✅ Created and loaded prediction pipeline for model at {rdf_path}")
+            logger.info(
+                f"✅ Created and loaded prediction pipeline for model at {rdf_path}"
+            )
 
             return pipeline
         except Exception as e:

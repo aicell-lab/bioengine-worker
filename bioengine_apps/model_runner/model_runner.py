@@ -18,6 +18,7 @@ from ray.exceptions import RayTaskError
 from ray.serve.handle import DeploymentHandle
 
 logger = logging.getLogger("ray.serve")
+logger.setLevel("INFO")
 
 
 class BioimageioPackage:
@@ -152,36 +153,90 @@ class ModelCache:
                     f"⚠️ Failed to clean up stale temporary directory {temp_dir}: {e}"
                 )
 
-    async def _check_model_published_status(self, model_id: str, stage: bool) -> bool:
-        """Check if a model is published by looking at its manifest status."""
-        stage_param = f"?stage={str(stage).lower()}"
-        artifact_url = (
-            f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}{stage_param}"
+    async def _get_url_with_retry(
+        self, url: str, params: Dict[str, str]
+    ) -> httpx.Response:
+        """
+        Helper method to fetch a URL with retries.
+
+        Implements a simple retry mechanism for HTTP GET requests to handle
+        transient network issues. Retries the request up to 3 times with
+        exponential backoff.
+
+        Args:
+            url: The URL to fetch
+        Returns:
+            The HTTP response object
+        Raises:
+            httpx.HTTPError: If all retry attempts fail
+        """
+        max_attempts = 4
+        backoff = 0.2  # backoff: 0.2s, 0.4s, 0.8s
+        backoff_multiplier = 2.0
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = await self.client.get(url, params=params)
+                response.raise_for_status()
+                return response
+            except Exception as e:
+
+                if attempt < max_attempts:
+                    # Sleep with exponential backoff before retrying
+                    logger.warning(
+                        f"Attempt {attempt}/{max_attempts} failed for URL {url}, "
+                        f"params: {params}, error: {e}. Retrying in {backoff:.2f}s..."
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff *= backoff_multiplier
+                else:
+                    # If we get here, all retries failed due to errors (network, transport, etc.)
+                    logger.error(
+                        f"Failed to fetch URL '{url}' after {max_attempts} attempts: {e}"
+                    )
+                    return response
+
+    async def _check_model_published_status(self, model_id: str, stage: bool) -> None:
+        """
+        Check if a model is published by looking at its manifest status.
+
+        Behavior:
+        - Retries with exponential backoff on transient errors.
+        - Falls back from stage=true to stage=false on 404.
+        - Only raises 'not published' if status == 'request-review'.
+        - Raises a RuntimeError if status could not be determined after retries.
+        """
+        artifact_url = f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}"
+
+        response = await self._get_url_with_retry(
+            url=artifact_url, params={"stage": str(stage).lower()}
         )
 
-        try:
-            response = await self.client.get(artifact_url)
-            if response.status_code == 404 and stage:
-                # If staged version doesn't exist, try with stage=false
-                logger.warning(
-                    f"⚠️ Staged version not found for model '{model_id}', trying committed version..."
-                )
-                stage_param = "?stage=false"
-                artifact_url = f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}{stage_param}"
-                response = await self.client.get(artifact_url)
+        if response.status_code == 404 and stage:
+            logger.warning(
+                f"⚠️ Staged version not found for model '{model_id}', trying committed version..."
+            )
+            response = await self._get_url_with_retry(
+                url=artifact_url, params={"stage": "false"}
+            )
 
-            if response.status_code != 200:
-                raise RuntimeError(
-                    f"Failed to download manifest from {artifact_url}: "
-                    f"HTTP {response.status_code} - {response.text}"
-                )
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Failed to download manifest from {artifact_url}: "
+                f"HTTP {response.status_code} - {response.text}"
+            )
 
-            manifest = await asyncio.to_thread(yaml.safe_load, response.text)
-            # Model is published if status is NOT "request-review"
-            return manifest["manifest"].get("status") != "request-review"
-        except Exception as e:
-            logger.error(f"❌ Error checking model '{model_id}' status: {e}")
-            return False
+        artifact = await asyncio.to_thread(yaml.safe_load, response.text)
+        status = artifact["manifest"].get("status")
+
+        # Explicit logic:
+        # - Only treat as not published if status == "request-review"
+        # - Any other status (including None) is considered published/acceptable
+        if status == "request-review":
+            raise ValueError(
+                f"Model '{model_id}' is not published (status='request-review'). "
+                f"Only published models are allowed."
+            )
 
     async def _wait_for_download_completion(
         self, package_dir: Path, max_wait_time: int = 300
@@ -471,26 +526,27 @@ class ModelCache:
 
     async def _fetch_file_list(self, model_id: str, stage: bool = False) -> List[dict]:
         """Fetch the list of files for a model from the bioimage.io artifacts API."""
-        stage_param = f"?stage={str(stage).lower()}"
-        url = f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}/files/{stage_param}"
+        files_url = f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}/files/"
+        response = await self._get_url_with_retry(
+            url=files_url, params={"stage": str(stage).lower()}
+        )
 
-        download_timeout = httpx.Timeout(30.0)
-        async with httpx.AsyncClient(
-            timeout=download_timeout, follow_redirects=True
-        ) as client:
-            response = await client.get(url)
+        if response.status_code == 404 and stage:
+            # If staged version doesn't exist, try with stage=false
+            logger.warning(
+                f"⚠️ Staged file list not found for model '{model_id}', trying committed version..."
+            )
+            response = await self._get_url_with_retry(
+                url=files_url, params={"stage": "false"}
+            )
 
-            if response.status_code == 404 and stage:
-                # If staged version doesn't exist, try with stage=false
-                logger.warning(
-                    f"⚠️ Staged file list not found for model '{model_id}', trying committed version..."
-                )
-                stage_param = "?stage=false"
-                url = f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}/files/{stage_param}"
-                response = await client.get(url)
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Failed to fetch file list for model '{model_id}': "
+                f"HTTP {response.status_code} - {response.text}"
+            )
 
-            response.raise_for_status()
-            return response.json()
+        return response.json()
 
     async def _calculate_remote_model_size(self, file_list: List[dict]) -> int:
         """Calculate the total size of a model from its file list."""
@@ -502,7 +558,6 @@ class ModelCache:
 
     async def _download_file(
         self,
-        client: httpx.AsyncClient,
         model_id: str,
         model_dir: Path,
         file_meta: dict,
@@ -511,22 +566,27 @@ class ModelCache:
         """Download a single file for a model."""
         import aiofiles
 
-        stage_param = f"?stage={str(stage).lower()}"
-        file_url = f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}/files/{file_meta['name']}{stage_param}"
+        file_url = f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}/files/{file_meta['name']}"
         file_path = model_dir / file_meta["name"]
 
         # Create parent directories if needed
         await asyncio.to_thread(file_path.parent.mkdir, parents=True, exist_ok=True)
 
-        response = await client.get(file_url)
+        response = await self._get_url_with_retry(
+            url=file_url, params={"stage": str(stage).lower()}
+        )
 
         if response.status_code == 404 and stage:
             # If staged version doesn't exist, try with stage=false
-            stage_param = "?stage=false"
-            file_url = f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}/files/{file_meta['name']}{stage_param}"
-            response = await client.get(file_url)
+            response = await self._get_url_with_retry(
+                url=file_url, params={"stage": "false"}
+            )
 
-        response.raise_for_status()
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Failed to download file '{file_meta['name']}' for model '{model_id}': "
+                f"HTTP {response.status_code} - {response.text}"
+            )
 
         async with aiofiles.open(file_path, "wb") as f:
             await f.write(response.content)
@@ -562,10 +622,7 @@ class ModelCache:
         all_files = await asyncio.to_thread(lambda: list(model_dir.glob("*")))
         local_files = set()
         for f in all_files:
-            if await asyncio.to_thread(f.is_file) and f.name not in [
-                ".last_access",
-                ".file_metadata.json",
-            ]:
+            if await asyncio.to_thread(f.is_file) and not f.name.startswith("."):
                 local_files.add(f.name)
 
         # Determine files to delete
@@ -582,15 +639,11 @@ class ModelCache:
             elif name not in old_meta or meta["last_modified"] > old_meta[name]:
                 files_to_download.append(meta)
 
-        download_timeout = httpx.Timeout(180.0)
-        async with httpx.AsyncClient(
-            timeout=download_timeout, follow_redirects=True
-        ) as client:
-            tasks = [
-                self._download_file(client, model_id, model_dir, f, stage=stage)
-                for f in files_to_download
-            ]
-            results = await asyncio.gather(*tasks)
+        tasks = [
+            self._download_file(model_id, model_dir, f, stage=stage)
+            for f in files_to_download
+        ]
+        results = await asyncio.gather(*tasks)
 
         # Update metadata
         new_meta = old_meta.copy()
@@ -699,10 +752,9 @@ class ModelCache:
                 )
                 local_files = set()
                 for f in all_local_files:
-                    if await asyncio.to_thread(f.is_file) and f.name not in [
-                        ".last_access",
-                        ".file_metadata.json",
-                    ]:
+                    if await asyncio.to_thread(f.is_file) and not f.name.startswith(
+                        "."
+                    ):
                         local_files.add(f.name)
                 remote_file_names = set(remote_files.keys())
                 files_to_delete = local_files - remote_file_names
@@ -919,13 +971,7 @@ class ModelCache:
 
         # Check if model is published
         if not allow_unpublished:
-            is_published = await self._check_model_published_status(
-                model_id, stage=stage
-            )
-            if not is_published:
-                raise ValueError(
-                    f"Model '{model_id}' is not published. Only published models are allowed."
-                )
+            await self._check_model_published_status(model_id, stage=stage)
 
         # Force a complete re-download if skip_cache is True
         package_path = self.cache_dir / model_id
@@ -952,7 +998,7 @@ class ModelCache:
         # "memory": 16 * 1024 * 1024 * 1024,  # 16GB RAM limit
         "runtime_env": {
             "pip": [
-                "bioimageio.core==0.9.0",
+                "bioimageio.core==0.9.5",
                 "numpy==1.26.4",
                 "tqdm>=4.64.0",
                 "aiofiles>=23.0.0",
@@ -1220,6 +1266,8 @@ class ModelRunner:
             This method delegates to the model_evaluation deployment for isolated testing
             in a controlled environment with the specified requirements.
         """
+        import aiofiles
+
         logger.info(
             f"🧪 Testing model '{model_id}' (stage={stage}, skip_cache={skip_cache})."
         )
@@ -1237,10 +1285,57 @@ class ModelRunner:
             async with package:
                 logger.info(f"📍 Model source for '{model_id}': {package.source}")
 
+                # Check for cached test results
+                test_results_path = package.package_path / ".test_results.json"
+
+                if not skip_cache and await asyncio.to_thread(test_results_path.exists):
+                    try:
+                        # Load cached test results
+                        async with aiofiles.open(test_results_path, "r") as f:
+                            content = await f.read()
+                            cached_data = await asyncio.to_thread(json.loads, content)
+
+                        # Check if model files have changed since last test
+                        cached_download_time = cached_data["latest_download"]
+
+                        if package.latest_download == cached_download_time:
+                            # Model hasn't changed, return cached results
+                            logger.info(
+                                f"💾 Model '{model_id}' unchanged since last test, using cached results."
+                            )
+                            return cached_data["test_result"]
+                        else:
+                            logger.info(
+                                f"🔄 Model '{model_id}' has been updated, re-running tests "
+                                f"(cached: {cached_download_time}, current: {package.latest_download})"
+                            )
+                    except (json.JSONDecodeError, KeyError, OSError, IOError) as e:
+                        logger.warning(
+                            f"⚠️ Failed to load cached test results for '{model_id}': {e}. Running fresh test."
+                        )
+
+                # Run the test
                 test_result = await self.runtime_deployment.test.remote(
                     rdf_path=package.source,
                     additional_requirements=additional_requirements,
                 )
+
+                # Save test results to cache if successful
+                try:
+                    cache_data = {
+                        "test_result": test_result,
+                        "latest_download": package.latest_download,
+                        "tested_at": time.time(),
+                        "additional_requirements": additional_requirements,
+                    }
+                    async with aiofiles.open(test_results_path, "w") as f:
+                        await f.write(json.dumps(cache_data, indent=2))
+                    logger.info(f"💾 Test results cached for model '{model_id}'")
+                except (OSError, IOError) as e:
+                    logger.warning(
+                        f"⚠️ Failed to cache test results for '{model_id}': {e}"
+                    )
+
         except RayTaskError as e:
             error_msg = f"Failed to run model test for '{model_id}': {e}"
             logger.error(f"❌ {error_msg}")
@@ -1374,6 +1469,10 @@ if __name__ == "__main__":
                 runtime_deployment=MockHandle(),
                 cache_size_in_gb=0.23,  # 230 MB cache for testing
             )
+
+            # Test result caching of "test" method
+            await model_runner.test(model_id="fearless-deer")
+            await model_runner.test(model_id="fearless-deer")
 
             await model_runner.test_deployment(model_id="ambitious-ant")
 

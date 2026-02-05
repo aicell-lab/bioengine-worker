@@ -164,7 +164,6 @@ The BioEngine worker service provides comprehensive functionality:
 
 **Dataset Operations:**
 - `list_datasets()` - List available datasets
-- `refresh_datasets()` - Reload dataset manifests
 
 **Application Management:**
 - `run_application(artifact_id, ...)` - Deploy an application

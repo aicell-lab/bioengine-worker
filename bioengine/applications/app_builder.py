@@ -102,7 +102,6 @@ class AppBuilder:
     def __init__(
         self,
         apps_workdir: Union[str, Path],
-        data_server_url: Optional[str] = None,
         log_file: Optional[str] = None,
         debug: bool = False,
     ) -> None:
@@ -121,7 +120,6 @@ class AppBuilder:
 
         Args:
             apps_workdir: Directory for storing downloaded code and temporary files
-            data_server_url: URL for the data server (None = no data server)
             log_file: Optional file path for logging output (None = console only)
             debug: Whether to enable detailed debug logging for troubleshooting
 
@@ -129,7 +127,6 @@ class AppBuilder:
             ```python
             builder = AppBuilder(
                 apps_workdir=f"{os.environ['HOME']}/apps",
-                data_server_url="http://127.0.0.1:9527",
                 debug=True
             )
             ```
@@ -141,15 +138,15 @@ class AppBuilder:
             log_file=log_file,
         )
 
-        # Store parameters
+        # Initialize configuration
         self.apps_workdir = Path(apps_workdir)
-        self.data_server_url = data_server_url
         self.bioengine_package_alias = "bioengine-package"
         self.server: Optional[RemoteService] = None
         self.artifact_manager: Optional[ObjectProxy] = None
         self.worker_service_id: Optional[str] = None
         self.serve_http_url: Optional[str] = None
         self.proxy_actor_name: Optional[str] = None
+        self.data_server_url: Optional[str] = None
 
     def complete_initialization(
         self,
@@ -196,6 +193,24 @@ class AppBuilder:
         self.serve_http_url = serve_http_url
         self.proxy_actor_name = proxy_actor_name
 
+    def update_data_server_url(self, data_server_url: str) -> None:
+        """
+        Update the URL for the BioEngine data server used by deployments.
+
+        This method configures the data server URL that will be injected into
+        deployment environments. The data server provides access to datasets
+        and storage for BioEngine applications.
+
+        Args:
+            data_server_url: Full URL of the data server (e.g., "https://data.bioengine.ai")
+
+        Example:
+            ```python
+            builder.update_data_server_url("https://data.bioengine.ai")
+            ```
+        """
+        self.data_server_url = data_server_url
+
     async def _load_manifest(
         self, artifact_id: str, version: Optional[str] = None
     ) -> AppManifest:
@@ -229,7 +244,6 @@ class AppBuilder:
             Parsed manifest as a typed dictionary
 
         Raises:
-            FileNotFoundError: Manifest file missing in local development mode
             ValueError: Manifest not found in artifact
             Exception: Network/permission error downloading from artifact manager
 
@@ -241,16 +255,23 @@ class AppBuilder:
             authorized_users: ["user123", "admin@example.com"]
             ```
         """
+        manifest = None
+
         if os.environ.get("BIOENGINE_LOCAL_ARTIFACT_PATH"):
-            # Load the file content from local path
+            # Try to load the file content from local path
             artifact_folder = artifact_id.split("/")[1].replace("-", "_")
             local_deployments_dir = Path(os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"])
             local_path = local_deployments_dir / artifact_folder / "manifest.yaml"
-            if not local_path.exists():
-                raise FileNotFoundError(f"Local manifest file not found: {local_path}")
-            with open(local_path, "r") as f:
-                manifest = yaml.safe_load(f)
-        else:
+            if local_path.exists():
+                with open(local_path, "r") as f:
+                    manifest = yaml.safe_load(f)
+            else:
+                self.logger.warning(
+                    f"Local manifest file not found: {local_path}. Fetching from remote artifact manager."
+                )
+
+        # If manifest was not loaded locally, fetch from remote
+        if manifest is None:
             artifact = await self.artifact_manager.read(artifact_id, version=version)
             manifest = artifact.get("manifest")
             if manifest is None:
@@ -327,6 +348,7 @@ class AppBuilder:
         pip_requirements = update_requirements(
             pip_requirements,
             select=["httpx", "hypha-rpc", "pydantic"],
+            extras=["worker"],
         )
         runtime_env["pip"] = pip_requirements
 
@@ -504,6 +526,7 @@ class AppBuilder:
             self.bioengine_datasets = BioEngineDatasets(
                 data_server_url=data_server_url,
                 hypha_token=os.getenv("HYPHA_TOKEN"),
+                logger=logger,
             )
 
             # Call the original __init__ method
@@ -990,22 +1013,27 @@ class AppBuilder:
             import_path="model_server:ImageClassifier" loads the ImageClassifier
             class from model_server.py file in the artifact.
         """
+        code_content = None
+        local_path = None
+
         if os.environ.get("BIOENGINE_LOCAL_ARTIFACT_PATH"):
-            # Load the file content from local path
+            # Try to load the file content from local path
             artifact_folder = artifact_id.split("/")[1].replace("-", "_")
-            self.logger.debug(
-                f"Loading deployment code from local path: {python_file} in folder {artifact_folder}/"
-            )
             local_deployments_dir = Path(os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"])
             local_path = local_deployments_dir / artifact_folder / python_file
-            if not local_path.exists():
-                raise FileNotFoundError(
-                    f"Local deployment file not found: {local_path}"
+            if local_path.exists():
+                self.logger.debug(
+                    f"Loading deployment code from local path: {python_file} in folder {artifact_folder}/"
                 )
-            with open(local_path, "r") as f:
-                code_content = f.read()
-        else:
-            local_path = None
+                with open(local_path, "r") as f:
+                    code_content = f.read()
+            else:
+                self.logger.warning(
+                    f"Local deployment file not found: {local_path}. Fetching from remote artifact manager."
+                )
+
+        # If code was not loaded locally, fetch from remote
+        if code_content is None:
             try:
                 # Get download URL for the file
                 self.logger.debug(
@@ -1215,176 +1243,175 @@ class AppBuilder:
             )
             ```
         """
-        # Validate application_id and artifact_id
-        if not application_id:
-            raise ValueError("Application ID cannot be empty.")
-
-        if not artifact_id or "/" not in artifact_id:
-            raise ValueError(
-                f"Invalid artifact ID format: {artifact_id}. "
-                "Expected format is 'workspace/artifact_alias'."
-            )
-
         self.logger.info(
             f"Building application '{application_id}' from artifact '{artifact_id}' (version: {version})"
         )
 
-        # Load the artifact manifest
-        manifest = await self._load_manifest(artifact_id, version)
+        try:
+            # Load the artifact manifest
+            manifest = await self._load_manifest(artifact_id, version)
 
-        # Load all deployments defined in the manifest
-        deployment_import_paths = manifest["deployments"]
-        if not isinstance(deployment_import_paths, list) or not deployment_import_paths:
-            raise ValueError(
-                f"Invalid deployments format in artifact {artifact_id}. "
-                "Expected a non-empty list of deployment import paths."
-            )
-
-        deployments = []
-        for import_path in deployment_import_paths:
-            try:
-                filename, class_name = import_path.split(":")
-                python_file = f"{filename}.py"  # Add .py extension
-            except ValueError:
-                raise ValueError(
-                    f"Invalid import path format: {import_path}. "
-                    "Expected format is 'filename:ClassName' (without .py extension)."
-                )
-
-            # Get or create deployment environment variables dictionary
-            if class_name not in application_env_vars:
-                application_env_vars[class_name] = {}
-            deployment_env_vars = application_env_vars[class_name]
-
-            # Add user provided Hypha token as secret environment variable
-            if hypha_token is not None:
-                deployment_env_vars["_HYPHA_TOKEN"] = hypha_token
-
-            deployment = await self._load_deployment(
-                application_id=application_id,
-                artifact_id=artifact_id,
-                version=version,
-                python_file=python_file,
-                class_name=class_name,
-                disable_gpu=disable_gpu,
-                env_vars=deployment_env_vars,
-            )
-            deployments.append(deployment)
-
-            # Extract complete runtime environment variables from the deployment
-            application_env_vars[class_name] = deployment.ray_actor_options[
-                "runtime_env"
-            ]["env_vars"]
-
-        # Calculate the total number of required resources
-        proxy_deployment = BioEngineProxyDeployment
-        required_resources = self._calculate_required_resources(
-            deployments + [proxy_deployment]
-        )
-
-        # Get all schema_methods from the entry deployment class
-        entry_deployment = deployments[0]
-        class_name = entry_deployment.func_or_class.__name__
-        method_schemas = []
-        for method_name in dir(entry_deployment.func_or_class):
-            method = getattr(entry_deployment.func_or_class, method_name)
-            if callable(method) and hasattr(method, "__schema__"):
-                method_schemas.append(method.__schema__)
-
-        if not method_schemas:
-            raise ValueError(
-                f"No schema methods found in the entry deployment class: {class_name}."
-            )
-
-        # Get kwargs for the entry deployment
-        if class_name not in application_kwargs:
-            application_kwargs[class_name] = {}
-        entry_deployment_kwargs = application_kwargs[class_name].copy()
-        entry_init_params = self._get_init_param_info(entry_deployment)
-        self._check_params(entry_init_params, entry_deployment_kwargs)
-
-        # If multiple deployment classes are found, create a composition deployment
-        if len(deployments) > 1:
-            self.logger.debug(
-                f"Creating a composition deployment with {len(deployments)} classes."
-            )
-
-            # Add the composition deployment class(es) to the entry deployment kwargs
-            # Use the parameter name from import_path (first part before ':') as the kwarg name
-            for import_path, deployment in zip(
-                deployment_import_paths[1:], deployments[1:]
+            # Load all deployments defined in the manifest
+            deployment_import_paths = manifest["deployments"]
+            if (
+                not isinstance(deployment_import_paths, list)
+                or not deployment_import_paths
             ):
-                parameter_name, class_name = import_path.split(":")
-
-                # Check that the parameter exists and is of type DeploymentHandle
-                if parameter_name not in entry_init_params:
-                    raise ValueError(
-                        f"Parameter '{parameter_name}' not found in entry deployment "
-                        f"'{entry_deployment.func_or_class.__name__}' init method. "
-                        f"Available parameters: {list(entry_init_params.keys())}"
-                    )
-
-                param_info = entry_init_params[parameter_name]
-                if param_info["type"] != DeploymentHandle:
-                    raise ValueError(
-                        f"Parameter '{parameter_name}' in entry deployment "
-                        f"'{entry_deployment.func_or_class.__name__}' must be of type "
-                        f"DeploymentHandle, but got {param_info['type']}"
-                    )
-
-                init_params = self._get_init_param_info(deployment)
-                deployment_kwargs = application_kwargs.get(class_name, {})
-                self._check_params(init_params, deployment_kwargs)
-                entry_deployment_kwargs[parameter_name] = deployment.bind(
-                    **deployment_kwargs
+                raise ValueError(
+                    f"Invalid deployments format in artifact {artifact_id}. "
+                    "Expected a non-empty list of deployment import paths."
                 )
 
-        # Create the entry deployment handle
-        entry_deployment_handle = entry_deployment.bind(**entry_deployment_kwargs)
+            deployments = []
+            for import_path in deployment_import_paths:
+                try:
+                    filename, class_name = import_path.split(":")
+                    python_file = f"{filename}.py"  # Add .py extension
+                except ValueError:
+                    raise ValueError(
+                        f"Invalid import path format: {import_path}. "
+                        "Expected format is 'filename:ClassName' (without .py extension)."
+                    )
 
-        # Generate a token to register the application service
-        proxy_service_token = await self.server.generate_token(
-            {
-                "workspace": self.server.config.workspace,
-                "permission": "read_write",
-                "expires_in": 3600 * 24 * 30,  # support application for 30 days
+                # Get or create deployment environment variables dictionary
+                if class_name not in application_env_vars:
+                    application_env_vars[class_name] = {}
+                deployment_env_vars = application_env_vars[class_name]
+
+                # Add user provided Hypha token as secret environment variable
+                if hypha_token is not None:
+                    deployment_env_vars["_HYPHA_TOKEN"] = hypha_token
+
+                deployment = await self._load_deployment(
+                    application_id=application_id,
+                    artifact_id=artifact_id,
+                    version=version,
+                    python_file=python_file,
+                    class_name=class_name,
+                    disable_gpu=disable_gpu,
+                    env_vars=deployment_env_vars,
+                )
+                deployments.append(deployment)
+
+                # Extract complete runtime environment variables from the deployment
+                application_env_vars[class_name] = deployment.ray_actor_options[
+                    "runtime_env"
+                ]["env_vars"]
+
+            # Calculate the total number of required resources
+            proxy_deployment = BioEngineProxyDeployment
+            required_resources = self._calculate_required_resources(
+                deployments + [proxy_deployment]
+            )
+
+            # Get all schema_methods from the entry deployment class
+            entry_deployment = deployments[0]
+            class_name = entry_deployment.func_or_class.__name__
+            method_schemas = []
+            for method_name in dir(entry_deployment.func_or_class):
+                method = getattr(entry_deployment.func_or_class, method_name)
+                if callable(method) and hasattr(method, "__schema__"):
+                    method_schemas.append(method.__schema__)
+
+            if not method_schemas:
+                raise ValueError(
+                    f"No schema methods found in the entry deployment class: {class_name}."
+                )
+
+            # Get kwargs for the entry deployment
+            if class_name not in application_kwargs:
+                application_kwargs[class_name] = {}
+            entry_deployment_kwargs = application_kwargs[class_name].copy()
+            entry_init_params = self._get_init_param_info(entry_deployment)
+            self._check_params(entry_init_params, entry_deployment_kwargs)
+
+            # If multiple deployment classes are found, create a composition deployment
+            if len(deployments) > 1:
+                self.logger.debug(
+                    f"Creating a composition deployment with {len(deployments)} classes."
+                )
+
+                # Add the composition deployment class(es) to the entry deployment kwargs
+                # Use the parameter name from import_path (first part before ':') as the kwarg name
+                for import_path, deployment in zip(
+                    deployment_import_paths[1:], deployments[1:]
+                ):
+                    parameter_name, class_name = import_path.split(":")
+
+                    # Check that the parameter exists and is of type DeploymentHandle
+                    if parameter_name not in entry_init_params:
+                        raise ValueError(
+                            f"Parameter '{parameter_name}' not found in entry deployment "
+                            f"'{entry_deployment.func_or_class.__name__}' init method. "
+                            f"Available parameters: {list(entry_init_params.keys())}"
+                        )
+
+                    param_info = entry_init_params[parameter_name]
+                    if param_info["type"] != DeploymentHandle:
+                        raise ValueError(
+                            f"Parameter '{parameter_name}' in entry deployment "
+                            f"'{entry_deployment.func_or_class.__name__}' must be of type "
+                            f"DeploymentHandle, but got {param_info['type']}"
+                        )
+
+                    init_params = self._get_init_param_info(deployment)
+                    deployment_kwargs = application_kwargs.get(class_name, {})
+                    self._check_params(init_params, deployment_kwargs)
+                    entry_deployment_kwargs[parameter_name] = deployment.bind(
+                        **deployment_kwargs
+                    )
+
+            # Create the entry deployment handle
+            entry_deployment_handle = entry_deployment.bind(**entry_deployment_kwargs)
+
+            # Generate a token to register the application service
+            proxy_service_token = await self.server.generate_token(
+                {
+                    "workspace": self.server.config.workspace,
+                    "permission": "read_write",
+                    "expires_in": 3600 * 24 * 30,  # support application for 30 days
+                }
+            )
+
+            # Create the application
+            app = proxy_deployment.bind(
+                application_id=application_id,
+                application_name=manifest["name"],
+                application_description=manifest["description"],
+                entry_deployment_handle=entry_deployment_handle,
+                method_schemas=method_schemas,
+                max_ongoing_requests=max_ongoing_requests,
+                server_url=self.server.config.public_base_url,
+                workspace=self.server.config.workspace,
+                worker_client_id=self.server.config.client_id,
+                proxy_service_token=proxy_service_token,
+                authorized_users=manifest["authorized_users"],
+                serve_http_url=self.serve_http_url,
+                proxy_actor_name=self.proxy_actor_name,
+            )
+
+            # Create application metadata
+            app.metadata = {
+                "name": manifest["name"],
+                "description": manifest["description"],
+                "resources": required_resources,
+                "authorized_users": manifest["authorized_users"],
+                "available_methods": [
+                    method_schema["name"] for method_schema in method_schemas
+                ],
+                "application_kwargs": application_kwargs,
+                "application_env_vars": application_env_vars,
             }
-        )
 
-        # Create the application
-        app = proxy_deployment.bind(
-            application_id=application_id,
-            application_name=manifest["name"],
-            application_description=manifest["description"],
-            entry_deployment_handle=entry_deployment_handle,
-            method_schemas=method_schemas,
-            max_ongoing_requests=max_ongoing_requests,
-            server_url=self.server.config.public_base_url,
-            workspace=self.server.config.workspace,
-            worker_client_id=self.server.config.client_id,
-            proxy_service_token=proxy_service_token,
-            authorized_users=manifest["authorized_users"],
-            serve_http_url=self.serve_http_url,
-            proxy_actor_name=self.proxy_actor_name,
-        )
+            self.logger.info(
+                f"Successfully built application '{application_id}' with "
+                f"available methods: {app.metadata['available_methods']}"
+            )
 
-        # Create application metadata
-        app.metadata = {
-            "name": manifest["name"],
-            "description": manifest["description"],
-            "resources": required_resources,
-            "authorized_users": manifest["authorized_users"],
-            "available_methods": [
-                method_schema["name"] for method_schema in method_schemas
-            ],
-            "application_kwargs": application_kwargs,
-            "application_env_vars": application_env_vars,
-        }
+        except Exception as e:
+            self.logger.error(f"Error building application '{application_id}': {e}")
+            raise e
 
-        self.logger.info(
-            f"Successfully built application '{application_id}' with "
-            f"available methods: {app.metadata['available_methods']}"
-        )
         return app
 
 
@@ -1404,12 +1431,11 @@ if __name__ == "__main__":
         artifact_manager = await server.get_service("public/artifact-manager")
 
         app_builder = AppBuilder(
-            token=token,
             apps_workdir=apps_workdir,
             log_file=None,
             debug=True,
         )
-        app_builder.initialize(
+        app_builder.complete_initialization(
             server, artifact_manager, serve_http_url="https://test-url"
         )
 

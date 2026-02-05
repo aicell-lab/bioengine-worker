@@ -1,6 +1,8 @@
 import asyncio
+import logging
 import os
 import time
+from asyncio import Semaphore
 from dataclasses import dataclass
 from typing import AsyncIterator, Iterable, Optional
 
@@ -9,10 +11,10 @@ import httpx
 try:
     import zarr
 except ImportError as e:
-    raise ImportError("zarr>=3.0.0 is required") from e
+    raise ImportError("zarr>=3.0.8 is required") from e
 
-if zarr.__version__ < "3.0.0":
-    raise ImportError(f"zarr>=3.0.0 is required but found {zarr.__version__}")
+if zarr.__version__ < "3.0.8":
+    raise ImportError(f"zarr>=3.0.8 is required but found {zarr.__version__}")
 
 from zarr.abc.store import (
     ByteRequest,
@@ -23,7 +25,7 @@ from zarr.abc.store import (
 )
 from zarr.core.buffer import Buffer, BufferPrototype
 
-from bioengine.datasets.utils import get_presigned_url
+from bioengine.datasets.utils import get_presigned_url, get_url_with_retry
 
 
 @dataclass
@@ -82,9 +84,16 @@ class HttpZarrStore(Store):
         dataset_id: str,
         zarr_path: str,
         token: Optional[str] = None,
-        max_chunk_cache_size: int = int(
-            os.getenv("BIOENGINE_DATASETS_ZARR_STORE_CACHE_SIZE", 1024 * 1024 * 1024)
-        ),  # 1 GiB default
+        max_chunk_cache_size_gb: int = int(
+            os.getenv("BIOENGINE_DATASETS_ZARR_STORE_CACHE_SIZE", 1)
+        ),  # 1 GiB default; Note that this is not shared between multiple store instances
+        max_concurrent_requests: int = int(
+            os.getenv("BIOENGINE_DATASETS_ZARR_STORE_CONCURRENT_REQUESTS", 50)
+        ),
+        max_connections: int = int(
+            os.getenv("BIOENGINE_DATASETS_ZARR_STORE_CONNECTIONS", 100)
+        ),
+        logger: logging.Logger = logging.getLogger("HttpZarrStore"),
     ):
         """
         Initialize the HTTP-based Zarr store for remote dataset access.
@@ -97,13 +106,32 @@ class HttpZarrStore(Store):
             dataset_id: Name of the dataset to access through this store
             zarr_path: Path within the dataset to the Zarr store (must end with .zarr)
             token: Authentication token for access control
+            max_chunk_cache_size: Maximum size of chunk cache in bytes (default 1GB)
+            max_concurrent_requests: Maximum number of concurrent HTTP requests (default 50)
+            max_connections: Maximum number of HTTP connections in pool (default 100)
+            logger: Logger instance for logging messages
         """
         super().__init__(read_only=True)
         self.service_url = service_url.rstrip("/")
         self.dataset_id = dataset_id
         self.zarr_path = zarr_path[1:] if zarr_path.startswith("/") else zarr_path
         self.token = token
-        self.http_client = None
+        self.logger = logger
+
+        # Concurrency control
+        self.max_concurrent_requests = max_concurrent_requests
+        self._request_semaphore = Semaphore(max_concurrent_requests)
+
+        # Configure HTTP/2 and connection pooling for optimal performance
+        limits = httpx.Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=max_connections // 2,
+        )
+        self.http_client = httpx.AsyncClient(
+            timeout=60,  # seconds
+            limits=limits,
+            http2=True,  # Enable HTTP/2 for better multiplexing
+        )
 
         # Presigned URL cache (expires just under 1 hour for safety)
         # Cache expiry is set to 59 minutes to be safe with 60 minute URL expiry
@@ -116,14 +144,14 @@ class HttpZarrStore(Store):
             []
         )  # List of cache_keys in access order (oldest first)
         self._chunk_cache_size = 0  # Current total size in bytes
-        self._max_chunk_cache_size = max_chunk_cache_size
+        self._max_chunk_cache_size = (
+            max_chunk_cache_size_gb * 1024 * 1024 * 1024
+        )  # Convert GB to bytes
+        # Lock to protect operations that read/modify cache size and cache structures
+        self._cache_lock = asyncio.Lock()
 
         if not self.zarr_path.endswith(".zarr"):
             raise ValueError("zarr_path must end with .zarr")
-
-    def _set_http_client(self) -> None:
-        if self.http_client is None:
-            self.http_client = httpx.AsyncClient(timeout=120)  # seconds
 
     def _get_url_cache_key(self, file_path: str) -> str:
         """Generate a cache key for the presigned URL based on file path."""
@@ -148,9 +176,11 @@ class HttpZarrStore(Store):
         if cache_key in self._presigned_url_cache:
             url, timestamp = self._presigned_url_cache[cache_key]
             if not self._is_cache_expired(timestamp):
+                self.logger.debug(f"Presigned URL cache hit for {cache_key}")
                 return url
             else:
                 # Remove expired entry
+                self.logger.debug(f"Presigned URL cache expired for {cache_key}")
                 del self._presigned_url_cache[cache_key]
 
         return None
@@ -171,19 +201,21 @@ class HttpZarrStore(Store):
             return cached_url
 
         # Not in cache or expired, fetch new URL
-        self._set_http_client()
+        self.logger.debug(f"Fetching presigned URL for {self.dataset_id}/{file_path}")
         url = await get_presigned_url(
             data_service_url=self.service_url,
             dataset_id=self.dataset_id,
             file_path=file_path,
             token=self.token,
             http_client=self.http_client,
+            logger=self.logger,
         )
 
         # Cache the URL if we got one
         if url is not None:
             cache_key = self._get_url_cache_key(file_path)
             self._presigned_url_cache[cache_key] = (url, time.time())
+            self.logger.debug(f"Cached presigned URL for {cache_key}")
 
         return url
 
@@ -204,7 +236,11 @@ class HttpZarrStore(Store):
             return f"chunk:{self.dataset_id}:{key}:{range_str}"
 
     def _evict_oldest_chunks(self, required_size: int) -> None:
-        """Evict least recently used chunks until we have enough space for required_size bytes."""
+        """Evict least recently used chunks until we have enough space for required_size bytes.
+
+        NOTE: This helper assumes the caller holds ``self._cache_lock`` to make eviction
+        atomic with other cache-size touching operations.
+        """
         while (
             self._chunk_cache_size + required_size > self._max_chunk_cache_size
             and self._chunk_cache_order
@@ -212,41 +248,66 @@ class HttpZarrStore(Store):
             # Remove least recently used chunk (first in order list)
             oldest_key = self._chunk_cache_order.pop(0)
             if oldest_key in self._chunk_cache:
-                print(f"Evicting chunk from cache: {oldest_key}")
                 _, size = self._chunk_cache[oldest_key]
                 del self._chunk_cache[oldest_key]
                 self._chunk_cache_size -= size
+                self.logger.info(
+                    f"Evicted chunk {oldest_key} (size={size} bytes). Cache "
+                    f"{self._chunk_cache_size / self._max_chunk_cache_size * 100:.2f}% full after eviction. "
+                    f"(dataset ID={self.dataset_id}, zarr_path={self.zarr_path})"
+                )
 
-    def _cache_chunk(self, cache_key: str, buffer: Buffer) -> None:
-        """Add a chunk to the cache, evicting old chunks if necessary."""
+    async def _cache_chunk(self, cache_key: str, buffer: Buffer) -> None:
+        """Add a chunk to the cache, evicting old chunks if necessary.
+
+        This operation is performed under ``self._cache_lock`` so that cache-size
+        accounting and eviction are atomic.
+        """
         # Estimate buffer size (this is approximate)
         buffer_size = len(buffer.to_bytes()) if hasattr(buffer, "to_bytes") else 0
 
         # Don't cache if the chunk is larger than the entire cache
         if buffer_size > self._max_chunk_cache_size:
+            self.logger.warning(
+                f"Chunk {cache_key} size {buffer_size} exceeds cache capacity {self._max_chunk_cache_size}, "
+                f"not caching (dataset ID={self.dataset_id}, zarr_path={self.zarr_path})"
+            )
             return
 
-        # Evict old chunks if necessary
-        self._evict_oldest_chunks(buffer_size)
+        # Perform eviction and insertion while holding the cache lock
+        async with self._cache_lock:
+            # Evict old chunks if necessary
+            self._evict_oldest_chunks(buffer_size)
 
-        # Add to cache (most recently used, so goes at end of order list)
-        self._chunk_cache[cache_key] = (buffer, buffer_size)
-        self._chunk_cache_order.append(cache_key)
-        self._chunk_cache_size += buffer_size
+            # Add to cache (most recently used, so goes at end of order list)
+            self._chunk_cache[cache_key] = (buffer, buffer_size)
+            self._chunk_cache_order.append(cache_key)
+            self._chunk_cache_size += buffer_size
+            self.logger.info(
+                f"Cached chunk {cache_key} (size={buffer_size} bytes). Cache "
+                f"{self._chunk_cache_size / self._max_chunk_cache_size * 100:.2f}% full after caching. "
+                f"(dataset ID={self.dataset_id}, zarr_path={self.zarr_path})"
+            )
 
-    def _get_cached_chunk(self, cache_key: str) -> Buffer | None:
-        """Get a chunk from cache and move it to end of LRU order."""
-        if cache_key not in self._chunk_cache:
-            return None
+    async def _get_cached_chunk(self, cache_key: str) -> Buffer | None:
+        """Get a chunk from cache and move it to end of LRU order.
 
-        buffer, size = self._chunk_cache[cache_key]
+        This acquires ``self._cache_lock`` briefly to update LRU ordering safely.
+        """
+        async with self._cache_lock:
+            if cache_key not in self._chunk_cache:
+                self.logger.debug(f"Chunk cache miss: {cache_key}")
+                return None
 
-        # Move to end of order list (most recently used)
-        if cache_key in self._chunk_cache_order:
-            self._chunk_cache_order.remove(cache_key)
-        self._chunk_cache_order.append(cache_key)
+            buffer, size = self._chunk_cache[cache_key]
 
-        return buffer
+            # Move to end of order list (most recently used)
+            if cache_key in self._chunk_cache_order:
+                self._chunk_cache_order.remove(cache_key)
+            self._chunk_cache_order.append(cache_key)
+
+            self.logger.debug(f"Chunk cache hit: {cache_key} (size={size} bytes)")
+            return buffer
 
     def __eq__(self, other: object) -> bool:
         return all(
@@ -289,34 +350,50 @@ class HttpZarrStore(Store):
         # Check chunk cache first
         if self._max_chunk_cache_size > 0:
             chunk_cache_key = self._get_chunk_cache_key(key, byte_range)
-            cached_buffer = self._get_cached_chunk(chunk_cache_key)
+            cached_buffer = await self._get_cached_chunk(chunk_cache_key)
             if cached_buffer is not None:
                 return cached_buffer
 
-        # Not in cache, fetch from remote
-        url = await self._get_and_cache_url(f"{self.zarr_path}/{key}")
-        if url is None:
-            return None
+        # Use semaphore to limit concurrent requests
+        async with self._request_semaphore:
+            # Not in cache, fetch from remote
+            url = await self._get_and_cache_url(f"{self.zarr_path}/{key}")
+            if url is None:
+                return None
 
-        headers = {}
-        if byte_range:
-            if isinstance(byte_range, RangeByteRequest):
-                headers["Range"] = f"bytes={byte_range.start}-{byte_range.end - 1}"
-            elif isinstance(byte_range, OffsetByteRequest):
-                headers["Range"] = f"bytes={byte_range.offset}-"
-            elif isinstance(byte_range, SuffixByteRequest):
-                headers["Range"] = f"bytes=-{byte_range.suffix}"
+            headers = {}
+            if byte_range:
+                if isinstance(byte_range, RangeByteRequest):
+                    headers["Range"] = f"bytes={byte_range.start}-{byte_range.end - 1}"
+                elif isinstance(byte_range, OffsetByteRequest):
+                    headers["Range"] = f"bytes={byte_range.offset}-"
+                elif isinstance(byte_range, SuffixByteRequest):
+                    headers["Range"] = f"bytes=-{byte_range.suffix}"
 
-        response = await self.http_client.get(url, headers=headers)
-        response.raise_for_status()
-        content = response.content
-        buffer = prototype.buffer.from_bytes(content)
+            try:
+                response = await get_url_with_retry(
+                    url=url,
+                    headers=headers,
+                    http_client=self.http_client,
+                    logger=self.logger,
+                )
+                content = response.content
+                self.logger.debug(
+                    f"Fetched {len(content)} bytes for {key} (range={headers.get('Range')}) from {url}"
+                )
+                buffer = prototype.buffer.from_bytes(content)
 
-        # Cache the buffer for future use
-        if self._max_chunk_cache_size > 0:
-            self._cache_chunk(chunk_cache_key, buffer)
+                # Cache the buffer for future use
+                if self._max_chunk_cache_size > 0:
+                    await self._cache_chunk(chunk_cache_key, buffer)
 
-        return buffer
+                return buffer
+
+            except Exception as e:
+                self.logger.error(
+                    f"Failed to fetch {key} (range={headers.get('Range')}) from {url}: {e}"
+                )
+                raise e
 
     async def get_partial_values(
         self,
@@ -376,7 +453,6 @@ class HttpZarrStore(Store):
         raise NotImplementedError("Dir listing not supported")
 
     def close(self):
-        self.http_client = None
         # Clear both presigned URL cache and chunk cache when closing
         self._presigned_url_cache.clear()
         self._chunk_cache.clear()

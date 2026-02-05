@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bioengine"
-version = "0.5.19"
+version = "0.6.2"
 description = "BioEngine Worker for managing Ray clusters and datasets"
 requires-python = ">=3.11"
 authors = [
@@ -13,23 +13,25 @@ authors = [
 readme = "README.md"
 license = {file = "LICENSE"}
 dependencies = [
-    "cloudpickle>=3.1.1",
-    "haikunator>=2.1.0",
     "httpx>=0.28.1",
-    "hypha-rpc>=0.20.85",
+    "hypha-rpc>=0.20.93",
     "numpy==1.26.4",
-    "pydantic>=2.11.0",
     "pyyaml>=6.0.2",
-    "ray[client,serve]==2.33.0",
 ]
 
 [project.optional-dependencies]
 datasets = [
-    "hypha[s3]>=0.21.23",
+    "httpx[http2]>=0.28.1",
+    "hypha[s3]>=0.21.39",
+    "psutil",  # Missing requirement in hypha
     "zarr>=3.0.8",
 ]
-rtc = [
-    "aiortc==1.13.0",
+worker = [
+    "aiortc==1.14.0",
+    "cloudpickle>=3.1.1",
+    "haikunator>=2.1.0",
+    "pydantic>=2.11.0",
+    "ray[client,serve]==2.33.0",
 ]
 dev = [
     "black>=25.9.0",
@@ -41,8 +43,8 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-artifacts = [
-    "bioengine/*.py",
+include = [
+    "bioengine/**/*.py",
 ]
 
 [tool.hatch.build.targets.wheel.sources]
@@ -61,5 +63,5 @@ python_files = "test_*.py"
 
 [tool.black]
 line-length = 88
-target-version = ["py310", "py311"]
+target-version = ["py311"]
 include = '\.pyi?$'

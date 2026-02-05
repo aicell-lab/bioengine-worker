@@ -398,13 +398,7 @@ async def create_bioengine_datasets(server: RemoteService):
     logger = logging.getLogger("ProxyServer")
 
     try:
-        server_url = server["config"]["public_base_url"]
-        workspace = server["config"]["workspace"]
-        if workspace != "public":
-            raise ValueError(
-                f"Expected workspace to be 'public', but got '{workspace}'"
-            )
-
+        server_url = server.config.public_base_url
         logger.info(
             f"Creating BioEngine datasets artifacts at '{server_url}' in workspace 'public'"
         )

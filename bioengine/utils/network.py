@@ -68,6 +68,7 @@ def acquire_free_port(
 def get_url_with_retry(
     url: str,
     params: Optional[Dict[str, str]] = None,
+    raise_for_status: bool = False,
     http_client: Optional[httpx.Client] = None,
     logger: Optional[logging.Logger] = None,
 ) -> httpx.Response:
@@ -101,6 +102,16 @@ def get_url_with_retry(
             response.raise_for_status()
             return response
         except Exception as e:
+            # Don't retry on 4xx client errors (except 429 Too Many Requests)
+            if isinstance(e, httpx.HTTPStatusError):
+                if (
+                    400 <= e.response.status_code < 500
+                    and e.response.status_code != 429
+                ):
+                    if raise_for_status:
+                        raise e
+
+                    return response
 
             if attempt < max_attempts:
                 # Sleep with exponential backoff before retrying
@@ -115,7 +126,10 @@ def get_url_with_retry(
                 logger.error(
                     f"Failed to fetch URL {url}, params: {params} after {max_attempts} attempts: {e}"
                 )
-                raise e
+                if not isinstance(e, httpx.HTTPStatusError) or raise_for_status:
+                    raise e
+
+                return response
 
 
 if __name__ == "__main__":

@@ -180,6 +180,13 @@ class ModelCache:
                 response.raise_for_status()
                 return response
             except Exception as e:
+                # Don't retry on 4xx client errors (except 429 Too Many Requests)
+                if isinstance(e, httpx.HTTPStatusError):
+                    if (
+                        400 <= e.response.status_code < 500
+                        and e.response.status_code != 429
+                    ):
+                        return response
 
                 if attempt < max_attempts:
                     # Sleep with exponential backoff before retrying
@@ -194,7 +201,10 @@ class ModelCache:
                     logger.error(
                         f"Failed to fetch URL '{url}' after {max_attempts} attempts: {e}"
                     )
-                    return response
+                    if isinstance(e, httpx.HTTPStatusError):
+                        return response
+                    else:
+                        raise e
 
     async def _check_model_published_status(self, model_id: str, stage: bool) -> None:
         """
@@ -220,11 +230,12 @@ class ModelCache:
                 url=artifact_url, params={"stage": "false"}
             )
 
-        if response.status_code != 200:
+        try:
+            response.raise_for_status()
+        except Exception as e:
             raise RuntimeError(
-                f"Failed to download manifest from {artifact_url}: "
-                f"HTTP {response.status_code} - {response.text}"
-            )
+                f"Failed to download manifest from {artifact_url}"
+            ) from e
 
         artifact = await asyncio.to_thread(yaml.safe_load, response.text)
         status = artifact["manifest"].get("status")
@@ -540,11 +551,12 @@ class ModelCache:
                 url=files_url, params={"stage": "false"}
             )
 
-        if response.status_code != 200:
+        try:
+            response.raise_for_status()
+        except Exception as e:
             raise RuntimeError(
-                f"Failed to fetch file list for model '{model_id}': "
-                f"HTTP {response.status_code} - {response.text}"
-            )
+                f"Failed to fetch file list for model '{model_id}'"
+            ) from e
 
         return response.json()
 
@@ -582,11 +594,12 @@ class ModelCache:
                 url=file_url, params={"stage": "false"}
             )
 
-        if response.status_code != 200:
+        try:
+            response.raise_for_status()
+        except Exception as e:
             raise RuntimeError(
-                f"Failed to download file '{file_meta['name']}' for model '{model_id}': "
-                f"HTTP {response.status_code} - {response.text}"
-            )
+                f"Failed to download file '{file_meta['name']}' for model '{model_id}'"
+            ) from e
 
         async with aiofiles.open(file_path, "wb") as f:
             await f.write(response.content)

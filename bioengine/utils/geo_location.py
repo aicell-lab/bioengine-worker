@@ -41,13 +41,17 @@ def calculate_region_centroid_coordinates(
         response = get_url_with_retry(
             url="https://nominatim.openstreetmap.org/search",
             params={"q": query, "format": "json", "limit": 1},
+            raise_for_status=True,
+            logger=logger,
         )
         data = response.json()
         if data:
             latitude = float(data[0]["lat"])
             longitude = float(data[0]["lon"])
-    except:
-        pass
+    except Exception as e:
+        logger.warning(
+            f"Failed to calculate centroid coordinates for location: {query}. Error: {e}"
+        )
 
     return {"latitude": latitude, "longitude": longitude}
 
@@ -72,7 +76,9 @@ def run_geolocation(logger: Optional[logging.Logger] = None) -> Dict[str, str]:
     }
 
     try:
-        response = get_url_with_retry(url="https://ipapi.co/json/", logger=logger)
+        response = get_url_with_retry(
+            url="https://ipapi.co/json/", raise_for_status=True, logger=logger
+        )
         data = response.json()
 
         geo_info = {

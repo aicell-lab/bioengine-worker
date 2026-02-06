@@ -1167,24 +1167,26 @@ class ModelRunner:
         """
         logger.info(f"📋 Downloading RDF for model '{model_id}' (stage={stage}).")
 
-        stage_param = f"?stage={str(stage).lower()}"
-        download_url = f"{self.server_url}/{self.workspace}/artifacts/{model_id}/files/rdf.yaml{stage_param}"
-        response = await self.model_cache.client.get(download_url)
+        rdf_url = (
+            f"{self.server_url}/{self.workspace}/artifacts/{model_id}/files/rdf.yaml"
+        )
+        response = await self.model_cache._get_url_with_retry(
+            rdf_url, params={"stage": str(stage).lower()}
+        )
 
         if response.status_code == 404 and stage:
             # If staged version doesn't exist, try with stage=false
             logger.warning(
                 f"⚠️ Staged RDF not found for model '{model_id}', trying committed version..."
             )
-            stage_param = "?stage=false"
-            download_url = f"{self.server_url}/{self.workspace}/artifacts/{model_id}/files/rdf.yaml{stage_param}"
-            response = await self.model_cache.client.get(download_url)
-
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"Failed to download RDF from {download_url}: "
-                f"HTTP {response.status_code} - {response.text}"
+            response = await self.model_cache._get_url_with_retry(
+                rdf_url, params={"stage": "false"}
             )
+
+        try:
+            response.raise_for_status()
+        except Exception as e:
+            raise RuntimeError(f"Failed to download RDF from {rdf_url}") from e
 
         model_rdf = await asyncio.to_thread(yaml.safe_load, response.text)
 

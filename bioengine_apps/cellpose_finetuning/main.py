@@ -690,7 +690,8 @@ def train_seg_with_callbacks(
             Where val_metrics is a dict with keys like precision/recall/f1, or None
             when validation was not run for that epoch.
         batch_callback: Optional callback function called after each batch.
-            Signature: callback(epoch, batch_idx, total_batches, batch_loss, elapsed_seconds)
+            Signature: callback(epoch, batch_idx, total_batches, batch_loss, elapsed_seconds, val_metrics)
+            Where val_metrics can be None (training) or dict (validation).
 
     Returns:
         tuple: (model_path, train_losses, test_losses)
@@ -929,8 +930,14 @@ def train_seg_with_callbacks(
                 batch_idx = k // batch_size
                 total_batches = (nimg_per_epoch + batch_size - 1) // batch_size
                 batch_loss_per_sample = loss.item()  # Loss per sample for this batch
+                # Pass None for val_metrics during training
                 batch_callback(
-                    iepoch + 1, batch_idx, total_batches, batch_loss_per_sample, elapsed
+                    iepoch + 1,
+                    batch_idx,
+                    total_batches,
+                    batch_loss_per_sample,
+                    elapsed,
+                    None,
                 )
 
         train_losses[iepoch] /= nimg_per_epoch
@@ -996,49 +1003,57 @@ def train_seg_with_callbacks(
 
                         # Validation performance on Cellpose cell-prob channel.
                         # Channel layout is typically: [flow_y, flow_x, cellprob, ...]
-                        try:
-                            pred_cellprob = y[:, 2].detach().float().cpu()
+                        pred_cellprob = y[:, 2].detach().float().cpu()
 
-                            # Handle different label formats (flows vs masks)
-                            if lbl.shape[1] >= 3:
-                                # Labels are flows: [flow_y, flow_x, cellprob, ...]
-                                true_cellprob = lbl[:, 2].detach().float().cpu()
-                            elif lbl.shape[1] == 1:
-                                # Labels are masks: [mask]
-                                # Create binary cellprob from mask (0 is background)
-                                true_cellprob = (lbl[:, 0] > 0).float().cpu()
-                            else:
-                                # Unexpected shape (e.g. 2 channels), skip metrics
-                                train_logger.warning(
-                                    f"Skipping metrics: unexpected lbl shape {lbl.shape}"
-                                )
-                                continue
-
-                            batch_metrics = _compute_binary_metrics(
-                                pred_cellprob, true_cellprob
-                            )
-                            # Reconstruct confusion from metrics is lossy; instead
-                            # accumulate directly here for stability.
-                            # Use same thresholding logic as _compute_binary_metrics.
-                            tmin = float(true_cellprob.min().item())
-                            tmax = float(true_cellprob.max().item())
-                            target_thr = 0.5 if (tmin >= 0.0 and tmax <= 1.0) else 0.0
-                            pmin = float(pred_cellprob.min().item())
-                            pmax = float(pred_cellprob.max().item())
-                            pred_thr = 0.5 if (pmin >= 0.0 and pmax <= 1.0) else 0.0
-                            gt = (true_cellprob > target_thr).to(torch.bool).flatten()
-                            pr = (pred_cellprob > pred_thr).to(torch.bool).flatten()
-                            tp += int(torch.sum(pr & gt).item())
-                            fp += int(torch.sum(pr & ~gt).item())
-                            fn += int(torch.sum(~pr & gt).item())
-                            tn += int(torch.sum(~pr & ~gt).item())
-                            _ = batch_metrics  # keep for readability; not used further
-                        except Exception as e:
-                            # Metrics are best-effort; never fail training because of them.
+                        # Handle different label formats (flows vs masks)
+                        if lbl.shape[1] >= 3:
+                            # Labels are flows: [flow_y, flow_x, cellprob, ...]
+                            true_cellprob = lbl[:, 2].detach().float().cpu()
+                        elif lbl.shape[1] == 1:
+                            # Labels are masks: [mask]
+                            # Create binary cellprob from mask (0 is background)
+                            true_cellprob = (lbl[:, 0] > 0).float().cpu()
+                        else:
+                            # Unexpected shape (e.g. 2 channels), skip metrics
                             train_logger.warning(
-                                f"Failed to compute validation metrics: {e}"
+                                f"Skipping metrics: unexpected lbl shape {lbl.shape}"
                             )
-                            pass
+                            continue
+
+                        batch_metrics = _compute_binary_metrics(
+                            pred_cellprob, true_cellprob
+                        )
+                        # Reconstruct confusion from metrics is lossy; instead
+                        # accumulate directly here for stability.
+                        # Use same thresholding logic as _compute_binary_metrics.
+                        tmin = float(true_cellprob.min().item())
+                        tmax = float(true_cellprob.max().item())
+                        target_thr = 0.5 if (tmin >= 0.0 and tmax <= 1.0) else 0.0
+                        pmin = float(pred_cellprob.min().item())
+                        pmax = float(pred_cellprob.max().item())
+                        pred_thr = 0.5 if (pmin >= 0.0 and pmax <= 1.0) else 0.0
+                        gt = (true_cellprob > target_thr).to(torch.bool).flatten()
+                        pr = (pred_cellprob > pred_thr).to(torch.bool).flatten()
+                        tp += int(torch.sum(pr & gt).item())
+                        fp += int(torch.sum(pr & ~gt).item())
+                        fn += int(torch.sum(~pr & gt).item())
+                        tn += int(torch.sum(~pr & ~gt).item())
+
+                        # **CALLBACK: Report batch progress (during validation)**
+                        if batch_callback is not None:
+                            elapsed = time.time() - t0
+                            # Validation batches - mapping batch_idx
+                            batch_idx = ibatch // batch_size
+                            total_batches = (len(rperm) + batch_size - 1) // batch_size
+                            batch_loss_per_sample = loss.item()
+                            batch_callback(
+                                iepoch + 1,
+                                batch_idx,
+                                total_batches,
+                                batch_loss_per_sample,
+                                elapsed,
+                                batch_metrics,
+                            )
 
                         test_loss = loss.item()
                         test_loss *= len(imgi)
@@ -1148,14 +1163,21 @@ def run_blocking_task(
         total_batches: int,
         batch_loss: float,
         elapsed_seconds: float,
+        val_metrics: ValidationMetrics | None = None,
     ) -> None:
         """Update status after each batch (throttled to every 10 batches)."""
         # Update every 10 batches or on first/last batch to avoid too frequent updates
         if batch_idx % 10 == 0 or batch_idx == 0 or batch_idx == total_batches - 1:
+            # Prepare message
+            stage = "Validating" if val_metrics is not None else "Training"
+            msg = f"{stage} epoch {epoch}/{training_params['n_epochs']} (batch {batch_idx + 1}/{total_batches})"
+            if val_metrics:
+                msg += f" - Val Acc: {val_metrics.get('pixel_accuracy', 0):.4f}"
+
             update_status(
                 session_id,
                 StatusType.RUNNING,
-                f"Training epoch {epoch}/{training_params['n_epochs']} (batch {batch_idx + 1}/{total_batches})",
+                msg,
                 train_losses=(
                     accumulated_train_losses.copy()
                     if accumulated_train_losses
@@ -2639,6 +2661,16 @@ class CellposeFinetune:
             shutil.copy(model_path, export_dir / weights_filename)
             logger.info(f"Copied model weights: {weights_filename}")
 
+            # Copy training history and params
+            session_path = get_session_path(session_id)
+            shutil.copy(
+                session_path / "training_params.json",
+                export_dir / "training_params.json",
+            )
+            shutil.copy(
+                get_status_path(session_id), export_dir / "training_history.json"
+            )
+
             # 2. Write model.py from embedded template
             model_py_filename = "model.py"
             (export_dir / model_py_filename).write_text(MODEL_TEMPLATE_PY)
@@ -2869,6 +2901,8 @@ BSD-3-Clause (Cellpose license)
                     cover_filename,
                     "doc.md",
                     "rdf.yaml",
+                    "training_params.json",
+                    "training_history.json",
                 ],
             }
 

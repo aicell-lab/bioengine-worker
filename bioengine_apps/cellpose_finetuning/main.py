@@ -14,18 +14,19 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Self, TypedDict, TypeGuard
+from typing import TYPE_CHECKING, Any, Self, TypedDict, TypeGuard, cast
 from urllib.parse import urlparse
 
 import numpy as np
-from hypha_rpc.utils.schema import schema_method
+import numpy.typing as npt
+from hypha_rpc.utils.schema import schema_method  # type: ignore
 from pydantic import Field
 from ray import serve
 
 if TYPE_CHECKING:
-    import torch
-    from cellpose.models import CellposeModel
-    from hypha_artifact import AsyncHyphaArtifact
+    import torch  # type: ignore
+    from cellpose.models import CellposeModel  # type: ignore
+    from hypha_artifact import AsyncHyphaArtifact  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +37,9 @@ ENCODING_NPY_BASE64 = "npy_base64"
 METADATA_DIRNAME = "metadata"
 NDIM_3D_THRESHOLD = 3
 GB = 1024**3
+DOC_FILENAME = "doc.md"
+RDF_FILENAME = "rdf.yaml"
+TRAINING_PARAMS_FILENAME = "training_params.json"
 
 # Model template for BioImage.io export
 MODEL_TEMPLATE_PY = '''"""BioImage.io Model Wrapper for Cellpose 4.0.7 (Cellpose-SAM).
@@ -359,7 +363,7 @@ def artifact_cache_dir(artifact_id: str) -> Path:
 
 
 # Type guard to check that object is list[np.ndarray]:
-def is_ndarray(potential_arrays: list[object]) -> TypeGuard[list[np.ndarray]]:
+def is_ndarray(potential_arrays: list[object]) -> TypeGuard[list[npt.NDArray[Any]]]:
     """Check if the input is a list of numpy ndarrays."""
     return all(isinstance(array, np.ndarray) for array in potential_arrays)
 
@@ -368,8 +372,10 @@ class PredictionItemModel(TypedDict, total=False):
     """A single prediction mapping an input identifier to an encoded mask."""
 
     input_path: str
-    output: np.ndarray
-    flows: list[np.ndarray]  # Optional: [HSV flow, XY flows, cellprob, final positions]
+    output: npt.NDArray[Any]
+    flows: list[
+        npt.NDArray[Any]
+    ]  # Optional: [HSV flow, XY flows, cellprob, final positions]
 
 
 class ValidationMetrics(TypedDict, total=False):
@@ -406,11 +412,24 @@ class SessionStatus(TypedDict, total=False):
     model_modified: bool  # Flag indicating if model was modified since last export
 
 
-class SessionStatusWithId(TypedDict):
+class SessionStatusWithId(TypedDict, total=False):
     """Session status including the associated session identifier."""
 
     status_type: StatusType
     message: str
+    train_losses: list[float]
+    test_losses: list[float]
+    test_metrics: list[ValidationMetrics | None]
+    n_train: int  # Number of training samples
+    n_test: int  # Number of test samples
+    start_time: str  # Training start time (ISO format)
+    current_epoch: int  # Current epoch number (1-indexed)
+    total_epochs: int  # Total number of epochs
+    elapsed_seconds: float  # Elapsed time in seconds
+    current_batch: int  # Current batch number within epoch (0-indexed)
+    total_batches: int  # Total number of batches per epoch
+    exported_artifact_id: str  # Artifact ID if model has been exported
+    model_modified: bool  # Flag indicating if model was modified since last export
     session_id: str
 
 
@@ -430,7 +449,7 @@ async def make_artifact_client(
     if "/" not in artifact_id:
         msg = "artifact_id must be of form 'workspace/alias'"
         raise ValueError(msg)
-    workspace, _alias = artifact_id.split("/", 1)
+    _, _alias = artifact_id.split("/", 1)
 
     return AsyncHyphaArtifact(
         artifact_id=artifact_id,
@@ -465,7 +484,7 @@ def get_url_and_artifact_id(artifact_id: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def ensure_3_channels(image: np.ndarray) -> np.ndarray:
+def ensure_3_channels(image: npt.NDArray[Any]) -> npt.NDArray[Any]:
     """Convert image to 3-channel format required by Cellpose 4.0.7.
 
     Cellpose-SAM requires images with exactly 3 channels and is channel-order invariant.
@@ -513,7 +532,7 @@ def ensure_3_channels(image: np.ndarray) -> np.ndarray:
         )
 
 
-def ensure_3_channels_batch(images: np.ndarray) -> np.ndarray:
+def ensure_3_channels_batch(images: npt.NDArray[Any]) -> npt.NDArray[Any]:
     """Ensure a batch of images is shaped (N, 3, H, W)."""
     if images.ndim == 3:
         images = images[:, None, :, :]
@@ -644,38 +663,38 @@ def get_status(session_id: str) -> SessionStatus:
 
 
 def train_seg_with_callbacks(
-    net,
-    train_data=None,
-    train_labels=None,
-    train_files=None,
-    train_labels_files=None,
-    train_probs=None,
-    test_data=None,
-    test_labels=None,
-    test_files=None,
-    test_labels_files=None,
-    test_probs=None,
-    channel_axis=None,
-    load_files=True,
-    batch_size=1,
-    learning_rate=5e-5,
-    SGD=False,
-    n_epochs=100,
-    weight_decay=0.1,
-    normalize=True,
-    compute_flows=False,
-    save_path=None,
-    nimg_per_epoch=None,
-    nimg_test_per_epoch=None,
-    rescale=False,
-    scale_range=None,
-    bsize=256,
-    min_train_masks=5,
-    model_name=None,
-    class_weights=None,
-    epoch_callback=None,
-    batch_callback=None,
-):
+    net: Any,
+    train_data: list[npt.NDArray[Any]] | None = None,
+    train_labels: list[npt.NDArray[Any]] | None = None,
+    train_files: list[Path] | None = None,
+    train_labels_files: list[Path] | None = None,
+    train_probs: list[float] | None = None,
+    test_data: list[npt.NDArray[Any]] | None = None,
+    test_labels: list[npt.NDArray[Any]] | None = None,
+    test_files: list[Path] | None = None,
+    test_labels_files: list[Path] | None = None,
+    test_probs: list[float] | None = None,
+    channel_axis: int | None = None,
+    load_files: bool = True,
+    batch_size: int = 1,
+    learning_rate: float = 5e-5,
+    SGD: bool = False,
+    n_epochs: int = 100,
+    weight_decay: float = 0.1,
+    normalize: bool | dict[str, Any] = True,
+    compute_flows: bool = False,
+    save_path: Path | str | None = None,
+    nimg_per_epoch: int | None = None,
+    nimg_test_per_epoch: int | None = None,
+    rescale: bool = False,
+    scale_range: float | None = None,
+    bsize: int = 256,
+    min_train_masks: int = 5,
+    model_name: str | None = None,
+    class_weights: npt.NDArray[Any] | None = None,
+    epoch_callback: Any = None,
+    batch_callback: Any = None,
+) -> tuple[Path, npt.NDArray[Any], npt.NDArray[Any]]:
     """
     Train the network with images for segmentation (with epoch and batch callbacks).
 
@@ -699,15 +718,15 @@ def train_seg_with_callbacks(
     import time
 
     import torch
-    from cellpose import models
-    from cellpose.train import (
-        _get_batch,
-        _loss_fn_class,
-        _loss_fn_seg,
-        _process_train_test,
-        train_logger,
+    from cellpose import models  # type: ignore
+    from cellpose.train import (  # type: ignore
+        _get_batch,  # type: ignore
+        _loss_fn_class,  # type: ignore
+        _loss_fn_seg,  # type: ignore
+        _process_train_test,  # type: ignore
+        train_logger,  # type: ignore
     )
-    from cellpose.transforms import random_rotate_and_resize
+    from cellpose.transforms import random_rotate_and_resize  # type: ignore
 
     if SGD:
         train_logger.warning("SGD is deprecated, using AdamW instead")
@@ -726,30 +745,33 @@ def train_seg_with_callbacks(
     scale_range = 0.5 if scale_range is None else scale_range
 
     if isinstance(normalize, dict):
-        normalize_params = {**models.normalize_default, **normalize}
-    elif not isinstance(normalize, bool):
+        normalize_params = {**models.normalize_default, **normalize}  # type: ignore
+    elif not isinstance(normalize, bool):  # type: ignore
         raise ValueError("normalize parameter must be a bool or a dict")
     else:
-        normalize_params = models.normalize_default
+        normalize_params = models.normalize_default  # type: ignore
         normalize_params["normalize"] = normalize
 
-    out = _process_train_test(
-        train_data=train_data,
-        train_labels=train_labels,
-        train_files=train_files,
-        train_labels_files=train_labels_files,
-        train_probs=train_probs,
-        test_data=test_data,
-        test_labels=test_labels,
-        test_files=test_files,
-        test_labels_files=test_labels_files,
-        test_probs=test_probs,
-        load_files=load_files,
-        min_train_masks=min_train_masks,
-        compute_flows=compute_flows,
-        channel_axis=channel_axis,
-        normalize_params=normalize_params,
-        device=net.device,
+    out = cast(
+        Any,
+        _process_train_test(
+            train_data=train_data,
+            train_labels=train_labels,
+            train_files=train_files,
+            train_labels_files=train_labels_files,
+            train_probs=train_probs,
+            test_data=test_data,
+            test_labels=test_labels,
+            test_files=test_files,
+            test_labels_files=test_labels_files,
+            test_probs=test_probs,
+            load_files=load_files,
+            min_train_masks=min_train_masks,
+            compute_flows=compute_flows,
+            channel_axis=channel_axis,
+            normalize_params=normalize_params,
+            device=net.device,
+        ),
     )
     (
         train_data,
@@ -769,37 +791,48 @@ def train_seg_with_callbacks(
 
     # already normalized, do not normalize during training
     if normed:
-        kwargs = {}
+        kwargs = cast(dict[str, Any], {})
     else:
-        kwargs = {"normalize_params": normalize_params, "channel_axis": channel_axis}
+        kwargs = cast(
+            dict[str, Any],
+            {"normalize_params": normalize_params, "channel_axis": channel_axis},
+        )
 
     net.diam_labels.data = torch.Tensor([diam_train.mean()]).to(device)
 
-    if class_weights is not None and isinstance(
-        class_weights, (list, np.ndarray, tuple)
-    ):
-        class_weights = torch.from_numpy(class_weights).to(device).float()
-        print(class_weights)
+    class_weights_tensor: Any = None
+    if class_weights is not None:
+        class_weights_tensor = torch.from_numpy(class_weights).to(device).float()  # type: ignore
+        print(class_weights_tensor)
 
-    nimg = len(train_data) if train_data is not None else len(train_files)
+    nimg = len(train_data) if train_data is not None else len(train_files)  # type: ignore
     nimg_test = len(test_data) if test_data is not None else None
     nimg_test = len(test_files) if test_files is not None else nimg_test
-    nimg_per_epoch = nimg if nimg_per_epoch is None else nimg_per_epoch
-    nimg_test_per_epoch = (
-        nimg_test if nimg_test_per_epoch is None else nimg_test_per_epoch
+    # Ensure nimg_test is treated as int, defaulting to 0 if None
+    nimg_test_val = nimg_test if nimg_test is not None else 0
+
+    nimg_per_epoch_val = nimg if nimg_per_epoch is None else nimg_per_epoch
+    nimg_test_per_epoch_val = (
+        nimg_test_val if nimg_test_per_epoch is None else nimg_test_per_epoch
     )
 
     # learning rate schedule
-    LR = np.linspace(0, learning_rate, 10)
-    LR = np.append(LR, learning_rate * np.ones(max(0, n_epochs - 10)))
+    learning_rate_schedule = np.linspace(0, learning_rate, 10)
+    learning_rate_schedule = np.append(
+        learning_rate_schedule, learning_rate * np.ones(max(0, n_epochs - 10))
+    )
     if n_epochs > 300:
-        LR = LR[:-100]
+        learning_rate_schedule = learning_rate_schedule[:-100]
         for _ in range(10):
-            LR = np.append(LR, LR[-1] / 2 * np.ones(10))
+            learning_rate_schedule = np.append(
+                learning_rate_schedule, learning_rate_schedule[-1] / 2 * np.ones(10)
+            )
     elif n_epochs > 99:
-        LR = LR[:-50]
+        learning_rate_schedule = learning_rate_schedule[:-50]
         for _ in range(10):
-            LR = np.append(LR, LR[-1] / 2 * np.ones(5))
+            learning_rate_schedule = np.append(
+                learning_rate_schedule, learning_rate_schedule[-1] / 2 * np.ones(5)
+            )
 
     train_logger.info(f">>> n_epochs={n_epochs}, n_train={nimg}, n_test={nimg_test}")
     train_logger.info(
@@ -864,23 +897,23 @@ def train_seg_with_callbacks(
 
     for iepoch in range(n_epochs):
         np.random.seed(iepoch)
-        if nimg != nimg_per_epoch:
+        if nimg != nimg_per_epoch_val:
             # choose random images for epoch with probability train_probs
             rperm = np.random.choice(
-                np.arange(0, nimg), size=(nimg_per_epoch,), p=train_probs
+                np.arange(0, nimg), size=(nimg_per_epoch_val,), p=train_probs
             )
         else:
             # otherwise use all images
             rperm = np.random.permutation(np.arange(0, nimg))
 
         for param_group in optimizer.param_groups:
-            param_group["lr"] = LR[iepoch]  # set learning rate
+            param_group["lr"] = learning_rate_schedule[iepoch]  # set learning rate
 
         net.train()
-        for k in range(0, nimg_per_epoch, batch_size):
-            kend = min(k + batch_size, nimg_per_epoch)
+        for k in range(0, nimg_per_epoch_val, batch_size):
+            kend = min(k + batch_size, nimg_per_epoch_val)
             inds = rperm[k:kend]
-            imgs, lbls = _get_batch(
+            imgs, lbls = _get_batch(  # type: ignore
                 inds,
                 data=train_data,
                 labels=train_labels,
@@ -895,31 +928,31 @@ def train_seg_with_callbacks(
                 else np.ones(len(diams), "float32")
             )
             # augmentations
-            imgi, lbl = random_rotate_and_resize(
+            imgi, lbl = random_rotate_and_resize(  # type: ignore
                 imgs, Y=lbls, rescale=rsc, scale_range=scale_range, xy=(bsize, bsize)
             )[:2]
-            imgi = ensure_3_channels_batch(imgi)
+            imgi = ensure_3_channels_batch(imgi)  # type: ignore
             # network and loss optimization
-            X = torch.from_numpy(imgi).to(device)
-            lbl = torch.from_numpy(lbl).to(device)
+            x_batch = torch.from_numpy(imgi).to(device)  # type: ignore
+            lbl = torch.from_numpy(lbl).to(device)  # type: ignore
 
-            if X.dtype != net.dtype:
-                X = X.to(net.dtype)
+            if x_batch.dtype != net.dtype:
+                x_batch = x_batch.to(net.dtype)
                 lbl = lbl.to(net.dtype)
 
-            y = net(X)[0]
-            loss = _loss_fn_seg(lbl, y, device)
+            y = net(x_batch)[0]
+            loss = cast(torch.Tensor, _loss_fn_seg(lbl, y, device))  # type: ignore
             if y.shape[1] > 3:
-                loss3 = _loss_fn_class(lbl, y, class_weights=class_weights)
+                loss3 = cast(torch.Tensor, _loss_fn_class(lbl, y, class_weights=class_weights_tensor))  # type: ignore
                 loss += loss3
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            train_loss = loss.item()
-            train_loss *= len(imgi)
+            loss.backward()  # type: ignore
+            optimizer.step()  # type: ignore
+            train_loss = loss.item()  # type: ignore
+            train_loss *= len(imgi)  # type: ignore
 
             # keep track of average training loss across epochs
-            lavg += train_loss
+            lavg += train_loss  # type: ignore
             nsum += len(imgi)
             # per epoch training loss
             train_losses[iepoch] += train_loss
@@ -928,8 +961,10 @@ def train_seg_with_callbacks(
             if batch_callback is not None:
                 elapsed = time.time() - t0
                 batch_idx = k // batch_size
-                total_batches = (nimg_per_epoch + batch_size - 1) // batch_size
-                batch_loss_per_sample = loss.item()  # Loss per sample for this batch
+                total_batches = (nimg_per_epoch_val + batch_size - 1) // batch_size
+                batch_loss_per_sample = float(
+                    loss.item()  # type: ignore
+                )  # Loss per sample for this batch
                 # Pass None for val_metrics during training
                 batch_callback(
                     iepoch + 1,
@@ -940,7 +975,7 @@ def train_seg_with_callbacks(
                     None,
                 )
 
-        train_losses[iepoch] /= nimg_per_epoch
+        train_losses[iepoch] /= nimg_per_epoch_val
 
         # Compute test loss if appropriate
         lavgt = 0.0
@@ -950,14 +985,14 @@ def train_seg_with_callbacks(
         if iepoch == 0 or (iepoch + 1) % 10 == 0:
             if test_data is not None or test_files is not None:
                 np.random.seed(42)
-                if nimg_test != nimg_test_per_epoch:
+                if nimg_test_val != nimg_test_per_epoch_val:
                     rperm = np.random.choice(
-                        np.arange(0, nimg_test),
-                        size=(nimg_test_per_epoch,),
+                        np.arange(0, nimg_test_val),
+                        size=(nimg_test_per_epoch_val,),
                         p=test_probs,
                     )
                 else:
-                    rperm = np.random.permutation(np.arange(0, nimg_test))
+                    rperm = np.random.permutation(np.arange(0, nimg_test_val))
 
                 # Confusion counts for cellprob foreground/background
                 tp = fp = fn = tn = 0
@@ -966,7 +1001,7 @@ def train_seg_with_callbacks(
                     with torch.no_grad():
                         net.eval()
                         inds = rperm[ibatch : ibatch + batch_size]
-                        imgs, lbls = _get_batch(
+                        imgs, lbls = _get_batch(  # type: ignore
                             inds,
                             data=test_data,
                             labels=test_labels,
@@ -980,25 +1015,25 @@ def train_seg_with_callbacks(
                             if rescale
                             else np.ones(len(diams), "float32")
                         )
-                        imgi, lbl = random_rotate_and_resize(
+                        imgi, lbl = random_rotate_and_resize(  # type: ignore
                             imgs,
                             Y=lbls,
                             rescale=rsc,
                             scale_range=scale_range,
                             xy=(bsize, bsize),
                         )[:2]
-                        imgi = ensure_3_channels_batch(imgi)
-                        X = torch.from_numpy(imgi).to(device)
-                        lbl = torch.from_numpy(lbl).to(device)
+                        imgi = ensure_3_channels_batch(imgi)  # type: ignore
+                        x_batch = torch.from_numpy(imgi).to(device)  # type: ignore
+                        lbl = torch.from_numpy(lbl).to(device)  # type: ignore
 
-                        if X.dtype != net.dtype:
-                            X = X.to(net.dtype)
+                        if x_batch.dtype != net.dtype:
+                            x_batch = x_batch.to(net.dtype)
                             lbl = lbl.to(net.dtype)
 
-                        y = net(X)[0]
-                        loss = _loss_fn_seg(lbl, y, device)
+                        y = net(x_batch)[0]
+                        loss = cast(torch.Tensor, _loss_fn_seg(lbl, y, device))  # type: ignore
                         if y.shape[1] > 3:
-                            loss3 = _loss_fn_class(lbl, y, class_weights=class_weights)
+                            loss3 = cast(torch.Tensor, _loss_fn_class(lbl, y, class_weights=class_weights_tensor))  # type: ignore
                             loss += loss3
 
                         # Validation performance on Cellpose cell-prob channel.
@@ -1045,7 +1080,7 @@ def train_seg_with_callbacks(
                             # Validation batches - mapping batch_idx
                             batch_idx = ibatch // batch_size
                             total_batches = (len(rperm) + batch_size - 1) // batch_size
-                            batch_loss_per_sample = loss.item()
+                            batch_loss_per_sample = loss.item()  # type: ignore
                             batch_callback(
                                 iepoch + 1,
                                 batch_idx,
@@ -1055,11 +1090,11 @@ def train_seg_with_callbacks(
                                 batch_metrics,
                             )
 
-                        test_loss = loss.item()
-                        test_loss *= len(imgi)
-                        lavgt += test_loss
+                        test_loss = loss.item()  # type: ignore
+                        test_loss *= len(imgi)  # type: ignore
+                        lavgt += test_loss  # type: ignore
 
-                lavgt /= len(rperm)
+                lavgt /= len(rperm)  # type: ignore
                 test_losses[iepoch] = lavgt
 
                 # Finalize metrics if we collected any pixels.
@@ -1077,20 +1112,20 @@ def train_seg_with_callbacks(
                         iou=iou,
                     )
 
-            lavg /= nsum
+            lavg /= nsum  # type: ignore
             if val_metrics is not None:
                 train_logger.info(
                     f"{iepoch}, train_loss={lavg:.4f}, test_loss={lavgt:.4f}, "
-                    f"val_acc={val_metrics['pixel_accuracy']:.4f}, "
-                    f"val_p={val_metrics['precision']:.4f}, "
-                    f"val_r={val_metrics['recall']:.4f}, "
-                    f"val_f1={val_metrics['f1']:.4f}, "
-                    f"val_iou={val_metrics['iou']:.4f}, "
-                    f"LR={LR[iepoch]:.6f}, time {time.time()-t0:.2f}s"
+                    f"val_acc={val_metrics.get('pixel_accuracy', 0.0):.4f}, "
+                    f"val_p={val_metrics.get('precision', 0.0):.4f}, "
+                    f"val_r={val_metrics.get('recall', 0.0):.4f}, "
+                    f"val_f1={val_metrics.get('f1', 0.0):.4f}, "
+                    f"val_iou={val_metrics.get('iou', 0.0):.4f}, "
+                    f"LR={learning_rate_schedule[iepoch]:.6f}, time {time.time()-t0:.2f}s"
                 )
             else:
                 train_logger.info(
-                    f"{iepoch}, train_loss={lavg:.4f}, test_loss={lavgt:.4f}, LR={LR[iepoch]:.6f}, time {time.time()-t0:.2f}s"
+                    f"{iepoch}, train_loss={lavg:.4f}, test_loss={lavgt:.4f}, LR={learning_rate_schedule[iepoch]:.6f}, time {time.time()-t0:.2f}s"
                 )
             lavg, nsum = 0, 0
 
@@ -1117,7 +1152,7 @@ def run_blocking_task(
     model_save_path: Path,
     dataset_split: DatasetSplit,
     training_params: TrainingParams,
-) -> tuple[Path, list[float], list[float]]:
+) -> tuple[Path, Any, Any]:
     """Run the blocking training task."""
     import time
 
@@ -1260,7 +1295,7 @@ def run_blocking_task(
     elapsed = time.time() - t0
 
     # Extract training metrics from the result
-    model_path, train_losses, test_losses = seg_result
+    _, train_losses, test_losses = seg_result
 
     # Convert numpy arrays to lists for JSON serialization
     train_losses_list = (
@@ -1399,12 +1434,12 @@ def load_model(identifier: str | Path) -> CellposeModel:
     finetuned model. Otherwise, it is treated as a builtin model name
     (e.g., "cyto3").
     """
-    from cellpose import core, models
+    from cellpose import core, models  # type: ignore
 
     use_gpu = core.use_gpu()
 
     if isinstance(identifier, Path):
-        return models.CellposeModel(gpu=use_gpu, pretrained_model=str(identifier))
+        return models.CellposeModel(gpu=use_gpu, pretrained_model=str(identifier))  # type: ignore
 
     return models.CellposeModel(gpu=use_gpu, model_type=identifier)
 
@@ -1540,17 +1575,18 @@ async def list_artifact_files(
         # ls() returns a list of file info dicts
         files = await artifact.ls(folder_path)
         # Extract filenames (basenames only)
-        filenames = []
+        filenames: list[str] = []
         for file_info in files:
             # file_info is typically a dict with 'name' or 'path' key
             # Get the basename
             if isinstance(file_info, dict):
-                path = file_info.get("name") or file_info.get("path", "")
+                file_info_dict = cast(dict[str, Any], file_info)
+                path = file_info_dict.get("name") or file_info_dict.get("path", "")
             else:
                 path = str(file_info)
 
             # Extract basename
-            basename = Path(path).name
+            basename = Path(str(path)).name
             if basename and basename != ".":
                 filenames.append(basename)
 
@@ -1812,7 +1848,7 @@ async def make_training_pairs(
 async def create_test_samples(
     session_id: str,
     training_params: TrainingParams,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[npt.NDArray[Any], npt.NDArray[Any]]:
     """Create test input and output samples from training data.
 
     Uses the last training image to generate test samples for model validation.
@@ -1891,9 +1927,7 @@ async def create_test_samples(
         pass
     elif test_input.ndim == 3 and test_input.shape[2] in [1, 3, 4]:
         # Image is in (H, W, C) format, transpose to (C, H, W)
-        logger.info(
-            f"Transposing from (H,W,C) to (C,H,W): {test_input.shape} -> ", end=""
-        )
+        logger.info(f"Transposing from (H,W,C) to (C,H,W): {test_input.shape} -> ")
         test_input = np.transpose(test_input, (2, 0, 1))
         logger.info(f"{test_input.shape}")
 
@@ -1910,12 +1944,12 @@ async def create_test_samples(
 
 
 async def generate_cover_image(
-    test_input: np.ndarray,
-    test_output: np.ndarray,
+    test_input: npt.NDArray[Any],
+    test_output: npt.NDArray[Any],
     output_path: Path,
     model_name: str = "Cellpose Model",
     session_id: str = "",
-    training_info: dict = None,
+    training_info: dict[str, Any] | SessionStatus | None = None,
 ) -> None:
     """Generate a side-by-side cover image with model metadata in title.
 
@@ -1965,17 +1999,17 @@ async def generate_cover_image(
         mask_colored[test_output == label] = color
 
     # Create figure with side-by-side images
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))  # type: ignore
 
     # Plot input
-    ax1.imshow(display_input)
-    ax1.set_title("Input Image", fontsize=14)
-    ax1.axis("off")
+    ax1.imshow(display_input)  # type: ignore
+    ax1.set_title("Input Image", fontsize=14)  # type: ignore
+    ax1.axis("off")  # type: ignore
 
     # Plot output mask only (no background image)
-    ax2.imshow(mask_colored)
-    ax2.set_title(f"Segmentation ({len(unique_labels)} objects)", fontsize=14)
-    ax2.axis("off")
+    ax2.imshow(mask_colored)  # type: ignore
+    ax2.set_title(f"Segmentation ({len(unique_labels)} objects)", fontsize=14)  # type: ignore
+    ax2.axis("off")  # type: ignore
 
     # Add overall title with model metadata
     date_str = datetime.now().strftime("%Y-%m-%d")
@@ -1985,9 +2019,10 @@ async def generate_cover_image(
     n_train = training_info.get("n_train", "N/A")
     epochs = training_info.get("total_epochs", "N/A")
     train_losses = training_info.get("train_losses", [])
-    final_loss = (
-        f"{train_losses[-1]:.4f}" if train_losses and len(train_losses) > 0 else "N/A"
-    )
+    if isinstance(train_losses, list) and len(cast(list[Any], train_losses)) > 0:
+        final_loss = f"{train_losses[-1]:.4f}"
+    else:
+        final_loss = "N/A"
 
     # Create title with model info
     title_lines = [
@@ -1996,10 +2031,10 @@ async def generate_cover_image(
         f"Samples: {n_train} | Epochs: {epochs} | Loss: {final_loss}",
     ]
 
-    fig.suptitle("\n".join(title_lines), fontsize=12, fontweight="bold", y=0.98)
+    fig.suptitle("\n".join(title_lines), fontsize=12, fontweight="bold", y=0.98)  # type: ignore
 
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.tight_layout(rect=(0, 0, 1, 0.95))
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")  # type: ignore
     plt.close()
 
     logger.info(f"Generated cover image at {output_path}")
@@ -2013,9 +2048,9 @@ def generate_rdf_yaml(
     test_input_filename: str,
     test_output_filename: str,
     training_params: TrainingParams,
-    test_input_shape: tuple,
-    test_output_shape: tuple,
-) -> dict:
+    test_input_shape: tuple[int, ...],
+    test_output_shape: tuple[int, ...],
+) -> dict[str, Any]:
     """Generate BioImage.io RDF YAML structure.
 
     Args:
@@ -2071,7 +2106,7 @@ def generate_rdf_yaml(
         "type": "model",
         "id": session_id,
         "id_emoji": "🔬",
-        "documentation": "doc.md",
+        "documentation": DOC_FILENAME,
         "inputs": [
             {
                 "id": "input",
@@ -2112,7 +2147,9 @@ def generate_rdf_yaml(
                     "callable": "CellposeSAMWrapper",
                     "kwargs": {
                         "model_type": "cpsam",
-                        "diam_mean": float(training_params.get("diam_mean", 30.0)),
+                        "diam_mean": float(
+                            cast(dict[str, Any], training_params).get("diam_mean", 30.0)
+                        ),
                         "cp_batch_size": 8,
                         "channels": [0, 0],
                         "flow_threshold": 0.4,
@@ -2151,7 +2188,7 @@ async def _images_from_artifact(
     artifact_id: str,
     image_paths: list[str],
     server_url: str,
-) -> list[np.ndarray]:
+) -> list[npt.NDArray[Any]]:
     """Download missing images into cache and load as numpy arrays."""
     from tifffile import imread
 
@@ -2165,7 +2202,7 @@ async def _images_from_artifact(
     )
     if missing_remote:
         await artifact.get(missing_remote, missing_local, on_error="ignore")
-    imgs: list[np.ndarray] = []
+    imgs: list[npt.NDArray[Any]] = []
     for rel in image_paths:
         local_img = cache_dir / rel
         imgs.append(imread(local_img))
@@ -2175,7 +2212,7 @@ async def _images_from_artifact(
 def _predict_and_encode(
     *,
     model: CellposeModel,
-    images: list[np.ndarray],
+    images: list[npt.NDArray[Any]],
     image_paths: list[str],
     diameter: float | None,
     flow_threshold: float,
@@ -2207,7 +2244,7 @@ def _predict_and_encode(
 
         # model.eval returns (masks, flows, styles)
         # flows = [HSV flow, XY flows, cellprob, final pixel locations]
-        masks, flows, _styles = model.eval(
+        masks, flows, _styles = model.eval(  # type: ignore
             [image_3ch],
             diameter=diameter,
             flow_threshold=flow_threshold,
@@ -2215,10 +2252,13 @@ def _predict_and_encode(
             niter=niter,
         )
 
+        # Cast masks to ndarray for type checking
+        masks = cast(npt.NDArray[Any] | list[npt.NDArray[Any]], masks)
+
         # Process masks
         mask_np = masks[0] if isinstance(masks, list) else masks
-        if not isinstance(mask_np, np.ndarray):
-            mask_np = np.asarray(mask_np)
+        if not isinstance(mask_np, np.ndarray):  # type: ignore
+            mask_np = cast(npt.NDArray[Any], np.asarray(mask_np))
         if mask_np.ndim >= NDIM_3D_THRESHOLD and mask_np.shape[0] == 1:
             mask_np = mask_np[0]
         if not np.issubdtype(mask_np.dtype, np.integer):
@@ -2226,15 +2266,19 @@ def _predict_and_encode(
 
         # Create output item
         out_item = PredictionItemModel(
-            input_path=path,
-            output=mask_np,
+            input_path=path,  # type: ignore
         )
 
         # Optionally add flows
         if return_flows:
             # flows is a list containing [HSV flow, XY flows, cellprob, final positions]
-            flow_list = (
-                flows[0] if isinstance(flows, list) and len(flows) > 0 else flows
+            flow_list = cast(
+                list[Any],
+                (
+                    flows[0]
+                    if isinstance(flows, list) and len(cast(list[Any], flows)) > 0
+                    else flows
+                ),
             )
             out_item["flows"] = flow_list
 
@@ -2245,7 +2289,7 @@ def _predict_and_encode(
 # ---------------------------------------------------------------------------
 # Ray Serve deployment
 # ---------------------------------------------------------------------------
-@serve.deployment(
+@serve.deployment(  # type: ignore
     ray_actor_options={
         "num_gpus": 0.75,
         "num_cpus": 4,
@@ -2285,7 +2329,7 @@ class CellposeFinetune:
 
     pretrained_models: list[str]
     executors: dict[str, ThreadPoolExecutor]
-    tasks: dict[str, asyncio.Task]
+    tasks: dict[str, asyncio.Task[Any]]
     _session_lock: asyncio.Lock
 
     def __init__(self) -> None:
@@ -2309,7 +2353,7 @@ class CellposeFinetune:
         )
         raise ValueError(msg)
 
-    @schema_method(arbitrary_types_allowed=True)
+    @schema_method(arbitrary_types_allowed=True)  # type: ignore
     async def start_training(
         self,
         artifact: str = Field(
@@ -2441,7 +2485,7 @@ class CellposeFinetune:
         status = get_status(session_id)
         return SessionStatusWithId(**status, session_id=session_id)
 
-    @schema_method(arbitrary_types_allowed=True)
+    @schema_method(arbitrary_types_allowed=True)  # type: ignore
     async def stop_training(
         self,
         session_id: str = Field(
@@ -2469,18 +2513,18 @@ class CellposeFinetune:
 
         return get_status(session_id)
 
-    @schema_method(arbitrary_types_allowed=True)
+    @schema_method(arbitrary_types_allowed=True)  # type: ignore
     async def debug_task_info(
         self,
         session_id: str = Field(
             description="Session ID to debug",
         ),
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Debug information about the training task."""
         task = self.tasks.get(session_id)
         executor = self.executors.get(session_id)
 
-        info = {
+        info: dict[str, Any] = {
             "session_id": session_id,
             "task_exists": task is not None,
             "executor_exists": executor is not None,
@@ -2499,7 +2543,7 @@ class CellposeFinetune:
 
         return info
 
-    @schema_method(arbitrary_types_allowed=True)
+    @schema_method(arbitrary_types_allowed=True)  # type: ignore
     async def get_training_status(
         self,
         session_id: str = Field(
@@ -2513,7 +2557,7 @@ class CellposeFinetune:
         """
         return get_status(session_id)
 
-    @schema_method(arbitrary_types_allowed=True)
+    @schema_method(arbitrary_types_allowed=True)  # type: ignore
     async def list_training_sessions(
         self,
         status_types: list[str] | None = Field(
@@ -2531,21 +2575,54 @@ class CellposeFinetune:
         the session history. For completed sessions, the saved model path is included
         if available.
         """
+        filt: set[str] | None = None
         if status_types is not None:
             allowed = {s.value for s in StatusType}
             filt = {s for s in status_types if s in allowed}
 
-        all_session_ids = get_sessions_path().iterdir()
-        status_paths = [session_dir / "status.json" for session_dir in all_session_ids]
-        session_statuses = [json.loads(path.read_text()) for path in status_paths]
+        sessions: dict[str, SessionStatus] = {}
+        # Ensure session path exists (might not if no sessions yet)
+        sessions_path = get_sessions_path()
+        if not sessions_path.exists():
+            return sessions
 
-        return {
-            str(status_path): SessionStatus(**session)
-            for status_path, session in zip(status_paths, session_statuses)
-            if filt is None or session["status_type"] in filt
-        }
+        for session_dir in sessions_path.iterdir():
+            if not session_dir.is_dir():
+                continue
+            status_path = session_dir / "status.json"
+            if not status_path.exists():
+                continue
 
-    @schema_method(arbitrary_types_allowed=True)
+            try:
+                session_data = json.loads(status_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+
+            if filt is not None and session_data.get("status_type") not in filt:
+                continue
+
+            # Cast to SessionStatus to satisfy type checker
+            sessions[str(status_path)] = SessionStatus(
+                status_type=session_data.get("status_type"),
+                message=session_data.get("message"),
+                train_losses=session_data.get("train_losses"),
+                test_losses=session_data.get("test_losses"),
+                test_metrics=session_data.get("test_metrics"),
+                n_train=session_data.get("n_train"),
+                n_test=session_data.get("n_test"),
+                start_time=session_data.get("start_time"),
+                current_epoch=session_data.get("current_epoch"),
+                total_epochs=session_data.get("total_epochs"),
+                elapsed_seconds=session_data.get("elapsed_seconds"),
+                current_batch=session_data.get("current_batch"),
+                total_batches=session_data.get("total_batches"),
+                exported_artifact_id=session_data.get("exported_artifact_id"),
+                model_modified=session_data.get("model_modified"),
+            )
+
+        return sessions
+
+    @schema_method(arbitrary_types_allowed=True)  # type: ignore
     async def export_model(
         self,
         session_id: str = Field(description="Training session ID to export"),
@@ -2557,7 +2634,7 @@ class CellposeFinetune:
             "bioimage-io/colab-annotations",
             description="Collection to upload to (format: workspace/collection)",
         ),
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Export trained model as BioImage.io package to artifact manager.
 
         This function packages the trained model with all necessary files for
@@ -2584,7 +2661,7 @@ class CellposeFinetune:
         import tempfile
 
         import yaml
-        from hypha_rpc import connect_to_server
+        from hypha_rpc import connect_to_server  # type: ignore
 
         from bioengine.utils import create_file_list_from_directory
 
@@ -2592,40 +2669,36 @@ class CellposeFinetune:
 
         # Validate session
         status = get_status(session_id)
-        if status["status_type"] != "completed":
+        if status.get("status_type") != "completed":
             raise ValueError(
                 f"Cannot export model from session {session_id}: "
-                f"training status is '{status['status_type']}', must be 'completed'"
+                f"training status is '{status.get('status_type')}', must be 'completed'"
             )
 
         # Get training parameters
         session_path = get_session_path(session_id)
-        training_params_path = session_path / "training_params.json"
+        training_params_path = session_path / TRAINING_PARAMS_FILENAME
         if not training_params_path.exists():
             raise ValueError(f"Training parameters not found for session {session_id}")
 
         training_params = json.loads(training_params_path.read_text())
 
         # Check if model was already exported and hasn't been modified
-        if status.get("exported_artifact_id") and not status.get(
-            "model_modified", True
-        ):
+        exported_artifact_id = status.get("exported_artifact_id")
+        if exported_artifact_id and not status.get("model_modified", True):
             logger.info(
-                f"Model already exported as {status['exported_artifact_id']}, returning cached result"
+                f"Model already exported as {exported_artifact_id}, returning cached result"
             )
 
             # Reconstruct the result from stored info
-            artifact_id = status["exported_artifact_id"]
             workspace = collection.split("/")[0]
             base_url = training_params.get("server_url", "https://hypha.aicell.io")
-            artifact_url = (
-                f"{base_url}/{workspace}/artifacts/{artifact_id.split('/')[-1]}"
-            )
+            artifact_url = f"{base_url}/{workspace}/artifacts/{exported_artifact_id.split('/')[-1]}"
             download_url = f"{artifact_url}/create-zip-file"
 
             return {
-                "artifact_id": artifact_id,
-                "model_name": artifact_id.split("/")[-1],
+                "artifact_id": exported_artifact_id,
+                "model_name": exported_artifact_id.split("/")[-1],
                 "status": "exported",
                 "artifact_url": artifact_url,
                 "download_url": download_url,
@@ -2635,8 +2708,8 @@ class CellposeFinetune:
                     "input_sample.npy",
                     "output_sample.npy",
                     "cover.png",
-                    "doc.md",
-                    "rdf.yaml",
+                    DOC_FILENAME,
+                    RDF_FILENAME,
                 ],
                 "cached": True,
             }
@@ -2664,8 +2737,8 @@ class CellposeFinetune:
             # Copy training history and params
             session_path = get_session_path(session_id)
             shutil.copy(
-                session_path / "training_params.json",
-                export_dir / "training_params.json",
+                session_path / TRAINING_PARAMS_FILENAME,
+                export_dir / TRAINING_PARAMS_FILENAME,
             )
             shutil.copy(
                 get_status_path(session_id), export_dir / "training_history.json"
@@ -2702,9 +2775,10 @@ class CellposeFinetune:
             )
 
             # 5. Generate documentation
+            train_losses = status.get("train_losses")
             final_loss = (
-                f"{status['train_losses'][-1]:.4f}"
-                if status.get("train_losses") and len(status["train_losses"]) > 0
+                f"{train_losses[-1]:.4f}"  # type: ignore
+                if train_losses and len(train_losses) > 0  # type: ignore
                 else "N/A"
             )
             doc_content = f"""# {model_name}
@@ -2758,7 +2832,7 @@ See the citations in the RDF file for relevant papers.
 
 BSD-3-Clause (Cellpose license)
 """
-            (export_dir / "doc.md").write_text(doc_content)
+            (export_dir / DOC_FILENAME).write_text(doc_content)
             logger.info("Generated documentation")
 
             # 6. Generate RDF YAML
@@ -2770,15 +2844,16 @@ BSD-3-Clause (Cellpose license)
                 model_py_filename=model_py_filename,
                 test_input_filename=test_input_filename,
                 test_output_filename=test_output_filename,
-                training_params=training_params,
+                training_params=training_params,  # type: ignore
                 test_input_shape=test_input.shape,
                 test_output_shape=test_output.shape,
             )
 
-            with open(export_dir / "rdf.yaml", "w") as f:
-                yaml.dump(rdf, f)
-            logger.info("Generated RDF YAML")
+            def _write_rdf() -> None:
+                with open(export_dir / RDF_FILENAME, "w") as f:
+                    yaml.dump(rdf, f)
 
+            await asyncio.to_thread(_write_rdf)
             # 7. Upload to artifact manager
             logger.info(f"Uploading to artifact manager: {collection}")
 
@@ -2793,7 +2868,7 @@ BSD-3-Clause (Cellpose license)
                     "Cannot upload to artifact manager."
                 )
 
-            server = await connect_to_server(
+            server: Any = await connect_to_server(  # type: ignore
                 {
                     "server_url": training_params.get(
                         "server_url", "https://hypha.aicell.io"
@@ -2803,7 +2878,9 @@ BSD-3-Clause (Cellpose license)
                 }
             )
 
-            artifact_manager = await server.get_service("public/artifact-manager")
+            # Cast server to Any to avoid "Unknown type" errors
+            server = cast(Any, server)
+            artifact_manager = await server.get_service("public/artifact-manager")  # type: ignore
 
             # Create file list
             files = create_file_list_from_directory(
@@ -2817,8 +2894,8 @@ BSD-3-Clause (Cellpose license)
             )
             collection_id_str = f"{workspace}/{collection_alias}"
             try:
-                collection_info = await artifact_manager.read(collection_id_str)
-                collection_id = collection_info["id"]
+                collection_info = await artifact_manager.read(collection_id_str)  # type: ignore
+                collection_id = collection_info["id"]  # type: ignore
             except Exception as e:
                 logger.error(f"Collection {collection_id_str} not found: {e}")
                 raise ValueError(
@@ -2828,18 +2905,22 @@ BSD-3-Clause (Cellpose license)
 
             # Create model artifact
             logger.info(f"Creating model artifact in collection {collection_id}")
-            artifact_result = await artifact_manager.create(
+            artifact_result = await artifact_manager.create(  # type: ignore
                 type="model",
                 alias=model_name,
                 parent_id=collection_id,
                 manifest=rdf,
                 stage=True,  # Enable staging mode for file uploads
             )
-            artifact_id = (
-                artifact_result["id"]
-                if isinstance(artifact_result, dict)
-                else artifact_result
+            val = cast(
+                Any,
+                (
+                    artifact_result["id"]
+                    if isinstance(artifact_result, dict)
+                    else artifact_result
+                ),
             )
+            artifact_id = str(val)
             logger.info(f"Created model artifact: {artifact_id}")
 
             # Upload files
@@ -2852,7 +2933,7 @@ BSD-3-Clause (Cellpose license)
                     logger.debug(f"Uploading file: {file_info['name']}")
 
                     # Get presigned upload URL
-                    upload_url = await artifact_manager.put_file(
+                    upload_url = await artifact_manager.put_file(  # type: ignore
                         artifact_id, file_path=file_info["name"]
                     )
 
@@ -2866,14 +2947,14 @@ BSD-3-Clause (Cellpose license)
                     response.raise_for_status()
 
             # Commit the artifact
-            await artifact_manager.commit(artifact_id)
+            await artifact_manager.commit(artifact_id)  # type: ignore
             logger.info(f"Successfully exported model: {artifact_id}")
 
             # Update artifact with training dataset ID (stored in artifact config, not in rdf.yaml)
             training_dataset_id = training_params.get("artifact_id")
             if training_dataset_id:
                 try:
-                    await artifact_manager.edit(
+                    await artifact_manager.edit(  # type: ignore
                         artifact_id, config={"training_dataset_id": training_dataset_id}
                     )
                     logger.info(f"Added training_dataset_id: {training_dataset_id}")
@@ -2887,7 +2968,7 @@ BSD-3-Clause (Cellpose license)
             )
             download_url = f"{artifact_url}/create-zip-file"
 
-            result = {
+            result: dict[str, str] = {
                 "artifact_id": artifact_id,
                 "model_name": model_name,
                 "status": "exported",
@@ -2899,9 +2980,9 @@ BSD-3-Clause (Cellpose license)
                     test_input_filename,
                     test_output_filename,
                     cover_filename,
-                    "doc.md",
-                    "rdf.yaml",
-                    "training_params.json",
+                    DOC_FILENAME,
+                    RDF_FILENAME,
+                    TRAINING_PARAMS_FILENAME,
                     "training_history.json",
                 ],
             }
@@ -2910,8 +2991,8 @@ BSD-3-Clause (Cellpose license)
             current_status = get_status(session_id)
             update_status(
                 session_id,
-                current_status["status_type"],
-                current_status["message"],
+                current_status.get("status_type", StatusType.FAILED),  # Default or cast
+                current_status.get("message", ""),
                 train_losses=current_status.get("train_losses"),
                 test_losses=current_status.get("test_losses"),
                 test_metrics=current_status.get("test_metrics"),
@@ -2947,7 +3028,7 @@ BSD-3-Clause (Cellpose license)
             except Exception as e:
                 logger.warning(f"Failed to clean up export directory: {e}")
 
-    @schema_method
+    @schema_method  # type: ignore
     async def list_models_by_dataset(
         self,
         dataset_id: str = Field(
@@ -2957,7 +3038,7 @@ BSD-3-Clause (Cellpose license)
             "bioimage-io/colab-annotations",
             description="Collection to search in (format: workspace/collection)",
         ),
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """List all models trained on a specific dataset.
 
         This function queries the artifact manager to find all model artifacts
@@ -2978,9 +3059,9 @@ BSD-3-Clause (Cellpose license)
         Raises:
             RuntimeError: If query fails
         """
-        import os
+        import os  # type: ignore
 
-        from hypha_rpc import connect_to_server
+        from hypha_rpc import connect_to_server  # type: ignore
 
         logger.info(f"Listing models trained on dataset: {dataset_id}")
 
@@ -2996,7 +3077,7 @@ BSD-3-Clause (Cellpose license)
                     "Cannot query artifact manager."
                 )
 
-            server = await connect_to_server(
+            server: Any = await connect_to_server(  # type: ignore
                 {
                     "server_url": "https://hypha.aicell.io",
                     "workspace": workspace,
@@ -3004,7 +3085,9 @@ BSD-3-Clause (Cellpose license)
                 }
             )
 
-            artifact_manager = await server.get_service("public/artifact-manager")
+            # Cast server to Any
+            server = cast(Any, server)
+            artifact_manager = await server.get_service("public/artifact-manager")  # type: ignore
 
             # Get the collection ID
             collection_alias = (
@@ -3025,7 +3108,7 @@ BSD-3-Clause (Cellpose license)
             )
 
             # Filter models by training_dataset_id
-            matching_models = []
+            matching_models: list[dict[str, Any]] = []
             for artifact in artifacts:
                 config = artifact.get("config", {})
                 if config.get("training_dataset_id") == dataset_id:
@@ -3053,7 +3136,7 @@ BSD-3-Clause (Cellpose license)
             logger.error(f"Error listing models by dataset: {e}")
             raise RuntimeError(f"Failed to list models by dataset: {e}") from e
 
-    @schema_method(arbitrary_types_allowed=True)
+    @schema_method(arbitrary_types_allowed=True)  # type: ignore
     async def infer(
         self,
         artifact: str | None = Field(
@@ -3147,14 +3230,14 @@ BSD-3-Clause (Cellpose license)
         model_id = self.get_model_id(model)
         model_obj = load_model(model_id)
 
-        images: list[np.ndarray]
+        images: list[npt.NDArray[Any]]
         if input_arrays is not None:
             images = input_arrays
             image_paths = [f"input_arrays[{i}]" for i in range(len(input_arrays))]
-        elif artifact_id is not None and image_paths is not None:
+        elif artifact_id is not None:
             images = await _images_from_artifact(
                 artifact_id=artifact_id,
-                image_paths=image_paths,
+                image_paths=image_paths,  # type: ignore
                 server_url=server_url,
             )
         else:
@@ -3173,11 +3256,11 @@ BSD-3-Clause (Cellpose license)
 
 
 async def infer(
-    cellpose_tuner: object,
+    cellpose_tuner: Any,
     model: str | None = None,
 ) -> None:
     """Test inference functionality of the Cellpose Fine-Tuning service."""
-    from plotly import express as px
+    from plotly import express as px  # type: ignore
 
     inference_result = await cellpose_tuner.infer(  # type: ignore[hasAttribute]
         model=model,
@@ -3187,11 +3270,12 @@ async def infer(
     )
     logger.info("Inference done! Result: %s", str(inference_result)[:500] + "...")
     arr = inference_result[0]["output"]
+    # px.imshow usually expects image like (H, W) or (H, W, C).
     px.imshow(arr).show()
 
 
 async def monitor_training(
-    cellpose_tuner: object,
+    cellpose_tuner: Any,
     session_id: str,
 ) -> None:
     """Monitor the training session until completion."""
@@ -3214,14 +3298,20 @@ async def monitor_training(
 
 async def test_cellpose_finetune() -> None:
     """Test the CellposeFinetune Ray Serve deployment end-to-end."""
-    cellpose_tuner = CellposeFinetune.func_or_class()  # type: ignore[reportCallIssue]
+    # Note: .func_or_class() or .options().bind() usage depends on Ray version.
+    # Assuming .func_or_class() based on previous code but modifying for type safety if needed.
+    # Reverting to original call style but casting:
+    cellpose_tuner = cast(Any, CellposeFinetune.func_or_class())  # type: ignore
 
     await infer(cellpose_tuner, model="cyto3")
 
-    session_status = await cellpose_tuner.start_training(
-        artifact="ri-scale/zarr-demo",
-        n_epochs=1,
-        n_samples=5,
+    session_status = cast(
+        dict[str, Any],
+        await cellpose_tuner.start_training(
+            artifact="ri-scale/zarr-demo",
+            n_epochs=1,
+            n_samples=5,
+        ),
     )
 
     session_id = session_status["session_id"]

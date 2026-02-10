@@ -119,6 +119,7 @@ class BioEngineDatasets:
             # Try to ping dataset service
             await get_url_with_retry(
                 url=f"{self.service_url}/ping",
+                raise_for_status=True,
                 http_client=self.http_client,
                 logger=self.logger,
             )
@@ -149,6 +150,7 @@ class BioEngineDatasets:
         start_time = asyncio.get_event_loop().time()
         response = await get_url_with_retry(
             url=f"{self.service_url}/list_datasets",
+            raise_for_status=True,
             http_client=self.http_client,
             logger=self.logger,
         )
@@ -206,6 +208,7 @@ class BioEngineDatasets:
         response = await get_url_with_retry(
             url=f"{self.service_url}/list_files",
             params=params,
+            raise_for_status=True,
             http_client=self.http_client,
             logger=self.logger,
         )
@@ -221,7 +224,7 @@ class BioEngineDatasets:
     async def get_file(
         self,
         dataset_id: str,
-        file_name: str,
+        file_path: str,
         token: Optional[str] = None,
     ) -> Union["HttpZarrStore", bytes]:
         """
@@ -239,7 +242,7 @@ class BioEngineDatasets:
 
         Args:
             dataset_id: Name of the dataset to access
-            file_name: Specific file within the dataset to access.
+            file_path: Specific file path within the dataset to access
             token: Optional authentication token for accessing protected datasets
 
         Returns:
@@ -256,14 +259,20 @@ class BioEngineDatasets:
         if dataset_id not in available_datasets.keys():
             raise ValueError(f"Dataset '{dataset_id}' does not exist")
 
-        available_files = await self.list_files(dataset_id=dataset_id, token=token)
-        if len(available_files) == 0:
-            raise ValueError(f"No files found in dataset '{dataset_id}'")
+        _file_path = Path(file_path)
+        lookup_dir = (
+            _file_path.parent.as_posix() if _file_path.parent != Path(".") else None
+        )
+        available_files = await self.list_files(
+            dataset_id=dataset_id, dir_path=lookup_dir, token=token
+        )
 
-        if file_name not in available_files:
-            raise ValueError(f"File '{file_name}' not found in dataset '{dataset_id}'")
+        if _file_path.name not in available_files:
+            raise ValueError(
+                f"File '{_file_path.as_posix()}' not found in dataset '{dataset_id}'"
+            )
 
-        if file_name.endswith(".zarr"):
+        if _file_path.suffix == ".zarr":
             try:
                 from bioengine.datasets.http_zarr_store import HttpZarrStore
             except ImportError as e:
@@ -272,7 +281,7 @@ class BioEngineDatasets:
             file_output = HttpZarrStore(
                 service_url=self.service_url,
                 dataset_id=dataset_id,
-                zarr_path=file_name,
+                zarr_path=_file_path.as_posix(),
                 token=token,
                 logger=self.logger,
             )
@@ -282,17 +291,18 @@ class BioEngineDatasets:
             presigned_url = await get_presigned_url(
                 data_service_url=self.service_url,
                 dataset_id=dataset_id,
-                file_path=file_name,
+                file_path=_file_path.as_posix(),
                 token=token,
                 http_client=self.http_client,
             )
             if presigned_url is None:
                 raise ValueError(
-                    f"File '{file_name}' not found in dataset '{dataset_id}'"
+                    f"File '{_file_path.as_posix()}' not found in dataset '{dataset_id}'"
                 )
 
             response = await get_url_with_retry(
                 url=presigned_url,
+                raise_for_status=True,
                 http_client=self.http_client,
                 logger=self.logger,
             )
@@ -300,7 +310,7 @@ class BioEngineDatasets:
 
         end_time = asyncio.get_event_loop().time()
         self.logger.debug(
-            f"Time taken to get file '{file_name}' from dataset "
+            f"Time taken to get file '{_file_path.as_posix()}' from dataset "
             f"'{dataset_id}': {end_time - start_time:.2f} seconds"
         )
 
@@ -336,21 +346,17 @@ if __name__ == "__main__":
         print(available_files)
 
         zarr_file = [f for f in available_files if f.endswith(".zarr")][0]
-        readme = [f for f in available_files if f == "README.md"][0]
 
         store = await bioengine_datasets.get_file(
             dataset_id=dataset_id, file_path=zarr_file
         )
         print(store)
 
-        # Test resetting the http client
-        store.close()
-
-        readme_file = await bioengine_datasets.get_file(
-            dataset_id=dataset_id, file_path=readme
+        file_content = await bioengine_datasets.get_file(
+            dataset_id=dataset_id, file_path="filter_129.zarr/zarr.json"
         )
-        print(readme_file.decode("utf-8"))
 
+        # Load it as lazy AnnData object
         adata = await asyncio.to_thread(read_lazy, store, load_annotation_index=True)
         print(adata)
         print(adata.obs)

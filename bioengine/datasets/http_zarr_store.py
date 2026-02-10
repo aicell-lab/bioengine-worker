@@ -374,6 +374,7 @@ class HttpZarrStore(Store):
                 response = await get_url_with_retry(
                     url=url,
                     headers=headers,
+                    raise_for_status=True,
                     http_client=self.http_client,
                     logger=self.logger,
                 )

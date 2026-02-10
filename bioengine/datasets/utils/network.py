@@ -9,6 +9,7 @@ async def get_url_with_retry(
     url: str,
     params: Optional[Dict[str, str]] = None,
     headers: Optional[Dict[str, str]] = None,
+    raise_for_status: bool = False,
     http_client: Optional[httpx.AsyncClient] = None,
     logger: Optional[logging.Logger] = None,
 ) -> httpx.Response:
@@ -33,7 +34,7 @@ async def get_url_with_retry(
         logger = logging.getLogger(__name__)
 
     max_attempts = 4
-    backoff = 1.0  # backoff: 1.0s, 2.0s, 4.0s
+    backoff = 0.2  # backoff: 0.2s, 0.4s, 0.8s
     backoff_multiplier = 2.0
 
     for attempt in range(1, max_attempts + 1):
@@ -42,6 +43,16 @@ async def get_url_with_retry(
             response.raise_for_status()
             return response
         except Exception as e:
+            # Don't retry on 4xx client errors (except 429 Too Many Requests)
+            if isinstance(e, httpx.HTTPStatusError):
+                if (
+                    400 <= e.response.status_code < 500
+                    and e.response.status_code != 429
+                ):
+                    if raise_for_status:
+                        raise e
+
+                    return response
 
             if attempt < max_attempts:
                 # Sleep with exponential backoff before retrying
@@ -56,7 +67,10 @@ async def get_url_with_retry(
                 logger.error(
                     f"Failed to fetch URL '{url}' after {max_attempts} attempts: {e}"
                 )
-                raise e
+                if not isinstance(e, httpx.HTTPStatusError) or raise_for_status:
+                    raise e
+
+                return response
 
 
 async def get_presigned_url(
@@ -106,6 +120,7 @@ async def get_presigned_url(
     response = await get_url_with_retry(
         url=query_url,
         params=params,
+        raise_for_status=False,
         http_client=http_client,
         logger=logger,
     )

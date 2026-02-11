@@ -6,6 +6,7 @@ A BioEngine service for running Cellpose-SAM 4.0.7 inference and fine-tuning cel
 
 - **Inference**: Run cell segmentation on images using Cellpose-SAM
 - **Fine-tuning**: Train custom models on your annotated datasets
+- **Validation Metrics**: Per-epoch pixel-level metrics and end-of-training instance segmentation AP
 - **Model Export**: Export trained models to BioImage.IO format for sharing and reuse
 - **Async API**: Monitor training progress in real-time
 - **GPU-accelerated**: Optimized for fast inference and training
@@ -91,9 +92,10 @@ session_status = await cellpose_service.start_training(
     model="cpsam",
     n_epochs=10,
     n_samples=None,  # Use all matched samples
-    # Optional: specify test set
+    # Optional: specify test set for validation metrics
     test_images="images/test/*.ome.tif",
     test_annotations="annotations/test/*_mask.ome.tif",
+    validation_interval=1,  # Validate every epoch (default: every 10)
 )
 
 session_id = session_status["session_id"]
@@ -157,8 +159,9 @@ Run inference on images.
 - `flow_threshold` (float): Flow error threshold (default: 0.4)
 - `cellprob_threshold` (float): Cell probability threshold (default: 0.0)
 - `niter` (int, optional): Number of iterations for dynamics (None for auto)
+- `return_flows` (bool): If True, include flow fields in the output (default: False)
 
-**Returns:** List of dicts with `"output"` key containing segmentation masks
+**Returns:** List of dicts with `"output"` key containing segmentation masks (and `"flows"` if `return_flows=True`)
 
 ### `start_training()`
 
@@ -179,9 +182,10 @@ Start asynchronous model fine-tuning.
 - `n_samples` (int, optional): Limit number of samples to use
 - `learning_rate` (float): Learning rate (default: 1e-6)
 - `weight_decay` (float): Weight decay (default: 0.0001)
+- `min_train_masks` (int): Minimum number of masks per training batch (default: 5). Lower values speed up training.
 - `validation_interval` (int, optional): Epochs between validation evaluations. Always validates on the first epoch. Default (None) validates every 10 epochs. Set to 1 for every epoch. Requires `test_images` and `test_annotations`.
 
-**Returns:** Dict with `"session_id"` key
+**Returns:** Dict with `"session_id"` and initial `"status_type"`
 
 **Path Formats:**
 
@@ -205,7 +209,7 @@ Monitor training progress and retrieve training metrics with real-time updates.
 - `session_id` (str): Training session ID
 
 **Returns:** Dict with the following keys:
-- `status_type` (str): Status of the training ("waiting", "preparing", "running", "completed", "failed")
+- `status_type` (str): Status of the training ("waiting", "preparing", "running", "stopped", "completed", "failed", "unknown")
 - `message` (str): Human-readable status message
 - `dataset_artifact_id` (str): Training dataset artifact ID (e.g., "bioimage-io/your-dataset")
 - `train_losses` (list[float], optional): Per-epoch training loss values (updated in real-time)
@@ -218,6 +222,10 @@ Monitor training progress and retrieve training metrics with real-time updates.
 - `current_epoch` (int, optional): Current epoch number (1-indexed)
 - `total_epochs` (int, optional): Total number of epochs
 - `elapsed_seconds` (float, optional): Elapsed time since training started
+- `current_batch` (int, optional): Current batch number within epoch (0-indexed)
+- `total_batches` (int, optional): Total number of batches per epoch
+- `exported_artifact_id` (str, optional): Artifact ID if model has been exported
+- `model_modified` (bool, optional): Whether model was modified since last export
 
 **ValidationMetrics fields** (pixel-level binary foreground/background — NOT instance segmentation):
 - `pixel_accuracy` (float): (TP+TN) / total pixels
@@ -239,8 +247,8 @@ Export a trained model to BioImage.IO format for sharing and reuse.
 
 **Parameters:**
 - `session_id` (str): Training session ID of the model to export
-- `model_name` (str): Name for the exported model artifact
-- `collection` (str): Collection to save the model to (e.g., "bioimage-io/colab-annotations")
+- `model_name` (str, optional): Name for the exported model artifact (defaults to "cellpose-{session_id}")
+- `collection` (str): Collection to save the model to (default: "bioimage-io/colab-annotations")
 
 **Returns:** Dict with the following keys:
 - `artifact_id` (str): Full artifact ID (e.g., "bioimage-io/test-model-abc123")
@@ -317,11 +325,23 @@ for model in models:
     print(f"  Created: {model['created_at']}")
 ```
 
-### `list_pretrained_models()`
+### `stop_training()`
 
-Get available pretrained models.
+Stop an ongoing training session.
 
-**Returns:** List of model names (currently only ["cpsam"])
+**Parameters:**
+- `session_id` (str): Training session ID to stop
+
+**Returns:** Dict with current session status (status_type will be "stopped")
+
+### `list_training_sessions()`
+
+List all known training sessions with their status.
+
+**Parameters:**
+- `status_types` (list[str], optional): Filter by status types (e.g., ["running", "completed"]). If None, returns all sessions.
+
+**Returns:** Dict mapping session paths to their `SessionStatus` dicts
 
 ## Inference Parameters Guide
 
@@ -360,7 +380,7 @@ Before deploying, upload the latest application code to the artifact store:
 source .env
 python scripts/save_application.py \
     --directory "bioengine_apps/cellpose_finetuning" \
-    --server_url "https://hypha.aicell.io" \
+    --server-url "https://hypha.aicell.io" \
     --workspace "bioimage-io" \
     --token "$HYPHA_TOKEN"
 ```

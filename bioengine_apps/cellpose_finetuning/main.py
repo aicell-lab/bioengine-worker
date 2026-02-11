@@ -2766,9 +2766,11 @@ class CellposeFinetune:
             sessions[str(status_path)] = SessionStatus(
                 status_type=session_data.get("status_type"),
                 message=session_data.get("message"),
+                dataset_artifact_id=session_data.get("dataset_artifact_id"),
                 train_losses=session_data.get("train_losses"),
                 test_losses=session_data.get("test_losses"),
                 test_metrics=session_data.get("test_metrics"),
+                instance_metrics=session_data.get("instance_metrics"),
                 n_train=session_data.get("n_train"),
                 n_test=session_data.get("n_test"),
                 start_time=session_data.get("start_time"),

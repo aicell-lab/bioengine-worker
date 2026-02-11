@@ -29,8 +29,7 @@ Export a completed session (and optionally download cover):
         --export-collection 'ri-scale/ai-model-hub' \
         --download-cover
 
-If you deployed in your own workspace, the default service id is:
-  <your-workspace>/cellpose-finetuning
+The default service id is <your-workspace>/cellpose-finetuning.
 You can override with --service-id.
 """
 
@@ -340,9 +339,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--service-id",
         default=None,
-        help="Override service id (default: <workspace>/cellpose-finetuning-test)",
+        help="Override service id (default: <workspace>/cellpose-finetuning)",
     )
-    p.add_argument("--application-id", default="cellpose-finetuning-test")
+    p.add_argument("--application-id", default="cellpose-finetuning")
 
     p.add_argument(
         "--session",

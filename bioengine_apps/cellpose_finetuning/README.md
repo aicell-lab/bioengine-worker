@@ -120,6 +120,12 @@ while True:
         if losses:
             msg += f" | Train Loss: {losses[-1]:.4f}"
 
+    # Add validation metrics if available
+    if "test_metrics" in status and status["test_metrics"]:
+        last_metrics = next((m for m in reversed(status["test_metrics"]) if m), None)
+        if last_metrics:
+            msg += f" | Val F1: {last_metrics['f1']:.4f}, IoU: {last_metrics['iou']:.4f}"
+
     print(msg)
 
     if status["status_type"] in ("completed", "failed"):
@@ -203,12 +209,20 @@ Monitor training progress and retrieve training metrics with real-time updates.
 - `dataset_artifact_id` (str): Training dataset artifact ID (e.g., "bioimage-io/your-dataset")
 - `train_losses` (list[float], optional): Per-epoch training loss values (updated in real-time)
 - `test_losses` (list[float], optional): Per-epoch test loss values (computed periodically)
+- `test_metrics` (list[ValidationMetrics | None], optional): Per-epoch validation metrics (computed at epoch 0 and every 10 epochs)
 - `n_train` (int, optional): Number of training samples
 - `n_test` (int, optional): Number of test samples
 - `start_time` (str, optional): Training start time in ISO 8601 format
 - `current_epoch` (int, optional): Current epoch number (1-indexed)
 - `total_epochs` (int, optional): Total number of epochs
 - `elapsed_seconds` (float, optional): Elapsed time since training started
+
+**ValidationMetrics fields:**
+- `pixel_accuracy` (float): Proportion of correctly classified pixels
+- `precision` (float): True positives / (true positives + false positives)
+- `recall` (float): True positives / (true positives + false negatives)
+- `f1` (float): Harmonic mean of precision and recall
+- `iou` (float): Intersection over union
 
 ### `export_model()`
 
@@ -347,6 +361,11 @@ python scripts/save_application.py \
 ```bash
 source .env
 python bioengine_apps/cellpose_finetuning/scripts/deploy_cellpose.py
+
+# Deploy to a test target instead:
+python bioengine_apps/cellpose_finetuning/scripts/deploy_cellpose.py \
+    --artifact-id bioimage-io/cellpose-finetuning-test \
+    --application-id cellpose-finetuning-test
 ```
 
 This calls `run_application()` with `hypha_token=token`, which injects `HYPHA_TOKEN` into the Ray worker's environment as a secret env var. The token is required for the service to access artifacts (datasets and models) on behalf of users.
@@ -356,6 +375,11 @@ This calls `run_application()` with `hypha_token=token`, which injects `HYPHA_TO
 ```bash
 source .env
 python bioengine_apps/cellpose_finetuning/scripts/redeploy_cellpose.py
+
+# Redeploy a test target instead:
+python bioengine_apps/cellpose_finetuning/scripts/redeploy_cellpose.py \
+    --artifact-id bioimage-io/cellpose-finetuning-test \
+    --application-id cellpose-finetuning-test
 ```
 
 This stops the existing deployment and starts a fresh one with the latest artifact code and a new token.
@@ -378,46 +402,38 @@ Ensure `.env` contains only one `HYPHA_TOKEN` entry. If there are duplicates, th
 
 ## Example Scripts
 
-This repository includes several example scripts:
+This repository includes several example scripts in `bioengine_apps/cellpose_finetuning/scripts/`:
 
-- **`scripts/test_single_image.py`**: Run inference on a single image from URL
-- **`scripts/test_service.py`**: Full workflow including training, inference, and model export with metrics display (quick test with 2 samples, 1 epoch)
-- **`scripts/test_export_e2e.py`**: End-to-end test of model export with validation (trains, exports, and verifies all files)
-- **`scripts/train_realistic.py`**: Realistic long-running training with all samples and comprehensive progress tracking
-- **`scripts/test_callbacks.py`**: Test real-time epoch callbacks with 5 epochs
-- **`scripts/check_status.py`**: Check training status and view metrics for a session
+- **`deploy_cellpose.py`**: First-time deployment of the service
+- **`redeploy_cellpose.py`**: Stop and redeploy the service with updated code/token
+- **`test_service.py`**: Full workflow (training, monitoring, inference, export) with argparse
+- **`test_dataset_artifact_id.py`**: Verify `dataset_artifact_id` is returned in training status
 
 Run them with:
 
 ```bash
-# Set your Hypha token
-export HYPHA_TOKEN="your-token-here"
+source .env
 
-# Test single image inference
-python scripts/test_single_image.py
-
-# Quick test training workflow with export (2 samples, 1 epoch)
-python scripts/test_service.py
-
-# End-to-end export test (trains and validates export)
-python scripts/test_export_e2e.py
-
-# Realistic training with all samples (default: 50 epochs)
-python scripts/train_realistic.py --epochs 50
-
-# Customize training parameters
-python scripts/train_realistic.py \
-    --artifact "your-workspace/your-dataset" \
-    --train-images "*.tif" \
-    --train-annotations "annotations/*_mask.tif" \
-    --epochs 100 \
-    --learning-rate 1e-6
+# Full training + inference test
+python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
+    --dataset-artifact ri-scale/zarr-demo \
+    --train-images 'images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif' \
+    --train-annotations 'annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif' \
+    --n-epochs 5
 
 # Resume monitoring an existing training session
-python scripts/train_realistic.py --session <session_id>
+python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
+    --dataset-artifact ri-scale/zarr-demo \
+    --train-images 'images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif' \
+    --train-annotations 'annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif' \
+    --session <session-id>
 
-# Check status of a training session
-python scripts/check_status.py <session_id>
+# Export a completed model
+python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
+    --dataset-artifact ri-scale/zarr-demo \
+    --train-images 'images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif' \
+    --train-annotations 'annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif' \
+    --session <session-id> --export --download-cover
 ```
 
 ## Real-Time Training Progress

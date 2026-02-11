@@ -339,6 +339,14 @@ python scripts/test_single_image.py
 # Quick test training workflow with export (2 samples, 1 epoch)
 python scripts/test_service.py
 
+# Example with custom dataset pattern matching
+python scripts/test_service.py \
+  --dataset-artifact ri-scale/zarr-demo \
+  --train-images "images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif" \
+  --train-annotations "annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif" \
+  --service-id bioimage-io/cellpose-finetuning \
+  --application-id cellpose-finetuning
+
 # End-to-end export test (trains and validates export)
 python scripts/test_export_e2e.py
 

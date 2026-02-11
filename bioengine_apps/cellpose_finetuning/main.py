@@ -256,6 +256,7 @@ class TrainingParams(TypedDict):
     n_samples: int | None
     session_id: str
     min_train_masks: int
+    validation_interval: int | None
 
 
 class DatasetSplit(TypedDict):
@@ -379,17 +380,33 @@ class PredictionItemModel(TypedDict, total=False):
 
 
 class ValidationMetrics(TypedDict, total=False):
-    """Validation performance metrics for a segmentation foreground mask.
+    """Pixel-level binary foreground/background validation metrics.
 
-    Metrics are computed on Cellpose's cell-probability channel as a binary
-    foreground/background classification problem.
+    These metrics evaluate how well the model predicts *foreground pixels*
+    (cell vs. background) on Cellpose's cell-probability channel.  They are
+    NOT instance segmentation metrics -- a high IoU here does NOT mean
+    individual cells are correctly separated.  All values are in [0, 1].
     """
 
-    pixel_accuracy: float
-    precision: float
-    recall: float
-    f1: float
-    iou: float
+    pixel_accuracy: float  # (TP+TN) / total pixels
+    precision: float  # TP / (TP+FP) — fraction of predicted foreground that is correct
+    recall: float  # TP / (TP+FN) — fraction of true foreground that is detected
+    f1: float  # harmonic mean of precision and recall (same as Dice coefficient)
+    iou: float  # TP / (TP+FP+FN) — Jaccard index on binary foreground mask
+
+
+class InstanceMetrics(TypedDict, total=False):
+    """Instance segmentation metrics computed by matching predicted cells to ground truth.
+
+    Uses Cellpose's ``metrics.average_precision`` with Hungarian matching.
+    Computed at end of training by running full inference on the test set.
+    """
+
+    ap_0_5: float  # average precision at IoU >= 0.5
+    ap_0_75: float  # average precision at IoU >= 0.75
+    ap_0_9: float  # average precision at IoU >= 0.9
+    n_true: int  # total ground-truth instances in test set
+    n_pred: int  # total predicted instances in test set
 
 
 class SessionStatus(TypedDict, total=False):
@@ -399,8 +416,9 @@ class SessionStatus(TypedDict, total=False):
     message: str
     dataset_artifact_id: str  # Training dataset artifact ID
     train_losses: list[float]
-    test_losses: list[float]
+    test_losses: list[float | None]  # None for epochs where validation was skipped
     test_metrics: list[ValidationMetrics | None]
+    instance_metrics: InstanceMetrics | None  # Computed at end of training on test set
     n_train: int  # Number of training samples
     n_test: int  # Number of test samples
     start_time: str  # Training start time (ISO format)
@@ -425,8 +443,9 @@ class SessionStatusWithId(TypedDict, total=False):
     message: str
     dataset_artifact_id: str
     train_losses: list[float]
-    test_losses: list[float]
+    test_losses: list[float | None]
     test_metrics: list[ValidationMetrics | None]
+    instance_metrics: InstanceMetrics | None
     n_train: int
     n_test: int
     start_time: str
@@ -572,8 +591,9 @@ def update_status(
     message: str,
     dataset_artifact_id: str | None = None,
     train_losses: list[float] | None = None,
-    test_losses: list[float] | None = None,
+    test_losses: list[float | None] | None = None,
     test_metrics: list[ValidationMetrics | None] | None = None,
+    instance_metrics: InstanceMetrics | None = None,
     n_train: int | None = None,
     n_test: int | None = None,
     start_time: str | None = None,
@@ -608,6 +628,8 @@ def update_status(
         status_dict["test_losses"] = test_losses
     if test_metrics is not None:
         status_dict["test_metrics"] = test_metrics
+    if instance_metrics is not None:
+        status_dict["instance_metrics"] = instance_metrics
     if n_train is not None:
         status_dict["n_train"] = n_train
     if n_test is not None:
@@ -767,7 +789,8 @@ def train_seg_with_callbacks(
     class_weights: npt.NDArray[Any] | None = None,
     epoch_callback: Any = None,
     batch_callback: Any = None,
-) -> tuple[Path, npt.NDArray[Any], npt.NDArray[Any]]:
+    validation_interval: int | None = None,
+) -> tuple[Path, npt.NDArray[Any], list[float | None]]:
     """
     Train the network with images for segmentation (with epoch and batch callbacks).
 
@@ -919,7 +942,9 @@ def train_seg_with_callbacks(
     train_logger.info(f">>> saving model to {filename}")
 
     lavg, nsum = 0, 0
-    train_losses, test_losses = np.zeros(n_epochs), np.zeros(n_epochs)
+    train_losses = np.zeros(n_epochs)
+    test_losses: list[float | None] = [None] * n_epochs
+    _val_every = validation_interval if validation_interval is not None else 10
 
     for iepoch in range(n_epochs):
         np.random.seed(iepoch)
@@ -1006,9 +1031,8 @@ def train_seg_with_callbacks(
         # Compute test loss if appropriate
         lavgt = 0.0
         val_metrics: ValidationMetrics | None = None
-        # Validate at epoch 0 (first epoch), and then every 10 epochs (10, 20, 30...)
-        # iepoch is 0-indexed, so iepoch=9 corresponds to Epoch 10.
-        if iepoch == 0 or (iepoch + 1) % 10 == 0:
+        # Validate at first epoch and then every _val_every epochs
+        if iepoch == 0 or (iepoch + 1) % _val_every == 0:
             if test_data is not None or test_files is not None:
                 np.random.seed(42)
                 if nimg_test_val != nimg_test_per_epoch_val:
@@ -1150,7 +1174,7 @@ def train_seg_with_callbacks(
         if epoch_callback is not None:
             elapsed = time.time() - t0
             epoch_callback(
-                iepoch + 1, train_losses[iepoch], lavgt, elapsed, val_metrics
+                iepoch + 1, train_losses[iepoch], test_losses[iepoch], elapsed, val_metrics
             )
 
     # Save final model only (no intermediate snapshots)
@@ -1203,7 +1227,7 @@ def run_blocking_task(
 
     # Lists to accumulate training metrics during epoch callbacks
     accumulated_train_losses: list[float] = []
-    accumulated_test_losses: list[float] = []
+    accumulated_test_losses: list[float | None] = []
     accumulated_test_metrics: list[ValidationMetrics | None] = []
 
     # Define batch callback for within-epoch progress updates
@@ -1256,7 +1280,7 @@ def run_blocking_task(
     def epoch_callback(
         epoch: int,
         train_loss: float,
-        test_loss: float,
+        test_loss: float | None,
         elapsed_seconds: float,
         test_metrics: ValidationMetrics | None,
     ) -> None:
@@ -1293,6 +1317,7 @@ def run_blocking_task(
             min_train_masks=training_params["min_train_masks"],
             epoch_callback=epoch_callback,
             batch_callback=batch_callback,
+            validation_interval=training_params["validation_interval"],
         )
     except Exception as e:
         elapsed = time.time() - t0
@@ -1318,9 +1343,8 @@ def run_blocking_task(
     train_losses_list = (
         train_losses.tolist() if hasattr(train_losses, "tolist") else list(train_losses)
     )
-    test_losses_list = (
-        test_losses.tolist() if hasattr(test_losses, "tolist") else list(test_losses)
-    )
+    # test_losses is already list[float | None]
+    test_losses_list: list[float | None] = list(test_losses)
 
     # Check if we're continuing from a previous session and inherit training history
     model_param = training_params["model"]
@@ -1357,6 +1381,82 @@ def run_blocking_task(
     # Count actual completed epochs (non-zero losses)
     completed_epochs = len([loss for loss in train_losses_list if loss > 0])
 
+    # Compute instance segmentation metrics on test set if test data was provided
+    final_instance_metrics: InstanceMetrics | None = None
+    if dataset_split["test_files"] is not None and dataset_split["test_labels_files"] is not None:
+        try:
+            from cellpose import metrics as cp_metrics
+            from tifffile import imread as tiff_imread
+
+            logger.info("Session %s: Computing instance segmentation metrics on test set...", session_id)
+            update_status(
+                session_id,
+                StatusType.RUNNING,
+                "Computing instance segmentation metrics on test set...",
+                train_losses=train_losses_list,
+                test_losses=test_losses_list,
+                test_metrics=accumulated_test_metrics.copy(),
+                n_train=n_train,
+                n_test=n_test,
+                start_time=start_time_str,
+                current_epoch=completed_epochs,
+                total_epochs=training_params["n_epochs"],
+                elapsed_seconds=time.time() - t0,
+            )
+
+            # Run full Cellpose eval on each test image
+            masks_true_all: list[npt.NDArray[Any]] = []
+            masks_pred_all: list[npt.NDArray[Any]] = []
+
+            for img_path, lbl_path in zip(
+                dataset_split["test_files"],
+                dataset_split["test_labels_files"],
+            ):
+                img = tiff_imread(img_path)
+                lbl = tiff_imread(lbl_path)
+
+                # Run inference with the trained model
+                mask_pred = cellpose_model.eval(
+                    ensure_3_channels(img),
+                    channels=[0, 0],
+                    channel_axis=0,
+                )[0]
+
+                masks_true_all.append(lbl.astype(np.int32))
+                masks_pred_all.append(mask_pred.astype(np.int32))
+
+            # Compute average precision at standard IoU thresholds
+            thresholds = [0.5, 0.75, 0.9]
+            ap, _tp, _fp, _fn = cp_metrics.average_precision(
+                masks_true_all, masks_pred_all, threshold=thresholds,
+            )
+            # ap shape: (n_images, n_thresholds) — average across images
+            mean_ap = np.nanmean(ap, axis=0)
+
+            n_true_total = sum(int(m.max()) for m in masks_true_all)
+            n_pred_total = sum(int(m.max()) for m in masks_pred_all)
+
+            final_instance_metrics = InstanceMetrics(
+                ap_0_5=round(float(mean_ap[0]), 4),
+                ap_0_75=round(float(mean_ap[1]), 4),
+                ap_0_9=round(float(mean_ap[2]), 4),
+                n_true=n_true_total,
+                n_pred=n_pred_total,
+            )
+            logger.info(
+                "Session %s: Instance metrics — AP@0.5=%.4f, AP@0.75=%.4f, AP@0.9=%.4f "
+                "(n_true=%d, n_pred=%d)",
+                session_id,
+                mean_ap[0], mean_ap[1], mean_ap[2],
+                n_true_total, n_pred_total,
+            )
+        except Exception as e:
+            logger.warning(
+                "Session %s: Could not compute instance metrics: %s",
+                session_id,
+                str(e),
+            )
+
     update_status(
         session_id,
         StatusType.COMPLETED,
@@ -1364,6 +1464,7 @@ def run_blocking_task(
         train_losses=train_losses_list,
         test_losses=test_losses_list,
         test_metrics=accumulated_test_metrics.copy(),
+        instance_metrics=final_instance_metrics,
         n_train=n_train,
         n_test=n_test,
         start_time=start_time_str,
@@ -2432,13 +2533,19 @@ class CellposeFinetune:
         ),
         test_images: str | None = Field(
             None,
-            description=("Optional path to test images. Same format as train_images."),
+            description=(
+                "Optional path to test images. Same format as train_images. "
+                "Providing test data enables per-epoch pixel-level validation "
+                "metrics and end-of-training instance segmentation metrics "
+                "(AP@0.5/0.75/0.9)."
+            ),
             examples=["images/test/", "images/test/*.ome.tif"],
         ),
         test_annotations: str | None = Field(
             None,
             description=(
-                "Optional path to test annotations. Same format as train_annotations."
+                "Optional path to test annotations (label masks). Same format as "
+                "train_annotations. Required together with test_images."
             ),
             examples=["annotations/test/", "annotations/test/*_mask.ome.tif"],
         ),
@@ -2470,6 +2577,14 @@ class CellposeFinetune:
                 "Minimum number of masks per training batch. Lower values speed up "
                 "training, useful for quick testing with large sample sets. "
                 "Cellpose default is 5."
+            ),
+        ),
+        validation_interval: int | None = Field(
+            None,
+            description=(
+                "Epochs between validation evaluations. Always validates on the "
+                "first epoch. Default (None) validates every 10 epochs. Set to 1 "
+                "for every epoch. Requires test_images and test_annotations."
             ),
         ),
     ) -> SessionStatusWithId:
@@ -2508,6 +2623,7 @@ class CellposeFinetune:
             n_samples=n_samples,
             session_id=session_id,
             min_train_masks=min_train_masks,
+            validation_interval=validation_interval,
         )
 
         # Save training parameters for later export

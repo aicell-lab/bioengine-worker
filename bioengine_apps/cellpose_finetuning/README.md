@@ -116,7 +116,7 @@ while True:
 
     # Add latest training loss if available
     if "train_losses" in status and status["train_losses"]:
-        losses = [l for l in status["train_losses"] if l > 0]
+        losses = [l for l in status["train_losses"] if l is not None and l > 0]
         if losses:
             msg += f" | Train Loss: {losses[-1]:.4f}"
 
@@ -172,13 +172,14 @@ Start asynchronous model fine-tuning.
 - `train_annotations` (str): **Required** - Path to training annotations. Can be:
   - Folder path ending with '/': `"annotations/folder/"` (assumes same filenames as images)
   - Path pattern with wildcard: `"annotations/folder/*_mask.ome.tif"`
-- `test_images` (str, optional): Optional test images path (same format as train_images)
-- `test_annotations` (str, optional): Optional test annotations path (same format as train_annotations)
+- `test_images` (str, optional): Optional test images path (same format as train_images). Providing test data enables per-epoch pixel-level validation metrics and end-of-training instance segmentation metrics (AP@0.5/0.75/0.9).
+- `test_annotations` (str, optional): Optional test annotations (label masks). Required together with `test_images`.
 - `model` (str): Pretrained model to start from (default: "cpsam")
 - `n_epochs` (int): Number of training epochs (default: 10)
 - `n_samples` (int, optional): Limit number of samples to use
 - `learning_rate` (float): Learning rate (default: 1e-6)
 - `weight_decay` (float): Weight decay (default: 0.0001)
+- `validation_interval` (int, optional): Epochs between validation evaluations. Always validates on the first epoch. Default (None) validates every 10 epochs. Set to 1 for every epoch. Requires `test_images` and `test_annotations`.
 
 **Returns:** Dict with `"session_id"` key
 
@@ -208,8 +209,9 @@ Monitor training progress and retrieve training metrics with real-time updates.
 - `message` (str): Human-readable status message
 - `dataset_artifact_id` (str): Training dataset artifact ID (e.g., "bioimage-io/your-dataset")
 - `train_losses` (list[float], optional): Per-epoch training loss values (updated in real-time)
-- `test_losses` (list[float], optional): Per-epoch test loss values (computed periodically)
-- `test_metrics` (list[ValidationMetrics | None], optional): Per-epoch validation metrics (computed at epoch 0 and every 10 epochs)
+- `test_losses` (list[float | None], optional): Per-epoch test loss values. `None` for epochs where validation was skipped.
+- `test_metrics` (list[ValidationMetrics | None], optional): Per-epoch pixel-level validation metrics. `None` for epochs where validation was skipped. Controlled by `validation_interval`.
+- `instance_metrics` (InstanceMetrics | None, optional): Instance segmentation metrics computed at the end of training by running full Cellpose inference on the test set. Only present when test data was provided.
 - `n_train` (int, optional): Number of training samples
 - `n_test` (int, optional): Number of test samples
 - `start_time` (str, optional): Training start time in ISO 8601 format
@@ -217,12 +219,19 @@ Monitor training progress and retrieve training metrics with real-time updates.
 - `total_epochs` (int, optional): Total number of epochs
 - `elapsed_seconds` (float, optional): Elapsed time since training started
 
-**ValidationMetrics fields:**
-- `pixel_accuracy` (float): Proportion of correctly classified pixels
-- `precision` (float): True positives / (true positives + false positives)
-- `recall` (float): True positives / (true positives + false negatives)
-- `f1` (float): Harmonic mean of precision and recall
-- `iou` (float): Intersection over union
+**ValidationMetrics fields** (pixel-level binary foreground/background — NOT instance segmentation):
+- `pixel_accuracy` (float): (TP+TN) / total pixels
+- `precision` (float): TP / (TP+FP) — fraction of predicted foreground that is correct
+- `recall` (float): TP / (TP+FN) — fraction of true foreground that is detected
+- `f1` (float): Harmonic mean of precision and recall (same as Dice coefficient)
+- `iou` (float): TP / (TP+FP+FN) — Jaccard index on binary foreground mask
+
+**InstanceMetrics fields** (computed at end of training using Hungarian matching):
+- `ap_0_5` (float): Average precision at IoU >= 0.5
+- `ap_0_75` (float): Average precision at IoU >= 0.75
+- `ap_0_9` (float): Average precision at IoU >= 0.9
+- `n_true` (int): Total ground-truth instances in test set
+- `n_pred` (int): Total predicted instances in test set
 
 ### `export_model()`
 
@@ -414,12 +423,14 @@ Run them with:
 ```bash
 source .env
 
-# Full training + inference test
+# Full training + inference test (with validation every epoch)
 python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
     --dataset-artifact ri-scale/zarr-demo \
     --train-images 'images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif' \
     --train-annotations 'annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif' \
-    --n-epochs 5
+    --test-images 'images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif' \
+    --test-annotations 'annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif' \
+    --n-epochs 5 --validation-interval 1
 
 # Resume monitoring an existing training session
 python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
@@ -469,6 +480,17 @@ if "train_losses" in status and status["train_losses"]:
     if valid_losses:
         print(f"Latest training loss: {valid_losses[-1]:.4f}")
         print(f"Initial loss: {valid_losses[0]:.4f}")
+
+    # test_losses uses None for skipped epochs
+    valid_test = [l for l in test_losses if l is not None]
+    if valid_test:
+        print(f"Latest val loss: {valid_test[-1]:.4f}")
+
+# Instance metrics (computed at end of training)
+if status.get("instance_metrics"):
+    im = status["instance_metrics"]
+    print(f"AP@0.5={im['ap_0_5']}, AP@0.75={im['ap_0_75']}, AP@0.9={im['ap_0_9']}")
+    print(f"Ground-truth cells: {im['n_true']}, Predicted cells: {im['n_pred']}")
 ```
 
 ## Tutorial Notebook

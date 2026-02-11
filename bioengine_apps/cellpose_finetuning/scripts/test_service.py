@@ -166,7 +166,7 @@ def write_training_metrics_file(
     *,
     session_id: str,
     train_losses: list[float],
-    test_losses: list[float] | None,
+    test_losses: list[float | None] | None,
     test_metrics: list[dict] | None,
 ) -> str:
     """Write per-epoch losses/metrics to a TSV file.
@@ -198,12 +198,12 @@ def write_training_metrics_file(
     with open(metrics_path, "w", encoding="utf-8") as f:
         f.write("\t".join(headers) + "\n")
         for epoch_index, train_loss in enumerate(train_losses, start=1):
-            # Validation loss can be missing or 0 for epochs without evaluation.
+            # Validation loss is None for epochs without evaluation.
             val_loss_str = "N/A"
             if test_losses is not None and (epoch_index - 1) < len(test_losses):
-                candidate = float(test_losses[epoch_index - 1])
-                if candidate > 0:
-                    val_loss_str = str(candidate)
+                candidate = test_losses[epoch_index - 1]
+                if candidate is not None:
+                    val_loss_str = str(float(candidate))
 
             m = _metric_at(epoch_index - 1)
             row = [
@@ -250,7 +250,7 @@ async def monitor_training(
                 msg_parts.append(f"| Train Loss: {losses[-1]:.4f}")
 
         if status.get("test_losses"):
-            losses = [float(loss) for loss in status["test_losses"] if float(loss) > 0]
+            losses = [float(loss) for loss in status["test_losses"] if loss is not None]
             if losses:
                 msg_parts.append(f"| Val Loss: {losses[-1]:.4f}")
 
@@ -263,8 +263,26 @@ async def monitor_training(
         message = f"\r{' '.join(msg_parts)}"
         print(message, end="")  # noqa: T201
 
+        if status.get("instance_metrics"):
+            im = status["instance_metrics"]
+            msg_parts.append(
+                f"| Instance AP@0.5={im.get('ap_0_5', 0):.4f}"
+            )
+
         if status.get("status_type") in ("completed", "failed"):
             print()  # noqa: T201
+
+            # Print instance metrics summary if available
+            if status.get("instance_metrics"):
+                im = status["instance_metrics"]
+                print(  # noqa: T201
+                    f"Instance segmentation metrics: "
+                    f"AP@0.5={im.get('ap_0_5', 'N/A')}, "
+                    f"AP@0.75={im.get('ap_0_75', 'N/A')}, "
+                    f"AP@0.9={im.get('ap_0_9', 'N/A')}, "
+                    f"n_true={im.get('n_true', 'N/A')}, "
+                    f"n_pred={im.get('n_pred', 'N/A')}"
+                )
 
             # Ported behavior: write per-epoch metrics to a file on completion.
             if status.get("status_type") == "completed" and status.get("train_losses"):
@@ -305,18 +323,22 @@ async def start_training(
     n_samples: int | None,
     learning_rate: float,
     min_train_masks: int,
+    validation_interval: int | None,
 ) -> str:
-    session_status = await cellpose_service.start_training(
-        artifact=dataset_artifact,
-        train_images=train_images,
-        train_annotations=train_annotations,
-        test_images=test_images,
-        test_annotations=test_annotations,
-        n_epochs=n_epochs,
-        learning_rate=learning_rate,
-        n_samples=n_samples,
-        min_train_masks=min_train_masks,
-    )
+    kwargs: dict = {
+        "artifact": dataset_artifact,
+        "train_images": train_images,
+        "train_annotations": train_annotations,
+        "test_images": test_images,
+        "test_annotations": test_annotations,
+        "n_epochs": n_epochs,
+        "learning_rate": learning_rate,
+        "n_samples": n_samples,
+        "min_train_masks": min_train_masks,
+    }
+    if validation_interval is not None:
+        kwargs["validation_interval"] = validation_interval
+    session_status = await cellpose_service.start_training(**kwargs)
     session_id = session_status["session_id"]
     logger.info("Started training session: %s", session_id)
     return session_id
@@ -362,6 +384,12 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--n-samples", type=int, default=None)
     p.add_argument("--learning-rate", type=float, default=1e-5)
     p.add_argument("--min-train-masks", type=int, default=5)
+    p.add_argument(
+        "--validation-interval",
+        type=int,
+        default=None,
+        help="Epochs between validation evaluations (default: every 10 epochs). Set to 1 for every epoch.",
+    )
     p.add_argument("--poll-s", type=float, default=0.3)
 
     p.add_argument(
@@ -442,6 +470,7 @@ async def main() -> None:
                 n_samples=args.n_samples,
                 learning_rate=args.learning_rate,
                 min_train_masks=args.min_train_masks,
+                validation_interval=args.validation_interval,
             )
 
         final_status = await monitor_training(

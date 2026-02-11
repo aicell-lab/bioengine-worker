@@ -378,6 +378,7 @@ class SessionStatus(TypedDict, total=False):
 
     status_type: StatusType
     message: str
+    dataset_artifact_id: str  # Training dataset artifact ID
     train_losses: list[float]
     test_losses: list[float]
     n_train: int  # Number of training samples
@@ -513,6 +514,7 @@ def update_status(
     session_id: str,
     status_type: StatusType,
     message: str,
+    dataset_artifact_id: str | None = None,
     train_losses: list[float] | None = None,
     test_losses: list[float] | None = None,
     n_train: int | None = None,
@@ -526,35 +528,45 @@ def update_status(
 ) -> None:
     """Update the status of a training session."""
     status_path = get_status_path(session_id)
-    with status_path.open(
-        "w",
-        encoding="utf-8",
-    ) as f:
-        status_dict: SessionStatus = {
-            "status_type": status_type,
-            "message": message,
-        }
-        if train_losses is not None:
-            status_dict["train_losses"] = train_losses
-        if test_losses is not None:
-            status_dict["test_losses"] = test_losses
-        if n_train is not None:
-            status_dict["n_train"] = n_train
-        if n_test is not None:
-            status_dict["n_test"] = n_test
-        if start_time is not None:
-            status_dict["start_time"] = start_time
-        if current_epoch is not None:
-            status_dict["current_epoch"] = current_epoch
-        if total_epochs is not None:
-            status_dict["total_epochs"] = total_epochs
-        if elapsed_seconds is not None:
-            status_dict["elapsed_seconds"] = elapsed_seconds
-        if current_batch is not None:
-            status_dict["current_batch"] = current_batch
-        if total_batches is not None:
-            status_dict["total_batches"] = total_batches
 
+    # Read existing status to preserve fields not being updated
+    existing_status: SessionStatus = {}
+    if status_path.exists():
+        with status_path.open("r", encoding="utf-8") as f:
+            try:
+                existing_status = json.load(f)
+            except json.JSONDecodeError:
+                pass  # If file is corrupt, start fresh
+
+    # Start with existing status, then update with new values
+    status_dict: SessionStatus = {**existing_status}
+    status_dict["status_type"] = status_type
+    status_dict["message"] = message
+
+    if dataset_artifact_id is not None:
+        status_dict["dataset_artifact_id"] = dataset_artifact_id
+    if train_losses is not None:
+        status_dict["train_losses"] = train_losses
+    if test_losses is not None:
+        status_dict["test_losses"] = test_losses
+    if n_train is not None:
+        status_dict["n_train"] = n_train
+    if n_test is not None:
+        status_dict["n_test"] = n_test
+    if start_time is not None:
+        status_dict["start_time"] = start_time
+    if current_epoch is not None:
+        status_dict["current_epoch"] = current_epoch
+    if total_epochs is not None:
+        status_dict["total_epochs"] = total_epochs
+    if elapsed_seconds is not None:
+        status_dict["elapsed_seconds"] = elapsed_seconds
+    if current_batch is not None:
+        status_dict["current_batch"] = current_batch
+    if total_batches is not None:
+        status_dict["total_batches"] = total_batches
+
+    with status_path.open("w", encoding="utf-8") as f:
         status = json.dumps(status_dict)
         f.write(status)
 
@@ -1051,6 +1063,36 @@ def run_blocking_task(
     # Convert numpy arrays to lists for JSON serialization
     train_losses_list = train_losses.tolist() if hasattr(train_losses, "tolist") else list(train_losses)
     test_losses_list = test_losses.tolist() if hasattr(test_losses, "tolist") else list(test_losses)
+
+    # Check if we're continuing from a previous session and inherit training history
+    model_param = training_params["model"]
+    if isinstance(model_param, Path):
+        # Model is from a previous session - load and append to previous history
+        previous_session_id = model_param.parent.name
+        previous_status_path = get_status_path(previous_session_id)
+        if previous_status_path.exists():
+            try:
+                with previous_status_path.open("r", encoding="utf-8") as f:
+                    previous_status = json.load(f)
+                    previous_train_losses = previous_status.get("train_losses", [])
+                    previous_test_losses = previous_status.get("test_losses", [])
+
+                    # Append new losses to previous history
+                    train_losses_list = previous_train_losses + train_losses_list
+                    test_losses_list = previous_test_losses + test_losses_list
+
+                    logger.info(
+                        "Session %s: Inherited %d epochs of training history from session %s",
+                        session_id,
+                        len(previous_train_losses),
+                        previous_session_id,
+                    )
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.warning(
+                    "Session %s: Could not load previous training history: %s",
+                    session_id,
+                    str(e),
+                )
 
     # Count actual completed epochs (non-zero losses)
     completed_epochs = len([loss for loss in train_losses_list if loss > 0])
@@ -2153,6 +2195,7 @@ class CellposeFinetune:
             session_id=session_id,
             status_type=StatusType.PREPARING,
             message="Preparing for training...",
+            dataset_artifact_id=artifact_id,
         )
 
         training_params = TrainingParams(

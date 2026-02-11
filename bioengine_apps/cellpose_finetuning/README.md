@@ -200,6 +200,7 @@ Monitor training progress and retrieve training metrics with real-time updates.
 **Returns:** Dict with the following keys:
 - `status_type` (str): Status of the training ("waiting", "preparing", "running", "completed", "failed")
 - `message` (str): Human-readable status message
+- `dataset_artifact_id` (str): Training dataset artifact ID (e.g., "bioimage-io/your-dataset")
 - `train_losses` (list[float], optional): Per-epoch training loss values (updated in real-time)
 - `test_losses` (list[float], optional): Per-epoch test loss values (computed periodically)
 - `n_train` (int, optional): Number of training samples
@@ -315,6 +316,65 @@ Get available pretrained models.
 - **Higher values** (e.g., 250): Better convergence, recommended for HuggingFace-quality results
 - **None/0**: Auto-set based on diameter
 - **Recommended**: 250 for best results
+
+## Deploying the Service
+
+The cellpose fine-tuning service runs as a Ray Serve deployment on BioEngine. To deploy or redeploy it, you need a valid `HYPHA_TOKEN` with `bioimage-io` workspace access.
+
+### Prerequisites
+
+1. A valid Hypha token with read/write access to the `bioimage-io` workspace. Generate one from [hypha.aicell.io](https://hypha.aicell.io/).
+2. Store the token in `.env` at the repository root:
+   ```
+   HYPHA_TOKEN=eyJhbG...your_token_here
+   ```
+
+### Upload the Application Code
+
+Before deploying, upload the latest application code to the artifact store:
+
+```bash
+source .env
+python scripts/save_application.py \
+    --directory "bioengine_apps/cellpose_finetuning" \
+    --server_url "https://hypha.aicell.io" \
+    --workspace "bioimage-io" \
+    --token "$HYPHA_TOKEN"
+```
+
+### Deploy (First Time)
+
+```bash
+source .env
+python bioengine_apps/cellpose_finetuning/scripts/deploy_cellpose.py
+```
+
+This calls `run_application()` with `hypha_token=token`, which injects `HYPHA_TOKEN` into the Ray worker's environment as a secret env var. The token is required for the service to access artifacts (datasets and models) on behalf of users.
+
+### Redeploy (Update Running Service)
+
+```bash
+source .env
+python bioengine_apps/cellpose_finetuning/scripts/redeploy_cellpose.py
+```
+
+This stops the existing deployment and starts a fresh one with the latest artifact code and a new token.
+
+### When to Redeploy
+
+You must redeploy the service when:
+- **The token expires**: The `HYPHA_TOKEN` baked into the Ray worker at deploy time has a fixed expiry. If training fails with `HYPHA_TOKEN environment variable is not set`, the token has likely expired. Generate a fresh token, update `.env`, and redeploy.
+- **Code changes**: After updating `main.py` or other files, upload the new code with `save_application.py` and then redeploy.
+
+### Troubleshooting
+
+**"HYPHA_TOKEN environment variable is not set" during training**
+
+This error occurs on the server side (Ray worker), not locally. It means the token passed at deploy time is missing or expired. Fix by redeploying with a fresh token.
+
+**Multiple tokens in `.env`**
+
+Ensure `.env` contains only one `HYPHA_TOKEN` entry. If there are duplicates, the last one wins when sourced, which may point to the wrong workspace or an expired token.
 
 ## Example Scripts
 

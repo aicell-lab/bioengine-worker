@@ -2755,6 +2755,9 @@ class CellposeFinetune:
             ),
             examples=[["running", "completed"]],
         ),
+        limit: int = Field(
+            50, description="Maximum number of sessions to return (most recent first)"
+        ),
     ) -> dict[str, SessionStatus]:
         """List all known training sessions with their current or final status.
 
@@ -2773,12 +2776,23 @@ class CellposeFinetune:
         if not sessions_path.exists():
             return sessions
 
+        # Get all potential session directories
+        candidates = []
         for session_dir in sessions_path.iterdir():
             if not session_dir.is_dir():
                 continue
             status_path = session_dir / "status.json"
             if not status_path.exists():
                 continue
+            candidates.append(status_path)
+
+        # Sort by modification time (most recent first) to prioritize active/recent sessions
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+        for status_path in candidates:
+            # Stop if we have enough sessions
+            if len(sessions) >= limit:
+                break
 
             try:
                 session_data = json.loads(status_path.read_text(encoding="utf-8"))

@@ -377,11 +377,13 @@ The cellpose fine-tuning service runs as a Ray Serve deployment on BioEngine. To
 Before deploying, upload the latest application code to the artifact store:
 
 ```bash
-source .env
+# Set your token first (if not already set)
+export HYPHA_TOKEN=$(grep HYPHA_TOKEN .env | cut -d '=' -f2)
+
+# Upload the folder content
 python scripts/save_application.py \
     --directory "bioengine_apps/cellpose_finetuning" \
     --server-url "https://hypha.aicell.io" \
-    --workspace "bioimage-io" \
     --token "$HYPHA_TOKEN"
 ```
 

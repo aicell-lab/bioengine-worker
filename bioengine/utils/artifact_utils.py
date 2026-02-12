@@ -106,8 +106,7 @@ async def ensure_applications_collection(
     Ensure the 'applications' collection exists in the Hypha artifact manager.
 
     Creates the applications collection if it doesn't exist, providing organized
-    storage for BioEngine application artifacts within the current workspace.
-    The collection acts as a container for grouping related applications.
+    storage for BioEngine application artifacts. Ensures public read access.
 
     Args:
         artifact_manager: Hypha artifact manager service instance
@@ -116,16 +115,6 @@ async def ensure_applications_collection(
 
     Returns:
         The collection ID in format 'workspace/applications'
-
-    Raises:
-        RuntimeError: If the collection cannot be created or accessed
-
-    Example:
-        collection_id = await ensure_applications_collection(
-            artifact_manager=am,
-            workspace="my-workspace"
-        )
-        # Returns "my-workspace/applications"
     """
     if logger is None:
         logger = create_logger("ArtifactUtils")
@@ -133,8 +122,20 @@ async def ensure_applications_collection(
     collection_id = f"{workspace}/applications"
 
     try:
-        await artifact_manager.read(collection_id)
+        col = await artifact_manager.read(collection_id)
         logger.info(f"Collection '{collection_id}' already exists")
+
+        # Check and fix permissions if needed
+        # We want permissions to be public read: {'*': 'r'}
+        perms = col.config.get("permissions", {})
+        if perms.get("*") != "r":
+            logger.info("Updating collection permissions for public access")
+            existing_config = col.config or {}
+            existing_config.update({"permissions": {"*": "r"}})
+            await artifact_manager.edit(
+                artifact_id=collection_id, config=existing_config
+            )
+
     except Exception as collection_error:
         expected_error = (
             f"KeyError: \"Artifact with ID '{collection_id}' does not exist."
@@ -150,6 +151,9 @@ async def ensure_applications_collection(
                     type="collection",
                     alias="applications",
                     manifest=collection_manifest,
+                    config={
+                        "permissions": {"*": "r"}
+                    },  # Set public permission on create
                 )
                 logger.info(f"Applications collection created with ID: {collection.id}")
             except Exception as e:
@@ -325,6 +329,7 @@ async def stage_artifact(
     workspace: str,
     manifest: Dict[str, Any],
     logger: Optional[logging.Logger] = None,
+    permissions: Optional[Dict[str, Any]] = None,
 ) -> ObjectProxy:
     """
     Put an artifact into stage mode. Creates a new artifact if it doesn't exist.
@@ -334,6 +339,7 @@ async def stage_artifact(
         workspace: Hypha workspace identifier
         manifest: The updated artifact manifest
         logger: Optional logger instance for debugging
+        permissions: Optional permissions to set on the artifact
 
     Returns:
         The artifact object
@@ -371,13 +377,26 @@ async def stage_artifact(
 
         if existing_artifact:
             # Edit existing artifact
-            artifact = await artifact_manager.edit(
-                artifact_id=artifact_id,
-                manifest=manifest,
-                type="application",
-                stage=True,
-            )
+            edit_kwargs = {
+                "artifact_id": artifact_id,
+                "manifest": manifest,
+                "type": "application",
+                "stage": True,
+            }
+            if permissions:
+                # Add permissions to config as requested
+                current_config = getattr(existing_artifact, "config", {}) or {}
+                # Ensure we have a dict
+                if not isinstance(current_config, dict):
+                    current_config = {}
+
+                updated_config = current_config.copy()
+                updated_config["permissions"] = permissions
+                edit_kwargs["config"] = updated_config
+
+            artifact = await artifact_manager.edit(**edit_kwargs)
             logger.info(f"Editing existing artifact '{artifact_id}'")
+
     except Exception as e:
         expected_error = f"KeyError: \"Artifact with ID '{artifact_id}' does not exist."
         if expected_error not in str(e).strip():
@@ -386,13 +405,17 @@ async def stage_artifact(
     # Create new artifact if it doesn't exist or was deleted
     if artifact is None:
         try:
-            artifact = await artifact_manager.create(
-                parent_id=collection_id,
-                type="application",
-                alias=artifact_id.split("/")[1],
-                manifest=manifest,
-                stage=True,
-            )
+            create_kwargs = {
+                "parent_id": collection_id,
+                "type": "application",
+                "alias": artifact_id.split("/")[1],
+                "manifest": manifest,
+                "stage": True,
+            }
+            if permissions:
+                create_kwargs["config"] = {"permissions": permissions}
+
+            artifact = await artifact_manager.create(**create_kwargs)
             logger.info(f"Created new artifact '{artifact.id}'")
         except Exception as e:
             raise RuntimeError(f"Failed to create artifact '{artifact_id}': {e}")
@@ -532,6 +555,7 @@ async def create_application_from_files(
     workspace: str,
     user_id: str,
     logger: Optional[logging.Logger] = None,
+    permissions: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Create or update a Hypha artifact from a list of files.
@@ -560,6 +584,7 @@ async def create_application_from_files(
         workspace: Hypha workspace identifier
         user_id: User ID to set as the 'created_by' field in the manifest
         logger: Optional logger instance for debugging
+        permissions: Optional permissions to set on the artifact
 
     Returns:
         The artifact ID of the created or updated artifact
@@ -605,6 +630,7 @@ async def create_application_from_files(
         workspace=workspace,
         manifest=application_manifest,
         logger=logger,
+        permissions=permissions,
     )
 
     # Get existing files if artifact already exists (to remove old files later)

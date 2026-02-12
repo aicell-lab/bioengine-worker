@@ -1178,7 +1178,7 @@ class AppsManager:
         ),
         version: Optional[str] = Field(
             None,
-            description="Specific version of the artifact to deploy. If not provided, deploys the latest available version of the artifact. When updating an existing application, if not specified, uses the previously deployed version.",
+            description="Specific version of the artifact to deploy. If not provided, deploys the latest available version of the artifact. If not specified, uses the latest version for a new deployment, or preserves the previously deployed version if updating an existing application (only when application_id is specified).",
         ),
         application_id: Optional[str] = Field(
             None,
@@ -1186,27 +1186,41 @@ class AppsManager:
         ),
         application_kwargs: Optional[Dict[str, Dict[str, Any]]] = Field(
             None,
-            description="Advanced deployment configuration parameters. Dictionary where keys are deployment class names and values are dictionaries of keyword arguments to pass to those classes during initialization. When updating an existing application, if not specified, uses the previous kwargs.",
+            description='Keyword arguments to set for each deployment. Dictionary where keys are deployment class names and values are dictionaries of keyword arguments. If not specified, uses default parameters for a new deployment, or preserves previous values if updating an existing application (only when application_id is specified).',
+            examples=[
+                {"DeploymentClass": {"init_parameter": 50.0}},
+                {
+                    "DeploymentClass1": {"text": "Hello World!"},
+                    "DeploymentClass2": {"x": 3, "y": 10},
+                },
+            ],
         ),
         application_env_vars: Optional[Dict[str, Dict[str, str]]] = Field(
             None,
-            description="Environment variables to set for each deployment. Dictionary where keys are deployment class names and values are dictionaries of environment variable names and their values. When updating an existing application, if not specified, uses the previous env vars.",
+            description='Environment variables to set for each deployment. Dictionary where keys are deployment class names and values are dictionaries of environment variables. If not specified, uses defaults for a new deployment, or preserves previous values if updating an existing application (only when application_id is specified).',
+            examples=[
+                {"DeploymentClass": {"KEY": "VALUE"}},
+                {
+                    "DeploymentClass1": {"TEST_VARIABLE": "1"},
+                    "DeploymentClass2": {"ENV_VAR": "example"},
+                },
+            ],
         ),
         hypha_token: str = Field(
             None,
-            description="Hypha connection token for authentication. The token will be set as environment variable 'HYPHA_TOKEN' in the application deployments. An already existing environment variable named 'HYPHA_TOKEN' will not be overwritten. The token is used to authenticate to BioEngine datasets and enables Hypha API calls as logged in user. When updating an existing application, if not specified, uses the previous token.",
+            description="Hypha connection token for authentication. The token will be set as environment variable 'HYPHA_TOKEN' in the application deployments. An already existing environment variable named 'HYPHA_TOKEN' will not be overwritten. The token is used to authenticate to BioEngine datasets and enables Hypha API calls as logged in user. If not specified, uses None (no token) for a new deployment, or preserves the previous token if updating an existing application (only when application_id is specified).",
         ),
         disable_gpu: bool = Field(
             None,
-            description="Set to true to disable GPU usage for this deployment, forcing it to run on CPU only. Useful for testing or when GPU resources are limited. When updating an existing application, if not specified (None), uses the previous setting.",
+            description="Set to true to disable GPU usage for this deployment, forcing it to run on CPU only. Useful for testing or when GPU resources are limited. If not specified, uses False (GPU enabled if available) for a new deployment, or preserves the previous setting if updating an existing application (only when application_id is specified).",
         ),
         max_ongoing_requests: int = Field(
             None,
-            description="Maximum number of concurrent requests this application instance can handle simultaneously. Higher values allow more parallelism but use more memory. When updating an existing application, if not specified (None), uses the previous value.",
+            description="Maximum number of concurrent requests this application instance can handle simultaneously. Higher values allow more parallelism but use more memory. If not specified, uses 10 for a new deployment, or preserves the previous value if updating an existing application (only when application_id is specified).",
         ),
         auto_redeploy: bool = Field(
             None,
-            description="If set to true, the application will be automatically redeployed if it becomes unhealthy. When updating an existing application, if not specified (None), uses the previous setting.",
+            description="If set to true, the application will be automatically redeployed if it becomes unhealthy. If not specified, uses False for a new deployment, or preserves the previous setting if updating an existing application (only when application_id is specified).",
         ),
         context: Dict[str, Any] = Field(
             ...,

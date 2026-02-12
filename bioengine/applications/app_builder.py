@@ -1365,13 +1365,17 @@ class AppBuilder:
             entry_deployment_handle = entry_deployment.bind(**entry_deployment_kwargs)
 
             # Generate a token to register the application service
-            proxy_service_token = await self.server.generate_token(
-                {
-                    "workspace": self.server.config.workspace,
-                    "permission": "read_write",
-                    "expires_in": 3600 * 24 * 30,  # support application for 30 days
-                }
-            )
+            try:
+                proxy_service_token = await self.server.generate_token(
+                    {
+                        "workspace": self.server.config.workspace,
+                        "permission": "read_write",
+                        "expires_in": 3600 * 24 * 30,  # support application for 30 days
+                    }
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to generate token for proxy service: {e}. Fallback to existing HYPHA_TOKEN.")
+                proxy_service_token = os.environ.get("HYPHA_TOKEN")
 
             # Create the application
             app = proxy_deployment.bind(

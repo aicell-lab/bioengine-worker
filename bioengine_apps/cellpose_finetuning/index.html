@@ -4,352 +4,631 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cellpose Fine-Tuning UI</title>
+    <!-- Favicon to prevent 404 -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧬</text></svg>">
+    
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.30/dist/hypha-rpc-websocket.min.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        slate: {
+                            850: '#1e293b',
+                            900: '#0f172a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
     <style>
-        .loader {
-            border-top-color: #3498db;
-            -webkit-animation: spinner 1.5s linear infinite;
-            animation: spinner 1.5s linear infinite;
-        }
-        @keyframes spinner {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
+        body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+        .fade-enter-active, .fade-leave-active { transition: opacity 0.3s ease; }
+        .fade-enter-from, .fade-leave-to { opacity: 0; }
+        /* Custom scrollbar for log area */
+        .log-area::-webkit-scrollbar { width: 8px; }
+        .log-area::-webkit-scrollbar-track { background-color: #0f172a; }
+        .log-area::-webkit-scrollbar-thumb { background-color: #4b5563; border-radius: 4px; }
     </style>
 </head>
-<body class="bg-gray-100 min-h-screen">
-    <div id="app" class="container mx-auto px-4 py-8">
+<body class="bg-gray-100 text-slate-800 min-h-screen flex flex-col">
+    <div id="app" class="flex flex-col h-screen overflow-hidden">
         
-        <!-- Header & Connection -->
-        <header class="bg-white shadow rounded-lg p-6 mb-6 flex justify-between items-center">
-            <div>
-                <h1 class="text-2xl font-bold text-gray-800">🧬 Cellpose Fine-Tuning</h1>
-                <p class="text-gray-600 text-sm" v-if="isConnected">Connected to {{ serverUrl }} (Workspace: {{ workspace }})</p>
-                <p class="text-red-500 text-sm" v-else>Disconnected</p>
-            </div>
-            <div class="flex gap-2">
-                <div v-if="!isConnected" class="flex gap-2">
-                    <input v-model="serverUrl" placeholder="Server URL" class="border rounded px-3 py-2 text-sm">
-                    <button @click="connect" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition">Connect</button>
+        <!-- Top Navigation Bar -->
+        <header class="bg-white border-b border-gray-200 z-10 flex-none h-16 flex items-center justify-between px-6 shadow-sm">
+            <div class="flex items-center gap-3">
+                <div class="bg-blue-600 text-white p-2 rounded-lg shadow-sm">
+                    <i class="fas fa-search-plus"></i>
                 </div>
-                <div v-else class="flex items-center gap-4">
-                    <div class="flex items-center gap-2">
-                        <span class="text-sm font-medium">Service:</span>
-                        <select v-model="selectedServiceId" class="border rounded px-2 py-1 text-sm max-w-xs">
+                <div>
+                    <h1 class="font-bold text-lg text-slate-800 leading-tight">Cellpose Fine-Tuning</h1>
+                    <div class="text-xs text-slate-500 font-medium flex items-center gap-1">
+                        <span v-if="isConnected" class="text-green-600 flex items-center gap-1"><i class="fas fa-circle text-[8px]"></i> Connected</span>
+                        <span v-else class="text-red-500 flex items-center gap-1"><i class="fas fa-circle text-[8px]"></i> Disconnected</span>
+                        <span v-if="isConnected" class="opacity-75">• {{ workspace }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-4">
+                <!-- Connection Controls -->
+                <div v-if="!isConnected" class="flex items-center gap-2 bg-gray-50 p-1.5 rounded-lg border border-gray-200">
+                    <input v-model="serverUrl" placeholder="Server URL" class="bg-transparent border-none text-sm focus:ring-0 px-2 w-48 placeholder-gray-400">
+                    <button @click="connect" :disabled="isConnecting" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-md text-sm font-medium transition flex items-center gap-2">
+                        <i v-if="isConnecting" class="fas fa-circle-notch fa-spin"></i>
+                        <span>{{ isConnecting ? 'Connecting...' : 'Connect' }}</span>
+                    </button>
+                    <button @click="showTokenInput = !showTokenInput" class="text-gray-400 hover:text-gray-600 px-2" title="Settings">
+                        <i class="fas fa-cog"></i>
+                    </button>
+                </div>
+                <div v-if="showTokenInput && !isConnected" class="absolute top-16 right-6 bg-white p-4 shadow-xl rounded-lg border border-gray-200 w-72 z-50">
+                    <label class="block text-xs font-semibold text-gray-500 mb-1">Auth Token (Optional)</label>
+                    <input v-model="authToken" type="password" class="w-full border rounded px-3 py-2 text-sm mb-2" placeholder="Token...">
+                </div>
+
+                <!-- Service Selection -->
+                <div v-if="isConnected" class="flex items-center gap-3">
+                    <div class="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
+                        <i class="fas fa-server text-slate-400 text-xs"></i>
+                        <select v-model="selectedServiceId" class="bg-transparent border-none text-sm focus:ring-0 w-48 font-medium">
+                            <option value="" disabled>Select Service</option>
                             <option v-for="id in availableServices" :key="id" :value="id">{{ id }}</option>
                         </select>
-                        <button @click="listServices" class="text-gray-500 hover:text-blue-600" title="Refresh Services">
-                            <i class="fas fa-sync-alt"></i>
+                        <button @click="listServices" class="text-slate-400 hover:text-blue-600 transition" title="Refresh Services">
+                            <i class="fas fa-sync-alt" :class="{'fa-spin': isScanning}"></i>
                         </button>
                     </div>
-                    <button @click="disconnect" class="text-red-600 hover:text-red-800 text-sm font-medium">Disconnect</button>
+                    <button @click="disconnect" class="text-slate-500 hover:text-red-600 text-sm font-medium p-2 rounded-lg hover:bg-red-50 transition" title="Disconnect">
+                        <i class="fas fa-power-off"></i>
+                    </button>
                 </div>
             </div>
         </header>
 
-        <div v-if="isConnected && service" class="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        <main class="flex-grow flex overflow-hidden">
             
-            <!-- Sidebar / Navigation -->
-            <div class="lg:col-span-1 space-y-4">
-                <div class="bg-white shadow rounded-lg overflow-hidden">
-                    <nav class="flex flex-col">
-                        <button v-for="tab in tabs" 
-                                :key="tab.id"
-                                @click="currentTab = tab.id"
-                                :class="{'bg-blue-50 text-blue-700 border-l-4 border-blue-600': currentTab === tab.id, 'text-gray-600 hover:bg-gray-50': currentTab !== tab.id}"
-                                class="px-6 py-4 text-left font-medium transition flex items-center gap-3">
-                            <i :class="tab.icon"></i> {{ tab.name }}
-                        </button>
-                    </nav>
+            <transition name="fade">
+                <div v-if="syncError" class="fixed bottom-4 left-4 z-50 bg-red-800 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 max-w-sm">
+                    <i class="fas fa-wifi"></i>
+                    <div class="text-xs">
+                        <div class="font-bold">Connection Issue</div>
+                        <div>{{ syncError }}</div>
+                    </div>
+                    <button @click="syncError = null" class="ml-2 text-white/50 hover:text-white"><i class="fas fa-times"></i></button>
                 </div>
+            </transition>
 
-                <!-- Active Training Status -->
-                <div v-if="activeTrainingSession" class="bg-white shadow rounded-lg p-4">
-                    <h3 class="font-bold text-gray-800 mb-2">Active Training</h3>
-                    <div class="text-sm space-y-2">
-                        <div class="flex justify-between">
-                            <span class="text-gray-600">Session:</span>
-                            <span class="font-mono" :title="activeTrainingSession">{{ activeTrainingSession.slice(0,8) }}...</span>
-                        </div>
-                        <div class="flex justify-between">
-                            <span class="text-gray-600">Status:</span>
-                            <span :class="statusColor(activeSessionStatus?.status_type)">{{ activeSessionStatus?.status_type || 'Unknown' }}</span>
-                        </div>
-                        <div v-if="activeSessionStatus?.current_epoch" class="w-full bg-gray-200 rounded-full h-2.5 mt-2">
-                            <div class="bg-blue-600 h-2.5 rounded-full" :style="{ width: (activeSessionStatus.current_epoch / activeSessionStatus.total_epochs * 100) + '%' }"></div>
-                        </div>
-                        <div v-if="activeSessionStatus?.current_epoch" class="text-xs text-right text-gray-500">
-                            Epoch {{ activeSessionStatus.current_epoch }} / {{ activeSessionStatus.total_epochs }}
+            <!-- Sidebar -->
+            <transition name="fade">
+                <aside v-if="isConnected && service" class="w-64 bg-slate-850 text-slate-300 flex-none flex flex-col justify-between">
+                    <div>
+                        <div class="p-6">
+                            <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">Menu</div>
+                            <nav class="space-y-1">
+                                <button v-for="tab in tabs" :key="tab.id"
+                                    @click="currentTab = tab.id"
+                                    :class="currentTab === tab.id ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'hover:bg-slate-800 hover:text-white'"
+                                    class="w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 transition-all duration-200 font-medium">
+                                    <i :class="tab.icon" class="w-5 text-center"></i> {{ tab.name }}
+                                </button>
+                            </nav>
                         </div>
                     </div>
-                </div>
-            </div>
 
-            <!-- Main Content -->
-            <div class="lg:col-span-3 space-y-6">
+                    <!-- Active Session Widget -->
+                    <div v-if="monitoredSession" class="bg-slate-900 p-6 border-t border-slate-800 relative group">
+                        <button @click="monitoringSessionId = null" class="absolute top-2 right-2 text-slate-600 hover:text-slate-400 opacity-0 group-hover:opacity-100 transition">
+                            <i class="fas fa-times"></i>
+                        </button>
+                        <div class="flex items-center justify-between mb-3">
+                            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                                {{ monitoredSession.status_type === 'running' ? 'Active Training' : 'Training Status' }}
+                            </h3>
+                            <span class="w-2 h-2 rounded-full transition-colors duration-300"
+                                  :class="{
+                                      'bg-green-500 animate-pulse': monitoredSession.status_type === 'running',
+                                      'bg-green-600': monitoredSession.status_type === 'completed',
+                                      'bg-red-500': monitoredSession.status_type === 'failed',
+                                      'bg-gray-500': monitoredSession.status_type === 'stopped' || monitoredSession.status_type === 'waiting'
+                                  }"></span>
+                        </div>
+                        <div class="bg-slate-800 rounded-lg p-3 border border-slate-700 transition-colors duration-300" 
+                             :class="{'border-red-500/50': monitoredSession.status_type === 'failed'}">
+                            <div class="flex justify-between items-center mb-1">
+                                <span class="text-white text-sm font-mono font-bold">{{ monitoringSessionId.slice(0, 8) }}...</span>
+                                <span class="text-xs px-1.5 py-0.5 rounded capitalize" 
+                                      :class="{
+                                          'bg-blue-900 text-blue-300': monitoredSession.status_type === 'running',
+                                          'bg-green-900 text-green-300': monitoredSession.status_type === 'completed',
+                                          'bg-red-900 text-red-300': monitoredSession.status_type === 'failed',
+                                          'bg-gray-700 text-gray-300': monitoredSession.status_type === 'stopped' || monitoredSession.status_type === 'waiting'
+                                      }">
+                                    {{ monitoredSession.status_type || 'Run' }}
+                                </span>
+                            </div>
+                            
+                            <div v-if="monitoredSession.status_type !== 'failed'" class="w-full bg-slate-700 rounded-full h-1.5 mt-2 mb-1">
+                                <div class="bg-blue-500 h-1.5 rounded-full transition-all duration-500" 
+                                     :style="{ width: ((monitoredSession.current_epoch || 0) / (monitoredSession.total_epochs || 1) * 100) + '%' }"></div>
+                            </div>
+                            <div v-if="monitoredSession.status_type !== 'failed'" class="flex justify-between text-[10px] text-slate-400">
+                                <span>Epoch {{ monitoredSession.current_epoch || 0 }}</span>
+                                <span>{{ monitoredSession.total_epochs || '?' }} Total</span>
+                            </div>
+
+                            <div v-if="monitoredSession.status_type === 'failed'" class="mt-2 text-[10px] text-red-300 leading-tight">
+                                {{ monitoredSession.message }}
+                            </div>
+                        </div>
+                    </div>
+                </aside>
+            </transition>
+
+            <!-- Main Content Area -->
+            <div class="flex-grow bg-gray-50 overflow-auto p-8">
                 
-                <!-- Dashboard Tab -->
-                <div v-if="currentTab === 'dashboard'" class="bg-white shadow rounded-lg p-6">
-                    <div class="flex justify-between items-center mb-6">
-                        <h2 class="text-xl font-bold text-gray-800">Training Sessions</h2>
-                        <button @click="refreshSessions" class="text-blue-600 hover:text-blue-800">
-                            <i class="fas fa-sync-alt" :class="{'fa-spin': refreshLoading}"></i> Refresh
+                <!-- Not Connected / No Service State -->
+                <div v-if="!isConnected || !service" class="h-full flex items-center justify-center">
+                    <div class="max-w-md text-center">
+                        <div class="inline-flex items-center justify-center w-20 h-20 bg-white rounded-2xl shadow-sm mb-6 text-4xl">🧬</div>
+                        <h2 class="text-2xl font-bold text-gray-800 mb-2">Welcome to Cellpose Fine-Tuning</h2>
+                        <p class="text-gray-500 mb-8" v-if="!isConnected">Connect to a Hypha server to manage your training sessions.</p>
+                        <p class="text-gray-500 mb-8" v-else>Select a Cellpose Fine-Tuning Service to continue.</p>
+                        
+                        <div v-if="isConnected && availableServices.length === 0 && !isScanning" class="bg-orange-50 text-orange-800 p-4 rounded-lg text-sm mb-4">
+                            <i class="fas fa-exclamation-triangle mr-2"></i> No services found in workspace "{{ workspace }}".
+                            <br>Make sure the Worker is running and you are logged into the correct workspace.
+                        </div>
+
+                        <div v-if="!isConnected && autoConnectError" class="bg-red-50 text-red-800 p-4 rounded-lg text-sm mb-4">
+                             {{ autoConnectError }}
+                        </div>
+
+                         <button v-if="isConnected && !service" @click="listServices" class="text-blue-600 hover:text-blue-800 font-medium">
+                            <i class="fas fa-sync-alt mr-1"></i> Scan Again
                         </button>
                     </div>
-                    
-                    <div class="overflow-x-auto">
-                        <table class="min-w-full divide-y divide-gray-200">
-                            <thead class="bg-gray-50">
+                </div>
+
+                <!-- Dashboard Tab -->
+                <div v-if="service && currentTab === 'dashboard'" class="max-w-6xl mx-auto space-y-6 fade-enter-active">
+                     <div class="flex justify-between items-end">
+                        <h2 class="text-2xl font-bold text-gray-900">Dashboard</h2>
+                        <div v-if="syncError" class="text-red-500 text-sm px-4 py-1 bg-red-50 rounded-full border border-red-200 flex items-center" title="Connection to worker is unstable">
+                            <i class="fas fa-exclamation-triangle mr-2"></i> {{ syncError }}
+                        </div>
+                        <button @click="refreshSessions(false)" class="text-gray-500 hover:text-blue-600 transition text-sm font-medium bg-white px-3 py-1.5 rounded-lg border border-gray-200 shadow-sm">
+                            <i class="fas fa-sync-alt mr-1" :class="{'fa-spin': refreshLoading}"></i> Refresh
+                        </button>
+                    </div>
+
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                         <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50/50">
                                 <tr>
-                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
-                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Epochs</th>
-                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Loss</th>
-                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Timestamp</th>
-                                    <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                                    <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Session ID</th>
+                                    <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                                    <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Progress</th>
+                                    <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Metrics (Loss)</th>
+                                    <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Created</th>
+                                    <th class="px-6 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
                                 </tr>
                             </thead>
                             <tbody class="bg-white divide-y divide-gray-200">
-                                <tr v-for="(session, id) in sessions" :key="id" class="hover:bg-gray-50">
-                                    <td class="px-4 py-3 whitespace-nowrap font-mono text-sm text-gray-900 cursor-pointer" @click="viewSession(id)" title="Click to view details">{{ id.slice(0,8) }}</td>
-                                    <td class="px-4 py-3 whitespace-nowrap">
-                                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full" :class="statusBadgeClass(session.status_type)">
+                                <tr v-for="(session, id) in sessions" :key="id" class="hover:bg-slate-50 transition-colors cursor-pointer group" @click="viewSession(id)">
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="flex items-center">
+                                            <span class="font-mono text-sm text-blue-600 font-medium group-hover:underline">{{ id.slice(0, 8) }}</span>
+                                        </div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <span class="px-2.5 py-0.5 inline-flex text-xs font-medium rounded-full capitalize" 
+                                              :class="{
+                                                  'bg-green-100 text-green-800': session.status_type === 'completed',
+                                                  'bg-blue-100 text-blue-800': session.status_type === 'running',
+                                                  'bg-red-100 text-red-800': session.status_type === 'failed',
+                                                  'bg-gray-100 text-gray-800': session.status_type === 'waiting' || session.status_type === 'stopped'
+                                              }">
                                             {{ session.status_type }}
                                         </span>
                                     </td>
-                                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                                        {{ session.current_epoch || 0 }} / {{ session.total_epochs || '?' }}
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                         <div v-if="session.total_epochs">
+                                            <div class="flex justify-between mb-1 text-xs"><span>{{ session.current_epoch || 0 }}</span><span>{{ session.total_epochs }}</span></div>
+                                            <div class="w-24 bg-gray-200 rounded-full h-1.5">
+                                                <div class="bg-blue-500 h-1.5 rounded-full" :style="{ width: ((session.current_epoch || 0) / session.total_epochs * 100) + '%' }"></div>
+                                            </div>
+                                         </div>
+                                         <span v-else>-</span>
                                     </td>
-                                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                                        {{ session.train_losses && session.train_losses.length ? session.train_losses[session.train_losses.length-1].toFixed(4) : '-' }}
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        {{ getLatestLoss(session) }}
                                     </td>
-                                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                                        {{ session.start_time ? new Date(session.start_time).toLocaleString() : '-' }}
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        {{ formatDate(session.start_time) }}
                                     </td>
-                                    <td class="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
-                                        <button @click="viewSession(id)" class="text-blue-600 hover:text-blue-900 mr-2">View</button>
-                                        <button v-if="session.status_type === 'running'" @click="stopTraining(id)" class="text-red-600 hover:text-red-900">Stop</button>
+                                    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium" @click.stop>
+                                         <button @click="viewSession(id)" class="text-blue-600 hover:text-blue-900 mr-3">Details</button>
+                                         <button v-if="session.status_type === 'running'" @click="stopTraining(id)" class="text-red-600 hover:text-red-900">Stop</button>
                                     </td>
                                 </tr>
                                 <tr v-if="Object.keys(sessions).length === 0">
-                                    <td colspan="6" class="px-4 py-8 text-center text-gray-500">No training sessions found.</td>
+                                    <td colspan="6" class="px-6 py-12 text-center text-gray-500 bg-gray-50 rounded-b-xl">
+                                        <div class="text-4xl mb-2">📭</div>
+                                        <p>No training sessions found.</p>
+                                        <button @click="currentTab = 'training'" class="mt-4 text-blue-600 font-medium hover:underline">Start a new training session</button>
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
                 </div>
 
-                <!-- New Training Tab -->
-                <div v-if="currentTab === 'training'" class="bg-white shadow rounded-lg p-6">
-                    <h2 class="text-xl font-bold text-gray-800 mb-6">Start New Training</h2>
-                    <form @submit.prevent="startTraining" class="space-y-6">
+                <!-- Training Form Tab -->
+                <div v-if="service && currentTab === 'training'" class="max-w-4xl mx-auto">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-2xl font-bold text-gray-900">New Training Session</h2>
+                    </div>
+
+                     <form @submit.prevent="startTraining" class="space-y-6">
                         
-                        <!-- Dataset Selection -->
-                        <div class="border rounded-lg p-4 bg-gray-50">
-                            <h3 class="font-medium text-gray-700 mb-3 flex justify-between items-center">
-                                Dataset Configuration
-                                <button type="button" @click="showUploadModal = true" class="text-sm bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700">
-                                    <i class="fas fa-upload mr-1"></i> Upload New Dataset
+                         <!-- Card: Dataset -->
+                         <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                            <div class="flex justify-between items-center mb-4">
+                                <h3 class="text-lg font-semibold text-gray-800 flex items-center gap-2"><i class="fas fa-database text-gray-400"></i> Dataset & Model</h3>
+                                <button type="button" @click="showUploadModal = true" class="text-sm bg-green-50 text-green-700 px-3 py-1.5 rounded-lg border border-green-200 hover:bg-green-100 transition flex items-center gap-1 font-medium">
+                                    <i class="fas fa-cloud-upload-alt"></i> Upload New
                                 </button>
-                            </h3>
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            </div>
+                            
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-1">Artifact ID</label>
-                                    <input v-model="trainingParams.artifact" required class="w-full border rounded px-3 py-2 text-sm" placeholder="workspace/alias">
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Artifact ID <span class="text-red-500">*</span></label>
+                                    <div class="flex gap-2">
+                                        <input v-model="trainingParams.artifact" required class="flex-grow bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition" placeholder="workspace/dataset-alias">
+                                        <button type="button" @click="openFileBrowser" class="px-3 py-2 bg-slate-100 border border-slate-300 rounded-lg hover:bg-slate-200 text-slate-600 transition" title="Browse Files">
+                                            <i class="fas fa-folder-open"></i>
+                                        </button>
+                                    </div>
                                 </div>
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-1">Model ID</label>
-                                    <input v-model="trainingParams.model" required class="w-full border rounded px-3 py-2 text-sm" placeholder="Pretrained model or session ID">
-                                    <p class="text-xs text-gray-500 mt-1">e.g., cyto3, nuclei, cpsam</p>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Base Model <span class="text-red-500">*</span></label>
+                                    <div class="relative">
+                                        <input v-model="trainingParams.model" required class="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition" placeholder="Pretrained ID or Session ID">
+                                        <div class="absolute right-2 top-2 text-xs text-gray-400 space-x-1">
+                                            <span class="cursor-pointer hover:text-blue-600" @click="trainingParams.model = 'cpsam'">cpsam</span>
+                                            <span class="cursor-pointer hover:text-blue-600" @click="trainingParams.model = 'cyto3'">cyto3</span>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div class="md:col-span-2 grid grid-cols-2 gap-4">
-                                    <div>
-                                        <label class="block text-sm font-medium text-gray-700 mb-1">Train Images</label>
-                                        <input v-model="trainingParams.train_images" required class="w-full border rounded px-3 py-2 text-sm" placeholder="Path/pattern (e.g. images/)">
+
+                                <div class="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                                     <div>
+                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Train Images</label>
+                                        <input v-model="trainingParams.train_images" required class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. images/">
                                     </div>
                                     <div>
-                                        <label class="block text-sm font-medium text-gray-700 mb-1">Train Annotations</label>
-                                        <input v-model="trainingParams.train_annotations" required class="w-full border rounded px-3 py-2 text-sm" placeholder="Path/pattern (e.g. masks/)">
+                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Train Annotations</label>
+                                        <input v-model="trainingParams.train_annotations" required class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. masks/">
                                     </div>
                                     <div>
-                                        <label class="block text-sm font-medium text-gray-700 mb-1">Test Images (Optional)</label>
-                                        <input v-model="trainingParams.test_images" class="w-full border rounded px-3 py-2 text-sm" placeholder="Path/pattern">
+                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Test Images (Opt)</label>
+                                        <input v-model="trainingParams.test_images" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
                                     </div>
                                     <div>
-                                        <label class="block text-sm font-medium text-gray-700 mb-1">Test Annotations (Optional)</label>
-                                        <input v-model="trainingParams.test_annotations" class="w-full border rounded px-3 py-2 text-sm" placeholder="Path/pattern">
+                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Test Annotations (Opt)</label>
+                                        <input v-model="trainingParams.test_annotations" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
                                     </div>
                                 </div>
                             </div>
-                        </div>
+                         </div>
 
-                        <!-- Parameters -->
-                        <div class="border rounded-lg p-4 bg-gray-50">
-                            <h3 class="font-medium text-gray-700 mb-3">Hyperparameters</h3>
-                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                         <!-- Card: Hyperparameters -->
+                         <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                             <h3 class="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2"><i class="fas fa-sliders-h text-gray-400"></i> Hyperparameters</h3>
+                             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                                 <div>
                                     <label class="block text-sm font-medium text-gray-700 mb-1">Epochs</label>
-                                    <input v-model.number="trainingParams.n_epochs" type="number" min="1" required class="w-full border rounded px-3 py-2 text-sm">
+                                    <input v-model.number="trainingParams.n_epochs" type="number" min="1" required class="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-blue-500 focus:border-blue-500">
                                 </div>
                                 <div>
                                     <label class="block text-sm font-medium text-gray-700 mb-1">Learning Rate</label>
-                                    <input v-model.number="trainingParams.learning_rate" type="number" step="1e-7" required class="w-full border rounded px-3 py-2 text-sm">
+                                    <input v-model.number="trainingParams.learning_rate" type="number" step="1e-7" required class="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-blue-500 focus:border-blue-500">
                                 </div>
                                 <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-1">Batch Size (Min Masks)</label>
-                                    <input v-model.number="trainingParams.min_train_masks" type="number" min="1" class="w-full border rounded px-3 py-2 text-sm">
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Min Batch Masks</label>
+                                    <input v-model.number="trainingParams.min_train_masks" type="number" min="1" class="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-blue-500 focus:border-blue-500">
                                 </div>
                             </div>
+                         </div>
+
+                         <div class="flex justify-end gap-4">
+                             <button type="button" @click="currentTab = 'dashboard'" class="px-6 py-2.5 text-gray-600 font-medium hover:bg-gray-100 rounded-lg transition">Cancel</button>
+                             <button type="submit" :disabled="isStartingTraining" class="bg-blue-600 text-white px-8 py-2.5 rounded-lg shadow-sm hover:bg-blue-700 hover:shadow-md transition-all font-medium disabled:opacity-50 flex items-center gap-2">
+                                <i v-if="isStartingTraining" class="fas fa-circle-notch fa-spin"></i>
+                                {{ isStartingTraining ? 'Starting...' : 'Start Training' }}
+                            </button>
+                         </div>
+
+                        <div v-if="trainingError" class="bg-red-50 text-red-800 p-4 rounded-lg text-sm border border-red-200 flex items-start gap-2">
+                            <i class="fas fa-exclamation-circle mt-0.5"></i>
+                            <span class="font-mono whitespace-pre-wrap">{{ trainingError }}</span>
                         </div>
 
-                        <div class="flex justify-end">
-                            <button type="submit" :disabled="isStartingTraining" class="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 transition disabled:opacity-50 flex items-center gap-2">
-                                <i v-if="isStartingTraining" class="fas fa-spinner fa-spin"></i>
-                                Start Training
-                            </button>
-                        </div>
-                    </form>
+                     </form>
                 </div>
 
-                <!-- Session Details View -->
-                <div v-if="currentTab === 'session_details' && selectedSessionId" class="space-y-6">
-                    <div class="bg-white shadow rounded-lg p-6">
-                        <div class="flex justify-between items-start mb-4">
-                            <div>
-                                <h2 class="text-xl font-bold text-gray-800">Session Details</h2>
-                                <p class="text-sm text-gray-500 font-mono">{{ selectedSessionId }}</p>
+                <!-- Session Details Tab (Dynamic) -->
+                <div v-if="service && currentTab === 'session_details' && selectedSessionId" class="max-w-6xl mx-auto">
+                    <div class="flex items-center gap-4 mb-6">
+                        <button @click="currentTab = 'dashboard'" class="text-gray-400 hover:text-gray-600 transition">
+                            <i class="fas fa-arrow-left text-xl"></i>
+                        </button>
+                        <div>
+                             <h2 class="text-2xl font-bold text-gray-900 flex items-center gap-3">
+                                 Session Analysis
+                                 <span class="text-sm font-mono font-normal text-gray-500 bg-gray-100 px-2 py-0.5 rounded">{{ selectedSessionId }}</span>
+                             </h2>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                        <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+                            <div class="text-sm text-gray-500 mb-1">Status</div>
+                            <div class="text-lg font-bold capitalize" :class="statusTextColor(currentSession?.status_type)">{{ currentSession?.status_type }}</div>
+                        </div>
+                        <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+                            <div class="text-sm text-gray-500 mb-1">Progress</div>
+                            <div class="text-lg font-bold text-gray-800">{{ currentSession?.current_epoch || 0 }} <span class="text-sm text-gray-400 font-normal">/ {{ currentSession?.total_epochs }} Epochs</span></div>
+                        </div>
+                        <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+                            <div class="text-sm text-gray-500 mb-1">Samples</div>
+                            <div class="text-lg font-bold text-gray-800">{{ currentSession?.n_train || '-' }} <span class="text-sm text-gray-400 font-normal">Train</span></div>
+                        </div>
+                        <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+                             <div class="text-sm text-gray-500 mb-1">Duration</div>
+                            <div class="text-lg font-bold text-gray-800">{{ formatDuration(currentSession?.elapsed_seconds) }}</div>
+                        </div>
+                    </div>
+                
+                    <!-- Charts -->
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                        <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+                            <h3 class="font-bold text-gray-700 mb-4 px-2">Loss History</h3>
+                            <div id="lossChart" class="w-full h-72"></div>
+                        </div>
+                        <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+                            <h3 class="font-bold text-gray-700 mb-4 px-2">Validation Metrics</h3>
+                            <div v-if="hasMetrics" id="metricsChart" class="w-full h-72"></div>
+                             <div v-else class="h-72 flex items-center justify-center text-gray-400 italic">
+                                No validation metrics available.
                             </div>
-                            <button @click="currentTab = 'dashboard'" class="text-gray-500 hover:text-gray-700">
-                                <i class="fas fa-times"></i> Close
-                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Logs & Actions -->
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div class="bg-slate-900 rounded-xl overflow-hidden text-slate-300 font-mono text-xs flex flex-col h-64 shadow-sm border border-slate-800">
+                            <div class="bg-slate-950 px-4 py-2 border-b border-slate-800 font-bold text-slate-500 flex justify-between">
+                                <span>SYSTEM LOG</span>
+                                <span class="text-[10px]">{{ currentSession?.status_type === 'running' ? 'LIVE' : 'OFFLINE' }}</span>
+                            </div>
+                            <div class="p-4 overflow-y-auto log-area flex-grow">
+                                <p class="mb-2"><span class="text-slate-500">Session ID:</span> {{ selectedSessionId }}</p>
+                                <p class="mb-2 text-yellow-500">> {{ currentSession?.message }}</p>
+                                <p v-if="currentSession?.status_type === 'failed'" class="text-red-400 mt-2">Error: Process terminated unexpectedly.</p>
+                            </div>
                         </div>
 
-                        <!-- Status Cards -->
-                        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                            <div class="bg-gray-50 p-3 rounded">
-                                <div class="text-xs text-gray-500">Status</div>
-                                <div class="font-bold capitalize" :class="statusTextColor(currentSession?.status_type)">{{ currentSession?.status_type }}</div>
-                            </div>
-                            <div class="bg-gray-50 p-3 rounded">
-                                <div class="text-xs text-gray-500">Epochs</div>
-                                <div class="font-bold">{{ currentSession?.current_epoch || 0 }} / {{ currentSession?.total_epochs || '?' }}</div>
-                            </div>
-                            <div class="bg-gray-50 p-3 rounded">
-                                <div class="text-xs text-gray-500">Samples</div>
-                                <div class="font-bold">{{ currentSession?.n_train || '-' }} / {{ currentSession?.n_test || '-' }}</div>
-                            </div>
-                            <div class="bg-gray-50 p-3 rounded">
-                                <div class="text-xs text-gray-500">Time</div>
-                                <div class="font-bold">{{ formatDuration(currentSession?.elapsed_seconds) }}</div>
-                            </div>
-                        </div>
-
-                        <!-- Slots for Live Inference Toggle -->
-                        <div class="flex justify-between items-center mb-4 p-3 bg-blue-50 rounded border border-blue-100" v-if="currentSession?.status_type === 'running'">
-                            <div class="text-blue-800 text-sm">
-                                <i class="fas fa-info-circle mr-1"></i> Live monitoring active. Charts update automatically.
-                            </div>
-                            <!-- Future: Live Inference toggle here -->
-                        </div>
-
-                        <!-- Plots -->
-                        <div id="lossChart" class="w-full h-80 bg-gray-50 rounded mb-6"></div>
-                        <div id="metricsChart" class="w-full h-80 bg-gray-50 rounded mb-6" v-if="hasMetrics"></div>
-
-                        <!-- Logs/Message -->
-                        <div class="bg-gray-900 text-gray-200 p-4 rounded font-mono text-sm h-40 overflow-y-auto mb-6">
-                            <div class="text-gray-500 text-xs mb-2">LAST MESSAGE</div>
-                            {{ currentSession?.message }}
-                        </div>
-
-                        <!-- Export Section -->
-                        <div v-if="currentSession?.status_type === 'completed'" class="bg-green-50 rounded p-4 border border-green-200">
-                             <h3 class="font-bold text-green-800 mb-2">Export Model</h3>
-                             <div class="flex gap-2 items-center">
-                                 <input v-model="exportModelName" placeholder="Model Name (optional)" class="border rounded px-3 py-2 text-sm flex-grow">
-                                 <input v-model="exportCollection" placeholder="Collection (workspace/col)" class="border rounded px-3 py-2 text-sm flex-grow">
-                                 <button @click="exportModel" :disabled="isExporting" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50">
-                                     <i v-if="isExporting" class="fas fa-spinner fa-spin mr-1"></i> Export
+                         <div v-if="currentSession?.status_type === 'completed'" class="bg-green-50 rounded-xl p-6 border border-green-200 flex flex-col justify-center">
+                             <h3 class="font-bold text-green-900 mb-2">Ready for Export</h3>
+                             <p class="text-green-700 text-sm mb-4">Package this model as a standardized BioImage.io artifact.</p>
+                             
+                             <div class="space-y-3">
+                                 <div>
+                                     <label class="block text-xs font-bold text-green-800 uppercase tracking-wide mb-1">Model Name</label>
+                                     <input v-model="exportModelName" placeholder="my-model-v1" class="w-full border-green-300 rounded px-3 py-2 text-sm focus:ring-green-500 focus:border-green-500">
+                                 </div>
+                                 <button @click="exportModel" :disabled="isExporting" class="w-full bg-green-600 text-white px-4 py-3 rounded-lg hover:bg-green-700 disabled:opacity-50 font-medium shadow-sm transition">
+                                     <i v-if="isExporting" class="fas fa-spinner fa-spin mr-1"></i>
+                                     {{ isExporting ? 'Exporting Package...' : 'Export to Artifact Manager' }}
                                  </button>
                              </div>
-                             <div v-if="exportResult" class="mt-2 text-sm text-gray-700">
-                                 <i class="fas fa-check-circle text-green-500"></i> Exported: <a :href="exportResult.artifact_url" target="_blank" class="text-blue-600 hover:underline">{{ exportResult.model_name }}</a>
+                             
+                             <div v-if="exportResult" class="mt-4 p-3 bg-white rounded border border-green-200 text-sm">
+                                 <div class="flex items-center text-green-600 font-bold mb-1"><i class="fas fa-check-circle mr-2"></i> Export Success</div>
+                                 <a :href="exportResult.artifact_url" target="_blank" class="text-blue-600 hover:underline break-all block">{{ exportResult.model_name }}</a>
                              </div>
                         </div>
                     </div>
                 </div>
 
                 <!-- Inference Tab -->
-                <div v-if="currentTab === 'inference'" class="bg-white shadow rounded-lg p-6">
-                    <h2 class="text-xl font-bold text-gray-800 mb-6">Inference</h2>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <!-- Controls -->
-                        <div class="space-y-4">
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Model</label>
-                                <select v-model="inferenceParams.model" class="w-full border rounded px-3 py-2 text-sm">
-                                     <option v-for="m in pretrainedModels" :key="m" :value="m">{{ m }} (Pretrained)</option>
-                                     <option v-for="(s, id) in sessions" :key="id" :value="id" v-show="s.status_type==='completed'">Session: {{ id.slice(0,8) }}</option>
-                                </select>
+                <div v-if="service && currentTab === 'inference'" class="max-w-7xl mx-auto lg:h-[calc(100vh-8rem)] h-auto flex flex-col">
+                     <h2 class="text-2xl font-bold text-gray-900 mb-6 flex-none">Live Inference</h2>
+                     
+                     <div class="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6 lg:min-h-0 h-auto">
+                         <!-- Left: Controls -->
+                         <div class="lg:col-span-4 bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col overflow-hidden">
+                            <div class="p-4 border-b border-gray-100 flex-none bg-gray-50/50">
+                                <h3 class="font-bold text-gray-700">Configuration</h3>
                             </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Diameter (px)</label>
-                                <input v-model.number="inferenceParams.diameter" type="number" placeholder="Auto" class="w-full border rounded px-3 py-2 text-sm">
+                            
+                            <div class="p-6 overflow-y-auto flex-grow space-y-5">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Model Source</label>
+                                    <select v-model="inferenceParams.model" class="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                                         <optgroup label="Pretrained Models">
+                                             <option v-for="m in pretrainedModels" :key="m" :value="m">{{ m }}</option>
+                                         </optgroup>
+                                         <optgroup label="Your Sessions">
+                                             <option v-for="(s, id) in sessions" :key="id" :value="id" v-show="s.status_type==='completed' || s.status_type==='running'">
+                                                 {{ s.status_type==='running' ? '🟢' : '⚫' }} {{ id.slice(0,8) }}
+                                             </option>
+                                         </optgroup>
+                                    </select>
+                                    <p class="text-xs text-gray-500 mt-1" v-if="sessions[inferenceParams.model]?.status_type === 'running'">
+                                        <i class="fas fa-bolt text-yellow-500"></i> Using live checkpoint from running session.
+                                    </p>
+                                </div>
+
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Average Diameter (px)</label>
+                                    <input v-model.number="inferenceParams.diameter" type="number" placeholder="0 = Auto" class="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                                </div>
+
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Input Image</label>
+                                    <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:bg-gray-50 transition cursor-pointer relative group">
+                                        <input type="file" @change="handleInferenceFile" accept="image/*,.tif,.tiff" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer">
+                                        <div v-if="!inferenceFile">
+                                            <i class="fas fa-image text-gray-400 text-2xl mb-2 group-hover:scale-110 transition-transform"></i>
+                                            <p class="text-xs text-gray-500">Click or Drag Image Here</p>
+                                        </div>
+                                        <div v-else class="text-sm font-medium text-blue-600 truncate px-2">
+                                            {{ inferenceFile.name }}
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
-                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Input Image</label>
-                                <input type="file" @change="handleInferenceFile" accept="image/*,.tif,.tiff" class="w-full text-sm">
+                            
+                            <div class="p-4 border-t border-gray-100 bg-gray-50/50 flex-none">
+                                <button @click="runInference" :disabled="!inferenceFile || isInferring" class="w-full bg-purple-600 text-white px-4 py-3 rounded-lg hover:bg-purple-700 transition disabled:opacity-50 font-medium shadow-sm flex justify-center items-center gap-2">
+                                    <i v-if="isInferring" class="fas fa-spinner fa-spin"></i>
+                                    {{ isInferring ? 'Processing...' : 'Run Segmentation' }}
+                                </button>
                             </div>
-                            <button @click="runInference" :disabled="!inferenceFile || isInferring" class="w-full bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 transition disabled:opacity-50">
-                                <i v-if="isInferring" class="fas fa-spinner fa-spin mr-2"></i> Run Inference
-                            </button>
-                        </div>
-                        
-                        <!-- Result -->
-                        <div class="bg-gray-100 rounded-lg flex items-center justify-center min-h-[300px] relative overflow-hidden">
-                            <div v-if="!inferenceResult && !inferencePreview" class="text-gray-400">Select image and run inference</div>
-                            <img v-if="inferencePreview" :src="inferencePreview" class="absolute inset-0 w-full h-full object-contain opacity-50">
-                            <canvas ref="inferenceCanvas" class="absolute inset-0 w-full h-full object-contain z-10"></canvas>
-                        </div>
+                         </div>
+
+                         <!-- Right: Visualization -->
+                         <div class="lg:col-span-8 bg-gray-900 rounded-xl overflow-hidden shadow-lg border border-gray-800 relative flex items-center justify-center min-h-[400px]">
+                             <div v-if="!inferencePreview" class="text-gray-600 text-center">
+                                 <i class="fas fa-image text-4xl mb-3 opacity-50"></i>
+                                 <p>No image loaded</p>
+                             </div>
+                             
+                             <div v-else class="relative w-full h-full p-4 flex items-center justify-center bg-[url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAHElEQVQYV2NkYGAwYcACGRkY/sfHx2BEV4yhEAB5ZwX9qj2t2QAAAABJRU5ErkJggg==')]">
+                                <img ref="previewImg" :src="inferencePreview" class="max-w-full max-h-full object-contain shadow-2xl" @load="onImageLoad">
+                                <canvas ref="inferenceCanvas" class="absolute pointer-events-none max-w-full max-h-full aspect-auto" :style="canvasStyle"></canvas>
+                             </div>
+
+                             <!-- Legend -->
+                             <transition name="fade">
+                                 <div v-if="inferenceResult" class="absolute bottom-4 right-4 bg-black/80 backdrop-blur text-white text-xs px-3 py-1.5 rounded-full border border-white/10 shadow-lg">
+                                     <i class="fas fa-cubes text-purple-400 mr-1"></i> Found <b>{{ inferenceObjectCount }}</b> objects
+                                 </div>
+                             </transition>
+                         </div>
+                     </div>
+                </div>
+
+            </div>
+        </main>
+
+
+        <!-- File Browser Modal -->
+        <div v-if="showFileBrowser" class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 fade-enter-active">
+            <div class="bg-white rounded-2xl p-6 w-full max-w-2xl shadow-2xl flex flex-col max-h-[80vh]">
+                <div class="flex justify-between items-center mb-4 border-b border-gray-100 pb-4 flex-none">
+                    <div>
+                        <h3 class="text-lg font-bold text-gray-900">Artifact Explorer</h3>
+                        <p class="text-xs text-gray-500">{{ trainingParams.artifact || 'No artifact selected' }}</p>
+                    </div>
+                    <button @click="showFileBrowser = false" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+                </div>
+
+                <div class="flex-none bg-gray-50 p-2 rounded-lg mb-4 flex items-center gap-2 text-sm text-gray-600 border border-gray-200">
+                    <button @click="browserNavigateUp" class="hover:bg-gray-200 p-1 rounded transition" :disabled="!browserPath"><i class="fas fa-arrow-up"></i></button>
+                    <span class="font-mono text-gray-400">/</span>
+                    <span class="font-mono">{{ browserPath }}</span>
+                </div>
+
+                <div class="flex-grow overflow-y-auto min-h-0 bg-white border border-gray-100 rounded-lg">
+                    <div v-if="browserLoading" class="p-8 text-center text-gray-400">
+                        <i class="fas fa-circle-notch fa-spin text-2xl mb-2"></i><br>Loading files...
+                    </div>
+                    <div v-else-if="browserError" class="p-8 text-center text-red-400">
+                        <i class="fas fa-exclamation-circle text-2xl mb-2"></i><br>{{ browserError }}
+                    </div>
+                    <ul v-else class="divide-y divide-gray-50">
+                        <li v-if="browserPath" @click="browserNavigateUp" class="px-4 py-2 hover:bg-gray-50 cursor-pointer flex items-center gap-3 text-gray-500">
+                            <i class="fas fa-level-up-alt"></i> ..
+                        </li>
+                        <li v-for="item in browserVisibleItems" :key="item.fullPath" 
+                            @click="handleItemClick(item)"
+                            class="px-4 py-2 hover:bg-blue-50 group flex items-center justify-between transition-colors cursor-pointer">
+                            
+                            <div class="flex items-center gap-3 overflow-hidden">
+                                <i :class="item.type === 'folder' ? 'fas fa-folder text-yellow-400' : 'fas fa-file text-gray-400'"></i>
+                                <span class="text-sm truncate" :class="item.type === 'folder' ? 'font-medium text-gray-700' : 'text-gray-500'">{{ item.name }}</span>
+                            </div>
+
+                            <div v-if="item.type === 'folder'" class="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                 <button @click.stop="selectFolderFor(item.fullPath, 'images')" class="text-[10px] px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 font-medium whitespace-nowrap">Use as Images</button>
+                                 <button @click.stop="selectFolderFor(item.fullPath, 'annotations')" class="text-[10px] px-2 py-1 bg-purple-100 text-purple-700 rounded hover:bg-purple-200 font-medium whitespace-nowrap">Use as Annotations</button>
+                            </div>
+                        </li>
+                    </ul>
+                     <div v-if="!browserLoading && browserVisibleItems.length === 0" class="p-8 text-center text-gray-400 text-sm">
+                         Empty folder
                     </div>
                 </div>
 
+                <div class="mt-4 pt-4 border-t border-gray-100 flex justify-between items-center text-xs text-gray-400">
+                    <div class="flex items-center gap-3">
+                        <span>Current: /{{ browserPath }}</span>
+                        <transition name="fade">
+                            <span v-if="browserFeedback" class="text-green-600 font-bold bg-green-50 px-2 py-0.5 rounded border border-green-200">
+                                <i class="fas fa-check"></i> {{ browserFeedback }}
+                            </span>
+                        </transition>
+                    </div>
+                    <div class="flex gap-2">
+                         <button @click="selectFolderFor(browserPath, 'images')" class="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded transition">Set Current as Images</button>
+                         <button @click="selectFolderFor(browserPath, 'annotations')" class="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded transition">Set Current as Annotations</button>
+                    </div>
+                </div>
             </div>
         </div>
 
         <!-- Upload Modal -->
-        <div v-if="showUploadModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div class="bg-white rounded-lg p-6 w-full max-w-lg">
-                <h3 class="text-lg font-bold mb-4">Upload Dataset</h3>
-                <form @submit.prevent="uploadDataset" class="space-y-4">
+        <div v-if="showUploadModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 fade-enter-active">
+            <div class="bg-white rounded-2xl p-8 w-full max-w-lg shadow-2xl transform transition-all">
+                <h3 class="text-xl font-bold mb-1 text-gray-900">Upload Dataset</h3>
+                <p class="text-sm text-gray-500 mb-6">Create a new dataset artifact from a local folder.</p>
+                
+                <form @submit.prevent="uploadDataset" class="space-y-5">
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1">Dataset Alias</label>
-                        <input v-model="uploadParams.alias" required class="w-full border rounded px-3 py-2" placeholder="my-custom-dataset">
+                        <input v-model="uploadParams.alias" required class="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-green-500 outline-none" placeholder="e.g. skin-tissue-v1">
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1">Select Folder</label>
-                        <input type="file" ref="folderInput" webkitdirectory directory multiple required class="w-full text-sm">
-                        <p class="text-xs text-gray-500 mt-1">Select a folder containing your images and annotations.</p>
+                        <input type="file" ref="folderInput" @change="handleFolderSelect" webkitdirectory directory multiple required class="w-full text-sm border border-gray-300 rounded-lg p-2 bg-gray-50">
+                        <p class="text-xs text-gray-500 mt-1.5"><i class="fas fa-info-circle"></i> Folder should contain images and mask files.</p>
                     </div>
                     
-                    <div v-if="isUploading" class="space-y-2">
-                         <div class="flex justify-between text-xs">
+                    <div v-if="isUploading" class="space-y-2 pt-2">
+                         <div class="flex justify-between text-xs font-medium text-gray-600">
                             <span>Uploading...</span>
                             <span>{{ uploadProgress }}%</span>
                         </div>
-                        <div class="w-full bg-gray-200 rounded-full h-2">
-                            <div class="bg-green-600 h-2 rounded-full transition-all duration-300" :style="{ width: uploadProgress + '%' }"></div>
+                        <div class="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+                            <div class="bg-green-500 h-2 rounded-full transition-all duration-300" :style="{ width: uploadProgress + '%' }"></div>
                         </div>
-                        <div class="text-xs text-gray-500">{{ uploadStatus }}</div>
+                        <div class="text-xs text-gray-400 truncate">{{ uploadStatus }}</div>
                     </div>
 
-                    <div class="flex justify-end gap-3 pt-4">
-                        <button type="button" @click="showUploadModal = false" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">Cancel</button>
-                        <button type="submit" :disabled="isUploading" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50">Upload</button>
+                    <div class="flex justify-end gap-3 pt-4 border-t border-gray-100">
+                        <button type="button" @click="showUploadModal = false" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium transition">Cancel</button>
+                        <button type="submit" :disabled="isUploading" class="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 font-medium shadow-sm transition">Upload</button>
                     </div>
                 </form>
             </div>
@@ -362,15 +641,23 @@
 
         createApp({
             setup() {
-                // Connection
+                // Connection State
                 const serverUrl = ref('https://hypha.aicell.io');
-                const isConnected = ref(false);
+                const monitoringSessionId = ref(null);
                 const workspace = ref('');
+                const authToken = ref('');
+                const isConnected = ref(false);
+                const isConnecting = ref(false);
+                const autoConnectError = ref('');
+                const showTokenInput = ref(false);
+
+                // Service Discovery
                 const availableServices = ref([]);
                 const selectedServiceId = ref('');
                 const service = ref(null);
-                
-                // Tabs
+                const isScanning = ref(false);
+
+                // Navigation
                 const currentTab = ref('dashboard');
                 const tabs = [
                     { id: 'dashboard', name: 'Dashboard', icon: 'fas fa-chart-line' },
@@ -378,27 +665,28 @@
                     { id: 'inference', name: 'Inference', icon: 'fas fa-microscope' },
                 ];
 
-                // Data
+                // Training Data
+                const syncError = ref(null);
                 const sessions = ref({});
                 const selectedSessionId = ref(null);
-                const activeTrainingSession = ref(null); // ID of currently running session found
                 const refreshLoading = ref(false);
-
-                // Training Form
+                
+                // Form Data
                 const trainingParams = reactive({
                     artifact: '',
                     model: 'cpsam',
                     train_images: 'images/',
-                    train_annotations: 'masks/',
+                    train_annotations: 'annotations/',
                     test_images: '',
                     test_annotations: '',
-                    n_epochs: 10,
-                    learning_rate: 1e-6,
+                    n_epochs: 50,
+                    learning_rate: 1e-5,
                     min_train_masks: 5,
                 });
                 const isStartingTraining = ref(false);
+                const trainingError = ref('');
 
-                // Upload
+                // Upload Data
                 const showUploadModal = ref(false);
                 const uploadParams = reactive({ alias: '' });
                 const isUploading = ref(false);
@@ -406,45 +694,84 @@
                 const uploadStatus = ref('');
                 const folderInput = ref(null);
 
-                // Inference
-                const inferenceParams = reactive({
-                    model: 'cpsam',
-                    diameter: null,
-                });
-                const pretrainedModels = ['cpsam', 'cyto3', 'nuclei', 'tissuenet']; // Simplified list
+                // Inference Data
+                const inferenceParams = reactive({ model: 'cpsam', diameter: null });
+                const pretrainedModels = ['cpsam', 'cyto3', 'nuclei', 'tissuenet'];
                 const inferenceFile = ref(null);
                 const inferencePreview = ref(null);
                 const isInferring = ref(false);
                 const inferenceResult = ref(null);
                 const inferenceCanvas = ref(null);
+                const previewImg = ref(null);
+                const canvasStyle = reactive({ top: '0', left: '0', width: '100%', height: '100%' });
+                const inferenceObjectCount = ref(0);
 
-                // Export
+                // File Browser
+                const showFileBrowser = ref(false);
+                const browserFiles = ref([]);
+                const browserPath = ref(''); 
+                const browserLoading = ref(false);
+                const browserError = ref('');
+
+                // Export Data
                 const exportModelName = ref('');
-                const exportCollection = ref('bioimage-io/colab-annotations');
                 const isExporting = ref(false);
                 const exportResult = ref(null);
 
-                // Computed
-                const activeSessionStatus = computed(() => activeTrainingSession.value ? sessions.value[activeTrainingSession.value] : null);
+                // Computed Properties
                 const currentSession = computed(() => selectedSessionId.value ? sessions.value[selectedSessionId.value] : null);
-                const hasMetrics = computed(() => {
-                    const s = currentSession.value;
-                    return s && s.test_metrics && s.test_metrics.length > 0;
+                const monitoredSession = computed(() => monitoringSessionId.value ? sessions.value[monitoringSessionId.value] : null);
+                const hasMetrics = computed(() => currentSession.value?.test_metrics?.length > 0);
+
+                // --- Lifecycle Hooks ---
+                onMounted(async () => {
+                    // Parse URL parameters for auto-connect
+                    const params = new URLSearchParams(window.location.search);
+                    if (params.has('server_url')) serverUrl.value = params.get('server_url');
+                    if (params.has('token')) authToken.value = params.get('token');
+                    
+                    // Auto-connect immediately
+                    await connect();
+                    
+                    if (isConnected.value) {
+                         if (params.has('service_id')) {
+                            selectedServiceId.value = params.get('service_id');
+                         } else {
+                            // Try to find service automatically
+                            await listServices();
+                             // Auto-select logic is inside listServices now to handle async better
+                         }
+                         
+                         if (params.has('view_session')) {
+                             // Wait a bit for service to load
+                             const sessId = params.get('view_session');
+                             // We need to wait for watcher to fire
+                             setTimeout(() => viewSession(sessId), 1000);
+                         }
+                    }
                 });
 
-                // Methods
+                // --- Connection Methods ---
                 const connect = async () => {
+                    isConnecting.value = true;
+                    autoConnectError.value = '';
                     try {
-                        const client = await hyphaWebsocketClient.connectToServer({
-                            "server_url": serverUrl.value,
-                        });
+                        const config = { "server_url": serverUrl.value };
+                        if (authToken.value) config.token = authToken.value;
+                        
+                        const client = await hyphaWebsocketClient.connectToServer(config);
                         workspace.value = client.config.workspace;
                         isConnected.value = true;
-                        window.hyphaClient = client; // Expose globally for debugging
+                        window.hyphaClient = client;
+                        
+                        // Initial Scan
                         await listServices();
+                        
                     } catch (e) {
                         console.error(e);
-                        alert("Connection failed: " + e.message);
+                        autoConnectError.value = "Connection failed: " + e.message;
+                    } finally {
+                        isConnecting.value = false;
                     }
                 };
 
@@ -452,429 +779,750 @@
                     if (window.hyphaClient) window.hyphaClient.disconnect();
                     isConnected.value = false;
                     service.value = null;
+                    sessions.value = {};
                 };
 
                 const listServices = async () => {
-                    const client = window.hyphaClient;
-                    if (!client) return;
-                    // Find services. ImJoy RPC uses `listServices`. Hypha client has `listServices`.
-                    // We look for services loaded in current workspace or public that match our app.
-                    // Assuming the app is running in the same workspace or we can see it.
-                    // The service ID usually ends with ":CellposeFinetune" or similar if unnamed, or just the app ID.
-                    // The App Manager registers services.
-                    // Let's try to list all and filter.
-                    // Since redeploy_cellpose.py starts it as an app, the service ID is likely returned by run_app usually.
-                    // But here we need to find it.
-                    // We can also assume the user knows it, but better to find it.
-                    
-                    // NOTE: Depending on how the worker starts the app, the service ID might be unpredictable.
-                    // However, Hypha services usually registered with an ID.
-                    // If we can't find it, we'll ask user.
-                    // Let's try to query services with "cellpose" in ID.
+                    if (!window.hyphaClient) return;
+                    isScanning.value = true;
                     try {
-                        const allServices = await client.listServices("public"); // Or workspace?
-                         // "public" listing might be restricted.
-                         // Let's list from our own workspace first.
-                         const wsServices = await client.listServices(client.config.workspace);
-                         // Also try to list from the workspace where the app serves (which might be 'bioimage-io' or similar)
-                         // For now, let's just list active services.
-                         
-                        const candidates = wsServices.filter(s => s.type && (s.type.includes('CellposeFinetune') || s.id.includes('cellpose')));
-                        availableServices.value = candidates.map(s => s.id);
-                        if (availableServices.value.length > 0) {
-                            selectedServiceId.value = availableServices.value[0];
-                        } else {
-                            // Fallback: Manually look for 'cellpose-finetuning'
-                            // availableServices.value = ['cellpose-finetuning']; // Guess
+                        const client = window.hyphaClient;
+                        let services = [];
+
+                        // 1. List from current workspace
+                        try {
+                            const personal = await client.listServices(client.config.workspace);
+                            services = services.concat(personal);
+                        } catch (e) {
+                            console.warn("My workspace scan failed", e);
                         }
+
+                        // 2. List from bioimage-io workspace (if different)
+                        if (client.config.workspace !== 'bioimage-io') {
+                            try {
+                                const publicWs = await client.listServices('bioimage-io');
+                                services = services.concat(publicWs);
+                            } catch (e) {
+                                console.warn("Bioimage-io workspace scan failed", e);
+                            }
+                        }
+                        
+                        // Filter for likely cellpose services
+                        // Looking for type "CellposeFinetune" or id containing "cellpose"
+                        const candidates = services.filter(s => 
+                            (s.type && s.type.includes('CellposeFinetune')) || 
+                            (s.id && s.id.includes('cellpose-finetuning'))
+                        );
+                        
+                        // Deduplicate by ID
+                        const uniqueIds = new Set(candidates.map(s => s.id));
+                        availableServices.value = Array.from(uniqueIds);
+                        
+                        // Auto-select if none selected and we found some
+                        if (availableServices.value.length > 0 && !selectedServiceId.value) {
+                             // Prefer one matching 'cellpose-finetuning'
+                             const match = availableServices.value.find(id => id.includes('cellpose-finetuning'));
+                             selectedServiceId.value = match || availableServices.value[0];
+                        }
+                        
                     } catch (e) {
-                        console.warn("Failed to list services", e);
-                        availableServices.value = [];
+                        console.warn("Service scan failed", e);
+                    } finally {
+                        isScanning.value = false;
                     }
                 };
 
+                // --- Helper: Get Artifact Manager ---
+                const getArtifactManager = async () => {
+                    // Strategy 1: Discovery via listServices (Robust)
+                    try {
+                        const services = await window.hyphaClient.listServices("bioimage-io");
+                        // Look for Artifact Manager by name or specific ID
+                        const amService = services.find(s => s.config.name === "Artifact Manager" || s.id === "bioimage-io/artifact-manager");
+                        if (amService) {
+                            console.log("Found Artifact Manager via discovery:", amService.id);
+                            return await window.hyphaClient.getService(amService.id);
+                        }
+                    } catch (e) {
+                        console.warn("Artifact Manager discovery failed:", e);
+                    }
+
+                    // Strategy 2: Fallback to known alias
+                    console.log("Falling back to public/artifact-manager");
+                    // Use keyword arg invocation style if possible, or simpler service
+                    // Note: 'public/artifact-manager' might be 'bioimage-io/artifact-manager'
+                    try {
+                         return await window.hyphaClient.getService("bioimage-io/artifact-manager");
+                    } catch (e) {
+                         // Last resort
+                         return await window.hyphaClient.getService("public/artifact-manager");
+                    }
+                };
+
+                // Watch Selected Service to Initialize
                 watch(selectedServiceId, async (newId) => {
-                    if (newId) {
+                    if (newId && window.hyphaClient) {
                         try {
                             service.value = await window.hyphaClient.getService(newId);
                             await refreshSessions();
                             startAutoUpdate();
                         } catch (e) {
-                            console.error("Failed to get service", e);
-                            alert("Failed to connect to service: " + e.message);
+                            console.error("Failed to bind service", e);
+                            alert(`Failed to connect to service '${newId}': ${e.message}`);
+                            service.value = null;
                         }
                     }
                 });
 
-                // Dashboard
-                const refreshSessions = async () => {
+                // --- Dashboard Methods ---
+                const refreshSessions = async (background = false) => {
                     if (!service.value) return;
-                    refreshLoading.value = true;
+                    if (!background) refreshLoading.value = true;
+                    
                     try {
-                        sessions.value = await service.value.list_training_sessions();
-                        // Check for running session
-                        const runningIds = Object.keys(sessions.value).filter(k => sessions.value[k].status_type === 'running');
-                        if (runningIds.length > 0) {
-                            activeTrainingSession.value = runningIds[0];
-                        } else {
-                            activeTrainingSession.value = null;
+                        // Use a timeout for the call to prevent hanging
+                        let result = {};
+                        try {
+                             result = await Promise.race([
+                                service.value.list_training_sessions(),
+                                new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 60000))
+                            ]);
+                        } catch (err) {
+                            console.warn("Training sessions list timed out or failed:", err);
+                            // Do not propagate error to UI 'syncError' unless we really want to annoy the user
+                            // syncError.value = "Sync slow/failed";
+                            // Return empty dict to allow app to continue
+                            result = {};
+                        }
+                        
+                        sessions.value = result;
+                        syncError.value = null;
+
+                        // Find active session
+                        const running = Object.entries(sessions.value).find(([_, s]) => s.status_type === 'running');
+                        // Auto-monitor running session if none monitored
+                        if (!monitoringSessionId.value && running) {
+                            monitoringSessionId.value = running[0];
                         }
                     } catch (e) {
                         console.error(e);
+                        // Only show sync error if it persists or is manual
+                        syncError.value = "Sync failed: " + (e.message || "Timeout");
                     } finally {
-                        refreshLoading.value = false;
+                        if (!background) refreshLoading.value = false;
                     }
                 };
 
                 let updateTimer = null;
                 const startAutoUpdate = () => {
-                    if (updateTimer) clearInterval(updateTimer);
-                    updateTimer = setInterval(async () => {
+                    if (updateTimer) clearTimeout(updateTimer);
+                    
+                    const runLoop = async () => {
                         if (isConnected.value && service.value) {
-                            // Only full refresh active or selected session details to save bandwidth? 
-                            // Or just list_training_sessions as it's lightweight (metadata only).
-                            await refreshSessions();
-                            if (currentTab.value === 'session_details' && selectedSessionId.value) {
-                                renderCharts();
+                            try {
+                                await refreshSessions(true);
+                                // If viewing a session, update charts
+                                if (currentTab.value === 'session_details' && selectedSessionId.value) {
+                                    renderCharts();
+                                }
+                            } catch (e) {
+                                console.warn("Auto-update loop error:", e);
                             }
                         }
-                    }, 3000); // 3 seconds
+                        // Increase interval to 10 seconds to reduce load
+                        updateTimer = setTimeout(runLoop, 10000);
+                    };
+                    runLoop();
                 };
 
                 const viewSession = (id) => {
+                    if (!sessions.value[id]) return;
                     selectedSessionId.value = id;
                     currentTab.value = 'session_details';
-                    // Wait for DOM to update then render charts
                     setTimeout(renderCharts, 100);
                 };
 
-                const renderCharts = () => {
-                    if (!currentSession.value) return;
-                    const s = currentSession.value;
-                    const epochs = Array.from({length: (s.train_losses?.length || 0)}, (_, i) => i + 1);
-                    
-                    // Loss Chart
-                    const traceTrain = {
-                        x: epochs,
-                        y: s.train_losses || [],
-                        mode: 'lines',
-                        name: 'Train Loss'
-                    };
-                    const traceTest = {
-                        x: epochs,
-                        y: s.test_losses || [],
-                        mode: 'lines',
-                        name: 'Test Loss'
-                    };
-                    Plotly.newPlot('lossChart', [traceTrain, traceTest], {
-                        title: 'Losses',
-                        margin: { t: 30, r: 10, l: 40, b: 30 },
-                        height: 320
-                    });
-
-                    // Metrics Chart
-                    if (hasMetrics.value) {
-                        // Extract metrics
-                        const metrics = s.test_metrics || [];
-                        const validEpochs = [];
-                        const f1 = [];
-                        const iou = [];
-                        
-                        metrics.forEach((m, i) => {
-                            if (m) {
-                                validEpochs.push(i + 1);
-                                f1.push(m.f1);
-                                iou.push(m.iou);
-                            }
-                        });
-
-                        Plotly.newPlot('metricsChart', [
-                            { x: validEpochs, y: f1, mode: 'lines+markers', name: 'F1 Score' },
-                            { x: validEpochs, y: iou, mode: 'lines+markers', name: 'IoU' }
-                        ], {
-                            title: 'Validation Metrics',
-                            margin: { t: 30, r: 10, l: 40, b: 30 },
-                            height: 320
-                        });
-                    }
-                };
-
-                const statusColor = (status) => {
-                    switch(status) {
-                        case 'running': return 'text-blue-600 font-bold';
-                        case 'completed': return 'text-green-600 font-bold';
-                        case 'failed': return 'text-red-600 font-bold';
-                        default: return 'text-gray-600';
-                    }
-                };
-                 const statusBadgeClass = (status) => {
-                    switch(status) {
-                        case 'running': return 'bg-blue-100 text-blue-800';
-                        case 'completed': return 'bg-green-100 text-green-800';
-                        case 'failed': return 'bg-red-100 text-red-800';
-                        default: return 'bg-gray-100 text-gray-800';
-                    }
-                };
+                // --- Data Formatting ---
                 const statusTextColor = (status) => {
-                     switch(status) {
-                        case 'running': return 'text-blue-600';
-                        case 'completed': return 'text-green-600';
-                        case 'failed': return 'text-red-600';
-                        default: return 'text-gray-600';
-                    }
+                    const map = { running: 'text-blue-600', completed: 'text-green-600', failed: 'text-red-600' };
+                    return map[status] || 'text-gray-600';
                 };
+                
+                const fromNow = (dateStr) => {
+                    if (!dateStr) return '-';
+                    return new Date(dateStr).toLocaleString();
+                };
+                
                 const formatDuration = (seconds) => {
                     if (!seconds) return '-';
                     const h = Math.floor(seconds / 3600);
                     const m = Math.floor((seconds % 3600) / 60);
                     const s = Math.floor(seconds % 60);
-                    return `${h}h ${m}m ${s}s`;
+                    return h > 0 ? `${h}h ${m}m ${s}s` : `${m}m ${s}s`;
                 };
+                
+                const getLatestLoss = (session) => {
+                    if (session.train_losses && session.train_losses.length > 0) {
+                        return session.train_losses[session.train_losses.length - 1].toFixed(4);
+                    }
+                    return '-';
+                };
+                
+                const formatDate = (iso) => iso ? new Date(iso).toLocaleDateString() + ' ' + new Date(iso).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '-';
 
-                const stopTraining = async (id) => {
-                    if (!confirm("Are you sure you want to stop this training session?")) return;
-                    try {
-                        await service.value.stop_training(id);
-                        await refreshSessions();
-                    } catch (e) {
-                        alert("Failed to stop: " + e.message);
+                // --- Charting ---
+                const renderCharts = () => {
+                    if (!currentSession.value) return;
+                    const s = currentSession.value;
+                    const epochs = s.train_losses ? s.train_losses.map((_, i) => i + 1) : [];
+                    
+                    const layout = {
+                        margin: { t: 20, r: 20, l: 40, b: 30 },
+                        height: 280,
+                        showlegend: true,
+                        legend: { orientation: 'h', y: 1.1 },
+                        paper_bgcolor: 'rgba(0,0,0,0)',
+                        plot_bgcolor: 'rgba(0,0,0,0)'
+                    };
+
+                    Plotly.react('lossChart', [
+                        { x: epochs, y: s.train_losses || [], name: 'Train Loss', line: { color: '#3b82f6' } },
+                        { x: epochs, y: s.test_losses || [], name: 'Val Loss', line: { color: '#f97316' } }
+                    ], layout);
+
+                    if (hasMetrics.value) {
+                        const validEpochs = [];
+                        const f1 = [];
+                        const iou = [];
+                        s.test_metrics.forEach((m, i) => {
+                            if (m) { validEpochs.push(i + 1); f1.push(m.f1 || 0); iou.push(m.iou || 0); }
+                        });
+                        
+                        Plotly.react('metricsChart', [
+                            { x: validEpochs, y: f1, name: 'F1 Score', line: { color: '#10b981' } },
+                            { x: validEpochs, y: iou, name: 'IoU', line: { color: '#8b5cf6' } }
+                        ], layout);
                     }
                 };
 
-                // Training
+                // --- Actions ---
+                const stopTraining = async (id) => {
+                    if (!confirm("Stop this training session?")) return;
+                    try { await service.value.stop_training(id); await refreshSessions(); }
+                    catch (e) { alert("Failed: " + e.message); }
+                };
+
                 const startTraining = async () => {
                     isStartingTraining.value = true;
+                    trainingError.value = '';
                     try {
-                        const result = await service.value.start_training(trainingParams);
-                        alert(`Training started! Session ID: ${result.session_id}`);
-                        activeTrainingSession.value = result.session_id;
+                        const result = await service.value.start_training(
+                            trainingParams.artifact,
+                            trainingParams.train_images,
+                            trainingParams.train_annotations,
+                            trainingParams.test_images || null,
+                            trainingParams.test_annotations || null,
+                            trainingParams.model,
+                            null, // n_samples
+                            trainingParams.n_epochs,
+                            trainingParams.learning_rate,
+                            1e-4, // weight_decay default
+                            trainingParams.min_train_masks,
+                            // validation_interval (skip, will use default None)
+                        );
+                        monitoringSessionId.value = result.session_id;
                         viewSession(result.session_id);
                     } catch (e) {
-                        alert("Failed to start training: " + e.message);
                         console.error(e);
+                        trainingError.value = "Start failed: " + (e.message || "Unknown error");
                     } finally {
                         isStartingTraining.value = false;
                     }
                 };
 
-                // Upload
-                const uploadDataset = async () => {
-                    if (!folderInput.value.files.length) {
-                        alert("Please select a folder.");
-                        return;
-                    }
-                    isUploading.value = true;
-                    uploadStatus.value = "Creating artifact...";
-                    uploadProgress.value = 0;
 
+                const handleFolderSelect = (event) => {
+                     const files = event.target.files;
+                     if (files && files.length > 0) {
+                         // Extract the top-level folder name from webkitRelativePath
+                         // format: "FolderName/file.txt"
+                         const path = files[0].webkitRelativePath || "";
+                         const parts = path.split('/');
+                         if (parts.length > 0 && parts[0]) {
+                             // Sanitize for alias
+                             const folderName = parts[0];
+                             // Simple sanitation: lowercase, replace spaces/special chars with dash
+                             uploadParams.alias = folderName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+                         }
+                     }
+                };
+
+                // --- Upload ---
+                const uploadDataset = async () => {
+                    if (!folderInput.value.files.length) return;
+                    isUploading.value = true;
+                    uploadStatus.value = "Initializing...";
+                    
                     try {
-                        const am = await window.hyphaClient.getService("public/artifact-manager");
-                        const files = Array.from(folderInput.value.files);
-                        
-                        // Create artifact
-                        // Note: folder alias construction
+                        const am = await getArtifactManager();
                         const alias = uploadParams.alias.replace(/[^a-z0-9-]/g, '-').toLowerCase();
-                        const artifact = await am.create({
+                        
+                        // Use explicit manifest arg
+                        const manifest = {
                             alias: alias,
                             type: "dataset",
                             stage: true
-                        });
+                        };
+                        console.log("Creating artifact with manifest:", manifest);
                         
-                        // Upload Loop
-                        let uploaded = 0;
+                        // Pass manifest as positional args to match Hypha signature:
+                        // create(alias, artifact_id, workspace, parent_id, manifest, type, config, secrets, version, comment, overwrite, stage, context)
+                        const artifact = await am.create(
+                            alias,          // alias
+                            null,           // artifact_id
+                            null,           // workspace
+                            null,           // parent_id
+                            manifest,       // manifest
+                            "dataset",      // type
+                            null,           // config
+                            null,           // secrets
+                            null,           // version
+                            null,           // comment
+                            false,          // overwrite
+                            true            // stage
+                        );
+                        
+                        const files = Array.from(folderInput.value.files);
+                        let completed = 0;
                         uploadStatus.value = `Uploading ${files.length} files...`;
-                        
-                        // Batch uploads if needed, for now sequential-ish
-                        for (const file of files) {
-                            const path = file.webkitRelativePath || file.name;
-                            // Need to strip the root folder name usually if we want flat structure, 
-                            // or keep it. The backend expects "images/..." and "masks/..." structure.
-                            // If user uploads "mydata/images/img.tif", we want to preserve "images/img.tif" relative to "mydata".
-                            // Artifact manager paths are relative to artifact root.
-                            // webkitRelativePath gives "MyFolder/sub/file". We should use that.
-                            
-                            const uploadUrl = await am.put_file(artifact.id, path);
-                            await fetch(uploadUrl, { method: 'PUT', body: file });
-                            
-                            uploaded++;
-                            uploadProgress.value = Math.round((uploaded / files.length) * 100);
+
+                        // Simple concurrency control (batches of 5)
+                        const batchSize = 5;
+                        for (let i = 0; i < files.length; i += batchSize) {
+                            const batch = files.slice(i, i + batchSize);
+                            await Promise.all(batch.map(async (file) => {
+                                const path = file.webkitRelativePath || file.name;
+                                const putUrl = await am.put_file(artifact.id, path);
+                                await fetch(putUrl, { method: 'PUT', body: file });
+                                completed++;
+                                uploadProgress.value = Math.round((completed / files.length) * 100);
+                            }));
                         }
                         
-                        uploadStatus.value = "Committing artifact...";
+                        uploadStatus.value = "Committing...";
                         await am.commit(artifact.id);
                         
-                        alert(`Dataset uploaded successfully! ID: ${artifact.id}`);
+                        // Set fields in form
                         trainingParams.artifact = artifact.id;
                         showUploadModal.value = false;
+                        alert(`Dataset '${artifact.id}' uploaded successfully!`);
                         
                     } catch (e) {
                         console.error(e);
-                        alert("Upload failed: " + e.message);
+                        alert("Upload error: " + e.message);
                     } finally {
                         isUploading.value = false;
                     }
                 };
 
-                // Inference
-                const handleInferenceFile = (event) => {
-                    const file = event.target.files[0];
+                // --- Inference ---
+                const handleInferenceFile = (e) => {
+                    const file = e.target.files[0];
                     if (file) {
                         inferenceFile.value = file;
                         inferencePreview.value = URL.createObjectURL(file);
+                        inferenceResult.value = null; // Reset previous result
+                        
+                        // Reset canvas
+                        const canvas = inferenceCanvas.value;
+                        if (canvas) {
+                             const ctx = canvas.getContext('2d');
+                             ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        }
+                    }
+                };
+
+                const onImageLoad = () => {
+                    // Sync canvas size to image size
+                    const img = previewImg.value;
+                    const canvas = inferenceCanvas.value;
+                    if (img && canvas) {
+                        canvas.width = img.naturalWidth;
+                        canvas.height = img.naturalHeight;
                     }
                 };
 
                 const runInference = async () => {
-                     if (!inferenceFile.value) return;
-                     isInferring.value = true;
-                     try {
-                        // We need to send the image to the service.
-                        // We can't easily upload to artifact just for one inference (draft artifact overhead).
-                        // check `infer` signature: `input_arrays` (list of object).
-                        // We can read file as base64 or arraybuffer and send it if hypha-rpc supports it.
-                        // Better: Decode image to pixels in JS and send as array?
-                        // Or use a "blob" if supported.
-                        // `hypha-rpc` supports `imjoy-rpc` codecs.
-                        // Simplest hack: Use `hypha-rpc` automatic encoding if we pass a suitable object?
-                        // Actually, the backend `infer` tool expects `list[object]` documented as "List of numpy ndarrays".
-                        // Hypha supports transferring typed arrays.
+                    if (!inferenceFile.value) return;
+                    isInferring.value = true;
+                    try {
+                        const am = await getArtifactManager();
                         
-                        // 1. Read file to ArrayBuffer
-                        // 2. Wrap in a structure that Hypha/ImJoy RPC recognizes as ndarray?
-                        //    Usually {_rtype: 'ndarray', _rvalue: <buffer>, shape: [...], dtype: ...}
-                        //    But without imjoy-rpc utils it is hard.
+                        // Upload temp file
+                        const tmpAlias = `temp-inf-${Date.now()}`;
+                        const manifest = { 
+                            alias: tmpAlias, 
+                            type: "temp", 
+                            stage: true, 
+                            expires_after: 1800 
+                        };
                         
-                        // ALTERNATIVE: Upload to temporary artifact.
-                        // This uses existing reliable upload logic.
+                        const art = await am.create(
+                            tmpAlias,       // alias
+                            null,           // artifact_id
+                            null,           // workspace
+                            null,           // parent_id
+                            manifest,       // manifest
+                            "temp",         // type
+                            null,           // config
+                            null,           // secrets
+                            null,           // version
+                            null,           // comment
+                            false,          // overwrite
+                            true            // stage
+                        );
                         
-                        const am = await window.hyphaClient.getService("public/artifact-manager");
-                        const tempAlias = `temp-inf-${Date.now()}`;
-                        const tempArtifact = await am.create({
-                            alias: tempAlias,
-                            type: "temp",
-                            stage: true,
-                            expires_after: 3600 // Clean up after 1 hour (config dependent)
-                        });
+                        const fname = inferenceFile.value.name;
+                        const url = await am.put_file(art.id, fname);
+                        await fetch(url, { method: 'PUT', body: inferenceFile.value });
+                        await am.commit(art.id); // Commit required for reading
                         
-                        // Use simple filename
-                        const filename = inferenceFile.value.name;
-                        const putUrl = await am.put_file(tempArtifact.id, filename);
-                        await fetch(putUrl, { method: 'PUT', body: inferenceFile.value });
-                        
-                        // We don't commit? If we stay in stage, can we access it?
-                        // Access usually requires commit.
-                        await am.commit(tempArtifact.id);
-                        
-                        // Now call infer
-                        const artifactId = tempArtifact.id;
-                        const result = await service.value.infer({
-                            artifact: artifactId,
-                            image_paths: [filename], // path in artifact
-                            model: inferenceParams.model,
-                            diameter: inferenceParams.diameter
-                        });
+                        const result = await service.value.infer(
+                            art.id,           // artifact
+                            [fname],          // image_paths
+                            null,             // input_arrays
+                            inferenceParams.model, // model
+                            inferenceParams.diameter, // diameter
+                        );
                         
                         inferenceResult.value = result[0];
-                        drawResult(result[0]);
+                        drawInference(result[0].output);
                         
-                        // Cleanup? Artifact manager handles lifecycle ideally.
-                        
-                     } catch (e) {
-                         console.error(e);
-                         alert("Inference failed: " + e.message);
-                     } finally {
-                         isInferring.value = false;
-                     }
+                        // Cleanup artifact (optional, expires anyway)
+                    } catch (e) {
+                        alert("Inference fail: " + e.message);
+                    } finally {
+                        isInferring.value = false;
+                    }
                 };
 
+                const drawInference = (mask) => {
+                    const canvas = inferenceCanvas.value;
+                    if (!canvas) return;
+                    
+                    const ctx = canvas.getContext('2d');
+                    const width = canvas.width;
+                    const height = canvas.height;
+                    
+                    // Decode & Draw Mask
+                    // Mask is likely a nested array (from JSON) or TypedArray (if binary). 
+                    // Assuming nested array matching image dimensions for now.
+                    // Flatten if needed.
+                    
+                    // Simple pixel manipulation
+                    const idata = ctx.createImageData(width, height);
+                    const data = idata.data;
+                    
+                    // Handle nested array [y][x] or flat
+                    const isNested = Array.isArray(mask) && Array.isArray(mask[0]);
+                    
+                    // Determine max label for coloring
+                    const flatData = isNested ? mask.flat() : mask;
+                    inferenceObjectCount.value = new Set(flatData).size - 1; // Exclude 0
+
+                    for (let y = 0; y < height; y++) {
+                        for (let x = 0; x < width; x++) {
+                            const val = isNested ? mask[y]?.[x] : mask[y * width + x];
+                            if (val && val > 0) {
+                                const idx = (y * width + x) * 4;
+                                // Simple hash for color
+                                const r = (val * 123) % 255;
+                                const g = (val * 231) % 255;
+                                const b = (val * 73) % 255;
+                                
+                                data[idx] = r;
+                                data[idx+1] = g;
+                                data[idx+2] = b;
+                                data[idx+3] = 150; // alpha
+                            }
+                        }
+                    }
+                    ctx.putImageData(idata, 0, 0);
+                };
+
+                // --- File Browser ---
+                const openFileBrowser = async () => {
+                   if (!trainingParams.artifact) {
+                       alert("Please enter an Artifact ID first (e.g. from the dashboard or your workspace).");
+                       return;
+                   }
+                   showFileBrowser.value = true;
+                   browserPath.value = '';
+                   browserError.value = '';
+                   browserFiles.value = [];
+                   browserLoading.value = true;
+                   
+                   try {
+                       const am = await getArtifactManager();
+                       
+                       // Try detailed read
+                       try {
+                            // If navigation path is empty, we read the root
+                            // If we are navigating INTO a folder, we might need to list files recursively or fetch the folder content?
+                            // But usually `am.read` or `list_files` returns ALL files?
+                            // If it returns a shallow list (folders only), we have a problem.
+                            // Let's assume `list_files` handles recursive listing unless specified otherwise.
+                            
+                            // ISSUE: The initial list seemed to be shallow ("images", "annotations").
+                            // If `browserFiles` only has directories, we can't show files inside them.
+                            // We need to re-fetch if the user drills down, OR we need to ensure we fetch everything up front.
+                            // `am.list_files` usually returns all files.
+                            // If "images" is a folder, `list_files` on it?
+                            
+                           let rawFiles = [];
+                           // Use list_files directly to get a flat list of strings
+                           // Note: list_files might not be recursive by default in some implementations?
+                           // Actually hypha artifact manager list_files usually returns all keys.
+                           
+                           // However, if we are in a subfolder, maybe we should fetch for that subfolder?
+                           // But `browserFiles` is the state for the whole tree currently.
+                           // Let's optimize: When opening browser, fetch EVERYTHING.
+                           
+                           console.log("Fetching file list for artifact:", trainingParams.artifact);
+                           rawFiles = await am.list_files(trainingParams.artifact);
+                           
+                           // If rawFiles is just ["images", "annotations"], that means the artifact
+                           // literally only contains those entries (maybe as empty file placeholders for folders?)
+                           // OR the artifact manager is returning directories.
+                           
+                        
+                        // Fallback: If list_files didn't work as expected or returned empty
+                        if (!rawFiles || rawFiles.length === 0) {
+                            console.log("list_files returned empty, trying to read manifest directly...");
+                            const art = await am.read(trainingParams.artifact);
+                            if (art.manifest && art.manifest.files) {
+                                rawFiles = art.manifest.files;
+                            } else if (art.files) {
+                                rawFiles = art.files;
+                            }
+                        }
+                           
+                        browserFiles.value = rawFiles.map(f => {
+                            // Handle object format {name: "...", ...} or string
+                            let p = typeof f === 'string' ? f : (f.path || f.name || f.key || "");
+                            // Remove leading ./ or /
+                            return p.replace(/^\.?\//, '');
+                        }).filter(f => f && typeof f === 'string');
+                            
+                        console.log("Loaded browser files:", browserFiles.value.length, browserFiles.value.slice(0, 10));
+
+                       } catch (e) {
+                           throw e;
+                       }
+                   } catch (e) {
+                       console.error(e);
+                       browserError.value = "Failed to load artifact: " + e.message;
+                   } finally {
+                       browserLoading.value = false;
+                   }
+                };
+
+
+                // Watch browserPath to refetch if needed
+                watch(browserPath, async (newPath) => {
+                     if (!newPath) return;
+                     
+                     // Check if we already have content for this path
+                     // browserVisibleItems is computed based on browserFiles.
+                     // If we have items in browserFiles that start with "newPath/", we are good.
+                     // However, browserVisibleItems is not available here synchronously if computed? 
+                     // Actually we can check browserFiles directly.
+                     
+                     const start = newPath.endsWith('/') ? newPath : newPath + '/';
+                     const hasContent = browserFiles.value.some(f => f.startsWith(start));
+                     
+                     if (!hasContent) {
+                         // Likely a placeholder folder. Try to fetch contents.
+                         // Use local loading state for just this check?
+                         // Or reuse browserLoading if we want to block UI. Use simpler indicators.
+                         console.log(`Path ${newPath} seems empty locally. Fetching...`);
+                         
+                         try {
+                             const am = await getArtifactManager();
+                             // Fetch files in this directory. 
+                             // NOTE: list_files(artifact_id, dir_path=...) might be supported depending on version.
+                             // Attempting to pass dir_path as 2nd argument.
+                             // Signature: list_files(artifact_id, dir_path, limit, version, stage, include_pending, offset, context)
+                             
+                             // If the API supports it, this will fill the gap.
+                             // Some AM versions treat 2nd arg as context? No, Python sig says dir_path.
+                             // JS Client typically maps args.
+                             let newFiles = [];
+                             try {
+                                 // Try positional: list_files(id, path)
+                                 newFiles = await am.list_files(trainingParams.artifact, newPath);
+                             } catch (err) {
+                                 console.warn("list_files(id, path) failed. Trying without path filtering or keyword args if object", err);
+                             }
+                             
+                             if (newFiles && newFiles.length > 0) {
+                                 const p = newPath.endsWith('/') ? newPath : newPath + '/';
+                                 // Add files if they aren't already there
+                                 const existing = new Set(browserFiles.value);
+                                 let added = 0;
+                                 
+                                 for (let f of newFiles) {
+                                     // f might be relative to artifact root, or relative to dir_path?
+                                     // Typically relative to root.
+                                     let pathStr = typeof f === 'string' ? f : (f.path || f.name || f.key || "");
+                                     pathStr = pathStr.replace(/^\.?\//, '');
+                                     
+                                     // If the server returns paths *relative to the dir_path* (unlikely but possible), prepending might be needed.
+                                     // BUT usually it returns full artifact path.
+                                     
+                                     // Ensure format consistency
+                                     if (pathStr && !existing.has(pathStr)) {
+                                         browserFiles.value.push(pathStr);
+                                         added++;
+                                     }
+                                 }
+                                 console.log(`Fetched ${added} new items for ${newPath}`);
+                             }
+                         } catch (e) {
+                             console.error("Failed to fetch sub-path:", e);
+                         }
+                     }
+                });
+                
+                // Feedback for browser actions
+                const browserFeedback = ref('');
+                
+                const showBrowserFeedback = (msg) => {
+                    browserFeedback.value = msg;
+                    setTimeout(() => browserFeedback.value = '', 2000);
+                };
+
+                const browserVisibleItems = computed(() => {
+                    if (!browserFiles.value) return [];
+                    
+                    const p = browserPath.value ? (browserPath.value.endsWith('/') ? browserPath.value : browserPath.value + '/') : '';
+                    const items = new Map();
+
+                    for (const f of browserFiles.value) {
+                         // Skip if not in current path
+                         if (p && !f.startsWith(p)) continue;
+                         
+                         // Get relative path
+                         const rel = f.slice(p.length);
+                         if (!rel) continue; // Same path as folder
+                         
+                         // Get first component
+                         const parts = rel.split('/');
+                         const name = parts[0];
+                         
+                         // If it has deeper parts, it's a folder
+                         // Or if it ends with slash (though split might handle empty last part)
+                         // logic: "subdir/file.txt" -> parts=["subdir", "file.txt"] -> name="subdir"
+                         // logic: "file.txt" -> parts=["file.txt"] -> name="file.txt"
+                         
+                         if (parts.length > 1 && parts[1] !== "") {
+                             // It is a directory containing stuff
+                             if (!items.has(name)) {
+                                 items.set(name, { name, type: 'folder', fullPath: p + name });
+                             }
+                         } else {
+                             // It is a file or empty directory placeholder
+                             // If name ends with slash in original? No we stripped them in loading.
+                             // Check if it's a file
+                             if (!items.has(name)) {
+                                const isExplicitFolder = f.endsWith('/');
+                                items.set(name, { 
+                                    name, 
+                                    type: isExplicitFolder ? 'folder' : 'file', 
+                                    fullPath: p + name 
+                                });
+                             }
+                         }
+                    }
+
+                    // Heuristic: If we have files named "images", "masks" etc without extensions, treat as folders
+                    for (const [name, item] of items) {
+                        if (item.type === 'file' && !name.includes('.')) {
+                             if (['images', 'annotations', 'masks', 'models', 'data', 'train', 'test', 'val'].includes(name.toLowerCase())) {
+                                 item.type = 'folder';
+                             }
+                        }
+                    }
+                    
+                    return Array.from(items.values()).sort((a, b) => {
+                        if (a.type === b.type) return a.name.localeCompare(b.name);
+                        return a.type === 'folder' ? -1 : 1;
+                    });
+                });
+                
+                const browserNavigate = (fullPath) => {
+                    console.log("Navigating to:", fullPath);
+                    browserPath.value = fullPath.replace(/\/$/, "");
+                };
+
+                const handleItemClick = (item) => {
+                    console.log("Clicked:", item);
+                    if (item.type === 'folder') {
+                        // Ensure we aren't already there and it's a valid path change
+                        browserNavigate(item.fullPath);
+                    }
+                };
+                
+                const browserNavigateUp = () => {
+                    if (!browserPath.value) return;
+                    const parts = browserPath.value.split('/');
+                    parts.pop();
+                    browserPath.value = parts.join('/');
+                    console.log("Navigated up to:", browserPath.value);
+                };
+                
+                const selectFolderFor = (path, target) => {
+                    const val = path ? (path.endsWith('/') ? path : path + '/') : '';
+                    if (target === 'images') trainingParams.train_images = val;
+                    if (target === 'annotations') trainingParams.train_annotations = val;
+                    if (typeof showBrowserFeedback === 'function') {
+                         showBrowserFeedback(`Selected "${val}" as ${target}`);
+                    }
+                };
+
+                // --- Export ---
                 const exportModel = async () => {
-                    if (!selectedSessionId.value) return;
                     isExporting.value = true;
-                    exportResult.value = null;
                     try {
-                        const result = await service.value.export_model({
-                            session_id: selectedSessionId.value,
-                            model_name: exportModelName.value || null,
-                            collection: exportCollection.value
-                        });
-                        exportResult.value = result;
-                        // alert("Model exported successfully!");
+                        exportResult.value = await service.value.export_model(
+                            selectedSessionId.value,
+                            exportModelName.value || null,
+                            'bioimage-io/colab-annotations' // Default collection
+                        );
                     } catch (e) {
-                         console.error(e);
                          alert("Export failed: " + e.message);
                     } finally {
                         isExporting.value = false;
                     }
                 };
 
-                const drawResult = (resultItem) => {
-                    if (!inferenceCanvas.value) return;
-                    const mask = resultItem.output; // Numpy array (or list if decoded)
-                    // If hypha-rpc auto-decodes ndarray (it usually does if numpy is installed in python and encoded correctly),
-                    // In JS `mask` might be a TypedArray or nested array.
-                    // The backend returns specialized PredictionItemModel with output as NDArray.
-                    // Hypha RPC should decode it.
-                    // If not, we might get the raw object.
-                    
-                    // Assuming we get a Ndarray-like object or nested array.
-                    // Flattening and visualizing.
-                    // If it's a raw JS array of arrays (nested list), we need to handle it.
-                    // If it's a typed array with shape info (from imjoy-rpc), we use that.
-                    
-                    // Let's assume simplest case: It's just available.
-                    // We need to scale canvas to image size.
-                    
-                    // NOTE: Without a robust ndarray library in JS (like scikit-image io), visualization is basic.
-                    // I'll assume we get a structure I can iterate.
-                    
-                    // Check structure of `mask`
-                    console.log("Inference Output:", mask);
-                    
-                    // Simple logic: Create an ImageData and put it heavily relying on shape.
-                    // Since I don't know the exact format `hypha-rpc` delivers here without testing,
-                    // I will leave the visualizer basic.
-                    
-                    const ctx = inferenceCanvas.value.getContext('2d');
-                    const img = new Image();
-                    img.onload = () => {
-                        inferenceCanvas.value.width = img.width;
-                        inferenceCanvas.value.height = img.height;
-                        
-                        // Only if we know how to parse mask...
-                        // For this demo, simply logging it is safer than crashing.
-                        // But I'll try to support nested arrays (standard JSON serialization of numpy).
-                        
-                        // If it came via base64 in a dict (common custom encoding):
-                        // But `main.py` uses `_predict_and_encode`. No wait, `infer` uses `_predict_and_encode` 
-                        // but returns `PredictionItemModel` where `output` is `npt.NDArray`.
-                        // The RPC layer handles it.
-                        
-                        // Let's assume we can overlay *something*.
-                        ctx.drawImage(img, 0, 0);
-                        
-                        // Overlay logic would go here if we parsed the mask.
-                        // I'll assume mask is a TypedArray if using binary transport, or flat array.
-                        // Not implementing full mask overlay to keep it simple and robust.
-                    };
-                    img.src = inferencePreview.value;
-                    
-                    alert("Inference finished! Check console for result object.");
-                };
-
-                onMounted(() => {
-                    // Auto connect if URL param present (optional)
-                });
-
                 return {
-                    serverUrl, isConnected, connect, disconnect, workspace,
-                    availableServices, selectedServiceId, listServices, service,
-                    tabs, currentTab,
-                    sessions, refreshSessions, activeTrainingSession, activeSessionStatus, refreshLoading,
+                    syncError, trainingError, handleItemClick,
+                    serverUrl, isConnected, isConnecting, workspace, showTokenInput, authToken, autoConnectError,
+                    availableServices, selectedServiceId, service, isScanning, listServices, disconnect, connect,
+                    currentTab, tabs,
+                    sessions, refreshSessions, refreshLoading, monitoringSessionId, monitoredSession, selectedSessionId, viewSession, currentSession, hasMetrics,
                     trainingParams, startTraining, isStartingTraining,
                     showUploadModal, uploadParams, uploadDataset, isUploading, uploadProgress, uploadStatus, folderInput,
-                    viewSession, currentSession, selectedSessionId, hasMetrics, statusColor, statusBadgeClass, statusTextColor, formatDuration, stopTraining,
-                    inferenceParams, pretrainedModels, handleInferenceFile, inferenceFile, inferencePreview, isInferring, runInference, inferenceCanvas,
-                    exportModelName, exportCollection, isExporting, exportResult, exportModel
+                    inferenceParams, pretrainedModels, inferenceFile, handleInferenceFile, inferencePreview, isInferring, runInference, inferenceCanvas, previewImg, onImageLoad, canvasStyle, inferenceObjectCount, inferenceResult,
+                    exportModelName, isExporting, exportResult, exportModel,
+                    
+                    // File Browser
+                    showFileBrowser, openFileBrowser, browserFiles, browserPath, browserLoading, browserError,
+                    browserVisibleItems, browserNavigate, browserNavigateUp, selectFolderFor, browserFeedback,
+
+                    // Helpers
+                    statusTextColor, formatDuration, handleFolderSelect, getLatestLoss, formatDate,
                 };
             }
         }).mount('#app');

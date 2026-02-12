@@ -42,13 +42,13 @@ import os
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 from hypha_rpc import connect_to_server, login
 
 if TYPE_CHECKING:
     from hypha_rpc.rpc import RemoteService
 
-load_dotenv()
+# load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -439,6 +439,9 @@ async def main() -> None:
     args = _parse_args()
 
     token = args.token or os.environ.get("HYPHA_TOKEN")
+    print(f"DEBUG: Token starts with {token[:10] if token else 'None'}.. ends with {token[-10:] if token else 'None'}")
+    print(f"DEBUG: Workspace arg: {args.workspace}")
+    
     if not token:
         token = await login({"server_url": args.server_url})
 

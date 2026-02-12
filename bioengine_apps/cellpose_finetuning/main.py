@@ -1298,6 +1298,15 @@ def run_blocking_task(
         accumulated_test_losses.append(test_loss)
         accumulated_test_metrics.append(test_metrics)
 
+        # Save model snapshot for live inference
+        try:
+            snapshot_path = model_save_path / "models" / "model"
+            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            cellpose_model.net.save_model(snapshot_path)
+        except Exception as e:
+            msg = f"Failed to save model snapshot: {e}"
+            logger.warning(msg)
+
         update_status(
             session_id,
             StatusType.RUNNING,

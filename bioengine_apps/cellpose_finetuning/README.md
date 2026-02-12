@@ -6,6 +6,7 @@ A BioEngine service for running Cellpose-SAM 4.0.7 inference and fine-tuning cel
 
 - **Inference**: Run cell segmentation on images using Cellpose-SAM
 - **Fine-tuning**: Train custom models on your annotated datasets
+- **Validation Metrics**: Per-epoch pixel-level metrics and end-of-training instance segmentation AP
 - **Model Export**: Export trained models to BioImage.IO format for sharing and reuse
 - **Async API**: Monitor training progress in real-time
 - **GPU-accelerated**: Optimized for fast inference and training
@@ -91,9 +92,10 @@ session_status = await cellpose_service.start_training(
     model="cpsam",
     n_epochs=10,
     n_samples=None,  # Use all matched samples
-    # Optional: specify test set
+    # Optional: specify test set for validation metrics
     test_images="images/test/*.ome.tif",
     test_annotations="annotations/test/*_mask.ome.tif",
+    validation_interval=1,  # Validate every epoch (default: every 10)
 )
 
 session_id = session_status["session_id"]
@@ -116,9 +118,15 @@ while True:
 
     # Add latest training loss if available
     if "train_losses" in status and status["train_losses"]:
-        losses = [l for l in status["train_losses"] if l > 0]
+        losses = [l for l in status["train_losses"] if l is not None and l > 0]
         if losses:
             msg += f" | Train Loss: {losses[-1]:.4f}"
+
+    # Add validation metrics if available
+    if "test_metrics" in status and status["test_metrics"]:
+        last_metrics = next((m for m in reversed(status["test_metrics"]) if m), None)
+        if last_metrics:
+            msg += f" | Val F1: {last_metrics['f1']:.4f}, IoU: {last_metrics['iou']:.4f}"
 
     print(msg)
 
@@ -151,8 +159,9 @@ Run inference on images.
 - `flow_threshold` (float): Flow error threshold (default: 0.4)
 - `cellprob_threshold` (float): Cell probability threshold (default: 0.0)
 - `niter` (int, optional): Number of iterations for dynamics (None for auto)
+- `return_flows` (bool): If True, include flow fields in the output (default: False)
 
-**Returns:** List of dicts with `"output"` key containing segmentation masks
+**Returns:** List of dicts with `"output"` key containing segmentation masks (and `"flows"` if `return_flows=True`)
 
 ### `start_training()`
 
@@ -166,15 +175,17 @@ Start asynchronous model fine-tuning.
 - `train_annotations` (str): **Required** - Path to training annotations. Can be:
   - Folder path ending with '/': `"annotations/folder/"` (assumes same filenames as images)
   - Path pattern with wildcard: `"annotations/folder/*_mask.ome.tif"`
-- `test_images` (str, optional): Optional test images path (same format as train_images)
-- `test_annotations` (str, optional): Optional test annotations path (same format as train_annotations)
+- `test_images` (str, optional): Optional test images path (same format as train_images). Providing test data enables per-epoch pixel-level validation metrics and end-of-training instance segmentation metrics (AP@0.5/0.75/0.9).
+- `test_annotations` (str, optional): Optional test annotations (label masks). Required together with `test_images`.
 - `model` (str): Pretrained model to start from (default: "cpsam")
 - `n_epochs` (int): Number of training epochs (default: 10)
 - `n_samples` (int, optional): Limit number of samples to use
 - `learning_rate` (float): Learning rate (default: 1e-6)
 - `weight_decay` (float): Weight decay (default: 0.0001)
+- `min_train_masks` (int): Minimum number of masks per training batch (default: 5). Lower values speed up training.
+- `validation_interval` (int, optional): Epochs between validation evaluations. Always validates on the first epoch. Default (None) validates every 10 epochs. Set to 1 for every epoch. Requires `test_images` and `test_annotations`.
 
-**Returns:** Dict with `"session_id"` key
+**Returns:** Dict with `"session_id"` and initial `"status_type"`
 
 **Path Formats:**
 
@@ -198,16 +209,37 @@ Monitor training progress and retrieve training metrics with real-time updates.
 - `session_id` (str): Training session ID
 
 **Returns:** Dict with the following keys:
-- `status_type` (str): Status of the training ("waiting", "preparing", "running", "completed", "failed")
+- `status_type` (str): Status of the training ("waiting", "preparing", "running", "stopped", "completed", "failed", "unknown")
 - `message` (str): Human-readable status message
+- `dataset_artifact_id` (str): Training dataset artifact ID (e.g., "bioimage-io/your-dataset")
 - `train_losses` (list[float], optional): Per-epoch training loss values (updated in real-time)
-- `test_losses` (list[float], optional): Per-epoch test loss values (computed periodically)
+- `test_losses` (list[float | None], optional): Per-epoch test loss values. `None` for epochs where validation was skipped.
+- `test_metrics` (list[ValidationMetrics | None], optional): Per-epoch pixel-level validation metrics. `None` for epochs where validation was skipped. Controlled by `validation_interval`.
+- `instance_metrics` (InstanceMetrics | None, optional): Instance segmentation metrics computed at the end of training by running full Cellpose inference on the test set. Only present when test data was provided.
 - `n_train` (int, optional): Number of training samples
 - `n_test` (int, optional): Number of test samples
 - `start_time` (str, optional): Training start time in ISO 8601 format
 - `current_epoch` (int, optional): Current epoch number (1-indexed)
 - `total_epochs` (int, optional): Total number of epochs
 - `elapsed_seconds` (float, optional): Elapsed time since training started
+- `current_batch` (int, optional): Current batch number within epoch (0-indexed)
+- `total_batches` (int, optional): Total number of batches per epoch
+- `exported_artifact_id` (str, optional): Artifact ID if model has been exported
+- `model_modified` (bool, optional): Whether model was modified since last export
+
+**ValidationMetrics fields** (pixel-level binary foreground/background — NOT instance segmentation):
+- `pixel_accuracy` (float): (TP+TN) / total pixels
+- `precision` (float): TP / (TP+FP) — fraction of predicted foreground that is correct
+- `recall` (float): TP / (TP+FN) — fraction of true foreground that is detected
+- `f1` (float): Harmonic mean of precision and recall (same as Dice coefficient)
+- `iou` (float): TP / (TP+FP+FN) — Jaccard index on binary foreground mask
+
+**InstanceMetrics fields** (computed at end of training using Hungarian matching):
+- `ap_0_5` (float): Average precision at IoU >= 0.5
+- `ap_0_75` (float): Average precision at IoU >= 0.75
+- `ap_0_9` (float): Average precision at IoU >= 0.9
+- `n_true` (int): Total ground-truth instances in test set
+- `n_pred` (int): Total predicted instances in test set
 
 ### `export_model()`
 
@@ -215,8 +247,8 @@ Export a trained model to BioImage.IO format for sharing and reuse.
 
 **Parameters:**
 - `session_id` (str): Training session ID of the model to export
-- `model_name` (str): Name for the exported model artifact
-- `collection` (str): Collection to save the model to (e.g., "bioimage-io/colab-annotations")
+- `model_name` (str, optional): Name for the exported model artifact (defaults to "cellpose-{session_id}")
+- `collection` (str): Collection to save the model to (default: "bioimage-io/colab-annotations")
 
 **Returns:** Dict with the following keys:
 - `artifact_id` (str): Full artifact ID (e.g., "bioimage-io/test-model-abc123")
@@ -293,11 +325,23 @@ for model in models:
     print(f"  Created: {model['created_at']}")
 ```
 
-### `list_pretrained_models()`
+### `stop_training()`
 
-Get available pretrained models.
+Stop an ongoing training session.
 
-**Returns:** List of model names (currently only ["cpsam"])
+**Parameters:**
+- `session_id` (str): Training session ID to stop
+
+**Returns:** Dict with current session status (status_type will be "stopped")
+
+### `list_training_sessions()`
+
+List all known training sessions with their status.
+
+**Parameters:**
+- `status_types` (list[str], optional): Filter by status types (e.g., ["running", "completed"]). If None, returns all sessions.
+
+**Returns:** Dict mapping session paths to their `SessionStatus` dicts
 
 ## Inference Parameters Guide
 
@@ -316,31 +360,96 @@ Get available pretrained models.
 - **None/0**: Auto-set based on diameter
 - **Recommended**: 250 for best results
 
+## Deploying the Service
+
+The cellpose fine-tuning service runs as a Ray Serve deployment on BioEngine. To deploy or redeploy it, you need a valid `HYPHA_TOKEN` with `bioimage-io` workspace access.
+
+### Prerequisites
+
+1. A valid Hypha token with read/write access to the `bioimage-io` workspace. Generate one from [hypha.aicell.io](https://hypha.aicell.io/).
+2. Store the token in `.env` at the repository root:
+   ```
+   HYPHA_TOKEN=eyJhbG...your_token_here
+   ```
+
+### Upload the Application Code
+
+Before deploying, upload the latest application code to the artifact store:
+
+```bash
+source .env
+python scripts/save_application.py \
+    --directory "bioengine_apps/cellpose_finetuning" \
+    --server-url "https://hypha.aicell.io" \
+    --workspace "bioimage-io" \
+    --token "$HYPHA_TOKEN"
+```
+
+### Deploy or Redeploy the Service
+
+The recommended way to deploy (whether for the first time or to update) is to use `redeploy_cellpose.py`. This script handles the full lifecycle: it gracefully stops any existing instance (if running) and starts a new one with the latest code and a fresh token.
+
+```bash
+source .env
+python bioengine_apps/cellpose_finetuning/scripts/redeploy_cellpose.py
+
+# Deploy a test target (using 'cellpose-finetuning-test' ID):
+python bioengine_apps/cellpose_finetuning/scripts/redeploy_cellpose.py \
+    --artifact-id bioimage-io/cellpose-finetuning-test \
+    --application-id cellpose-finetuning-test
+```
+
+**Note for Test Deployments:**
+When deploying the test version (using `manifest-test.yaml`), ensure you specify the correct IDs as shown above. The service will be available at `<your-workspace>/cellpose-finetuning-test`. The deployment class in `main.py` is aliased as `CellposeFinetuneTest` for this purpose.
+
+This calls `run_application()` with `hypha_token=token`, which injects `HYPHA_TOKEN` into the Ray worker's environment as a secret env var. The token is required for the service to access artifacts (datasets and models) on behalf of users.
+
+### When to Redeploy
+
+You must redeploy the service when:
+- **The token expires**: The `HYPHA_TOKEN` baked into the Ray worker at deploy time has a fixed expiry. If training fails with `HYPHA_TOKEN environment variable is not set`, the token has likely expired. Generate a fresh token, update `.env`, and redeploy.
+- **Code changes**: After updating `main.py` or other files, upload the new code with `save_application.py` and then redeploy.
+
+### Troubleshooting
+
+**"HYPHA_TOKEN environment variable is not set" during training**
+
+This error occurs on the server side (Ray worker), not locally. It means the token passed at deploy time is missing or expired. Fix by redeploying with a fresh token.
+
+**Multiple tokens in `.env`**
+
+Ensure `.env` contains only one `HYPHA_TOKEN` entry. If there are duplicates, the last one wins when sourced, which may point to the wrong workspace or an expired token.
+
 ## Example Scripts
 
-This repository includes several example scripts:
+This repository includes several example scripts in `bioengine_apps/cellpose_finetuning/scripts/`:
 
-- **`scripts/test_single_image.py`**: Run inference on a single image from URL
-- **`scripts/test_service.py`**: Full workflow including training, inference, and model export with metrics display (quick test with 2 samples, 1 epoch)
-- **`scripts/test_export_e2e.py`**: End-to-end test of model export with validation (trains, exports, and verifies all files)
-- **`scripts/train_realistic.py`**: Realistic long-running training with all samples and comprehensive progress tracking
-- **`scripts/test_callbacks.py`**: Test real-time epoch callbacks with 5 epochs
-- **`scripts/check_status.py`**: Check training status and view metrics for a session
+- **`redeploy_cellpose.py`**: Stop and start the service with updated code/token (works for first-time deploy too)
+- **`test_service.py`**: Full workflow (training, monitoring, inference, export) with argparse
+- **`test_dataset_artifact_id.py`**: Verify `dataset_artifact_id` is returned in training status
 
 Run them with:
 
 ```bash
-# Set your Hypha token
-export HYPHA_TOKEN="your-token-here"
+source .env
 
 # Test single image inference
-python scripts/test_single_image.py
+python bioengine_apps/cellpose_finetuning/scripts/test_single_image.py
 
 # Quick test training workflow with export (2 samples, 1 epoch)
-python scripts/test_service.py
+python bioengine_apps/cellpose_finetuning/scripts/test_service.py
+
+# Full training + inference test (with validation every epoch)
+python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
+    --dataset-artifact ri-scale/zarr-demo \
+    --train-images 'images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif' \
+    --train-annotations 'annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif' \
+    --test-images 'images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif' \
+    --test-annotations 'annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif' \
+    --n-epochs 5 --validation-interval 1
 
 # Example with custom dataset pattern matching
-python scripts/test_service.py \
+python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
   --dataset-artifact ri-scale/zarr-demo \
   --train-images "images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif" \
   --train-annotations "annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif" \
@@ -348,13 +457,13 @@ python scripts/test_service.py \
   --application-id cellpose-finetuning
 
 # End-to-end export test (trains and validates export)
-python scripts/test_export_e2e.py
+python bioengine_apps/cellpose_finetuning/scripts/test_export_e2e.py
 
 # Realistic training with all samples (default: 50 epochs)
-python scripts/train_realistic.py --epochs 50
+python bioengine_apps/cellpose_finetuning/scripts/train_realistic.py --epochs 50
 
 # Customize training parameters
-python scripts/train_realistic.py \
+python bioengine_apps/cellpose_finetuning/scripts/train_realistic.py \
     --artifact "your-workspace/your-dataset" \
     --train-images "*.tif" \
     --train-annotations "annotations/*_mask.tif" \
@@ -362,10 +471,18 @@ python scripts/train_realistic.py \
     --learning-rate 1e-6
 
 # Resume monitoring an existing training session
-python scripts/train_realistic.py --session <session_id>
+python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
+    --dataset-artifact ri-scale/zarr-demo \
+    --train-images 'images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif' \
+    --train-annotations 'annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif' \
+    --session <session-id>
 
-# Check status of a training session
-python scripts/check_status.py <session_id>
+# Export a completed model
+python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
+    --dataset-artifact ri-scale/zarr-demo \
+    --train-images 'images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif' \
+    --train-annotations 'annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif' \
+    --session <session-id> --export --download-cover
 ```
 
 ## Real-Time Training Progress
@@ -401,6 +518,17 @@ if "train_losses" in status and status["train_losses"]:
     if valid_losses:
         print(f"Latest training loss: {valid_losses[-1]:.4f}")
         print(f"Initial loss: {valid_losses[0]:.4f}")
+
+    # test_losses uses None for skipped epochs
+    valid_test = [l for l in test_losses if l is not None]
+    if valid_test:
+        print(f"Latest val loss: {valid_test[-1]:.4f}")
+
+# Instance metrics (computed at end of training)
+if status.get("instance_metrics"):
+    im = status["instance_metrics"]
+    print(f"AP@0.5={im['ap_0_5']}, AP@0.75={im['ap_0_75']}, AP@0.9={im['ap_0_9']}")
+    print(f"Ground-truth cells: {im['n_true']}, Predicted cells: {im['n_pred']}")
 ```
 
 ## Tutorial Notebook

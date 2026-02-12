@@ -21,6 +21,6 @@ tags: [cell-segmentation, deep-learning, biomedical-imaging, fine-tuning]
 type: ray-serve
 version: 0.0.2
 deployments:
-  - main:CellposeFinetuneTest
+  - main:CellposeFinetune
 authorized_users:
   - "*" # Allow all users to access the application

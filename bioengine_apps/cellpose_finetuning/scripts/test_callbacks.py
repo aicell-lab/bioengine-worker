@@ -40,7 +40,7 @@ async def test_callbacks():
                 msg += f" | Time: {status['elapsed_seconds']:.1f}s"
 
             if "train_losses" in status and status["train_losses"]:
-                losses = [l for l in status["train_losses"] if l > 0]
+                losses = [l for l in status["train_losses"] if l is not None and l > 0]
                 if losses:
                     msg += f" | Train Loss: {losses[-1]:.4f}"
 
@@ -55,9 +55,9 @@ async def test_callbacks():
         print("Final Status:")
         print("=" * 80)
         if "train_losses" in status:
-            print(f"Training losses: {[f'{l:.4f}' for l in status['train_losses'] if l > 0]}")
+            print(f"Training losses: {[f'{l:.4f}' for l in status['train_losses'] if l is not None and l > 0]}")
         if "test_losses" in status:
-            print(f"Test losses: {[f'{l:.4f}' for l in status['test_losses'] if l > 0]}")
+            print(f"Test losses: {[f'{l:.4f}' for l in status['test_losses'] if l is not None]}")
 
 
 if __name__ == "__main__":

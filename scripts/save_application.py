@@ -18,6 +18,7 @@ async def save_application(
     workspace: str = None,
     token: str = None,
     worker_service_id: str = None,
+    manifest_file: str = None,
 ) -> str:
     """
     Creates or updates a BioEngine application artifact in the Hypha artifact manager.
@@ -28,6 +29,7 @@ async def save_application(
         workspace: Hypha workspace to connect to
         token: Authentication token for Hypha server
         worker_service_id: Optional worker service ID to use creating/updating the artifact
+        manifest_file: Optional path to a specific manifest file to use (will be renamed to manifest.yaml)
 
     Returns:
         str: ID of the created artifact
@@ -72,6 +74,39 @@ async def save_application(
             logger.info(
                 f"Removed {len(pycache_files)} __pycache__ files; {original_count - len(pycache_files)} files remain"
             )
+
+        if manifest_file:
+            manifest_path = Path(manifest_file)
+            if not manifest_path.is_absolute():
+                manifest_path = Path(directory) / manifest_path
+
+            if not manifest_path.exists():
+                raise FileNotFoundError(f"Manifest file not found: {manifest_path}")
+
+            # Remove existing manifest.yaml if present in the list
+            files = [f for f in files if f["name"] != "manifest.yaml"]
+
+            relative_manifest_path = manifest_path.relative_to(directory).as_posix()
+
+            manifest_entry = next(
+                (f for f in files if f["name"] == relative_manifest_path), None
+            )
+
+            if manifest_entry:
+                logger.info(f"Using {manifest_file} as manifest.yaml")
+                manifest_entry["name"] = "manifest.yaml"
+            else:
+                logger.info(f"Adding {manifest_file} as manifest.yaml")
+                with open(manifest_path, "rb") as f:
+                    manifest_content = f.read()
+                files.append(
+                    {
+                        "name": "manifest.yaml",
+                        "content": manifest_content,
+                        "type": "application/x-yaml",
+                    }
+                )
+
     except Exception as e:
         logger.error(f"Failed to create file list from directory: {e}")
         raise
@@ -148,6 +183,11 @@ if __name__ == "__main__":
         type=str,
         help="Optional worker service ID to use creating/updating the artifact",
     )
+    parser.add_argument(
+        "--manifest-file",
+        type=str,
+        help="Optional path to a specific manifest file (relative to directory or absolute)",
+    )
 
     args = parser.parse_args()
 
@@ -158,5 +198,6 @@ if __name__ == "__main__":
             workspace=args.workspace,
             token=args.token,
             worker_service_id=args.worker_service_id,
+            manifest_file=args.manifest_file,
         )
     )

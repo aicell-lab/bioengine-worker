@@ -39,11 +39,17 @@ async def redeploy(artifact_id: str, application_id: str):
     )
     print(f"App ID: {app_id}")
 
-    # Get the new service IDs
-    app_status = await worker.get_application_status(application_ids=[app_id])
-    service_ids = app_status["service_ids"]
-    print(f"Services: {service_ids}")
-    return service_ids
+    # Wait for services to become available
+    print("Waiting for services to start...")
+    for _ in range(30):
+        app_status = await worker.get_application_status(application_ids=[app_id])
+        service_ids = app_status.get("service_ids", [])
+        if service_ids:
+            print(f"Services: {service_ids}")
+            return service_ids
+        await asyncio.sleep(5)
+    print("Warning: Services not yet available. The deployment may still be starting up.")
+    return []
 
 
 if __name__ == "__main__":
@@ -54,14 +60,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--artifact-id",
         type=str,
-        default="bioimage-io/cellpose-finetuning-test",
-        help="Artifact ID to deploy (default: bioimage-io/cellpose-finetuning-test)",
+        default="bioimage-io/cellpose-finetuning",
+        help="Artifact ID to deploy (default: bioimage-io/cellpose-finetuning)",
     )
     parser.add_argument(
         "--application-id",
         type=str,
-        default="cellpose-finetuning-test",
-        help="Application ID to deploy (default: cellpose-finetuning-test)",
+        default="cellpose-finetuning",
+        help="Application ID to deploy (default: cellpose-finetuning)",
     )
     args = parser.parse_args()
     asyncio.run(

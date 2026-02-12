@@ -717,7 +717,9 @@ def _binary_threshold(
     target_thr = 0.5 if (tmin >= 0.0 and tmax <= 1.0) else 0.0
     pmin, pmax = float(pred.min().item()), float(pred.max().item())
     pred_thr = 0.5 if (pmin >= 0.0 and pmax <= 1.0) else 0.0
-    return (pred > pred_thr).to(torch.bool).flatten(), (target > target_thr).to(torch.bool).flatten()
+    return (pred > pred_thr).to(torch.bool).flatten(), (target > target_thr).to(
+        torch.bool
+    ).flatten()
 
 
 def _compute_binary_metrics(
@@ -1083,7 +1085,9 @@ def train_seg_with_callbacks(
                         y = net(x_batch)[0]
                         loss = _loss_fn_seg(lbl, y, device)
                         if y.shape[1] > 3:
-                            loss3 = _loss_fn_class(lbl, y, class_weights=class_weights_tensor)
+                            loss3 = _loss_fn_class(
+                                lbl, y, class_weights=class_weights_tensor
+                            )
                             loss += loss3
 
                         # Validation performance on Cellpose cell-prob channel.
@@ -1174,7 +1178,11 @@ def train_seg_with_callbacks(
         if epoch_callback is not None:
             elapsed = time.time() - t0
             epoch_callback(
-                iepoch + 1, train_losses[iepoch], test_losses[iepoch], elapsed, val_metrics
+                iepoch + 1,
+                train_losses[iepoch],
+                test_losses[iepoch],
+                elapsed,
+                val_metrics,
             )
 
     # Save final model only (no intermediate snapshots)
@@ -1363,7 +1371,9 @@ def run_blocking_task(
                     # Append new losses to previous history
                     train_losses_list = previous_train_losses + train_losses_list
                     test_losses_list = previous_test_losses + test_losses_list
-                    accumulated_test_metrics = previous_test_metrics + accumulated_test_metrics
+                    accumulated_test_metrics = (
+                        previous_test_metrics + accumulated_test_metrics
+                    )
 
                     logger.info(
                         "Session %s: Inherited %d epochs of training history from session %s",
@@ -1383,12 +1393,18 @@ def run_blocking_task(
 
     # Compute instance segmentation metrics on test set if test data was provided
     final_instance_metrics: InstanceMetrics | None = None
-    if dataset_split["test_files"] is not None and dataset_split["test_labels_files"] is not None:
+    if (
+        dataset_split["test_files"] is not None
+        and dataset_split["test_labels_files"] is not None
+    ):
         try:
             from cellpose import metrics as cp_metrics
             from tifffile import imread as tiff_imread
 
-            logger.info("Session %s: Computing instance segmentation metrics on test set...", session_id)
+            logger.info(
+                "Session %s: Computing instance segmentation metrics on test set...",
+                session_id,
+            )
             update_status(
                 session_id,
                 StatusType.RUNNING,
@@ -1428,7 +1444,9 @@ def run_blocking_task(
             # Compute average precision at standard IoU thresholds
             thresholds = [0.5, 0.75, 0.9]
             ap, _tp, _fp, _fn = cp_metrics.average_precision(
-                masks_true_all, masks_pred_all, threshold=thresholds,
+                masks_true_all,
+                masks_pred_all,
+                threshold=thresholds,
             )
             # ap shape: (n_images, n_thresholds) — average across images
             mean_ap = np.nanmean(ap, axis=0)
@@ -1447,8 +1465,11 @@ def run_blocking_task(
                 "Session %s: Instance metrics — AP@0.5=%.4f, AP@0.75=%.4f, AP@0.9=%.4f "
                 "(n_true=%d, n_pred=%d)",
                 session_id,
-                mean_ap[0], mean_ap[1], mean_ap[2],
-                n_true_total, n_pred_total,
+                mean_ap[0],
+                mean_ap[1],
+                mean_ap[2],
+                n_true_total,
+                n_pred_total,
             )
         except Exception as e:
             logger.warning(
@@ -2297,9 +2318,7 @@ def generate_rdf_yaml(
                     "callable": "CellposeSAMWrapper",
                     "kwargs": {
                         "model_type": "cpsam",
-                        "diam_mean": float(
-                            training_params.get("diam_mean", 30.0)
-                        ),
+                        "diam_mean": float(training_params.get("diam_mean", 30.0)),
                         "cp_batch_size": 8,
                         "channels": [0, 0],
                         "flow_threshold": 0.4,
@@ -2421,9 +2440,7 @@ def _predict_and_encode(
         if return_flows:
             # flows is a list containing [HSV flow, XY flows, cellprob, final positions]
             flow_list = (
-                flows[0]
-                if isinstance(flows, list) and len(flows) > 0
-                else flows
+                flows[0] if isinstance(flows, list) and len(flows) > 0 else flows
             )
             out_item["flows"] = flow_list
 

@@ -385,33 +385,24 @@ python scripts/save_application.py \
     --token "$HYPHA_TOKEN"
 ```
 
-### Deploy (First Time)
+### Deploy or Redeploy the Service
 
-```bash
-source .env
-python bioengine_apps/cellpose_finetuning/scripts/deploy_cellpose.py
-
-# Deploy to a test target instead:
-python bioengine_apps/cellpose_finetuning/scripts/deploy_cellpose.py \
-    --artifact-id bioimage-io/cellpose-finetuning-test \
-    --application-id cellpose-finetuning-test
-```
-
-This calls `run_application()` with `hypha_token=token`, which injects `HYPHA_TOKEN` into the Ray worker's environment as a secret env var. The token is required for the service to access artifacts (datasets and models) on behalf of users.
-
-### Redeploy (Update Running Service)
+The recommended way to deploy (whether for the first time or to update) is to use `redeploy_cellpose.py`. This script handles the full lifecycle: it gracefully stops any existing instance (if running) and starts a new one with the latest code and a fresh token.
 
 ```bash
 source .env
 python bioengine_apps/cellpose_finetuning/scripts/redeploy_cellpose.py
 
-# Redeploy a test target instead:
+# Deploy a test target (using 'cellpose-finetuning-test' ID):
 python bioengine_apps/cellpose_finetuning/scripts/redeploy_cellpose.py \
     --artifact-id bioimage-io/cellpose-finetuning-test \
     --application-id cellpose-finetuning-test
 ```
 
-This stops the existing deployment and starts a fresh one with the latest artifact code and a new token.
+**Note for Test Deployments:**
+When deploying the test version (using `manifest-test.yaml`), ensure you specify the correct IDs as shown above. The service will be available at `<your-workspace>/cellpose-finetuning-test`. The deployment class in `main.py` is aliased as `CellposeFinetuneTest` for this purpose.
+
+This calls `run_application()` with `hypha_token=token`, which injects `HYPHA_TOKEN` into the Ray worker's environment as a secret env var. The token is required for the service to access artifacts (datasets and models) on behalf of users.
 
 ### When to Redeploy
 
@@ -433,8 +424,7 @@ Ensure `.env` contains only one `HYPHA_TOKEN` entry. If there are duplicates, th
 
 This repository includes several example scripts in `bioengine_apps/cellpose_finetuning/scripts/`:
 
-- **`deploy_cellpose.py`**: First-time deployment of the service
-- **`redeploy_cellpose.py`**: Stop and redeploy the service with updated code/token
+- **`redeploy_cellpose.py`**: Stop and start the service with updated code/token (works for first-time deploy too)
 - **`test_service.py`**: Full workflow (training, monitoring, inference, export) with argparse
 - **`test_dataset_artifact_id.py`**: Verify `dataset_artifact_id` is returned in training status
 

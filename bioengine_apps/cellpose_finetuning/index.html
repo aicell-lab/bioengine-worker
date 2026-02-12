@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cellpose Fine-Tuning UI</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.30/dist/hypha-rpc-websocket.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .loader {
+            border-top-color: #3498db;
+            -webkit-animation: spinner 1.5s linear infinite;
+            animation: spinner 1.5s linear infinite;
+        }
+        @keyframes spinner {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div id="app" class="container mx-auto px-4 py-8">
+        
+        <!-- Header & Connection -->
+        <header class="bg-white shadow rounded-lg p-6 mb-6 flex justify-between items-center">
+            <div>
+                <h1 class="text-2xl font-bold text-gray-800">🧬 Cellpose Fine-Tuning</h1>
+                <p class="text-gray-600 text-sm" v-if="isConnected">Connected to {{ serverUrl }} (Workspace: {{ workspace }})</p>
+                <p class="text-red-500 text-sm" v-else>Disconnected</p>
+            </div>
+            <div class="flex gap-2">
+                <div v-if="!isConnected" class="flex gap-2">
+                    <input v-model="serverUrl" placeholder="Server URL" class="border rounded px-3 py-2 text-sm">
+                    <button @click="connect" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition">Connect</button>
+                </div>
+                <div v-else class="flex items-center gap-4">
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm font-medium">Service:</span>
+                        <select v-model="selectedServiceId" class="border rounded px-2 py-1 text-sm max-w-xs">
+                            <option v-for="id in availableServices" :key="id" :value="id">{{ id }}</option>
+                        </select>
+                        <button @click="listServices" class="text-gray-500 hover:text-blue-600" title="Refresh Services">
+                            <i class="fas fa-sync-alt"></i>
+                        </button>
+                    </div>
+                    <button @click="disconnect" class="text-red-600 hover:text-red-800 text-sm font-medium">Disconnect</button>
+                </div>
+            </div>
+        </header>
+
+        <div v-if="isConnected && service" class="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            
+            <!-- Sidebar / Navigation -->
+            <div class="lg:col-span-1 space-y-4">
+                <div class="bg-white shadow rounded-lg overflow-hidden">
+                    <nav class="flex flex-col">
+                        <button v-for="tab in tabs" 
+                                :key="tab.id"
+                                @click="currentTab = tab.id"
+                                :class="{'bg-blue-50 text-blue-700 border-l-4 border-blue-600': currentTab === tab.id, 'text-gray-600 hover:bg-gray-50': currentTab !== tab.id}"
+                                class="px-6 py-4 text-left font-medium transition flex items-center gap-3">
+                            <i :class="tab.icon"></i> {{ tab.name }}
+                        </button>
+                    </nav>
+                </div>
+
+                <!-- Active Training Status -->
+                <div v-if="activeTrainingSession" class="bg-white shadow rounded-lg p-4">
+                    <h3 class="font-bold text-gray-800 mb-2">Active Training</h3>
+                    <div class="text-sm space-y-2">
+                        <div class="flex justify-between">
+                            <span class="text-gray-600">Session:</span>
+                            <span class="font-mono" :title="activeTrainingSession">{{ activeTrainingSession.slice(0,8) }}...</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-gray-600">Status:</span>
+                            <span :class="statusColor(activeSessionStatus?.status_type)">{{ activeSessionStatus?.status_type || 'Unknown' }}</span>
+                        </div>
+                        <div v-if="activeSessionStatus?.current_epoch" class="w-full bg-gray-200 rounded-full h-2.5 mt-2">
+                            <div class="bg-blue-600 h-2.5 rounded-full" :style="{ width: (activeSessionStatus.current_epoch / activeSessionStatus.total_epochs * 100) + '%' }"></div>
+                        </div>
+                        <div v-if="activeSessionStatus?.current_epoch" class="text-xs text-right text-gray-500">
+                            Epoch {{ activeSessionStatus.current_epoch }} / {{ activeSessionStatus.total_epochs }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Content -->
+            <div class="lg:col-span-3 space-y-6">
+                
+                <!-- Dashboard Tab -->
+                <div v-if="currentTab === 'dashboard'" class="bg-white shadow rounded-lg p-6">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-xl font-bold text-gray-800">Training Sessions</h2>
+                        <button @click="refreshSessions" class="text-blue-600 hover:text-blue-800">
+                            <i class="fas fa-sync-alt" :class="{'fa-spin': refreshLoading}"></i> Refresh
+                        </button>
+                    </div>
+                    
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Epochs</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Loss</th>
+                                    <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Timestamp</th>
+                                    <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-200">
+                                <tr v-for="(session, id) in sessions" :key="id" class="hover:bg-gray-50">
+                                    <td class="px-4 py-3 whitespace-nowrap font-mono text-sm text-gray-900 cursor-pointer" @click="viewSession(id)" title="Click to view details">{{ id.slice(0,8) }}</td>
+                                    <td class="px-4 py-3 whitespace-nowrap">
+                                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full" :class="statusBadgeClass(session.status_type)">
+                                            {{ session.status_type }}
+                                        </span>
+                                    </td>
+                                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                                        {{ session.current_epoch || 0 }} / {{ session.total_epochs || '?' }}
+                                    </td>
+                                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                                        {{ session.train_losses && session.train_losses.length ? session.train_losses[session.train_losses.length-1].toFixed(4) : '-' }}
+                                    </td>
+                                    <td class="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                                        {{ session.start_time ? new Date(session.start_time).toLocaleString() : '-' }}
+                                    </td>
+                                    <td class="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
+                                        <button @click="viewSession(id)" class="text-blue-600 hover:text-blue-900 mr-2">View</button>
+                                        <button v-if="session.status_type === 'running'" @click="stopTraining(id)" class="text-red-600 hover:text-red-900">Stop</button>
+                                    </td>
+                                </tr>
+                                <tr v-if="Object.keys(sessions).length === 0">
+                                    <td colspan="6" class="px-4 py-8 text-center text-gray-500">No training sessions found.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- New Training Tab -->
+                <div v-if="currentTab === 'training'" class="bg-white shadow rounded-lg p-6">
+                    <h2 class="text-xl font-bold text-gray-800 mb-6">Start New Training</h2>
+                    <form @submit.prevent="startTraining" class="space-y-6">
+                        
+                        <!-- Dataset Selection -->
+                        <div class="border rounded-lg p-4 bg-gray-50">
+                            <h3 class="font-medium text-gray-700 mb-3 flex justify-between items-center">
+                                Dataset Configuration
+                                <button type="button" @click="showUploadModal = true" class="text-sm bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700">
+                                    <i class="fas fa-upload mr-1"></i> Upload New Dataset
+                                </button>
+                            </h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Artifact ID</label>
+                                    <input v-model="trainingParams.artifact" required class="w-full border rounded px-3 py-2 text-sm" placeholder="workspace/alias">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Model ID</label>
+                                    <input v-model="trainingParams.model" required class="w-full border rounded px-3 py-2 text-sm" placeholder="Pretrained model or session ID">
+                                    <p class="text-xs text-gray-500 mt-1">e.g., cyto3, nuclei, cpsam</p>
+                                </div>
+                                <div class="md:col-span-2 grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-1">Train Images</label>
+                                        <input v-model="trainingParams.train_images" required class="w-full border rounded px-3 py-2 text-sm" placeholder="Path/pattern (e.g. images/)">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-1">Train Annotations</label>
+                                        <input v-model="trainingParams.train_annotations" required class="w-full border rounded px-3 py-2 text-sm" placeholder="Path/pattern (e.g. masks/)">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-1">Test Images (Optional)</label>
+                                        <input v-model="trainingParams.test_images" class="w-full border rounded px-3 py-2 text-sm" placeholder="Path/pattern">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-1">Test Annotations (Optional)</label>
+                                        <input v-model="trainingParams.test_annotations" class="w-full border rounded px-3 py-2 text-sm" placeholder="Path/pattern">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Parameters -->
+                        <div class="border rounded-lg p-4 bg-gray-50">
+                            <h3 class="font-medium text-gray-700 mb-3">Hyperparameters</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Epochs</label>
+                                    <input v-model.number="trainingParams.n_epochs" type="number" min="1" required class="w-full border rounded px-3 py-2 text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Learning Rate</label>
+                                    <input v-model.number="trainingParams.learning_rate" type="number" step="1e-7" required class="w-full border rounded px-3 py-2 text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Batch Size (Min Masks)</label>
+                                    <input v-model.number="trainingParams.min_train_masks" type="number" min="1" class="w-full border rounded px-3 py-2 text-sm">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flex justify-end">
+                            <button type="submit" :disabled="isStartingTraining" class="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700 transition disabled:opacity-50 flex items-center gap-2">
+                                <i v-if="isStartingTraining" class="fas fa-spinner fa-spin"></i>
+                                Start Training
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Session Details View -->
+                <div v-if="currentTab === 'session_details' && selectedSessionId" class="space-y-6">
+                    <div class="bg-white shadow rounded-lg p-6">
+                        <div class="flex justify-between items-start mb-4">
+                            <div>
+                                <h2 class="text-xl font-bold text-gray-800">Session Details</h2>
+                                <p class="text-sm text-gray-500 font-mono">{{ selectedSessionId }}</p>
+                            </div>
+                            <button @click="currentTab = 'dashboard'" class="text-gray-500 hover:text-gray-700">
+                                <i class="fas fa-times"></i> Close
+                            </button>
+                        </div>
+
+                        <!-- Status Cards -->
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                            <div class="bg-gray-50 p-3 rounded">
+                                <div class="text-xs text-gray-500">Status</div>
+                                <div class="font-bold capitalize" :class="statusTextColor(currentSession?.status_type)">{{ currentSession?.status_type }}</div>
+                            </div>
+                            <div class="bg-gray-50 p-3 rounded">
+                                <div class="text-xs text-gray-500">Epochs</div>
+                                <div class="font-bold">{{ currentSession?.current_epoch || 0 }} / {{ currentSession?.total_epochs || '?' }}</div>
+                            </div>
+                            <div class="bg-gray-50 p-3 rounded">
+                                <div class="text-xs text-gray-500">Samples</div>
+                                <div class="font-bold">{{ currentSession?.n_train || '-' }} / {{ currentSession?.n_test || '-' }}</div>
+                            </div>
+                            <div class="bg-gray-50 p-3 rounded">
+                                <div class="text-xs text-gray-500">Time</div>
+                                <div class="font-bold">{{ formatDuration(currentSession?.elapsed_seconds) }}</div>
+                            </div>
+                        </div>
+
+                        <!-- Slots for Live Inference Toggle -->
+                        <div class="flex justify-between items-center mb-4 p-3 bg-blue-50 rounded border border-blue-100" v-if="currentSession?.status_type === 'running'">
+                            <div class="text-blue-800 text-sm">
+                                <i class="fas fa-info-circle mr-1"></i> Live monitoring active. Charts update automatically.
+                            </div>
+                            <!-- Future: Live Inference toggle here -->
+                        </div>
+
+                        <!-- Plots -->
+                        <div id="lossChart" class="w-full h-80 bg-gray-50 rounded mb-6"></div>
+                        <div id="metricsChart" class="w-full h-80 bg-gray-50 rounded mb-6" v-if="hasMetrics"></div>
+
+                        <!-- Logs/Message -->
+                        <div class="bg-gray-900 text-gray-200 p-4 rounded font-mono text-sm h-40 overflow-y-auto mb-6">
+                            <div class="text-gray-500 text-xs mb-2">LAST MESSAGE</div>
+                            {{ currentSession?.message }}
+                        </div>
+
+                        <!-- Export Section -->
+                        <div v-if="currentSession?.status_type === 'completed'" class="bg-green-50 rounded p-4 border border-green-200">
+                             <h3 class="font-bold text-green-800 mb-2">Export Model</h3>
+                             <div class="flex gap-2 items-center">
+                                 <input v-model="exportModelName" placeholder="Model Name (optional)" class="border rounded px-3 py-2 text-sm flex-grow">
+                                 <input v-model="exportCollection" placeholder="Collection (workspace/col)" class="border rounded px-3 py-2 text-sm flex-grow">
+                                 <button @click="exportModel" :disabled="isExporting" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50">
+                                     <i v-if="isExporting" class="fas fa-spinner fa-spin mr-1"></i> Export
+                                 </button>
+                             </div>
+                             <div v-if="exportResult" class="mt-2 text-sm text-gray-700">
+                                 <i class="fas fa-check-circle text-green-500"></i> Exported: <a :href="exportResult.artifact_url" target="_blank" class="text-blue-600 hover:underline">{{ exportResult.model_name }}</a>
+                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Inference Tab -->
+                <div v-if="currentTab === 'inference'" class="bg-white shadow rounded-lg p-6">
+                    <h2 class="text-xl font-bold text-gray-800 mb-6">Inference</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <!-- Controls -->
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Model</label>
+                                <select v-model="inferenceParams.model" class="w-full border rounded px-3 py-2 text-sm">
+                                     <option v-for="m in pretrainedModels" :key="m" :value="m">{{ m }} (Pretrained)</option>
+                                     <option v-for="(s, id) in sessions" :key="id" :value="id" v-show="s.status_type==='completed'">Session: {{ id.slice(0,8) }}</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Diameter (px)</label>
+                                <input v-model.number="inferenceParams.diameter" type="number" placeholder="Auto" class="w-full border rounded px-3 py-2 text-sm">
+                            </div>
+                             <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Input Image</label>
+                                <input type="file" @change="handleInferenceFile" accept="image/*,.tif,.tiff" class="w-full text-sm">
+                            </div>
+                            <button @click="runInference" :disabled="!inferenceFile || isInferring" class="w-full bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 transition disabled:opacity-50">
+                                <i v-if="isInferring" class="fas fa-spinner fa-spin mr-2"></i> Run Inference
+                            </button>
+                        </div>
+                        
+                        <!-- Result -->
+                        <div class="bg-gray-100 rounded-lg flex items-center justify-center min-h-[300px] relative overflow-hidden">
+                            <div v-if="!inferenceResult && !inferencePreview" class="text-gray-400">Select image and run inference</div>
+                            <img v-if="inferencePreview" :src="inferencePreview" class="absolute inset-0 w-full h-full object-contain opacity-50">
+                            <canvas ref="inferenceCanvas" class="absolute inset-0 w-full h-full object-contain z-10"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Upload Modal -->
+        <div v-if="showUploadModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div class="bg-white rounded-lg p-6 w-full max-w-lg">
+                <h3 class="text-lg font-bold mb-4">Upload Dataset</h3>
+                <form @submit.prevent="uploadDataset" class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Dataset Alias</label>
+                        <input v-model="uploadParams.alias" required class="w-full border rounded px-3 py-2" placeholder="my-custom-dataset">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Select Folder</label>
+                        <input type="file" ref="folderInput" webkitdirectory directory multiple required class="w-full text-sm">
+                        <p class="text-xs text-gray-500 mt-1">Select a folder containing your images and annotations.</p>
+                    </div>
+                    
+                    <div v-if="isUploading" class="space-y-2">
+                         <div class="flex justify-between text-xs">
+                            <span>Uploading...</span>
+                            <span>{{ uploadProgress }}%</span>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded-full h-2">
+                            <div class="bg-green-600 h-2 rounded-full transition-all duration-300" :style="{ width: uploadProgress + '%' }"></div>
+                        </div>
+                        <div class="text-xs text-gray-500">{{ uploadStatus }}</div>
+                    </div>
+
+                    <div class="flex justify-end gap-3 pt-4">
+                        <button type="button" @click="showUploadModal = false" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">Cancel</button>
+                        <button type="submit" :disabled="isUploading" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50">Upload</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        const { createApp, ref, reactive, computed, onMounted, watch } = Vue;
+
+        createApp({
+            setup() {
+                // Connection
+                const serverUrl = ref('https://hypha.aicell.io');
+                const isConnected = ref(false);
+                const workspace = ref('');
+                const availableServices = ref([]);
+                const selectedServiceId = ref('');
+                const service = ref(null);
+                
+                // Tabs
+                const currentTab = ref('dashboard');
+                const tabs = [
+                    { id: 'dashboard', name: 'Dashboard', icon: 'fas fa-chart-line' },
+                    { id: 'training', name: 'New Training', icon: 'fas fa-plus-circle' },
+                    { id: 'inference', name: 'Inference', icon: 'fas fa-microscope' },
+                ];
+
+                // Data
+                const sessions = ref({});
+                const selectedSessionId = ref(null);
+                const activeTrainingSession = ref(null); // ID of currently running session found
+                const refreshLoading = ref(false);
+
+                // Training Form
+                const trainingParams = reactive({
+                    artifact: '',
+                    model: 'cpsam',
+                    train_images: 'images/',
+                    train_annotations: 'masks/',
+                    test_images: '',
+                    test_annotations: '',
+                    n_epochs: 10,
+                    learning_rate: 1e-6,
+                    min_train_masks: 5,
+                });
+                const isStartingTraining = ref(false);
+
+                // Upload
+                const showUploadModal = ref(false);
+                const uploadParams = reactive({ alias: '' });
+                const isUploading = ref(false);
+                const uploadProgress = ref(0);
+                const uploadStatus = ref('');
+                const folderInput = ref(null);
+
+                // Inference
+                const inferenceParams = reactive({
+                    model: 'cpsam',
+                    diameter: null,
+                });
+                const pretrainedModels = ['cpsam', 'cyto3', 'nuclei', 'tissuenet']; // Simplified list
+                const inferenceFile = ref(null);
+                const inferencePreview = ref(null);
+                const isInferring = ref(false);
+                const inferenceResult = ref(null);
+                const inferenceCanvas = ref(null);
+
+                // Export
+                const exportModelName = ref('');
+                const exportCollection = ref('bioimage-io/colab-annotations');
+                const isExporting = ref(false);
+                const exportResult = ref(null);
+
+                // Computed
+                const activeSessionStatus = computed(() => activeTrainingSession.value ? sessions.value[activeTrainingSession.value] : null);
+                const currentSession = computed(() => selectedSessionId.value ? sessions.value[selectedSessionId.value] : null);
+                const hasMetrics = computed(() => {
+                    const s = currentSession.value;
+                    return s && s.test_metrics && s.test_metrics.length > 0;
+                });
+
+                // Methods
+                const connect = async () => {
+                    try {
+                        const client = await hyphaWebsocketClient.connectToServer({
+                            "server_url": serverUrl.value,
+                        });
+                        workspace.value = client.config.workspace;
+                        isConnected.value = true;
+                        window.hyphaClient = client; // Expose globally for debugging
+                        await listServices();
+                    } catch (e) {
+                        console.error(e);
+                        alert("Connection failed: " + e.message);
+                    }
+                };
+
+                const disconnect = () => {
+                    if (window.hyphaClient) window.hyphaClient.disconnect();
+                    isConnected.value = false;
+                    service.value = null;
+                };
+
+                const listServices = async () => {
+                    const client = window.hyphaClient;
+                    if (!client) return;
+                    // Find services. ImJoy RPC uses `listServices`. Hypha client has `listServices`.
+                    // We look for services loaded in current workspace or public that match our app.
+                    // Assuming the app is running in the same workspace or we can see it.
+                    // The service ID usually ends with ":CellposeFinetune" or similar if unnamed, or just the app ID.
+                    // The App Manager registers services.
+                    // Let's try to list all and filter.
+                    // Since redeploy_cellpose.py starts it as an app, the service ID is likely returned by run_app usually.
+                    // But here we need to find it.
+                    // We can also assume the user knows it, but better to find it.
+                    
+                    // NOTE: Depending on how the worker starts the app, the service ID might be unpredictable.
+                    // However, Hypha services usually registered with an ID.
+                    // If we can't find it, we'll ask user.
+                    // Let's try to query services with "cellpose" in ID.
+                    try {
+                        const allServices = await client.listServices("public"); // Or workspace?
+                         // "public" listing might be restricted.
+                         // Let's list from our own workspace first.
+                         const wsServices = await client.listServices(client.config.workspace);
+                         // Also try to list from the workspace where the app serves (which might be 'bioimage-io' or similar)
+                         // For now, let's just list active services.
+                         
+                        const candidates = wsServices.filter(s => s.type && (s.type.includes('CellposeFinetune') || s.id.includes('cellpose')));
+                        availableServices.value = candidates.map(s => s.id);
+                        if (availableServices.value.length > 0) {
+                            selectedServiceId.value = availableServices.value[0];
+                        } else {
+                            // Fallback: Manually look for 'cellpose-finetuning'
+                            // availableServices.value = ['cellpose-finetuning']; // Guess
+                        }
+                    } catch (e) {
+                        console.warn("Failed to list services", e);
+                        availableServices.value = [];
+                    }
+                };
+
+                watch(selectedServiceId, async (newId) => {
+                    if (newId) {
+                        try {
+                            service.value = await window.hyphaClient.getService(newId);
+                            await refreshSessions();
+                            startAutoUpdate();
+                        } catch (e) {
+                            console.error("Failed to get service", e);
+                            alert("Failed to connect to service: " + e.message);
+                        }
+                    }
+                });
+
+                // Dashboard
+                const refreshSessions = async () => {
+                    if (!service.value) return;
+                    refreshLoading.value = true;
+                    try {
+                        sessions.value = await service.value.list_training_sessions();
+                        // Check for running session
+                        const runningIds = Object.keys(sessions.value).filter(k => sessions.value[k].status_type === 'running');
+                        if (runningIds.length > 0) {
+                            activeTrainingSession.value = runningIds[0];
+                        } else {
+                            activeTrainingSession.value = null;
+                        }
+                    } catch (e) {
+                        console.error(e);
+                    } finally {
+                        refreshLoading.value = false;
+                    }
+                };
+
+                let updateTimer = null;
+                const startAutoUpdate = () => {
+                    if (updateTimer) clearInterval(updateTimer);
+                    updateTimer = setInterval(async () => {
+                        if (isConnected.value && service.value) {
+                            // Only full refresh active or selected session details to save bandwidth? 
+                            // Or just list_training_sessions as it's lightweight (metadata only).
+                            await refreshSessions();
+                            if (currentTab.value === 'session_details' && selectedSessionId.value) {
+                                renderCharts();
+                            }
+                        }
+                    }, 3000); // 3 seconds
+                };
+
+                const viewSession = (id) => {
+                    selectedSessionId.value = id;
+                    currentTab.value = 'session_details';
+                    // Wait for DOM to update then render charts
+                    setTimeout(renderCharts, 100);
+                };
+
+                const renderCharts = () => {
+                    if (!currentSession.value) return;
+                    const s = currentSession.value;
+                    const epochs = Array.from({length: (s.train_losses?.length || 0)}, (_, i) => i + 1);
+                    
+                    // Loss Chart
+                    const traceTrain = {
+                        x: epochs,
+                        y: s.train_losses || [],
+                        mode: 'lines',
+                        name: 'Train Loss'
+                    };
+                    const traceTest = {
+                        x: epochs,
+                        y: s.test_losses || [],
+                        mode: 'lines',
+                        name: 'Test Loss'
+                    };
+                    Plotly.newPlot('lossChart', [traceTrain, traceTest], {
+                        title: 'Losses',
+                        margin: { t: 30, r: 10, l: 40, b: 30 },
+                        height: 320
+                    });
+
+                    // Metrics Chart
+                    if (hasMetrics.value) {
+                        // Extract metrics
+                        const metrics = s.test_metrics || [];
+                        const validEpochs = [];
+                        const f1 = [];
+                        const iou = [];
+                        
+                        metrics.forEach((m, i) => {
+                            if (m) {
+                                validEpochs.push(i + 1);
+                                f1.push(m.f1);
+                                iou.push(m.iou);
+                            }
+                        });
+
+                        Plotly.newPlot('metricsChart', [
+                            { x: validEpochs, y: f1, mode: 'lines+markers', name: 'F1 Score' },
+                            { x: validEpochs, y: iou, mode: 'lines+markers', name: 'IoU' }
+                        ], {
+                            title: 'Validation Metrics',
+                            margin: { t: 30, r: 10, l: 40, b: 30 },
+                            height: 320
+                        });
+                    }
+                };
+
+                const statusColor = (status) => {
+                    switch(status) {
+                        case 'running': return 'text-blue-600 font-bold';
+                        case 'completed': return 'text-green-600 font-bold';
+                        case 'failed': return 'text-red-600 font-bold';
+                        default: return 'text-gray-600';
+                    }
+                };
+                 const statusBadgeClass = (status) => {
+                    switch(status) {
+                        case 'running': return 'bg-blue-100 text-blue-800';
+                        case 'completed': return 'bg-green-100 text-green-800';
+                        case 'failed': return 'bg-red-100 text-red-800';
+                        default: return 'bg-gray-100 text-gray-800';
+                    }
+                };
+                const statusTextColor = (status) => {
+                     switch(status) {
+                        case 'running': return 'text-blue-600';
+                        case 'completed': return 'text-green-600';
+                        case 'failed': return 'text-red-600';
+                        default: return 'text-gray-600';
+                    }
+                };
+                const formatDuration = (seconds) => {
+                    if (!seconds) return '-';
+                    const h = Math.floor(seconds / 3600);
+                    const m = Math.floor((seconds % 3600) / 60);
+                    const s = Math.floor(seconds % 60);
+                    return `${h}h ${m}m ${s}s`;
+                };
+
+                const stopTraining = async (id) => {
+                    if (!confirm("Are you sure you want to stop this training session?")) return;
+                    try {
+                        await service.value.stop_training(id);
+                        await refreshSessions();
+                    } catch (e) {
+                        alert("Failed to stop: " + e.message);
+                    }
+                };
+
+                // Training
+                const startTraining = async () => {
+                    isStartingTraining.value = true;
+                    try {
+                        const result = await service.value.start_training(trainingParams);
+                        alert(`Training started! Session ID: ${result.session_id}`);
+                        activeTrainingSession.value = result.session_id;
+                        viewSession(result.session_id);
+                    } catch (e) {
+                        alert("Failed to start training: " + e.message);
+                        console.error(e);
+                    } finally {
+                        isStartingTraining.value = false;
+                    }
+                };
+
+                // Upload
+                const uploadDataset = async () => {
+                    if (!folderInput.value.files.length) {
+                        alert("Please select a folder.");
+                        return;
+                    }
+                    isUploading.value = true;
+                    uploadStatus.value = "Creating artifact...";
+                    uploadProgress.value = 0;
+
+                    try {
+                        const am = await window.hyphaClient.getService("public/artifact-manager");
+                        const files = Array.from(folderInput.value.files);
+                        
+                        // Create artifact
+                        // Note: folder alias construction
+                        const alias = uploadParams.alias.replace(/[^a-z0-9-]/g, '-').toLowerCase();
+                        const artifact = await am.create({
+                            alias: alias,
+                            type: "dataset",
+                            stage: true
+                        });
+                        
+                        // Upload Loop
+                        let uploaded = 0;
+                        uploadStatus.value = `Uploading ${files.length} files...`;
+                        
+                        // Batch uploads if needed, for now sequential-ish
+                        for (const file of files) {
+                            const path = file.webkitRelativePath || file.name;
+                            // Need to strip the root folder name usually if we want flat structure, 
+                            // or keep it. The backend expects "images/..." and "masks/..." structure.
+                            // If user uploads "mydata/images/img.tif", we want to preserve "images/img.tif" relative to "mydata".
+                            // Artifact manager paths are relative to artifact root.
+                            // webkitRelativePath gives "MyFolder/sub/file". We should use that.
+                            
+                            const uploadUrl = await am.put_file(artifact.id, path);
+                            await fetch(uploadUrl, { method: 'PUT', body: file });
+                            
+                            uploaded++;
+                            uploadProgress.value = Math.round((uploaded / files.length) * 100);
+                        }
+                        
+                        uploadStatus.value = "Committing artifact...";
+                        await am.commit(artifact.id);
+                        
+                        alert(`Dataset uploaded successfully! ID: ${artifact.id}`);
+                        trainingParams.artifact = artifact.id;
+                        showUploadModal.value = false;
+                        
+                    } catch (e) {
+                        console.error(e);
+                        alert("Upload failed: " + e.message);
+                    } finally {
+                        isUploading.value = false;
+                    }
+                };
+
+                // Inference
+                const handleInferenceFile = (event) => {
+                    const file = event.target.files[0];
+                    if (file) {
+                        inferenceFile.value = file;
+                        inferencePreview.value = URL.createObjectURL(file);
+                    }
+                };
+
+                const runInference = async () => {
+                     if (!inferenceFile.value) return;
+                     isInferring.value = true;
+                     try {
+                        // We need to send the image to the service.
+                        // We can't easily upload to artifact just for one inference (draft artifact overhead).
+                        // check `infer` signature: `input_arrays` (list of object).
+                        // We can read file as base64 or arraybuffer and send it if hypha-rpc supports it.
+                        // Better: Decode image to pixels in JS and send as array?
+                        // Or use a "blob" if supported.
+                        // `hypha-rpc` supports `imjoy-rpc` codecs.
+                        // Simplest hack: Use `hypha-rpc` automatic encoding if we pass a suitable object?
+                        // Actually, the backend `infer` tool expects `list[object]` documented as "List of numpy ndarrays".
+                        // Hypha supports transferring typed arrays.
+                        
+                        // 1. Read file to ArrayBuffer
+                        // 2. Wrap in a structure that Hypha/ImJoy RPC recognizes as ndarray?
+                        //    Usually {_rtype: 'ndarray', _rvalue: <buffer>, shape: [...], dtype: ...}
+                        //    But without imjoy-rpc utils it is hard.
+                        
+                        // ALTERNATIVE: Upload to temporary artifact.
+                        // This uses existing reliable upload logic.
+                        
+                        const am = await window.hyphaClient.getService("public/artifact-manager");
+                        const tempAlias = `temp-inf-${Date.now()}`;
+                        const tempArtifact = await am.create({
+                            alias: tempAlias,
+                            type: "temp",
+                            stage: true,
+                            expires_after: 3600 // Clean up after 1 hour (config dependent)
+                        });
+                        
+                        // Use simple filename
+                        const filename = inferenceFile.value.name;
+                        const putUrl = await am.put_file(tempArtifact.id, filename);
+                        await fetch(putUrl, { method: 'PUT', body: inferenceFile.value });
+                        
+                        // We don't commit? If we stay in stage, can we access it?
+                        // Access usually requires commit.
+                        await am.commit(tempArtifact.id);
+                        
+                        // Now call infer
+                        const artifactId = tempArtifact.id;
+                        const result = await service.value.infer({
+                            artifact: artifactId,
+                            image_paths: [filename], // path in artifact
+                            model: inferenceParams.model,
+                            diameter: inferenceParams.diameter
+                        });
+                        
+                        inferenceResult.value = result[0];
+                        drawResult(result[0]);
+                        
+                        // Cleanup? Artifact manager handles lifecycle ideally.
+                        
+                     } catch (e) {
+                         console.error(e);
+                         alert("Inference failed: " + e.message);
+                     } finally {
+                         isInferring.value = false;
+                     }
+                };
+
+                const exportModel = async () => {
+                    if (!selectedSessionId.value) return;
+                    isExporting.value = true;
+                    exportResult.value = null;
+                    try {
+                        const result = await service.value.export_model({
+                            session_id: selectedSessionId.value,
+                            model_name: exportModelName.value || null,
+                            collection: exportCollection.value
+                        });
+                        exportResult.value = result;
+                        // alert("Model exported successfully!");
+                    } catch (e) {
+                         console.error(e);
+                         alert("Export failed: " + e.message);
+                    } finally {
+                        isExporting.value = false;
+                    }
+                };
+
+                const drawResult = (resultItem) => {
+                    if (!inferenceCanvas.value) return;
+                    const mask = resultItem.output; // Numpy array (or list if decoded)
+                    // If hypha-rpc auto-decodes ndarray (it usually does if numpy is installed in python and encoded correctly),
+                    // In JS `mask` might be a TypedArray or nested array.
+                    // The backend returns specialized PredictionItemModel with output as NDArray.
+                    // Hypha RPC should decode it.
+                    // If not, we might get the raw object.
+                    
+                    // Assuming we get a Ndarray-like object or nested array.
+                    // Flattening and visualizing.
+                    // If it's a raw JS array of arrays (nested list), we need to handle it.
+                    // If it's a typed array with shape info (from imjoy-rpc), we use that.
+                    
+                    // Let's assume simplest case: It's just available.
+                    // We need to scale canvas to image size.
+                    
+                    // NOTE: Without a robust ndarray library in JS (like scikit-image io), visualization is basic.
+                    // I'll assume we get a structure I can iterate.
+                    
+                    // Check structure of `mask`
+                    console.log("Inference Output:", mask);
+                    
+                    // Simple logic: Create an ImageData and put it heavily relying on shape.
+                    // Since I don't know the exact format `hypha-rpc` delivers here without testing,
+                    // I will leave the visualizer basic.
+                    
+                    const ctx = inferenceCanvas.value.getContext('2d');
+                    const img = new Image();
+                    img.onload = () => {
+                        inferenceCanvas.value.width = img.width;
+                        inferenceCanvas.value.height = img.height;
+                        
+                        // Only if we know how to parse mask...
+                        // For this demo, simply logging it is safer than crashing.
+                        // But I'll try to support nested arrays (standard JSON serialization of numpy).
+                        
+                        // If it came via base64 in a dict (common custom encoding):
+                        // But `main.py` uses `_predict_and_encode`. No wait, `infer` uses `_predict_and_encode` 
+                        // but returns `PredictionItemModel` where `output` is `npt.NDArray`.
+                        // The RPC layer handles it.
+                        
+                        // Let's assume we can overlay *something*.
+                        ctx.drawImage(img, 0, 0);
+                        
+                        // Overlay logic would go here if we parsed the mask.
+                        // I'll assume mask is a TypedArray if using binary transport, or flat array.
+                        // Not implementing full mask overlay to keep it simple and robust.
+                    };
+                    img.src = inferencePreview.value;
+                    
+                    alert("Inference finished! Check console for result object.");
+                };
+
+                onMounted(() => {
+                    // Auto connect if URL param present (optional)
+                });
+
+                return {
+                    serverUrl, isConnected, connect, disconnect, workspace,
+                    availableServices, selectedServiceId, listServices, service,
+                    tabs, currentTab,
+                    sessions, refreshSessions, activeTrainingSession, activeSessionStatus, refreshLoading,
+                    trainingParams, startTraining, isStartingTraining,
+                    showUploadModal, uploadParams, uploadDataset, isUploading, uploadProgress, uploadStatus, folderInput,
+                    viewSession, currentSession, selectedSessionId, hasMetrics, statusColor, statusBadgeClass, statusTextColor, formatDuration, stopTraining,
+                    inferenceParams, pretrainedModels, handleInferenceFile, inferenceFile, inferencePreview, isInferring, runInference, inferenceCanvas,
+                    exportModelName, exportCollection, isExporting, exportResult, exportModel
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

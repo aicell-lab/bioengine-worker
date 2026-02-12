@@ -1247,7 +1247,7 @@ class ModelRunner:
             ..., description="Unique identifier of the bioimage.io model to test"
         ),
         stage: Optional[bool] = Field(
-            True,
+            False,
             description="Whether to get the staged version of the model (True) or the committed version (False)",
         ),
         additional_requirements: Optional[List[str]] = Field(

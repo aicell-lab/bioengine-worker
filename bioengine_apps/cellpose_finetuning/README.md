@@ -393,10 +393,10 @@ The recommended way to deploy (whether for the first time or to update) is to us
 
 ```bash
 source .env
-python bioengine_apps/cellpose_finetuning/scripts/redeploy_cellpose.py
+python tests/cellpose_legacy_scripts/redeploy_cellpose.py
 
 # Deploy a test target (using 'cellpose-finetuning-test' ID):
-python bioengine_apps/cellpose_finetuning/scripts/redeploy_cellpose.py \
+python tests/cellpose_legacy_scripts/redeploy_cellpose.py \
     --artifact-id bioimage-io/cellpose-finetuning-test \
     --application-id cellpose-finetuning-test
 ```
@@ -424,7 +424,7 @@ Ensure `.env` contains only one `HYPHA_TOKEN` entry. If there are duplicates, th
 
 ## Example Scripts
 
-This repository includes several example scripts in `bioengine_apps/cellpose_finetuning/scripts/`:
+This repository includes several example scripts in `tests/cellpose_legacy_scripts/`:
 
 - **`redeploy_cellpose.py`**: Stop and start the service with updated code/token (works for first-time deploy too)
 - **`test_service.py`**: Full workflow (training, monitoring, inference, export) with argparse
@@ -436,13 +436,13 @@ Run them with:
 source .env
 
 # Test single image inference
-python bioengine_apps/cellpose_finetuning/scripts/test_single_image.py
+python tests/cellpose_legacy_scripts/test_single_image.py
 
 # Quick test training workflow with export (2 samples, 1 epoch)
-python bioengine_apps/cellpose_finetuning/scripts/test_service.py
+python tests/cellpose_legacy_scripts/test_service.py
 
 # Full training + inference test (with validation every epoch)
-python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
+python tests/cellpose_legacy_scripts/test_service.py \
     --dataset-artifact ri-scale/zarr-demo \
     --train-images 'images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif' \
     --train-annotations 'annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif' \
@@ -451,7 +451,7 @@ python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
     --n-epochs 5 --validation-interval 1
 
 # Example with custom dataset pattern matching
-python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
+python tests/cellpose_legacy_scripts/test_service.py \
   --dataset-artifact ri-scale/zarr-demo \
   --train-images "images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif" \
   --train-annotations "annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif" \
@@ -459,13 +459,13 @@ python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
   --application-id cellpose-finetuning
 
 # End-to-end export test (trains and validates export)
-python bioengine_apps/cellpose_finetuning/scripts/test_export_e2e.py
+python tests/cellpose_legacy_scripts/test_export_e2e.py
 
 # Realistic training with all samples (default: 50 epochs)
-python bioengine_apps/cellpose_finetuning/scripts/train_realistic.py --epochs 50
+python tests/cellpose_legacy_scripts/train_realistic.py --epochs 50
 
 # Customize training parameters
-python bioengine_apps/cellpose_finetuning/scripts/train_realistic.py \
+python tests/cellpose_legacy_scripts/train_realistic.py \
     --artifact "your-workspace/your-dataset" \
     --train-images "*.tif" \
     --train-annotations "annotations/*_mask.tif" \
@@ -473,14 +473,14 @@ python bioengine_apps/cellpose_finetuning/scripts/train_realistic.py \
     --learning-rate 1e-6
 
 # Resume monitoring an existing training session
-python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
+python tests/cellpose_legacy_scripts/test_service.py \
     --dataset-artifact ri-scale/zarr-demo \
     --train-images 'images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif' \
     --train-annotations 'annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif' \
     --session <session-id>
 
 # Export a completed model
-python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
+python tests/cellpose_legacy_scripts/test_service.py \
     --dataset-artifact ri-scale/zarr-demo \
     --train-images 'images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif' \
     --train-annotations 'annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif' \

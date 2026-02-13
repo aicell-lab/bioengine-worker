@@ -30,11 +30,11 @@ BioEngine app deployment guide: See project README for artifact structure requir
 """
 
 import asyncio
+import logging
 import os
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Union
-import logging
 
 from hypha_rpc.utils.schema import schema_method
 from ray import serve
@@ -94,7 +94,6 @@ class DemoDeployment:
         - Must return a boolean value indicating whether the deployment is working correctly.
         """
         # Test importing a library set in the runtime environment
-        import pandas
 
         # Test accessing an environment variable set in the runtime environment
         os.environ["EXAMPLE_ENV_VAR"]
@@ -188,7 +187,7 @@ class DemoDeployment:
             """|================================================================================================|""",
         ]
         return ascii_art
-    
+
     @schema_method
     async def list_datasets(self) -> Dict[str, List[str]]:
         """

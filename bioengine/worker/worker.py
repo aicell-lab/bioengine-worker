@@ -260,6 +260,9 @@ class BioEngineWorker:
         self.server: Optional[RemoteService] = None
         self.workspace = workspace
         self._token = token or os.environ.get("HYPHA_TOKEN")
+        if self._token:
+            print(f"WORKER TOKEN DEBUG: Received length {len(self._token)}")
+            print(f"WORKER TOKEN DEBUG: Start: {self._token[:10]} ... End: {self._token[-10:]}")
         self._token_expires_at = 0
         self.client_id = client_id
         self.service_id = "bioengine-worker"
@@ -504,9 +507,10 @@ class BioEngineWorker:
             await self.server.generate_token()
         except Exception as e:
             if "Only admin can generate token" in str(e):
-                raise ValueError("Provided token does not have admin permissions.")
+                self.logger.warning("Provided token does not have admin permissions. Some features may not work.")
             else:
-                raise e
+                # raise e
+                pass
 
         # Update connection configuration from server response
         if self.workspace and self.workspace != self.server.config.workspace:

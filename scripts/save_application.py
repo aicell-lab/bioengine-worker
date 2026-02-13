@@ -1,7 +1,9 @@
 import argparse
 import asyncio
+import json
 import os
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from hypha_rpc import connect_to_server, login
 
@@ -18,6 +20,8 @@ async def save_application(
     workspace: str = None,
     token: str = None,
     worker_service_id: str = None,
+    manifest_file: str = None,
+    permissions: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Creates or updates a BioEngine application artifact in the Hypha artifact manager.
@@ -28,6 +32,8 @@ async def save_application(
         workspace: Hypha workspace to connect to
         token: Authentication token for Hypha server
         worker_service_id: Optional worker service ID to use creating/updating the artifact
+        manifest_file: Optional path to a specific manifest file to use (will be renamed to manifest.yaml)
+        permissions: Optional permissions to set on the artifact
 
     Returns:
         str: ID of the created artifact
@@ -41,14 +47,19 @@ async def save_application(
     token = token or os.environ.get("HYPHA_TOKEN")
     if not token:
         token = await login({"server_url": server_url})
+    
+    # Connect without forcing workspace (allow cross-workspace access)
     server = await connect_to_server(
         {
             "server_url": server_url,
-            "workspace": workspace,
             "token": token,
         }
     )
-    workspace = server.config.workspace
+    
+    # Use provided workspace or fallback to connected workspace
+    if not workspace:
+        workspace = server.config.workspace
+        
     user_id = server.config.user["id"]
 
     logger.info(
@@ -72,6 +83,39 @@ async def save_application(
             logger.info(
                 f"Removed {len(pycache_files)} __pycache__ files; {original_count - len(pycache_files)} files remain"
             )
+
+        if manifest_file:
+            manifest_path = Path(manifest_file)
+            if not manifest_path.is_absolute():
+                manifest_path = Path(directory) / manifest_path
+
+            if not manifest_path.exists():
+                raise FileNotFoundError(f"Manifest file not found: {manifest_path}")
+
+            # Remove existing manifest.yaml if present in the list
+            files = [f for f in files if f["name"] != "manifest.yaml"]
+
+            relative_manifest_path = manifest_path.relative_to(directory).as_posix()
+
+            manifest_entry = next(
+                (f for f in files if f["name"] == relative_manifest_path), None
+            )
+
+            if manifest_entry:
+                logger.info(f"Using {manifest_file} as manifest.yaml")
+                manifest_entry["name"] = "manifest.yaml"
+            else:
+                logger.info(f"Adding {manifest_file} as manifest.yaml")
+                with open(manifest_path, "rb") as f:
+                    manifest_content = f.read()
+                files.append(
+                    {
+                        "name": "manifest.yaml",
+                        "content": manifest_content,
+                        "type": "application/x-yaml",
+                    }
+                )
+
     except Exception as e:
         logger.error(f"Failed to create file list from directory: {e}")
         raise
@@ -107,6 +151,7 @@ async def save_application(
                 workspace=workspace,
                 user_id=user_id,
                 logger=logger,
+                permissions=permissions,
             )
             return artifact_id
         except Exception as e:
@@ -148,8 +193,29 @@ if __name__ == "__main__":
         type=str,
         help="Optional worker service ID to use creating/updating the artifact",
     )
+    parser.add_argument(
+        "--manifest-file",
+        type=str,
+        help="Optional path to a specific manifest file (relative to directory or absolute)",
+    )
+    parser.add_argument(
+        "--public",
+        action="store_true",
+        help="Make the artifact publicly matching",
+    )
+    parser.add_argument(
+        "--permissions",
+        type=str,
+        help="JSON string of permissions to set on the artifact",
+    )
 
     args = parser.parse_args()
+
+    perms = None
+    if args.permissions:
+        perms = json.loads(args.permissions)
+    elif args.public:
+        perms = {"*": "r"}
 
     asyncio.run(
         save_application(
@@ -158,5 +224,7 @@ if __name__ == "__main__":
             workspace=args.workspace,
             token=args.token,
             worker_service_id=args.worker_service_id,
+            manifest_file=args.manifest_file,
+            permissions=perms,
         )
     )

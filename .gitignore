@@ -171,3 +171,6 @@ ray-2.33.0/
 .bioengine*
 data/
 bioimageio_test_reports/
+
+# MacOS
+.DS_STORE

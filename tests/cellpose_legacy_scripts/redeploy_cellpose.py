@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import os
 
-from hypha_rpc import connect_to_server, login
+from hypha_rpc import connect_to_server
 
 
 async def redeploy(artifact_id: str, application_id: str):
@@ -14,21 +14,13 @@ async def redeploy(artifact_id: str, application_id: str):
     if not token:
         raise ValueError("HYPHA_TOKEN environment variable is not set")
 
-    async with connect_to_server({"server_url": server_url, "token": token, "workspace": "ri-scale"}) as hypha:
+    async with connect_to_server(
+        {"server_url": server_url, "token": token, "workspace": "ri-scale"}
+    ) as hypha:
         workspace = hypha.config.workspace
         print(f"Using workspace: {workspace}")
 
         worker = await hypha.get_service("bioimage-io/bioengine-worker")
-
-        # Stop the existing application if it's running
-        try:
-            print("Stopping existing application...")
-            await worker.stop_application(application_id)
-            print("Existing application stopped")
-            # Wait a bit for cleanup
-            await asyncio.sleep(5)
-        except Exception as e:
-            print(f"Note: Could not stop existing application (might not be running): {e}")
 
         # Start the new deployment
         print("Starting new deployment with latest artifact...")
@@ -45,26 +37,31 @@ async def redeploy(artifact_id: str, application_id: str):
         # Wait for services to become available
         print("Waiting for services to start...")
         import pprint
+
         for i in range(10):
-            app_status = await worker.get_application_status(application_ids=[application_id])
+            app_status = await worker.get_application_status(
+                application_ids=[application_id]
+            )
             print(f"DEBUG: Status check {i}:")
             pprint.pprint(app_status, indent=2)
-            
+
             # Try to find service_ids in nested structure if possible
             if isinstance(app_status, dict):
-                 # Check if it's a list of statuses or a single status dict keyed by app_id
-                 if application_id in app_status:
-                     status = app_status[application_id]
-                     if status.get("status") == "RUNNING":
-                         print(f"Application is running! Details: {status}")
-                         return
-            
+                # Check if it's a list of statuses or a single status dict keyed by app_id
+                if application_id in app_status:
+                    status = app_status[application_id]
+                    if status.get("status") == "RUNNING":
+                        print(f"Application is running! Details: {status}")
+                        return
+
             service_ids = app_status.get("service_ids", [])
             if service_ids:
                 print(f"Services: {service_ids}")
                 return service_ids
             await asyncio.sleep(2)
-        print("Warning: Services not yet available. The deployment may still be starting up.")
+        print(
+            "Warning: Services not yet available. The deployment may still be starting up."
+        )
         return []
 
 

@@ -145,14 +145,24 @@ async def save_application(
     else:
         # Create or update the artifact using the utility function
         try:
-            artifact_id = await create_application_from_files(
-                artifact_manager=artifact_manager,
-                files=files,
-                workspace=workspace,
-                user_id=user_id,
-                logger=logger,
-                permissions=permissions,
-            )
+            create_kwargs = {
+                "artifact_manager": artifact_manager,
+                "files": files,
+                "workspace": workspace,
+                "user_id": user_id,
+                "logger": logger,
+            }
+            if permissions is not None:
+                create_kwargs["permissions"] = permissions
+
+            try:
+                artifact_id = await create_application_from_files(**create_kwargs)
+            except TypeError as e:
+                if "permissions" in str(e):
+                    create_kwargs.pop("permissions", None)
+                    artifact_id = await create_application_from_files(**create_kwargs)
+                else:
+                    raise
             return artifact_id
         except Exception as e:
             logger.error(f"Failed to create/update artifact: {e}")

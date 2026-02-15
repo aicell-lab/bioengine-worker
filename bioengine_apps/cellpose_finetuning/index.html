@@ -11,6 +11,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.30/dist/hypha-rpc-websocket.min.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
     <script>
@@ -60,9 +61,13 @@
                 <!-- Connection Controls -->
                 <div v-if="!isConnected" class="flex items-center gap-2 bg-gray-50 p-1.5 rounded-lg border border-gray-200">
                     <input v-model="serverUrl" placeholder="Server URL" class="bg-transparent border-none text-sm focus:ring-0 px-2 w-48 placeholder-gray-400">
+                    <button @click="login" :disabled="isConnecting" class="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-md text-sm font-medium transition flex items-center gap-2">
+                        <i class="fas fa-sign-in-alt"></i>
+                        <span>Login</span>
+                    </button>
                     <button @click="connect" :disabled="isConnecting" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-md text-sm font-medium transition flex items-center gap-2">
                         <i v-if="isConnecting" class="fas fa-circle-notch fa-spin"></i>
-                        <span>{{ isConnecting ? 'Connecting...' : 'Connect' }}</span>
+                        <span v-text="isConnecting ? 'Connecting...' : 'Connect'"></span>
                     </button>
                     <button @click="showTokenInput = !showTokenInput" class="text-gray-400 hover:text-gray-600 px-2" title="Settings">
                         <i class="fas fa-cog"></i>
@@ -75,7 +80,8 @@
 
                 <!-- Service Selection -->
                 <div v-if="isConnected" class="flex items-center gap-3">
-                    <div class="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
+                    <!-- Only show selector if no service is active OR we have multiple options and want to switch -->
+                    <div v-if="!service" class="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
                         <i class="fas fa-server text-slate-400 text-xs"></i>
                         <select v-model="selectedServiceId" class="bg-transparent border-none text-sm focus:ring-0 w-48 font-medium">
                             <option value="" disabled>Select Service</option>
@@ -85,6 +91,11 @@
                             <i class="fas fa-sync-alt" :class="{'fa-spin': isScanning}"></i>
                         </button>
                     </div>
+                    
+                    <div v-else class="flex items-center gap-2 bg-green-50 px-3 py-1.5 rounded-lg border border-green-200 text-green-800 text-sm font-medium">
+                        <i class="fas fa-check-circle"></i> {{ selectedServiceId }}
+                    </div>
+
                     <button @click="disconnect" class="text-slate-500 hover:text-red-600 text-sm font-medium p-2 rounded-lg hover:bg-red-50 transition" title="Disconnect">
                         <i class="fas fa-power-off"></i>
                     </button>
@@ -312,11 +323,21 @@
                                 <div class="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
                                      <div>
                                         <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Train Images</label>
-                                        <input v-model="trainingParams.train_images" required class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. images/">
+                                        <input v-model="trainingParams.train_images" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. images/*/*.tif">
+                                        <div class="mt-1 text-xs text-gray-500 flex flex-wrap items-center gap-2">
+                                            <span>Examples:</span>
+                                            <button type="button" @click="applyTrainingGlobExample" class="text-blue-600 hover:underline">images/*/*.tif</button>
+                                            <button type="button" @click="applyTrainingFolderExample" class="text-blue-600 hover:underline">images/ + annotations/</button>
+                                        </div>
                                     </div>
                                     <div>
                                         <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Train Annotations</label>
-                                        <input v-model="trainingParams.train_annotations" required class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. masks/">
+                                        <input v-model="trainingParams.train_annotations" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. annotations/*/*_mask.ome.tif">
+                                    </div>
+                                    <div class="md:col-span-2">
+                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Metadata Folder (Opt)</label>
+                                        <input v-model="trainingParams.metadata_dir" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. metadata/">
+                                        <p class="text-xs text-gray-500 mt-1">Use this to load image/annotation pairs from metadata JSON files; then explicit annotation masks are optional.</p>
                                     </div>
                                     <div>
                                         <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Test Images (Opt)</label>
@@ -482,6 +503,11 @@
                                 <div>
                                     <label class="block text-sm font-medium text-gray-700 mb-1">Average Diameter (px)</label>
                                     <input v-model.number="inferenceParams.diameter" type="number" placeholder="0 = Auto" class="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                                </div>
+
+                                <div v-if="runningTrainingSessionsCount > 0" class="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-xs leading-relaxed">
+                                    <i class="fas fa-triangle-exclamation mr-1"></i>
+                                    {{ runningTrainingSessionsCount }} training session(s) are running. Inference may fail with GPU memory errors while training is active.
                                 </div>
 
                                 <div>
@@ -677,6 +703,7 @@
                     model: 'cpsam',
                     train_images: 'images/',
                     train_annotations: 'annotations/',
+                    metadata_dir: '',
                     test_images: '',
                     test_annotations: '',
                     n_epochs: 50,
@@ -722,13 +749,78 @@
                 const currentSession = computed(() => selectedSessionId.value ? sessions.value[selectedSessionId.value] : null);
                 const monitoredSession = computed(() => monitoringSessionId.value ? sessions.value[monitoringSessionId.value] : null);
                 const hasMetrics = computed(() => currentSession.value?.test_metrics?.length > 0);
+                const runningTrainingSessionsCount = computed(() =>
+                    Object.values(sessions.value).filter((s) => s && s.status_type === 'running').length
+                );
+
+                const to2DMaskArray = (maskValue) => {
+                    if (!maskValue) return null;
+                    if (Array.isArray(maskValue) && Array.isArray(maskValue[0])) return maskValue;
+                    if (Array.isArray(maskValue) && maskValue.length > 0 && typeof maskValue[0] === 'number') return null;
+                    return null;
+                };
+
+                const isGpuOomError = (message) => {
+                    const text = String(message || '').toLowerCase();
+                    return text.includes('cuda out of memory') || text.includes('outofmemoryerror');
+                };
+
+                const formatServiceError = (error, context) => {
+                    const base = String(error?.message || error || 'Unknown error');
+                    if (isGpuOomError(base)) {
+                        return `${context} failed due to GPU memory pressure. Stop active training sessions, wait a few seconds, then retry.`;
+                    }
+                    return base;
+                };
+
+                const applyTrainingGlobExample = () => {
+                    trainingParams.train_images = 'images/*/*.tif';
+                    trainingParams.train_annotations = 'annotations/*/*_mask.ome.tif';
+                };
+
+                const applyTrainingFolderExample = () => {
+                    trainingParams.train_images = 'images/';
+                    trainingParams.train_annotations = 'annotations/';
+                };
+
+                const getUserWorkspace = () => {
+                    const explicitWs = workspace.value;
+                    if (explicitWs) return explicitWs;
+
+                    const userId = window.hyphaClient?.config?.user?.id;
+                    if (userId) return `ws-user-${userId}`;
+
+                    return null;
+                };
+
+                const getServiceWorkspace = () => {
+                    const serviceId = selectedServiceId.value || service.value?.id;
+                    if (!serviceId || typeof serviceId !== 'string') return null;
+                    const firstSlash = serviceId.indexOf('/');
+                    if (firstSlash <= 0) return null;
+                    return serviceId.slice(0, firstSlash);
+                };
 
                 // --- Lifecycle Hooks ---
                 onMounted(async () => {
                     // Parse URL parameters for auto-connect
                     const params = new URLSearchParams(window.location.search);
                     if (params.has('server_url')) serverUrl.value = params.get('server_url');
-                    if (params.has('token')) authToken.value = params.get('token');
+                    
+                    // Check URL token first, then localStorage
+                    if (params.has('token')) {
+                        authToken.value = params.get('token');
+                    } else {
+                        const savedToken = localStorage.getItem('hypha_token');
+                        if (savedToken) {
+                            try {
+                                const parsedToken = JSON.parse(savedToken);
+                                authToken.value = parsedToken?.tokenString || parsedToken?.token || savedToken;
+                            } catch {
+                                authToken.value = savedToken;
+                            }
+                        }
+                    }
                     
                     // Auto-connect immediately
                     await connect();
@@ -756,11 +848,12 @@
                     isConnecting.value = true;
                     autoConnectError.value = '';
                     try {
-                        const config = { "server_url": serverUrl.value };
+                        const config = { "server_url": serverUrl.value, method_timeout: 20000 };
                         if (authToken.value) config.token = authToken.value;
                         
                         const client = await hyphaWebsocketClient.connectToServer(config);
-                        workspace.value = client.config.workspace;
+                        workspace.value = client?.config?.workspace || client?.workspace || '';
+                        console.log('Connected server.config:', client?.config);
                         isConnected.value = true;
                         window.hyphaClient = client;
                         
@@ -769,9 +862,43 @@
                         
                     } catch (e) {
                         console.error(e);
-                        autoConnectError.value = "Connection failed: " + e.message;
+                        autoConnectError.value = "Connection failed: " + (e.message || "Unknown error");
+                        isConnected.value = false;
                     } finally {
                         isConnecting.value = false;
+                    }
+                };
+
+                const login = async () => {
+                    isConnecting.value = true;
+                    autoConnectError.value = '';
+                    try {
+                        const loginResult = await hyphaWebsocketClient.login({
+                            server_url: serverUrl.value,
+                            profile: true,
+                            login_callback: (context) => {
+                                window.open(context.login_url, '_blank');
+                            }
+                        });
+                        const token = typeof loginResult === 'string'
+                            ? loginResult
+                            : (loginResult?.token || loginResult?.tokenString || null);
+                        if (token) {
+                            authToken.value = token;
+                            if (typeof loginResult === 'string') {
+                                localStorage.setItem('hypha_token', token);
+                            } else {
+                                localStorage.setItem('hypha_token', JSON.stringify({
+                                    tokenString: token,
+                                    ...loginResult,
+                                }));
+                            }
+                            await connect();
+                        }
+                    } catch (e) {
+                         console.error(e);
+                         autoConnectError.value = "Login failed: " + e.message;
+                         isConnecting.value = false;
                     }
                 };
 
@@ -789,42 +916,7 @@
                         const client = window.hyphaClient;
                         let services = [];
 
-                        // 1. List from current workspace
-                        try {
-                            const personal = await client.listServices(client.config.workspace);
-                            services = services.concat(personal);
-                        } catch (e) {
-                            console.warn("My workspace scan failed", e);
-                        }
-
-                        // 2. List from bioimage-io workspace (if different)
-                        if (client.config.workspace !== 'bioimage-io') {
-                            try {
-                                const publicWs = await client.listServices('bioimage-io');
-                                services = services.concat(publicWs);
-                            } catch (e) {
-                                console.warn("Bioimage-io workspace scan failed", e);
-                            }
-                        }
-                        
-                        // Filter for likely cellpose services
-                        // Looking for type "CellposeFinetune" or id containing "cellpose"
-                        const candidates = services.filter(s => 
-                            (s.type && s.type.includes('CellposeFinetune')) || 
-                            (s.id && s.id.includes('cellpose-finetuning'))
-                        );
-                        
-                        // Deduplicate by ID
-                        const uniqueIds = new Set(candidates.map(s => s.id));
-                        availableServices.value = Array.from(uniqueIds);
-                        
-                        // Auto-select if none selected and we found some
-                        if (availableServices.value.length > 0 && !selectedServiceId.value) {
-                             // Prefer one matching 'cellpose-finetuning'
-                             const match = availableServices.value.find(id => id.includes('cellpose-finetuning'));
-                             selectedServiceId.value = match || availableServices.value[0];
-                        }
-                        
+                        selectedServiceId.value = "bioimage-io/cellpose-finetuning";
                     } catch (e) {
                         console.warn("Service scan failed", e);
                     } finally {
@@ -834,29 +926,7 @@
 
                 // --- Helper: Get Artifact Manager ---
                 const getArtifactManager = async () => {
-                    // Strategy 1: Discovery via listServices (Robust)
-                    try {
-                        const services = await window.hyphaClient.listServices("bioimage-io");
-                        // Look for Artifact Manager by name or specific ID
-                        const amService = services.find(s => s.config.name === "Artifact Manager" || s.id === "bioimage-io/artifact-manager");
-                        if (amService) {
-                            console.log("Found Artifact Manager via discovery:", amService.id);
-                            return await window.hyphaClient.getService(amService.id);
-                        }
-                    } catch (e) {
-                        console.warn("Artifact Manager discovery failed:", e);
-                    }
-
-                    // Strategy 2: Fallback to known alias
-                    console.log("Falling back to public/artifact-manager");
-                    // Use keyword arg invocation style if possible, or simpler service
-                    // Note: 'public/artifact-manager' might be 'bioimage-io/artifact-manager'
-                    try {
-                         return await window.hyphaClient.getService("bioimage-io/artifact-manager");
-                    } catch (e) {
-                         // Last resort
-                         return await window.hyphaClient.getService("public/artifact-manager");
-                    }
+                    return await window.hyphaClient.getService("public/artifact-manager");
                 };
 
                 // Watch Selected Service to Initialize
@@ -874,40 +944,40 @@
                     }
                 });
 
-                // --- Dashboard Methods ---
+                  // --- Dashboard Methods ---
                 const refreshSessions = async (background = false) => {
                     if (!service.value) return;
                     if (!background) refreshLoading.value = true;
                     
                     try {
                         // Use a timeout for the call to prevent hanging
-                        let result = {};
+                        let result = null;
                         try {
                              result = await Promise.race([
                                 service.value.list_training_sessions(),
-                                new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 60000))
+                                new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 20000))
                             ]);
                         } catch (err) {
                             console.warn("Training sessions list timed out or failed:", err);
-                            // Do not propagate error to UI 'syncError' unless we really want to annoy the user
-                            // syncError.value = "Sync slow/failed";
-                            // Return empty dict to allow app to continue
-                            result = {};
+                            throw err;
                         }
                         
-                        sessions.value = result;
-                        syncError.value = null;
+                        if (result) {
+                            sessions.value = result;
+                            syncError.value = null;
 
-                        // Find active session
-                        const running = Object.entries(sessions.value).find(([_, s]) => s.status_type === 'running');
-                        // Auto-monitor running session if none monitored
-                        if (!monitoringSessionId.value && running) {
-                            monitoringSessionId.value = running[0];
+                            // Find active session
+                            const running = Object.entries(sessions.value).find(([_, s]) => s && s.status_type === 'running');
+                            if (running) {
+                                monitoringSessionId.value = running[0];
+                            } else {
+                                monitoringSessionId.value = null;
+                            }
                         }
                     } catch (e) {
                         console.error(e);
-                        // Only show sync error if it persists or is manual
-                        syncError.value = "Sync failed: " + (e.message || "Timeout");
+                        // Show sync error but preserve old sessions so user can see last known state
+                        syncError.value = "Sync failed: " + (e.message || "Timeout") + ". Displayed data may be outdated.";
                     } finally {
                         if (!background) refreshLoading.value = false;
                     }
@@ -929,8 +999,7 @@
                                 console.warn("Auto-update loop error:", e);
                             }
                         }
-                        // Increase interval to 10 seconds to reduce load
-                        updateTimer = setTimeout(runLoop, 10000);
+                        updateTimer = setTimeout(runLoop, 3000);
                     };
                     runLoop();
                 };
@@ -1008,33 +1077,90 @@
                 // --- Actions ---
                 const stopTraining = async (id) => {
                     if (!confirm("Stop this training session?")) return;
-                    try { await service.value.stop_training(id); await refreshSessions(); }
-                    catch (e) { alert("Failed: " + e.message); }
+                    try { 
+                        await service.value.stop_training({ session_id: id }, { _rkwargs: true }); 
+                        if (sessions.value[id]) {
+                            sessions.value[id].status_type = 'stopped';
+                            sessions.value[id].message = 'Training session stopped by user.';
+                        }
+                        await refreshSessions(); 
+                    }
+                    catch (e) {
+                        const errMsg = formatServiceError(e, 'Stop training');
+                        trainingError.value = "Stop failed: " + errMsg;
+                        syncError.value = "Stop failed: " + errMsg;
+                        console.error("Stop training failed:", e);
+                    }
                 };
 
                 const startTraining = async () => {
+                    console.log("startTraining called");
                     isStartingTraining.value = true;
                     trainingError.value = '';
                     try {
+                        const hasMetadataDir = !!(trainingParams.metadata_dir && trainingParams.metadata_dir.trim());
+                        const hasTrainImages = !!(trainingParams.train_images && trainingParams.train_images.trim());
+                        const hasTrainAnnotations = !!(trainingParams.train_annotations && trainingParams.train_annotations.trim());
+
+                        if (!hasMetadataDir && (!hasTrainImages || !hasTrainAnnotations)) {
+                            throw new Error("Provide either metadata folder, or both train images and train annotations.");
+                        }
+
+                        console.log("Invoking service.start_training with:", {
+                            artifact: trainingParams.artifact,
+                            train_images: trainingParams.train_images,
+                            train_annotations: trainingParams.train_annotations,
+                            metadata_dir: trainingParams.metadata_dir || null,
+                            test_images: trainingParams.test_images || null,
+                            test_annotations: trainingParams.test_annotations || null,
+                            model: trainingParams.model,
+                            n_epochs: trainingParams.n_epochs,
+                            learning_rate: trainingParams.learning_rate,
+                            min_train_masks: trainingParams.min_train_masks
+                        });
+                        
+                        console.log("Calling start_training with keyword args via _rkwargs.");
+                        
                         const result = await service.value.start_training(
-                            trainingParams.artifact,
-                            trainingParams.train_images,
-                            trainingParams.train_annotations,
-                            trainingParams.test_images || null,
-                            trainingParams.test_annotations || null,
-                            trainingParams.model,
-                            null, // n_samples
-                            trainingParams.n_epochs,
-                            trainingParams.learning_rate,
-                            1e-4, // weight_decay default
-                            trainingParams.min_train_masks,
-                            // validation_interval (skip, will use default None)
+                            {
+                                artifact: trainingParams.artifact,
+                                train_images: trainingParams.train_images || null,
+                                train_annotations: trainingParams.train_annotations || null,
+                                metadata_dir: trainingParams.metadata_dir || null,
+                                test_images: trainingParams.test_images || null,
+                                test_annotations: trainingParams.test_annotations || null,
+                                model: trainingParams.model || 'cpsam',
+                                n_samples: null,
+                                n_epochs: trainingParams.n_epochs,
+                                learning_rate: trainingParams.learning_rate,
+                                weight_decay: 1e-4,
+                                min_train_masks: trainingParams.min_train_masks,
+                                validation_interval: null
+                            },
+                            { _rkwargs: true }
                         );
-                        monitoringSessionId.value = result.session_id;
-                        viewSession(result.session_id);
+
+                        console.log("start_training result:", result);
+                        
+                        if (result && result.session_id) {
+                            // Update local session list immediately to ensure viewSession finds it
+                            sessions.value[result.session_id] = result;
+                            
+                            monitoringSessionId.value = result.session_id;
+                            viewSession(result.session_id);
+                            
+                            // Trigger background refresh
+                            refreshSessions(true);
+                            
+                            alert("Training started successfully! Session ID: " + result.session_id);
+                        } else {
+                            throw new Error("No session_id returned: " + JSON.stringify(result));
+                        }
                     } catch (e) {
-                        console.error(e);
-                        trainingError.value = "Start failed: " + (e.message || "Unknown error");
+                        console.error("Start Training Error:", e);
+                        const errMsg = formatServiceError(e, 'Training');
+                        trainingError.value = "Start failed: " + errMsg;
+                        alert("Start Training Failed:\n" + errMsg);
                     } finally {
                         isStartingTraining.value = false;
                     }
@@ -1044,28 +1170,30 @@
                 const handleFolderSelect = (event) => {
                      const files = event.target.files;
                      if (files && files.length > 0) {
-                         // Extract the top-level folder name from webkitRelativePath
-                         // format: "FolderName/file.txt"
-                         const path = files[0].webkitRelativePath || "";
-                         const parts = path.split('/');
-                         if (parts.length > 0 && parts[0]) {
-                             // Sanitize for alias
-                             const folderName = parts[0];
-                             // Simple sanitation: lowercase, replace spaces/special chars with dash
-                             uploadParams.alias = folderName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
-                         }
+                         // Generate a readable alias
+                         const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+                         const rand = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+                         uploadParams.alias = `dataset-${date}-${rand}`;
                      }
                 };
 
                 // --- Upload ---
                 const uploadDataset = async () => {
-                    if (!folderInput.value.files.length) return;
-                    isUploading.value = true;
-                    uploadStatus.value = "Initializing...";
-                    
-                    try {
+                   if (!folderInput.value.files.length) return;
+                   
+                   // Ensure alias is present
+                   if (!uploadParams.alias) {
+                       const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+                       const rand = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+                       uploadParams.alias = `dataset-${date}-${rand}`;
+                   }
+
+                   isUploading.value = true;
+                   uploadStatus.value = "Initializing...";
+                   
+                   try {
                         const am = await getArtifactManager();
-                        const alias = uploadParams.alias.replace(/[^a-z0-9-]/g, '-').toLowerCase();
+                        const alias = uploadParams.alias;
                         
                         // Use explicit manifest arg
                         const manifest = {
@@ -1080,7 +1208,7 @@
                         const artifact = await am.create(
                             alias,          // alias
                             null,           // artifact_id
-                            null,           // workspace
+                            getUserWorkspace(), // workspace
                             null,           // parent_id
                             manifest,       // manifest
                             "dataset",      // type
@@ -1126,11 +1254,44 @@
                 };
 
                 // --- Inference ---
-                const handleInferenceFile = (e) => {
+                const createTiffPreview = async (file) => {
+                    const buffer = await file.arrayBuffer();
+                    const ifds = UTIF.decode(buffer);
+                    if (!ifds || ifds.length === 0) {
+                        throw new Error("No TIFF image frames found.");
+                    }
+                    UTIF.decodeImage(buffer, ifds[0]);
+                    const rgba = UTIF.toRGBA8(ifds[0]);
+                    const width = ifds[0].width;
+                    const height = ifds[0].height;
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    const imageData = new ImageData(new Uint8ClampedArray(rgba), width, height);
+                    ctx.putImageData(imageData, 0, 0);
+                    return canvas.toDataURL('image/png');
+                };
+
+                const handleInferenceFile = async (e) => {
                     const file = e.target.files[0];
                     if (file) {
                         inferenceFile.value = file;
-                        inferencePreview.value = URL.createObjectURL(file);
+                        const lowerName = (file.name || '').toLowerCase();
+                        const isTiff = lowerName.endsWith('.tif') || lowerName.endsWith('.tiff');
+
+                        try {
+                            if (isTiff && window.UTIF) {
+                                inferencePreview.value = await createTiffPreview(file);
+                            } else {
+                                inferencePreview.value = URL.createObjectURL(file);
+                            }
+                        } catch (previewError) {
+                            console.warn('TIFF preview decode failed, falling back to object URL:', previewError);
+                            inferencePreview.value = URL.createObjectURL(file);
+                        }
+
                         inferenceResult.value = null; // Reset previous result
                         
                         // Reset canvas
@@ -1155,26 +1316,29 @@
                 const runInference = async () => {
                     if (!inferenceFile.value) return;
                     isInferring.value = true;
+                    console.log("Starting inference...");
                     try {
                         const am = await getArtifactManager();
                         
                         // Upload temp file
-                        const tmpAlias = `temp-inf-${Date.now()}`;
+                        const tmpAlias = `inference-${Date.now()}`;
                         const manifest = { 
                             alias: tmpAlias, 
                             type: "temp", 
                             stage: true, 
-                            expires_after: 1800 
+                            expires_after: 1800,
+                            visibility: "public"
                         };
                         
+                        console.log("Creating temp artifact:", tmpAlias);
                         const art = await am.create(
                             tmpAlias,       // alias
                             null,           // artifact_id
-                            null,           // workspace
+                            getServiceWorkspace() || getUserWorkspace(), // workspace
                             null,           // parent_id
                             manifest,       // manifest
                             "temp",         // type
-                            null,           // config
+                            { permissions: { "*": "r" } }, // config
                             null,           // secrets
                             null,           // version
                             null,           // comment
@@ -1184,23 +1348,46 @@
                         
                         const fname = inferenceFile.value.name;
                         const url = await am.put_file(art.id, fname);
+                        console.log("Uploading file to:", url);
                         await fetch(url, { method: 'PUT', body: inferenceFile.value });
                         await am.commit(art.id); // Commit required for reading
                         
+                        console.log("Invoking service.infer with keyword args via _rkwargs.");
+
                         const result = await service.value.infer(
-                            art.id,           // artifact
-                            [fname],          // image_paths
-                            null,             // input_arrays
-                            inferenceParams.model, // model
-                            inferenceParams.diameter, // diameter
+                            {
+                                artifact: art.id,
+                                image_paths: [fname],
+                                input_arrays: null,
+                                model: inferenceParams.model,
+                                diameter: inferenceParams.diameter || null,
+                                flow_threshold: 0.4,
+                                cellprob_threshold: 0.0,
+                                niter: null,
+                                return_flows: false,
+                                json_safe: true
+                            },
+                            { _rkwargs: true }
                         );
                         
-                        inferenceResult.value = result[0];
-                        drawInference(result[0].output);
+                        console.log("Inference Raw Result:", result);
+
+                        if (result && result.length > 0) {
+                             // Deep copy the result to detach from any proxies
+                             try {
+                                 inferenceResult.value = JSON.parse(JSON.stringify(result[0]));
+                             } catch(e) {
+                                 console.warn("Failed to structured clone result, using direct assignment", e);
+                                 inferenceResult.value = result[0];
+                             }
+                             drawInference(inferenceResult.value.output);
+                        } else {
+                            throw new Error("No inference result returned from service (empty list or null).");
+                        }
                         
-                        // Cleanup artifact (optional, expires anyway)
                     } catch (e) {
-                        alert("Inference fail: " + e.message);
+                        console.error("Inference Error:", e);
+                        alert("Inference fail: " + formatServiceError(e, 'Inference'));
                     } finally {
                         isInferring.value = false;
                     }
@@ -1208,31 +1395,30 @@
 
                 const drawInference = (mask) => {
                     const canvas = inferenceCanvas.value;
-                    if (!canvas) return;
+                    if (!canvas || !mask) return;
+
+                    const mask2d = to2DMaskArray(mask);
+                    if (!mask2d) {
+                        throw new Error('Inference returned a mask payload that the UI cannot render.');
+                    }
                     
                     const ctx = canvas.getContext('2d');
                     const width = canvas.width;
                     const height = canvas.height;
-                    
-                    // Decode & Draw Mask
-                    // Mask is likely a nested array (from JSON) or TypedArray (if binary). 
-                    // Assuming nested array matching image dimensions for now.
-                    // Flatten if needed.
                     
                     // Simple pixel manipulation
                     const idata = ctx.createImageData(width, height);
                     const data = idata.data;
                     
                     // Handle nested array [y][x] or flat
-                    const isNested = Array.isArray(mask) && Array.isArray(mask[0]);
-                    
-                    // Determine max label for coloring
-                    const flatData = isNested ? mask.flat() : mask;
-                    inferenceObjectCount.value = new Set(flatData).size - 1; // Exclude 0
+                    const flatData = mask2d.flat();
+                    inferenceObjectCount.value = Math.max(0, new Set(flatData).size - 1);
 
                     for (let y = 0; y < height; y++) {
                         for (let x = 0; x < width; x++) {
-                            const val = isNested ? mask[y]?.[x] : mask[y * width + x];
+                            const row = mask2d[y];
+                            const val = Array.isArray(row) ? row[x] : 0;
+
                             if (val && val > 0) {
                                 const idx = (y * width + x) * 4;
                                 // Simple hash for color
@@ -1306,6 +1492,13 @@
                                 rawFiles = art.files;
                             }
                         }
+                        
+                        // Handle cases where start_training is missing (debugging)
+                        if (service.value && typeof service.value.start_training !== 'function') {
+                            console.warn("WARNING: start_training method is missing on service object!", service.value);
+                            // Try to re-bind or check keys
+                            console.log("Service keys:", Object.keys(service.value));
+                        }
                            
                         browserFiles.value = rawFiles.map(f => {
                             // Handle object format {name: "...", ...} or string
@@ -1377,8 +1570,11 @@
                                      let pathStr = typeof f === 'string' ? f : (f.path || f.name || f.key || "");
                                      pathStr = pathStr.replace(/^\.?\//, '');
                                      
-                                     // If the server returns paths *relative to the dir_path* (unlikely but possible), prepending might be needed.
-                                     // BUT usually it returns full artifact path.
+                                     // Fix: If it's a basename (doesn't start with newPath), prepend newPath
+                                     // We assume if we asked for a dir, we got children of that dir
+                                     if (newPath && !pathStr.startsWith(newPath)) {
+                                         pathStr = (newPath.endsWith('/') ? newPath : newPath + '/') + pathStr;
+                                     }
                                      
                                      // Ensure format consistency
                                      if (pathStr && !existing.has(pathStr)) {
@@ -1465,39 +1661,64 @@
                     browserPath.value = fullPath.replace(/\/$/, "");
                 };
 
-                const handleItemClick = (item) => {
-                    console.log("Clicked:", item);
-                    if (item.type === 'folder') {
-                        // Ensure we aren't already there and it's a valid path change
-                        browserNavigate(item.fullPath);
-                    }
-                };
-                
-                const browserNavigateUp = () => {
-                    if (!browserPath.value) return;
-                    const parts = browserPath.value.split('/');
-                    parts.pop();
-                    browserPath.value = parts.join('/');
-                    console.log("Navigated up to:", browserPath.value);
-                };
-                
-                const selectFolderFor = (path, target) => {
-                    const val = path ? (path.endsWith('/') ? path : path + '/') : '';
-                    if (target === 'images') trainingParams.train_images = val;
-                    if (target === 'annotations') trainingParams.train_annotations = val;
-                    if (typeof showBrowserFeedback === 'function') {
-                         showBrowserFeedback(`Selected "${val}" as ${target}`);
-                    }
-                };
+                        // Handle item click
+                        const handleItemClick = (item) => {
+                            if (item.type === 'folder') {
+                                // Navigate into folder
+                                browserPath.value = item.fullPath;
+                            }
+                        };
+                        
+                        const browserNavigateUp = () => {
+                            if (!browserPath.value) return;
+                            const parts = browserPath.value.split('/');
+                            parts.pop();
+                            browserPath.value = parts.join('/');
+                        };
+                        
+                        const selectFolderFor = (path, target) => {
+                             let val = path ? (path.endsWith('/') ? path : path + '/') : '';
+                             
+                             // QoL: Append default patterns
+                             if (target === 'images') {
+                                 val += '*.tif';
+                                 trainingParams.train_images = val;
+                             } else if (target === 'annotations') {
+                                 val += '*_mask.ome.tif';
+                                 trainingParams.train_annotations = val;
+                             }
+                             
+                             // Show feedback
+                             if (typeof showBrowserFeedback === 'function') {
+                                 showBrowserFeedback(`Selected "${val}"`);
+                             } else {
+                                 browserFeedback.value = `Selected "${val}"`;
+                                 setTimeout(() => browserFeedback.value = '', 2000);
+                             }
+                        };
 
                 // --- Export ---
                 const exportModel = async () => {
                     isExporting.value = true;
                     try {
+                        if (!selectedSessionId.value) {
+                            throw new Error('Select a completed session before exporting.');
+                        }
+                        const latestStatus = await service.value.get_training_status(
+                            { session_id: selectedSessionId.value },
+                            { _rkwargs: true }
+                        );
+                        if (!latestStatus || latestStatus.status_type !== 'completed') {
+                            throw new Error(`Session ${selectedSessionId.value} is '${latestStatus?.status_type || 'unknown'}'. Wait for completion and retry.`);
+                        }
+
                         exportResult.value = await service.value.export_model(
-                            selectedSessionId.value,
-                            exportModelName.value || null,
-                            'bioimage-io/colab-annotations' // Default collection
+                            {
+                                session_id: selectedSessionId.value,
+                                model_name: exportModelName.value || null,
+                                collection: 'bioimage-io/colab-annotations' // Default collection
+                            },
+                            { _rkwargs: true }
                         );
                     } catch (e) {
                          alert("Export failed: " + e.message);
@@ -1509,10 +1730,12 @@
                 return {
                     syncError, trainingError, handleItemClick,
                     serverUrl, isConnected, isConnecting, workspace, showTokenInput, authToken, autoConnectError,
-                    availableServices, selectedServiceId, service, isScanning, listServices, disconnect, connect,
+                    availableServices, selectedServiceId, service, isScanning, listServices, disconnect, connect, login,
                     currentTab, tabs,
-                    sessions, refreshSessions, refreshLoading, monitoringSessionId, monitoredSession, selectedSessionId, viewSession, currentSession, hasMetrics,
+                    sessions, refreshSessions, refreshLoading, monitoringSessionId, monitoredSession, selectedSessionId, viewSession, currentSession, hasMetrics, stopTraining,
+                    runningTrainingSessionsCount,
                     trainingParams, startTraining, isStartingTraining,
+                    applyTrainingGlobExample, applyTrainingFolderExample,
                     showUploadModal, uploadParams, uploadDataset, isUploading, uploadProgress, uploadStatus, folderInput,
                     inferenceParams, pretrainedModels, inferenceFile, handleInferenceFile, inferencePreview, isInferring, runInference, inferenceCanvas, previewImg, onImageLoad, canvasStyle, inferenceObjectCount, inferenceResult,
                     exportModelName, isExporting, exportResult, exportModel,

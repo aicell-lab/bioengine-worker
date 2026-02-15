@@ -2,6 +2,8 @@
 
 A BioEngine service for running Cellpose-SAM 4.0.7 inference and fine-tuning cell segmentation models.
 
+**Deployed Application:** [https://hypha.aicell.io/ri-scale/view/cellpose-finetuning](https://hypha.aicell.io/ri-scale/view/cellpose-finetuning)
+
 ## Features
 
 - **Inference**: Run cell segmentation on images using Cellpose-SAM
@@ -87,8 +89,8 @@ session_status = await cellpose_service.start_training(
 # Option 2: Using path patterns (for different naming conventions)
 session_status = await cellpose_service.start_training(
     artifact="your-workspace/your-dataset",
-    train_images="images/experiment1/*.ome.tif",  # Pattern for image files
-    train_annotations="annotations/experiment1/*_mask.ome.tif",  # Pattern for annotation files
+    train_images="images/*/*.tif",  # Nested glob pattern for image files
+    train_annotations="annotations/*/*_mask.ome.tif",  # Nested glob pattern for annotation files
     model="cpsam",
     n_epochs=10,
     n_samples=None,  # Use all matched samples
@@ -96,6 +98,14 @@ session_status = await cellpose_service.start_training(
     test_images="images/test/*.ome.tif",
     test_annotations="annotations/test/*_mask.ome.tif",
     validation_interval=1,  # Validate every epoch (default: every 10)
+)
+
+# Option 3: Using metadata JSON files (annotations/images inferred from metadata)
+session_status = await cellpose_service.start_training(
+    artifact="your-workspace/your-dataset",
+    metadata_dir="metadata/",
+    model="cpsam",
+    n_epochs=10,
 )
 
 session_id = session_status["session_id"]
@@ -160,6 +170,7 @@ Run inference on images.
 - `cellprob_threshold` (float): Cell probability threshold (default: 0.0)
 - `niter` (int, optional): Number of iterations for dynamics (None for auto)
 - `return_flows` (bool): If True, include flow fields in the output (default: False)
+- `json_safe` (bool): If True, returns JSON-safe nested arrays (recommended for browser/UI clients)
 
 **Returns:** List of dicts with `"output"` key containing segmentation masks (and `"flows"` if `return_flows=True`)
 
@@ -169,12 +180,13 @@ Start asynchronous model fine-tuning.
 
 **Parameters:**
 - `artifact` (str): Artifact ID containing training data
-- `train_images` (str): **Required** - Path to training images. Can be:
+- `train_images` (str, optional): Path to training images. Can be:
   - Folder path ending with '/': `"images/folder/"` (assumes same filenames as annotations)
-  - Path pattern with wildcard: `"images/folder/*.ome.tif"`
-- `train_annotations` (str): **Required** - Path to training annotations. Can be:
+    - Path pattern with wildcard (including nested): `"images/*/*.tif"`
+- `train_annotations` (str, optional): Path to training annotations. Can be:
   - Folder path ending with '/': `"annotations/folder/"` (assumes same filenames as images)
-  - Path pattern with wildcard: `"annotations/folder/*_mask.ome.tif"`
+    - Path pattern with wildcard (including nested): `"annotations/*/*_mask.ome.tif"`
+- `metadata_dir` (str, optional): Folder containing metadata JSON files with image/annotation paths (e.g. `image_path` + `mask_path`). If provided, explicit `train_annotations` can be omitted.
 - `test_images` (str, optional): Optional test images path (same format as train_images). Providing test data enables per-epoch pixel-level validation metrics and end-of-training instance segmentation metrics (AP@0.5/0.75/0.9).
 - `test_annotations` (str, optional): Optional test annotations (label masks). Required together with `test_images`.
 - `model` (str): Pretrained model to start from (default: "cpsam")
@@ -193,10 +205,14 @@ Start asynchronous model fine-tuning.
    - `train_images="images/folder/"` and `train_annotations="annotations/folder/"`
    - Matches all files with same names in both folders
 
-2. **Pattern paths** (for different naming conventions):
-   - `train_images="images/folder/*.ome.tif"` and `train_annotations="annotations/folder/*_mask.ome.tif"`
+2. **Pattern paths** (for different naming conventions, including nested folders):
+    - `train_images="images/*/*.tif"` and `train_annotations="annotations/*/*_mask.ome.tif"`
    - The `*` part must match between images and annotations
    - Example: `t0000.ome.tif` ↔ `t0000_mask.ome.tif`
+
+3. **Metadata-driven paths**:
+    - `metadata_dir="metadata/"`
+    - Service reads JSON records and extracts image/mask paths for pairing.
 
 **Limitations:**
 - Currently limited to 1000 files per folder (via artifact.ls()). Future versions will support pagination for larger directories.
@@ -341,7 +357,11 @@ List all known training sessions with their status.
 **Parameters:**
 - `status_types` (list[str], optional): Filter by status types (e.g., ["running", "completed"]). If None, returns all sessions.
 
-**Returns:** Dict mapping session paths to their `SessionStatus` dicts
+**Returns:** Dict mapping `session_id` to `SessionStatus`.
+
+Notes:
+- Sessions with stale `waiting`/`preparing`/`running` states after a redeploy are normalized to `unknown`.
+- Running-session indicators in the UI only track sessions that are currently active.
 
 ## Inference Parameters Guide
 
@@ -393,12 +413,11 @@ The recommended way to deploy (whether for the first time or to update) is to us
 
 ```bash
 source .env
-python tests/cellpose_legacy_scripts/redeploy_cellpose.py
 
-# Deploy a test target (using 'cellpose-finetuning-test' ID):
+# Deploy to production
 python tests/cellpose_legacy_scripts/redeploy_cellpose.py \
-    --artifact-id bioimage-io/cellpose-finetuning-test \
-    --application-id cellpose-finetuning-test
+    --artifact-id ri-scale/cellpose-finetuning \
+    --application-id cellpose-finetuning
 ```
 
 **Note for Test Deployments:**
@@ -417,6 +436,17 @@ You must redeploy the service when:
 **"HYPHA_TOKEN environment variable is not set" during training**
 
 This error occurs on the server side (Ray worker), not locally. It means the token passed at deploy time is missing or expired. Fix by redeploying with a fresh token.
+
+**Export says session is `waiting` even though training just ended**
+
+Export validates that the session status is `completed`. The service now retries status reads briefly before failing, but if this still appears:
+1. Refresh sessions and confirm the selected session is `completed`.
+2. Retry export once after a few seconds.
+3. If status remains stale after redeploy, check that you are connected to the same service workspace and session ID.
+
+**Inference says objects were found but mask overlay is missing**
+
+Use the latest UI build, which requests `json_safe=true` for inference output. This ensures browser-safe mask payloads so overlays render correctly.
 
 **Multiple tokens in `.env`**
 

@@ -7,9 +7,12 @@ Cellpose model, and exposes training control and inference functions.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import logging
 import os
+import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from enum import Enum
@@ -40,6 +43,8 @@ GB = 1024**3
 DOC_FILENAME = "doc.md"
 RDF_FILENAME = "rdf.yaml"
 TRAINING_PARAMS_FILENAME = "training_params.json"
+STOP_REQUESTED_FILENAME = "stop.requested"
+STATUS_STALE_SECONDS = 300
 
 # Model template for BioImage.io export
 MODEL_TEMPLATE_PY = '''"""BioImage.io Model Wrapper for Cellpose 4.0.7 (Cellpose-SAM).
@@ -244,8 +249,9 @@ class TrainingParams(TypedDict):
     """Grouped training parameters for scheduling and logging."""
 
     artifact_id: str
-    train_images: str
-    train_annotations: str
+    train_images: str | None
+    train_annotations: str | None
+    metadata_dir: str | None
     test_images: str | None
     test_annotations: str | None
     model: str | Path
@@ -330,6 +336,14 @@ class TrainingPair(TypedDict):
     annotation: Path
 
 
+class TrainingStoppedError(RuntimeError):
+    """Raised when a training session was explicitly stopped by the user."""
+
+
+class MetadataPairExtractionError(ValueError):
+    """Raised when metadata files are present but contain no valid training pairs."""
+
+
 # ---------------------------------------------------------------------------
 # Path helpers and encoding utilities
 # ---------------------------------------------------------------------------
@@ -361,6 +375,35 @@ def artifact_cache_dir(artifact_id: str) -> Path:
     d = Path.home() / "data_cache" / safe
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def is_pydantic_undefined(value: Any) -> bool:
+    """Return True if ``value`` is Pydantic's undefined sentinel."""
+    try:
+        from pydantic_core import PydanticUndefined
+
+        return value is PydanticUndefined
+    except Exception:
+        return value.__class__.__name__ == "PydanticUndefinedType"
+
+
+def normalize_optional_param(value: Any) -> Any:
+    """Normalize schema-sentinel values to ``None`` for runtime usage."""
+    if is_pydantic_undefined(value):
+        return None
+    return value
+
+
+def sanitize_for_json(value: Any) -> Any:
+    """Recursively sanitize values so they are JSON-serializable."""
+    value = normalize_optional_param(value)
+    if isinstance(value, dict):
+        return {str(k): sanitize_for_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [sanitize_for_json(v) for v in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value
 
 
 # Type guard to check that object is list[np.ndarray]:
@@ -483,8 +526,29 @@ async def make_artifact_client(
     )
 
 
-def get_url_and_artifact_id(artifact_id: str) -> tuple[str, str]:
+def get_url_and_artifact_id(artifact_id: str | Any) -> tuple[str, str]:
     """Parse artifact into server URL and artifact ID components."""
+    # Check if artifact_id is a dictionary that contains 'artifact' or 'artifact_id' keys
+    # This handles cases where the entire arguments dict is passed by mistake
+    if isinstance(artifact_id, dict):
+        if "artifact" in artifact_id:
+            artifact_id = artifact_id["artifact"]
+        elif "artifact_id" in artifact_id:
+            artifact_id = artifact_id["artifact_id"]
+        elif "id" in artifact_id:
+                artifact_id = artifact_id["id"]
+    
+    # If artifact_id is not a string, try to extract the ID as string
+    if not isinstance(artifact_id, str):
+        if hasattr(artifact_id, "id"):
+            artifact_id = artifact_id.id
+        elif isinstance(artifact_id, dict) and "id" in artifact_id:
+            artifact_id = artifact_id["id"]
+        
+        # As a fallback or if it's explicitly wrapper, try str() but be careful
+        if not isinstance(artifact_id, str):
+                artifact_id = str(artifact_id)
+
     parsed = urlparse(artifact_id)
     if parsed.scheme in ("http", "https"):
         path_parts = parsed.path.lstrip("/").split("/")
@@ -577,12 +641,22 @@ def ensure_3_channels_batch(images: npt.NDArray[Any]) -> npt.NDArray[Any]:
 
 def get_session_path(session_id: str) -> Path:
     """Get the path to the directory for a training session."""
-    return get_sessions_path() / session_id
+    session_value = str(session_id).replace("\\", "/").strip()
+    session_value = session_value.rstrip("/")
+    if session_value.endswith("/status.json"):
+        session_value = session_value[: -len("/status.json")]
+    session_value = Path(session_value).name
+    return get_sessions_path() / session_value
 
 
 def get_status_path(session_id: str) -> Path:
     """Get the path to the status.json file for a training session."""
     return get_session_path(session_id) / "status.json"
+
+
+def get_stop_request_path(session_id: str) -> Path:
+    """Get the path to the stop-request marker for a training session."""
+    return get_session_path(session_id) / STOP_REQUESTED_FILENAME
 
 
 def update_status(
@@ -604,6 +678,11 @@ def update_status(
     total_batches: int | None = None,
 ) -> None:
     """Update the status of a training session."""
+    stop_requested = get_stop_request_path(session_id).exists()
+    if stop_requested and status_type in (StatusType.RUNNING, StatusType.PREPARING):
+        status_type = StatusType.STOPPED
+        message = "Training session stopped by user."
+
     status_path = get_status_path(session_id)
 
     # Read existing status to preserve fields not being updated
@@ -647,9 +726,13 @@ def update_status(
     if total_batches is not None:
         status_dict["total_batches"] = total_batches
 
-    with status_path.open("w", encoding="utf-8") as f:
-        status = json.dumps(status_dict)
-        f.write(status)
+    status_json = json.dumps(status_dict)
+    tmp_path = status_path.with_suffix(".json.tmp")
+    with tmp_path.open("w", encoding="utf-8") as f:
+        f.write(status_json)
+        f.flush()
+        os.fsync(f.fileno())
+    tmp_path.replace(status_path)
 
     append_info(
         session_id,
@@ -678,7 +761,7 @@ def get_status(session_id: str) -> SessionStatus:
 
     if not status_path.exists():
         return SessionStatus(
-            status_type=StatusType.WAITING,
+            status_type=StatusType.WAITING.value,
             message="Waiting for training to start...",
         )
 
@@ -689,9 +772,16 @@ def get_status(session_id: str) -> SessionStatus:
         ) as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
-        # Handle race condition where file exists but is empty or being written
+        # Handle race condition where file exists but is being replaced
+        for _ in range(3):
+            time.sleep(0.05)
+            try:
+                with status_path.open("r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                continue
         return SessionStatus(
-            status_type=StatusType.WAITING,
+            status_type=StatusType.WAITING.value,
             message="Waiting for training to start...",
         )
 
@@ -1238,6 +1328,10 @@ def run_blocking_task(
     accumulated_test_losses: list[float | None] = []
     accumulated_test_metrics: list[ValidationMetrics | None] = []
 
+    def check_stop_requested() -> None:
+        if get_stop_request_path(session_id).exists():
+            raise TrainingStoppedError("Training session stopped by user.")
+
     # Define batch callback for within-epoch progress updates
     last_batch_update = [0]  # Use list to allow modification in nested function
 
@@ -1250,6 +1344,7 @@ def run_blocking_task(
         val_metrics: ValidationMetrics | None = None,
     ) -> None:
         """Update status after each batch (throttled to every 10 batches)."""
+        check_stop_requested()
         # Update every 10 batches or on first/last batch to avoid too frequent updates
         if batch_idx % 10 == 0 or batch_idx == 0 or batch_idx == total_batches - 1:
             # Prepare message
@@ -1293,6 +1388,7 @@ def run_blocking_task(
         test_metrics: ValidationMetrics | None,
     ) -> None:
         """Update status after each epoch."""
+        check_stop_requested()
         # Accumulate losses
         accumulated_train_losses.append(train_loss)
         accumulated_test_losses.append(test_loss)
@@ -1336,12 +1432,34 @@ def run_blocking_task(
             batch_callback=batch_callback,
             validation_interval=training_params["validation_interval"],
         )
-    except Exception as e:
+    except TrainingStoppedError:
         elapsed = time.time() - t0
         update_status(
             session_id,
+            StatusType.STOPPED,
+            "Training session stopped by user.",
+            n_train=n_train,
+            n_test=n_test,
+            start_time=start_time_str,
+            total_epochs=training_params["n_epochs"],
+            elapsed_seconds=elapsed,
+        )
+        append_info(
+            session_id,
+            "Training stopped by user request.",
+            with_time=True,
+        )
+        return model_save_path, [], []
+    except Exception as e:
+        elapsed = time.time() - t0
+        err_msg = str(e)
+        guidance = ""
+        if _is_cuda_oom_message(err_msg):
+            guidance = " " + _resource_contention_guidance("Training")
+        update_status(
+            session_id,
             StatusType.FAILED,
-            f"Training failed with exception: {e}",
+            f"Training failed with exception: {e}.{guidance}".strip(),
             n_train=n_train,
             n_test=n_test,
             start_time=start_time_str,
@@ -1576,11 +1694,22 @@ async def finetune_cellpose(
             dataset_split,
             training_params,
         )
+    except (TrainingStoppedError, asyncio.CancelledError):
+        update_status(
+            session_id,
+            StatusType.STOPPED,
+            "Training session stopped by user.",
+        )
+        raise
     except Exception as e:
+        err_msg = str(e)
+        guidance = ""
+        if _is_cuda_oom_message(err_msg):
+            guidance = " " + _resource_contention_guidance("Training")
         update_status(
             session_id,
             StatusType.FAILED,
-            f"Training preparation failed: {str(e)}",
+            f"Training preparation failed: {str(e)}.{guidance}".strip(),
         )
         logger.exception(
             "Training failed during preparation for session %s", session_id
@@ -1600,6 +1729,8 @@ async def launch_training_task(
         logger.info(
             "launch_training_task completed successfully for session %s", session_id
         )
+    except (TrainingStoppedError, asyncio.CancelledError):
+        logger.info("launch_training_task stopped for session %s", session_id)
     except Exception as e:
         logger.exception(
             "launch_training_task failed for session %s: %s", session_id, str(e)
@@ -1607,7 +1738,11 @@ async def launch_training_task(
         raise
 
 
-def load_model(identifier: str | Path) -> CellposeModel:
+def load_model(
+    identifier: str | Path,
+    *,
+    allow_cpu_fallback: bool = False,
+) -> CellposeModel:
     """Load a Cellpose model by builtin name or by local file path.
 
     If `identifier` points to an existing file, it is treated as a path to a
@@ -1618,10 +1753,34 @@ def load_model(identifier: str | Path) -> CellposeModel:
 
     use_gpu = core.use_gpu()
 
-    if isinstance(identifier, Path):
-        return models.CellposeModel(gpu=use_gpu, pretrained_model=str(identifier))
+    def _build_model(gpu: bool) -> CellposeModel:
+        if isinstance(identifier, Path):
+            return models.CellposeModel(gpu=gpu, pretrained_model=str(identifier))
+        return models.CellposeModel(gpu=gpu, model_type=identifier)
 
-    return models.CellposeModel(gpu=use_gpu, model_type=identifier)
+    try:
+        return _build_model(use_gpu)
+    except Exception as e:
+        if allow_cpu_fallback and use_gpu and _is_cuda_oom_message(str(e)):
+            logger.warning(
+                "GPU OOM while loading model '%s'; retrying inference model load on CPU.",
+                str(identifier),
+            )
+            return _build_model(False)
+        raise
+
+
+def _is_cuda_oom_message(message: str) -> bool:
+    lowered = message.lower()
+    return "cuda out of memory" in lowered or "outofmemoryerror" in lowered
+
+
+def _resource_contention_guidance(context: str) -> str:
+    return (
+        f"{context} failed due to GPU memory pressure. "
+        "This often happens when training and inference run at the same time. "
+        "Stop active training sessions, wait a few seconds for GPU memory to clear, then retry."
+    )
 
 
 def is_missing(path: Path, *, check_nonempty: bool) -> bool:
@@ -1698,38 +1857,124 @@ def parse_path_pattern(path_pattern: str) -> tuple[str, str]:
     return folder, pattern
 
 
-def extract_pattern_match(filename: str, pattern: str) -> str | None:
-    """Extract the wildcard part from a filename based on a pattern.
+def _normalize_artifact_relpath(path_value: str) -> str:
+    return path_value.replace("\\", "/").lstrip("/")
 
-    Args:
-        filename: The filename to match (e.g., "t0000.ome.tif")
-        pattern: The pattern with * wildcard (e.g., "*.ome.tif")
 
-    Returns:
-        The matched wildcard part (e.g., "t0000"), or None if no match
+def extract_pattern_match(path_value: str, pattern: str) -> tuple[str, ...] | None:
+    """Extract wildcard capture groups from a path using a glob-like pattern."""
+    normalized_pattern = _normalize_artifact_relpath(pattern)
+    normalized_value = _normalize_artifact_relpath(path_value)
 
-    Examples:
-        >>> extract_pattern_match("t0000.ome.tif", "*.ome.tif")
-        't0000'
-        >>> extract_pattern_match("t0000_mask.ome.tif", "*_mask.ome.tif")
-        't0000'
-        >>> extract_pattern_match("image.png", "*.ome.tif")
-        None
-    """
-    import re
+    if "*" not in normalized_pattern:
+        return () if normalized_value == normalized_pattern else None
 
-    # Convert pattern with * to regex
-    # Escape all regex special characters except *
-    pattern_escaped = re.escape(pattern)
-    # Replace escaped \* with (.+) to capture the wildcard part
-    pattern_regex = pattern_escaped.replace(r"\*", "(.+)")
-    # Match from start to end
-    pattern_regex = f"^{pattern_regex}$"
+    pattern_escaped = re.escape(normalized_pattern)
+    pattern_replaced = pattern_escaped.replace(r"\*", "(.+?)")
+    pattern_regex = "^" + pattern_replaced + "$"
 
-    match = re.match(pattern_regex, filename)
+    match = re.match(pattern_regex, normalized_value)
     if match:
-        return match.group(1)
+        return tuple(match.groups())
     return None
+
+
+def _contains_glob(path_pattern: str) -> bool:
+    return "*" in path_pattern
+
+
+def _glob_base_folder(path_pattern: str) -> str:
+    normalized = _normalize_artifact_relpath(path_pattern)
+    wildcard_index = normalized.find("*")
+    if wildcard_index < 0:
+        return normalized if normalized.endswith("/") else str(Path(normalized).parent) + "/"
+
+    slash_before = normalized.rfind("/", 0, wildcard_index)
+    if slash_before < 0:
+        return ""
+    return normalized[: slash_before + 1]
+
+
+async def list_artifact_files_recursive(
+    artifact: AsyncHyphaArtifact,
+    folder_path: str,
+) -> list[str]:
+    """Recursively list artifact file paths (relative paths, not folders)."""
+    root = _normalize_artifact_relpath(folder_path)
+    if root and not root.endswith("/"):
+        root += "/"
+
+    queue = [root]
+    visited: set[str] = set()
+    collected: list[str] = []
+
+    while queue:
+        current = queue.pop(0)
+        if current in visited:
+            continue
+        visited.add(current)
+
+        entries = await artifact.ls(current)
+        for entry in entries:
+            raw_path = ""
+            entry_type = ""
+            if isinstance(entry, dict):
+                entry_dict = entry
+                raw_path = str(entry_dict.get("path") or entry_dict.get("name") or "")
+                entry_type = str(entry_dict.get("type") or "").lower()
+            else:
+                raw_path = str(entry)
+
+            normalized = _normalize_artifact_relpath(raw_path)
+            if current and normalized and not normalized.startswith(current):
+                normalized = _normalize_artifact_relpath(current + normalized)
+
+            is_dir = normalized.endswith("/") or entry_type in {"folder", "directory", "dir"}
+            if is_dir:
+                next_dir = normalized if normalized.endswith("/") else normalized + "/"
+                if next_dir not in visited:
+                    queue.append(next_dir)
+                continue
+
+            if normalized:
+                collected.append(normalized)
+
+    return sorted(set(collected))
+
+
+async def list_matching_artifact_paths(
+    artifact: AsyncHyphaArtifact,
+    path_pattern: str,
+) -> list[str]:
+    """List artifact files that match a folder path or glob path pattern."""
+    normalized_pattern = _normalize_artifact_relpath(path_pattern)
+
+    if normalized_pattern.endswith("/"):
+        folder = normalized_pattern
+        names = await list_artifact_files(artifact, folder)
+        return [_normalize_artifact_relpath(f"{folder}{name}") for name in names]
+
+    if not _contains_glob(normalized_pattern):
+        # If caller passed a directory without trailing slash (common in UI/manual input),
+        # treat it as folder-like path instead of a single file.
+        try:
+            dir_entries = await artifact.ls(normalized_pattern)
+            if isinstance(dir_entries, list):
+                names = await list_artifact_files(artifact, normalized_pattern)
+                folder = normalized_pattern if normalized_pattern.endswith("/") else normalized_pattern + "/"
+                return [_normalize_artifact_relpath(f"{folder}{name}") for name in names]
+        except Exception:
+            pass
+        return [normalized_pattern]
+
+    base_folder = _glob_base_folder(normalized_pattern)
+    candidates = await list_artifact_files_recursive(artifact, base_folder)
+    matched = [
+        candidate
+        for candidate in candidates
+        if fnmatch.fnmatch(candidate, normalized_pattern)
+    ]
+    return sorted(set(matched))
 
 
 async def list_artifact_files(
@@ -1800,17 +2045,20 @@ def match_image_annotation_pairs(
         >>> match_image_annotation_pairs(images, annots, "*.ome.tif", "*_mask.ome.tif")
         [("t0000.ome.tif", "t0000_mask.ome.tif"), ("t0001.ome.tif", "t0001_mask.ome.tif")]
     """
+    normalized_image_pattern = _normalize_artifact_relpath(image_pattern)
+    normalized_annotation_pattern = _normalize_artifact_relpath(annotation_pattern)
+
     # Build a dict mapping wildcard matches to annotation files
-    annot_map: dict[str, str] = {}
+    annot_map: dict[tuple[str, ...], str] = {}
     for annot_file in annotation_files:
-        match = extract_pattern_match(annot_file, annotation_pattern)
+        match = extract_pattern_match(annot_file, normalized_annotation_pattern)
         if match:
             annot_map[match] = annot_file
 
     # Match images to annotations
     pairs: list[tuple[str, str]] = []
     for image_file in image_files:
-        match = extract_pattern_match(image_file, image_pattern)
+        match = extract_pattern_match(image_file, normalized_image_pattern)
         if match and match in annot_map:
             pairs.append((image_file, annot_map[match]))
 
@@ -1820,6 +2068,236 @@ def match_image_annotation_pairs(
     )
 
     return pairs
+
+
+def _iter_metadata_records(payload: Any) -> list[dict[str, Any]]:
+    likely_pair_tokens = (
+        "image",
+        "mask",
+        "annotation",
+        "label",
+        "input",
+        "target",
+    )
+
+    def _looks_like_pair_record(record: dict[str, Any]) -> bool:
+        lowered_keys = {str(key).lower() for key in record.keys()}
+        return any(token in key for token in likely_pair_tokens for key in lowered_keys)
+
+    records: list[dict[str, Any]] = []
+    stack: list[Any] = [payload]
+    seen_ids: set[int] = set()
+
+    while stack:
+        current = stack.pop()
+        current_id = id(current)
+        if current_id in seen_ids:
+            continue
+        seen_ids.add(current_id)
+
+        if isinstance(current, list):
+            stack.extend(current)
+            continue
+
+        if isinstance(current, dict):
+            for key in ("records", "items", "samples", "entries", "data"):
+                value = current.get(key)
+                if isinstance(value, list):
+                    stack.extend(value)
+
+            if _looks_like_pair_record(current):
+                records.append(current)
+
+            for value in current.values():
+                if isinstance(value, (dict, list)):
+                    stack.append(value)
+
+    if records:
+        return records
+
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("records", "items", "samples", "entries", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return [payload]
+    return []
+
+
+def _coerce_record_path(value: Any, metadata_parent: Path) -> Path | None:
+    if isinstance(value, dict):
+        for key in ("path", "file", "uri", "name"):
+            if key in value:
+                return _coerce_record_path(value[key], metadata_parent)
+        return None
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    raw = value.strip().replace("\\", "/")
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return None
+    if raw.startswith("/"):
+        return Path(raw.lstrip("/"))
+    if "/" in raw and not raw.startswith("./"):
+        return Path(raw)
+    return strip_leading_slash(metadata_parent / raw)
+
+
+def _extract_metadata_pair(record: dict[str, Any], metadata_parent: Path) -> TrainingPair | None:
+    image_keys = (
+        "image",
+        "image_path",
+        "imagepath",
+        "imagePath",
+        "image_relpath",
+        "imageRelPath",
+        "image_file",
+        "imageFile",
+        "raw",
+        "raw_image",
+        "rawImage",
+        "input",
+        "input_path",
+        "inputPath",
+        "input_image",
+        "inputImage",
+        "source",
+        "source_path",
+        "sourcePath",
+        "img",
+    )
+    annotation_keys = (
+        "annotation",
+        "annotation_path",
+        "annotationPath",
+        "annotation_relpath",
+        "annotationRelPath",
+        "annotation_file",
+        "annotationFile",
+        "mask",
+        "mask_path",
+        "maskPath",
+        "mask_relpath",
+        "maskRelPath",
+        "mask_file",
+        "maskFile",
+        "label",
+        "label_path",
+        "labelPath",
+        "label_file",
+        "labelFile",
+        "labels",
+        "target",
+        "target_path",
+        "targetPath",
+        "gt",
+        "ground_truth",
+        "groundTruth",
+    )
+
+    image_path = None
+    for key in image_keys:
+        image_path = _coerce_record_path(record.get(key), metadata_parent)
+        if image_path is not None:
+            break
+
+    annotation_path = None
+    for key in annotation_keys:
+        annotation_path = _coerce_record_path(record.get(key), metadata_parent)
+        if annotation_path is not None:
+            break
+
+    if image_path is None or annotation_path is None:
+        return None
+
+    return TrainingPair(image=image_path, annotation=annotation_path)
+
+
+def _metadata_is_test_record(record: dict[str, Any]) -> bool:
+    split_value = str(
+        record.get("split")
+        or record.get("dataset_split")
+        or record.get("subset")
+        or record.get("partition")
+        or "train"
+    ).lower()
+    return split_value in {"test", "val", "validation"}
+
+
+async def make_training_pairs_from_metadata(
+    artifact: AsyncHyphaArtifact,
+    metadata_dir: str,
+    save_path: Path,
+    n_samples: int | None,
+) -> tuple[list[TrainingPair], list[TrainingPair]]:
+    metadata_root = _normalize_artifact_relpath(metadata_dir)
+    if metadata_root and not metadata_root.endswith("/"):
+        metadata_root += "/"
+
+    metadata_files = [
+        p
+        for p in await list_artifact_files_recursive(artifact, metadata_root)
+        if p.lower().endswith(".json")
+    ]
+    if not metadata_files:
+        raise ValueError(f"No metadata JSON files found under '{metadata_dir}'")
+
+    missing_rpaths, missing_lpaths = get_missing_paths(
+        [Path(p) for p in metadata_files],
+        save_path,
+    )
+    if missing_rpaths:
+        await artifact.get(missing_rpaths, missing_lpaths, on_error="ignore")
+
+    train_pairs_raw: list[TrainingPair] = []
+    test_pairs_raw: list[TrainingPair] = []
+
+    for metadata_rel in metadata_files:
+        metadata_local = to_local_path(save_path, Path(metadata_rel))
+        if not metadata_local.exists():
+            continue
+
+        payload = json.loads(metadata_local.read_text(encoding="utf-8"))
+        metadata_parent = Path(metadata_rel).parent
+
+        for record in _iter_metadata_records(payload):
+            pair = _extract_metadata_pair(record, metadata_parent)
+            if pair is None:
+                continue
+            if _metadata_is_test_record(record):
+                test_pairs_raw.append(pair)
+            else:
+                train_pairs_raw.append(pair)
+
+    if not train_pairs_raw:
+        raise MetadataPairExtractionError(
+            "No training pairs found from metadata JSON files. "
+            "Expected keys like image_path/mask_path (also supports camelCase variants)."
+        )
+
+    if n_samples is not None and n_samples < len(train_pairs_raw):
+        subset_idx = np.random.default_rng().permutation(len(train_pairs_raw))[:n_samples]
+        train_pairs_raw = [train_pairs_raw[i] for i in subset_idx]
+
+    train_pairs = await download_pairs_from_artifact(
+        artifact,
+        save_path,
+        [pair["image"] for pair in train_pairs_raw],
+        [pair["annotation"] for pair in train_pairs_raw],
+    )
+
+    test_pairs: list[TrainingPair] = []
+    if test_pairs_raw:
+        test_pairs = await download_pairs_from_artifact(
+            artifact,
+            save_path,
+            [pair["image"] for pair in test_pairs_raw],
+            [pair["annotation"] for pair in test_pairs_raw],
+        )
+
+    return train_pairs, test_pairs
 
 
 async def download_pairs_from_artifact(
@@ -1943,29 +2421,50 @@ async def make_training_pairs(
         config["server_url"],
     )
 
-    # Parse training path patterns
-    train_img_folder, train_img_pattern = parse_path_pattern(config["train_images"])
-    train_ann_folder, train_ann_pattern = parse_path_pattern(
-        config["train_annotations"]
-    )
+    train_images = config["train_images"]
+    train_annotations = config["train_annotations"]
 
-    # List training files
-    logger.info("Listing training images from %s", train_img_folder)
-    train_image_files = await list_artifact_files(artifact, train_img_folder)
-    logger.info("Listing training annotations from %s", train_ann_folder)
-    train_annotation_files = await list_artifact_files(artifact, train_ann_folder)
+    metadata_dir = config["metadata_dir"]
+    if metadata_dir:
+        try:
+            return await make_training_pairs_from_metadata(
+                artifact,
+                metadata_dir,
+                save_path,
+                config["n_samples"],
+            )
+        except MetadataPairExtractionError as e:
+            if train_images and train_annotations:
+                logger.warning(
+                    "Metadata parsing found no valid training pairs (%s). Falling back to explicit train_images/train_annotations patterns.",
+                    str(e),
+                )
+            else:
+                raise
+
+    if not train_images or not train_annotations:
+        raise ValueError(
+            "Either metadata_dir must be provided, or both train_images and "
+            "train_annotations must be provided."
+        )
+
+    train_image_files = await list_matching_artifact_paths(artifact, train_images)
+    train_annotation_files = await list_matching_artifact_paths(
+        artifact,
+        train_annotations,
+    )
 
     # Match training pairs
     train_matched = match_image_annotation_pairs(
         train_image_files,
         train_annotation_files,
-        train_img_pattern,
-        train_ann_pattern,
+        train_images,
+        train_annotations,
     )
 
     # Build full paths for training files
-    train_image_paths = [Path(train_img_folder) / img for img, _ in train_matched]
-    train_annotation_paths = [Path(train_ann_folder) / ann for _, ann in train_matched]
+    train_image_paths = [Path(img) for img, _ in train_matched]
+    train_annotation_paths = [Path(ann) for _, ann in train_matched]
 
     # Apply n_samples if specified
     if config["n_samples"] is not None and config["n_samples"] < len(train_image_paths):
@@ -1986,28 +2485,26 @@ async def make_training_pairs(
     # Handle test pairs if specified
     test_pairs: list[TrainingPair] = []
     if config["test_images"] and config["test_annotations"]:
-        # Parse test path patterns
-        test_img_folder, test_img_pattern = parse_path_pattern(config["test_images"])
-        test_ann_folder, test_ann_pattern = parse_path_pattern(
-            config["test_annotations"]
+        test_image_files = await list_matching_artifact_paths(
+            artifact,
+            config["test_images"],
         )
-
-        logger.info("Listing test images from %s", test_img_folder)
-        test_image_files = await list_artifact_files(artifact, test_img_folder)
-        logger.info("Listing test annotations from %s", test_ann_folder)
-        test_annotation_files = await list_artifact_files(artifact, test_ann_folder)
+        test_annotation_files = await list_matching_artifact_paths(
+            artifact,
+            config["test_annotations"],
+        )
 
         # Match test pairs
         test_matched = match_image_annotation_pairs(
             test_image_files,
             test_annotation_files,
-            test_img_pattern,
-            test_ann_pattern,
+            config["test_images"],
+            config["test_annotations"],
         )
 
         # Build full paths for test files
-        test_image_paths = [Path(test_img_folder) / img for img, _ in test_matched]
-        test_annotation_paths = [Path(test_ann_folder) / ann for _, ann in test_matched]
+        test_image_paths = [Path(img) for img, _ in test_matched]
+        test_annotation_paths = [Path(ann) for _, ann in test_matched]
 
         # Download test pairs
         test_pairs = await download_pairs_from_artifact(
@@ -2041,53 +2538,20 @@ async def create_test_samples(
         Tuple of (test_input, test_output) as numpy arrays
     """
 
-    # Get artifact and paths
-    artifact = await make_artifact_client(
-        training_params["artifact_id"],
-        training_params["server_url"],
-    )
     save_path = artifact_cache_dir(training_params["artifact_id"])
 
-    # Parse training path patterns
-    train_img_folder, train_img_pattern = parse_path_pattern(
-        training_params["train_images"]
-    )
-    train_ann_folder, train_ann_pattern = parse_path_pattern(
-        training_params["train_annotations"]
-    )
+    train_pairs, _ = await make_training_pairs(training_params, save_path)
 
-    # List training files
-    train_image_files = await list_artifact_files(artifact, train_img_folder)
-    train_annotation_files = await list_artifact_files(artifact, train_ann_folder)
-
-    # Match training pairs
-    train_matched = match_image_annotation_pairs(
-        train_image_files,
-        train_annotation_files,
-        train_img_pattern,
-        train_ann_pattern,
-    )
-
-    if not train_matched:
+    if not train_pairs:
         raise ValueError("No training pairs found for test sample generation")
 
     # Use the last pair as test sample
-    last_img_file, last_ann_file = train_matched[-1]
-
-    # Download files if needed
-    img_path = Path(train_img_folder) / last_img_file
-    ann_path = Path(train_ann_folder) / last_ann_file
-
-    await download_pairs_from_artifact(
-        artifact,
-        save_path,
-        [img_path],
-        [ann_path],
-    )
+    img_path = train_pairs[-1]["image"]
+    ann_path = train_pairs[-1]["annotation"]
 
     # Load files
-    local_img = to_local_path(save_path, img_path)
-    local_ann = to_local_path(save_path, ann_path)
+    local_img = img_path
+    local_ann = ann_path
 
     # Use PIL to support multiple formats (PNG, TIF, etc.)
     from PIL import Image
@@ -2379,7 +2843,22 @@ async def _images_from_artifact(
         check_nonempty=False,
     )
     if missing_remote:
-        await artifact.get(missing_remote, missing_local, on_error="ignore")
+        # Cast to strings explicitly to ensure compatibility
+        files_to_download = [str(p) for p in missing_remote]
+        dests_to_download = [str(p) for p in missing_local]
+        try:
+            await artifact.get(files_to_download, dests_to_download, on_error="ignore")
+        except Exception as e:
+            logger.warning(
+                f"artifact.get(files=..., dest=...) failed: {e}. Trying item-by-item fallback."
+            )
+            # Fallback to single file download
+            for f, d in zip(files_to_download, dests_to_download):
+                try:
+                    await artifact.get([f], [d], on_error="ignore")
+                except Exception as ex:
+                    logger.error(f"Failed to download {f}: {ex}")
+                    raise
     imgs: list[npt.NDArray[Any]] = []
     for rel in image_paths:
         local_img = cache_dir / rel
@@ -2397,6 +2876,7 @@ def _predict_and_encode(
     cellprob_threshold: float,
     niter: int | None,
     return_flows: bool = False,
+    json_safe: bool = False,
 ) -> list[PredictionItemModel]:
     """Run model on images and return encoded mask payloads.
 
@@ -2440,9 +2920,11 @@ def _predict_and_encode(
             mask_np = mask_np.astype(np.int32, copy=False)
 
         # Create output item
+        output_payload: Any = mask_np.tolist() if json_safe else mask_np
+
         out_item = PredictionItemModel(
             input_path=path,
-            output=mask_np,
+            output=output_payload,
         )
 
         # Optionally add flows
@@ -2534,28 +3016,40 @@ class CellposeFinetune:
             ),
             examples=["ri-scale/zarr-demo"],
         ),
-        train_images: str = Field(
+        train_images: str | None = Field(
+            None,
             description=(
                 "Path to training images. Can be either:\n"
                 "1. Folder path ending with '/' (assumes same filenames as annotations)\n"
-                "2. Path pattern with wildcard (e.g., 'images/folder/*.ome.tif')"
+                "2. Path pattern with wildcard (e.g., 'images/*/*.tif').\n"
+                "Optional if metadata_dir is provided."
             ),
             examples=[
                 "images/108bb69d-2e52-4382-8100-e96173db24ee/",
-                "images/folder/*.ome.tif",
+                "images/*/*.tif",
             ],
         ),
-        train_annotations: str = Field(
+        train_annotations: str | None = Field(
+            None,
             description=(
                 "Path to training annotations. Can be either:\n"
                 "1. Folder path ending with '/' (assumes same filenames as images)\n"
                 "2. Path pattern with wildcard (e.g., 'annotations/folder/*_mask.ome.tif')\n"
-                "The * part in patterns must match between images and annotations."
+                "The * part in patterns must match between images and annotations. "
+                "Optional if metadata_dir is provided."
             ),
             examples=[
                 "annotations/108bb69d-2e52-4382-8100-e96173db24ee/",
                 "annotations/folder/*_mask.ome.tif",
             ],
+        ),
+        metadata_dir: str | None = Field(
+            None,
+            description=(
+                "Optional metadata directory containing JSON files with image/annotation "
+                "paths (e.g., image_path and mask_path)."
+            ),
+            examples=["metadata/"],
         ),
         test_images: str | None = Field(
             None,
@@ -2613,7 +3107,7 @@ class CellposeFinetune:
                 "for every epoch. Requires test_images and test_annotations."
             ),
         ),
-    ) -> SessionStatusWithId:
+    ) -> dict[str, Any]:
         """Start asynchronous finetuning of a Cellpose model on an artifact dataset.
 
         This downloads metadata and the referenced image/annotation files from the
@@ -2622,6 +3116,68 @@ class CellposeFinetune:
         to cancel.
         """
         from uuid import uuid4
+
+        if isinstance(artifact, dict):
+            wrapped = artifact
+            artifact = wrapped.get("artifact", wrapped.get("artifact_id", wrapped.get("id", artifact)))
+            train_images = wrapped.get("train_images", train_images)
+            train_annotations = wrapped.get("train_annotations", train_annotations)
+            metadata_dir = wrapped.get("metadata_dir", metadata_dir)
+            test_images = wrapped.get("test_images", test_images)
+            test_annotations = wrapped.get("test_annotations", test_annotations)
+            model = wrapped.get("model", model)
+            n_samples = wrapped.get("n_samples", n_samples)
+            n_epochs = wrapped.get("n_epochs", n_epochs)
+            learning_rate = wrapped.get("learning_rate", learning_rate)
+            weight_decay = wrapped.get("weight_decay", weight_decay)
+            min_train_masks = wrapped.get("min_train_masks", min_train_masks)
+            validation_interval = wrapped.get("validation_interval", validation_interval)
+
+        artifact = normalize_optional_param(artifact)
+        train_images = normalize_optional_param(train_images)
+        train_annotations = normalize_optional_param(train_annotations)
+        metadata_dir = normalize_optional_param(metadata_dir)
+        test_images = normalize_optional_param(test_images)
+        test_annotations = normalize_optional_param(test_annotations)
+        model = normalize_optional_param(model)
+        n_samples = normalize_optional_param(n_samples)
+        n_epochs = normalize_optional_param(n_epochs)
+        learning_rate = normalize_optional_param(learning_rate)
+        weight_decay = normalize_optional_param(weight_decay)
+        min_train_masks = normalize_optional_param(min_train_masks)
+        validation_interval = normalize_optional_param(validation_interval)
+
+        if metadata_dir is None:
+            if not isinstance(train_images, str) or not train_images:
+                raise ValueError("train_images must be a non-empty string when metadata_dir is not provided")
+            if not isinstance(train_annotations, str) or not train_annotations:
+                raise ValueError("train_annotations must be a non-empty string when metadata_dir is not provided")
+        else:
+            if not isinstance(metadata_dir, str) or not metadata_dir:
+                raise ValueError("metadata_dir must be a non-empty string")
+
+        if (test_images is None) ^ (test_annotations is None):
+            raise ValueError("test_images and test_annotations must be provided together")
+
+        if not isinstance(model, str) or not model:
+            model = PretrainedModel.CPSAM.value
+        if n_epochs is None:
+            n_epochs = 10
+        if learning_rate is None:
+            learning_rate = 1e-6
+        if weight_decay is None:
+            weight_decay = 1e-4
+        if min_train_masks is None:
+            min_train_masks = 5
+        if n_samples is not None:
+            n_samples = int(n_samples)
+        if validation_interval is not None:
+            validation_interval = int(validation_interval)
+
+        n_epochs = int(n_epochs)
+        learning_rate = float(learning_rate)
+        weight_decay = float(weight_decay)
+        min_train_masks = int(min_train_masks)
 
         server_url, artifact_id = get_url_and_artifact_id(artifact)
         model_id = self.get_model_id(model)
@@ -2639,6 +3195,7 @@ class CellposeFinetune:
             artifact_id=artifact_id,
             train_images=train_images,
             train_annotations=train_annotations,
+            metadata_dir=metadata_dir,
             test_images=test_images,
             test_annotations=test_annotations,
             model=model_id,
@@ -2655,9 +3212,7 @@ class CellposeFinetune:
         # Save training parameters for later export
         training_params_path = get_session_path(session_id) / "training_params.json"
         # Convert Path objects to strings for JSON serialization
-        params_dict = dict(training_params)
-        if "model" in params_dict and isinstance(params_dict["model"], Path):
-            params_dict["model"] = str(params_dict["model"])
+        params_dict = sanitize_for_json(dict(training_params))
         training_params_path.write_text(json.dumps(params_dict, indent=2))
 
         async with self._session_lock:
@@ -2680,16 +3235,29 @@ class CellposeFinetune:
         ),
     ) -> SessionStatus:
         """Stop an ongoing training session."""
+        if isinstance(session_id, dict):
+            wrapped = session_id
+            session_id = wrapped.get("session_id", wrapped.get("id", session_id))
+
+        session_id = str(session_id).strip().replace("\\", "/")
+        if session_id.endswith("/status.json"):
+            session_id = session_id[: -len("/status.json")]
+        session_id = Path(session_id).name
+
+        stop_marker = get_stop_request_path(session_id)
+        stop_marker.parent.mkdir(parents=True, exist_ok=True)
+        stop_marker.write_text("1", encoding="utf-8")
+
         task = self.tasks.get(session_id)
         if task and not task.done():
             task.cancel()
 
         executor = self.executors.get(session_id)
-        if executor:
+        if executor and (task is None or task.done()):
             executor.shutdown(wait=False, cancel_futures=True)
             del self.executors[session_id]
 
-        if session_id in self.tasks:
+        if session_id in self.tasks and (task is None or task.done()):
             del self.tasks[session_id]
 
         update_status(
@@ -2742,29 +3310,43 @@ class CellposeFinetune:
         Use ``get_trained_model_path(session_id)`` to obtain the final saved model
         path once the session is completed.
         """
-        return get_status(session_id)
+        return await asyncio.to_thread(get_status, session_id)
 
-    @schema_method(arbitrary_types_allowed=True)  # type: ignore
-    async def list_training_sessions(
+    def _normalize_session_status(
         self,
-        status_types: list[str] | None = Field(
-            None,
-            description=(
-                "Optional list of statuses to include. Values must be among "
-                "{running, stopped, completed, failed, unknown}."
-            ),
-            examples=[["running", "completed"]],
-        ),
-        limit: int = Field(
-            50, description="Maximum number of sessions to return (most recent first)"
-        ),
-    ) -> dict[str, SessionStatus]:
-        """List all known training sessions with their current or final status.
+        session_id: str,
+        session_data: dict[str, Any],
+        status_mtime: float,
+    ) -> dict[str, Any]:
+        """Normalize stale in-progress sessions when no active task is present."""
+        status_type = str(session_data.get("status_type") or "unknown").lower()
+        if status_type not in {"waiting", "preparing", "running"}:
+            return session_data
 
-        Includes running sessions tracked in-memory and finished sessions recorded in
-        the session history. For completed sessions, the saved model path is included
-        if available.
-        """
+        task = self.tasks.get(session_id)
+        if task is not None and not task.done():
+            return session_data
+
+        if get_stop_request_path(session_id).exists():
+            session_data["status_type"] = StatusType.STOPPED.value
+            session_data["message"] = "Training session stopped by user."
+            return session_data
+
+        stale_for = time.time() - status_mtime
+        if stale_for >= STATUS_STALE_SECONDS:
+            session_data["status_type"] = StatusType.UNKNOWN.value
+            session_data["message"] = (
+                "Session is not active in this service instance. "
+                "It may have stopped after a redeploy."
+            )
+        return session_data
+
+    def _list_sessions_sync(
+        self,
+        status_types: list[str] | None,
+        limit: int,
+    ) -> dict[str, SessionStatus]:
+        """Synchronous implementation of list_sessions."""
         filt: set[str] | None = None
         if status_types is not None:
             allowed = {s.value for s in StatusType}
@@ -2787,6 +3369,7 @@ class CellposeFinetune:
             candidates.append(status_path)
 
         # Sort by modification time (most recent first) to prioritize active/recent sessions
+        # This I/O op can be slow if many files, hence running in thread
         candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
         for status_path in candidates:
@@ -2799,11 +3382,18 @@ class CellposeFinetune:
             except (json.JSONDecodeError, OSError):
                 continue
 
+            session_id = status_path.parent.name
+            session_data = self._normalize_session_status(
+                session_id=session_id,
+                session_data=session_data,
+                status_mtime=status_path.stat().st_mtime,
+            )
+
             if filt is not None and session_data.get("status_type") not in filt:
                 continue
 
             # Cast to SessionStatus to satisfy type checker
-            sessions[str(status_path)] = SessionStatus(
+            sessions[session_id] = SessionStatus(
                 status_type=session_data.get("status_type"),
                 message=session_data.get("message"),
                 dataset_artifact_id=session_data.get("dataset_artifact_id"),
@@ -2824,6 +3414,29 @@ class CellposeFinetune:
             )
 
         return sessions
+
+    @schema_method(arbitrary_types_allowed=True)  # type: ignore
+    async def list_training_sessions(
+        self,
+        status_types: list[str] | None = Field(
+            None,
+            description=(
+                "Optional list of statuses to include. Values must be among "
+                "{running, stopped, completed, failed, unknown}."
+            ),
+            examples=[["running", "completed"]],
+        ),
+        limit: int = Field(
+            50, description="Maximum number of sessions to return (most recent first)"
+        ),
+    ) -> dict[str, SessionStatus]:
+        """List all known training sessions with their current or final status.
+
+        Includes running sessions tracked in-memory and finished sessions recorded in
+        the session history. For completed sessions, the saved model path is included
+        if available.
+        """
+        return await asyncio.to_thread(self._list_sessions_sync, status_types, limit)
 
     @schema_method(arbitrary_types_allowed=True)  # type: ignore
     async def export_model(
@@ -2871,8 +3484,17 @@ class CellposeFinetune:
         logger.info(f"Starting model export for session {session_id}")
 
         # Validate session
-        status = get_status(session_id)
-        if status.get("status_type") != "completed":
+        status: SessionStatus = {}
+        for _ in range(15):
+            status = get_status(session_id)
+            status_type = str(status.get("status_type") or "").lower()
+            if status_type == StatusType.COMPLETED.value:
+                break
+            if status_type in {StatusType.FAILED.value, StatusType.STOPPED.value}:
+                break
+            await asyncio.sleep(0.2)
+
+        if str(status.get("status_type") or "").lower() != StatusType.COMPLETED.value:
             raise ValueError(
                 f"Cannot export model from session {session_id}: "
                 f"training status is '{status.get('status_type')}', must be 'completed'"
@@ -3398,6 +4020,13 @@ BSD-3-Clause (Cellpose license)
                 "[2] cell probability map, [3] final pixel locations after dynamics."
             ),
         ),
+        json_safe: bool = Field(
+            False,
+            description=(
+                "If True, return JSON-safe nested arrays for masks/flows instead of "
+                "numpy arrays. Useful for browser clients."
+            ),
+        ),
     ) -> list[PredictionItemModel]:
         """Run Cellpose inference on artifact images and return encoded masks.
 
@@ -3413,6 +4042,34 @@ BSD-3-Clause (Cellpose license)
         artifact_id: str | None = None
         server_url: str = DEFAULT_SERVER_URL
 
+        if isinstance(artifact, dict):
+            wrapped = artifact
+            artifact = wrapped.get("artifact", wrapped.get("artifact_id", wrapped.get("id", artifact)))
+            image_paths = wrapped.get("image_paths", image_paths)
+            input_arrays = wrapped.get("input_arrays", input_arrays)
+            model = wrapped.get("model", model)
+            diameter = wrapped.get("diameter", diameter)
+            flow_threshold = wrapped.get("flow_threshold", flow_threshold)
+            cellprob_threshold = wrapped.get("cellprob_threshold", cellprob_threshold)
+            niter = wrapped.get("niter", niter)
+            return_flows = wrapped.get("return_flows", return_flows)
+            json_safe = wrapped.get("json_safe", json_safe)
+
+        artifact = normalize_optional_param(artifact)
+        image_paths = normalize_optional_param(image_paths)
+        input_arrays = normalize_optional_param(input_arrays)
+        model = normalize_optional_param(model)
+        diameter = normalize_optional_param(diameter)
+        niter = normalize_optional_param(niter)
+        json_safe = bool(normalize_optional_param(json_safe) or False)
+
+        if not isinstance(model, str) or not model:
+            model = PretrainedModel.CPSAM.value
+        if image_paths is not None and not isinstance(image_paths, list):
+            image_paths = []
+        if input_arrays is not None and not isinstance(input_arrays, list):
+            input_arrays = None
+
         if artifact is not None:
             server_url, artifact_id = get_url_and_artifact_id(artifact)
 
@@ -3423,32 +4080,39 @@ BSD-3-Clause (Cellpose license)
             error_msg = "input_arrays must be a list of numpy ndarrays"
             raise TypeError(error_msg)
 
-        model_id = self.get_model_id(model)
-        model_obj = load_model(model_id)
+        try:
+            model_id = self.get_model_id(model)
+            model_obj = load_model(model_id, allow_cpu_fallback=True)
 
-        images: list[npt.NDArray[Any]]
-        if input_arrays is not None:
-            images = input_arrays
-            image_paths = [f"input_arrays[{i}]" for i in range(len(input_arrays))]
-        elif artifact_id is not None:
-            images = await _images_from_artifact(
-                artifact_id=artifact_id,
+            images: list[npt.NDArray[Any]]
+            if input_arrays is not None:
+                images = input_arrays
+                image_paths = [f"input_arrays[{i}]" for i in range(len(input_arrays))]
+            elif artifact_id is not None:
+                images = await _images_from_artifact(
+                    artifact_id=artifact_id,
+                    image_paths=image_paths,
+                    server_url=server_url,
+                )
+            else:
+                images = []
+
+            return _predict_and_encode(
+                model=model_obj,
+                images=images,
                 image_paths=image_paths,
-                server_url=server_url,
+                diameter=diameter,
+                flow_threshold=flow_threshold,
+                cellprob_threshold=cellprob_threshold,
+                niter=niter,
+                return_flows=return_flows,
+                json_safe=json_safe,
             )
-        else:
-            images = []
-
-        return _predict_and_encode(
-            model=model_obj,
-            images=images,
-            image_paths=image_paths,
-            diameter=diameter,
-            flow_threshold=flow_threshold,
-            cellprob_threshold=cellprob_threshold,
-            niter=niter,
-            return_flows=return_flows,
-        )
+        except Exception as e:
+            err_msg = str(e)
+            if _is_cuda_oom_message(err_msg):
+                raise RuntimeError(_resource_contention_guidance("Inference")) from e
+            raise
 
 
 async def infer(

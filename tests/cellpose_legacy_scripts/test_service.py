@@ -5,7 +5,7 @@ bioengine_apps/cellpose_finetuning/scripts/deploy_local_cellpose.py).
 
 Examples:
   export HYPHA_TOKEN=...
-  python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
+  python tests/cellpose_legacy_scripts/test_service.py \
     --dataset-artifact ri-scale/cellpose-test \
     --train-images 'train/*_image.ome.tif' \
     --train-annotations 'train/*_mask.ome.tif' \
@@ -13,14 +13,14 @@ Examples:
     --test-annotations 'test/*_mask.ome.tif'
 
 Resume monitoring an existing session:
-    python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
+    python tests/cellpose_legacy_scripts/test_service.py \
         --dataset-artifact ri-scale/cellpose-test \
         --train-images 'train/*_image.ome.tif' \
         --train-annotations 'train/*_mask.ome.tif' \
         --session <session-id>
 
 Export a completed session (and optionally download cover):
-    python bioengine_apps/cellpose_finetuning/scripts/test_service.py \
+    python tests/cellpose_legacy_scripts/test_service.py \
         --dataset-artifact ri-scale/cellpose-test \
         --train-images 'train/*_image.ome.tif' \
         --train-annotations 'train/*_mask.ome.tif' \
@@ -265,9 +265,7 @@ async def monitor_training(
 
         if status.get("instance_metrics"):
             im = status["instance_metrics"]
-            msg_parts.append(
-                f"| Instance AP@0.5={im.get('ap_0_5', 0):.4f}"
-            )
+            msg_parts.append(f"| Instance AP@0.5={im.get('ap_0_5', 0):.4f}")
 
         if status.get("status_type") in ("completed", "failed"):
             print()  # noqa: T201
@@ -289,7 +287,7 @@ async def monitor_training(
                 train_losses = [float(loss) for loss in status["train_losses"]]
                 test_losses_raw = status.get("test_losses")
                 test_losses = (
-                    [float(loss) for loss in test_losses_raw]
+                    [float(loss) if loss is not None else None for loss in test_losses_raw]
                     if isinstance(test_losses_raw, list)
                     else None
                 )
@@ -439,9 +437,11 @@ async def main() -> None:
     args = _parse_args()
 
     token = args.token or os.environ.get("HYPHA_TOKEN")
-    print(f"DEBUG: Token starts with {token[:10] if token else 'None'}.. ends with {token[-10:] if token else 'None'}")
+    print(
+        f"DEBUG: Token starts with {token[:10] if token else 'None'}.. ends with {token[-10:] if token else 'None'}"
+    )
     print(f"DEBUG: Workspace arg: {args.workspace}")
-    
+
     if not token:
         token = await login({"server_url": args.server_url})
 

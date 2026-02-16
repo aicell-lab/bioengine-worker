@@ -53,7 +53,7 @@
                     <div class="text-xs text-slate-500 font-medium flex items-center gap-1">
                         <span v-if="isConnected" class="text-green-600 flex items-center gap-1"><i class="fas fa-circle text-[8px]"></i> Connected</span>
                         <span v-else class="text-red-500 flex items-center gap-1"><i class="fas fa-circle text-[8px]"></i> Disconnected</span>
-                        <span v-if="isConnected" class="opacity-75">• {{ workspace }}</span>
+                        <span v-if="isConnected" class="opacity-75">• [[ workspace ]]</span>
                     </div>
                 </div>
             </div>
@@ -86,7 +86,7 @@
                         <i class="fas fa-server text-slate-400 text-xs"></i>
                         <select v-model="selectedServiceId" class="bg-transparent border-none text-sm focus:ring-0 w-48 font-medium">
                             <option value="" disabled>Select Service</option>
-                            <option v-for="id in availableServices" :key="id" :value="id">{{ id }}</option>
+                            <option v-for="id in availableServices" :key="id" :value="id">[[ id ]]</option>
                         </select>
                         <button @click="listServices" class="text-slate-400 hover:text-blue-600 transition" title="Refresh Services">
                             <i class="fas fa-sync-alt" :class="{'fa-spin': isScanning}"></i>
@@ -94,7 +94,7 @@
                     </div>
                     
                     <div v-else class="flex items-center gap-2 bg-green-50 px-3 py-1.5 rounded-lg border border-green-200 text-green-800 text-sm font-medium">
-                        <i class="fas fa-check-circle"></i> {{ selectedServiceId }}
+                        <i class="fas fa-check-circle"></i> [[ selectedServiceId ]]
                     </div>
 
                     <button @click="disconnect" class="text-slate-500 hover:text-red-600 text-sm font-medium p-2 rounded-lg hover:bg-red-50 transition" title="Disconnect">
@@ -111,7 +111,7 @@
                     <i class="fas fa-wifi"></i>
                     <div class="text-xs">
                         <div class="font-bold">Connection Issue</div>
-                        <div>{{ syncError }}</div>
+                        <div>[[ syncError ]]</div>
                     </div>
                     <button @click="syncError = null" class="ml-2 text-white/50 hover:text-white"><i class="fas fa-times"></i></button>
                 </div>
@@ -128,7 +128,7 @@
                                     @click="currentTab = tab.id"
                                     :class="currentTab === tab.id ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'hover:bg-slate-800 hover:text-white'"
                                     class="w-full text-left px-4 py-3 rounded-lg flex items-center gap-3 transition-all duration-200 font-medium">
-                                    <i :class="tab.icon" class="w-5 text-center"></i> {{ tab.name }}
+                                    <i :class="tab.icon" class="w-5 text-center"></i> [[ tab.name ]]
                                 </button>
                             </nav>
                         </div>
@@ -141,7 +141,7 @@
                         </button>
                         <div class="flex items-center justify-between mb-3">
                             <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                                {{ monitoredSession.status_type === 'running' ? 'Active Training' : 'Training Status' }}
+                                [[ monitoredSession.status_type === 'running' ? 'Active Training' : 'Training Status' ]]
                             </h3>
                             <span class="w-2 h-2 rounded-full transition-colors duration-300"
                                   :class="{
@@ -154,7 +154,7 @@
                         <div class="bg-slate-800 rounded-lg p-3 border border-slate-700 transition-colors duration-300" 
                              :class="{'border-red-500/50': monitoredSession.status_type === 'failed'}">
                             <div class="flex justify-between items-center mb-1">
-                                <span class="text-white text-sm font-mono font-bold">{{ monitoringSessionId.slice(0, 8) }}...</span>
+                                <span class="text-white text-sm font-mono font-bold">[[ monitoringSessionId.slice(0, 8) ]]...</span>
                                 <span class="text-xs px-1.5 py-0.5 rounded capitalize" 
                                       :class="{
                                           'bg-blue-900 text-blue-300': monitoredSession.status_type === 'running',
@@ -162,7 +162,7 @@
                                           'bg-red-900 text-red-300': monitoredSession.status_type === 'failed',
                                           'bg-gray-700 text-gray-300': monitoredSession.status_type === 'stopped' || monitoredSession.status_type === 'waiting'
                                       }">
-                                    {{ monitoredSession.status_type || 'Run' }}
+                                    [[ monitoredSession.status_type || 'Run' ]]
                                 </span>
                             </div>
                             
@@ -171,12 +171,12 @@
                                      :style="{ width: ((monitoredSession.current_epoch || 0) / (monitoredSession.total_epochs || 1) * 100) + '%' }"></div>
                             </div>
                             <div v-if="monitoredSession.status_type !== 'failed'" class="flex justify-between text-[10px] text-slate-400">
-                                <span>Epoch {{ monitoredSession.current_epoch || 0 }}</span>
-                                <span>{{ monitoredSession.total_epochs || '?' }} Total</span>
+                                <span>Epoch [[ monitoredSession.current_epoch || 0 ]]</span>
+                                <span>[[ monitoredSession.total_epochs || '?' ]] Total</span>
                             </div>
 
                             <div v-if="monitoredSession.status_type === 'failed'" class="mt-2 text-[10px] text-red-300 leading-tight">
-                                {{ monitoredSession.message }}
+                                [[ monitoredSession.message ]]
                             </div>
                         </div>
                     </div>
@@ -195,12 +195,12 @@
                         <p class="text-gray-500 mb-8" v-else>Select a Cellpose Fine-Tuning Service to continue.</p>
                         
                         <div v-if="isConnected && availableServices.length === 0 && !isScanning" class="bg-orange-50 text-orange-800 p-4 rounded-lg text-sm mb-4">
-                            <i class="fas fa-exclamation-triangle mr-2"></i> No services found in workspace "{{ workspace }}".
+                            <i class="fas fa-exclamation-triangle mr-2"></i> No services found in workspace "[[ workspace ]]".
                             <br>Make sure the Worker is running and you are logged into the correct workspace.
                         </div>
 
                         <div v-if="!isConnected && autoConnectError" class="bg-red-50 text-red-800 p-4 rounded-lg text-sm mb-4">
-                             {{ autoConnectError }}
+                             [[ autoConnectError ]]
                         </div>
 
                          <button v-if="isConnected && !service" @click="listServices" class="text-blue-600 hover:text-blue-800 font-medium">
@@ -214,7 +214,7 @@
                      <div class="flex justify-between items-end">
                         <h2 class="text-2xl font-bold text-gray-900">Dashboard</h2>
                         <div v-if="syncError" class="text-red-500 text-sm px-4 py-1 bg-red-50 rounded-full border border-red-200 flex items-center" title="Connection to worker is unstable">
-                            <i class="fas fa-exclamation-triangle mr-2"></i> {{ syncError }}
+                            <i class="fas fa-exclamation-triangle mr-2"></i> [[ syncError ]]
                         </div>
                         <button @click="refreshSessions(false)" class="text-gray-500 hover:text-blue-600 transition text-sm font-medium bg-white px-3 py-1.5 rounded-lg border border-gray-200 shadow-sm">
                             <i class="fas fa-sync-alt mr-1" :class="{'fa-spin': refreshLoading}"></i> Refresh
@@ -237,7 +237,7 @@
                                 <tr v-for="(session, id) in sessions" :key="id" class="hover:bg-slate-50 transition-colors cursor-pointer group" @click="viewSession(id)">
                                     <td class="px-6 py-4 whitespace-nowrap">
                                         <div class="flex items-center">
-                                            <span class="font-mono text-sm text-blue-600 font-medium group-hover:underline">{{ id.slice(0, 8) }}</span>
+                                            <span class="font-mono text-sm text-blue-600 font-medium group-hover:underline">[[ id.slice(0, 8) ]]</span>
                                         </div>
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap">
@@ -248,12 +248,12 @@
                                                   'bg-red-100 text-red-800': session.status_type === 'failed',
                                                   'bg-gray-100 text-gray-800': session.status_type === 'waiting' || session.status_type === 'stopped'
                                               }">
-                                            {{ session.status_type }}
+                                            [[ session.status_type ]]
                                         </span>
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                          <div v-if="session.total_epochs">
-                                            <div class="flex justify-between mb-1 text-xs"><span>{{ session.current_epoch || 0 }}</span><span>{{ session.total_epochs }}</span></div>
+                                            <div class="flex justify-between mb-1 text-xs"><span>[[ session.current_epoch || 0 ]]</span><span>[[ session.total_epochs ]]</span></div>
                                             <div class="w-24 bg-gray-200 rounded-full h-1.5">
                                                 <div class="bg-blue-500 h-1.5 rounded-full" :style="{ width: ((session.current_epoch || 0) / session.total_epochs * 100) + '%' }"></div>
                                             </div>
@@ -261,10 +261,10 @@
                                          <span v-else>-</span>
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                        {{ getLatestLoss(session) }}
+                                        [[ getLatestLoss(session) ]]
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                        {{ formatDate(session.start_time) }}
+                                        [[ formatDate(session.start_time) ]]
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium" @click.stop>
                                          <button @click="viewSession(id)" class="text-blue-600 hover:text-blue-900 mr-3">Details</button>
@@ -375,13 +375,13 @@
                              <button type="button" @click="currentTab = 'dashboard'" class="px-6 py-2.5 text-gray-600 font-medium hover:bg-gray-100 rounded-lg transition">Cancel</button>
                              <button type="submit" :disabled="isStartingTraining" class="bg-blue-600 text-white px-8 py-2.5 rounded-lg shadow-sm hover:bg-blue-700 hover:shadow-md transition-all font-medium disabled:opacity-50 flex items-center gap-2">
                                 <i v-if="isStartingTraining" class="fas fa-circle-notch fa-spin"></i>
-                                {{ isStartingTraining ? 'Starting...' : 'Start Training' }}
+                                [[ isStartingTraining ? 'Starting...' : 'Start Training' ]]
                             </button>
                          </div>
 
                         <div v-if="trainingError" class="bg-red-50 text-red-800 p-4 rounded-lg text-sm border border-red-200 flex items-start gap-2">
                             <i class="fas fa-exclamation-circle mt-0.5"></i>
-                            <span class="font-mono whitespace-pre-wrap">{{ trainingError }}</span>
+                            <span class="font-mono whitespace-pre-wrap">[[ trainingError ]]</span>
                         </div>
 
                      </form>
@@ -396,7 +396,7 @@
                         <div class="flex-1">
                              <h2 class="text-2xl font-bold text-gray-900 flex items-center gap-3">
                                  Session Analysis
-                                 <span class="text-sm font-mono font-normal text-gray-500 bg-gray-100 px-2 py-0.5 rounded">{{ selectedSessionId }}</span>
+                                 <span class="text-sm font-mono font-normal text-gray-500 bg-gray-100 px-2 py-0.5 rounded">[[ selectedSessionId ]]</span>
                              </h2>
                         </div>
                         <div class="flex items-center gap-2">
@@ -420,32 +420,32 @@
                     <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
                         <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
                             <div class="text-sm text-gray-500 mb-1">Status</div>
-                            <div class="text-lg font-bold capitalize" :class="statusTextColor(currentSession?.status_type)">{{ currentSession?.status_type }}</div>
+                            <div class="text-lg font-bold capitalize" :class="statusTextColor(currentSession?.status_type)">[[ currentSession?.status_type ]]</div>
                         </div>
                         <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
                             <div class="text-sm text-gray-500 mb-1">Progress</div>
-                            <div class="text-lg font-bold text-gray-800">{{ currentSession?.current_epoch || 0 }} <span class="text-sm text-gray-400 font-normal">/ {{ currentSession?.total_epochs }} Epochs</span></div>
+                            <div class="text-lg font-bold text-gray-800">[[ currentSession?.current_epoch || 0 ]] <span class="text-sm text-gray-400 font-normal">/ [[ currentSession?.total_epochs ]] Epochs</span></div>
                         </div>
                         <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
                             <div class="text-sm text-gray-500 mb-1">Samples</div>
-                            <div class="text-lg font-bold text-gray-800">{{ currentSession?.n_train || '-' }} <span class="text-sm text-gray-400 font-normal">Train</span></div>
+                            <div class="text-lg font-bold text-gray-800">[[ currentSession?.n_train || '-' ]] <span class="text-sm text-gray-400 font-normal">Train</span></div>
                         </div>
                         <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
                              <div class="text-sm text-gray-500 mb-1">Duration</div>
-                            <div class="text-lg font-bold text-gray-800">{{ formatDuration(currentSession?.elapsed_seconds) }}</div>
+                            <div class="text-lg font-bold text-gray-800">[[ formatDuration(currentSession?.elapsed_seconds) ]]</div>
                         </div>
                     </div>
 
                     <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-8">
                         <h3 class="font-bold text-gray-700 mb-3 px-2">Training Hyperparameters</h3>
                         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
-                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Model</span><div class="font-mono text-gray-800">{{ currentSession?.model || '-' }}</div></div>
-                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Epochs</span><div class="font-mono text-gray-800">{{ currentSession?.n_epochs ?? currentSession?.total_epochs ?? '-' }}</div></div>
-                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Samples</span><div class="font-mono text-gray-800">{{ currentSession?.n_samples ?? 'all' }}</div></div>
-                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Learning Rate</span><div class="font-mono text-gray-800">{{ currentSession?.learning_rate ?? '-' }}</div></div>
-                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Weight Decay</span><div class="font-mono text-gray-800">{{ currentSession?.weight_decay ?? '-' }}</div></div>
-                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Min Train Masks</span><div class="font-mono text-gray-800">{{ currentSession?.min_train_masks ?? '-' }}</div></div>
-                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Validation Interval</span><div class="font-mono text-gray-800">{{ currentSession?.validation_interval ?? 'default (10)' }}</div></div>
+                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Model</span><div class="font-mono text-gray-800">[[ currentSession?.model || '-' ]]</div></div>
+                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Epochs</span><div class="font-mono text-gray-800">[[ currentSession?.n_epochs ?? currentSession?.total_epochs ?? '-' ]]</div></div>
+                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Samples</span><div class="font-mono text-gray-800">[[ currentSession?.n_samples ?? 'all' ]]</div></div>
+                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Learning Rate</span><div class="font-mono text-gray-800">[[ currentSession?.learning_rate ?? '-' ]]</div></div>
+                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Weight Decay</span><div class="font-mono text-gray-800">[[ currentSession?.weight_decay ?? '-' ]]</div></div>
+                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Min Train Masks</span><div class="font-mono text-gray-800">[[ currentSession?.min_train_masks ?? '-' ]]</div></div>
+                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Validation Interval</span><div class="font-mono text-gray-800">[[ currentSession?.validation_interval ?? 'default (10)' ]]</div></div>
                         </div>
                     </div>
                 
@@ -470,11 +470,11 @@
                         <div class="bg-slate-900 rounded-xl overflow-hidden text-slate-300 font-mono text-xs flex flex-col h-64 shadow-sm border border-slate-800">
                             <div class="bg-slate-950 px-4 py-2 border-b border-slate-800 font-bold text-slate-500 flex justify-between">
                                 <span>SYSTEM LOG</span>
-                                <span class="text-[10px]">{{ currentSession?.status_type === 'running' ? 'LIVE' : 'OFFLINE' }}</span>
+                                <span class="text-[10px]">[[ currentSession?.status_type === 'running' ? 'LIVE' : 'OFFLINE' ]]</span>
                             </div>
                             <div class="p-4 overflow-y-auto log-area flex-grow">
-                                <p class="mb-2"><span class="text-slate-500">Session ID:</span> {{ selectedSessionId }}</p>
-                                <p class="mb-2 text-yellow-500">> {{ currentSession?.message }}</p>
+                                <p class="mb-2"><span class="text-slate-500">Session ID:</span> [[ selectedSessionId ]]</p>
+                                <p class="mb-2 text-yellow-500">> [[ currentSession?.message ]]</p>
                                 <p v-if="currentSession?.status_type === 'failed'" class="text-red-400 mt-2">Error: Process terminated unexpectedly.</p>
                             </div>
                         </div>
@@ -490,13 +490,13 @@
                                  </div>
                                  <button @click="exportModel" :disabled="isExporting" class="w-full bg-green-600 text-white px-4 py-3 rounded-lg hover:bg-green-700 disabled:opacity-50 font-medium shadow-sm transition">
                                      <i v-if="isExporting" class="fas fa-spinner fa-spin mr-1"></i>
-                                     {{ isExporting ? 'Exporting Package...' : 'Export to Artifact Manager' }}
+                                     [[ isExporting ? 'Exporting Package...' : 'Export to Artifact Manager' ]]
                                  </button>
                              </div>
                              
                              <div v-if="exportResult" class="mt-4 p-3 bg-white rounded border border-green-200 text-sm">
                                  <div class="flex items-center text-green-600 font-bold mb-1"><i class="fas fa-check-circle mr-2"></i> Export Success</div>
-                                 <a :href="exportResult.artifact_url" target="_blank" class="text-blue-600 hover:underline break-all block">{{ exportResult.model_name }}</a>
+                                 <a :href="exportResult.artifact_url" target="_blank" class="text-blue-600 hover:underline break-all block">[[ exportResult.model_name ]]</a>
                              </div>
                         </div>
                     </div>
@@ -518,11 +518,11 @@
                                     <label class="block text-sm font-medium text-gray-700 mb-1">Model Source</label>
                                     <select v-model="inferenceParams.model" class="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm">
                                          <optgroup label="Pretrained Models">
-                                             <option v-for="m in pretrainedModels" :key="m" :value="m">{{ m }}</option>
+                                             <option v-for="m in pretrainedModels" :key="m" :value="m">[[ m ]]</option>
                                          </optgroup>
                                          <optgroup label="Your Sessions">
                                              <option v-for="(s, id) in sessions" :key="id" :value="id" v-show="s.status_type==='completed' || s.status_type==='running'">
-                                                 {{ s.status_type==='running' ? '🟢' : '⚫' }} {{ id.slice(0,8) }}
+                                                 [[ s.status_type==='running' ? '🟢' : '⚫' ]] [[ id.slice(0,8) ]]
                                              </option>
                                          </optgroup>
                                     </select>
@@ -538,7 +538,7 @@
 
                                 <div v-if="runningTrainingSessionsCount > 0" class="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-xs leading-relaxed">
                                     <i class="fas fa-triangle-exclamation mr-1"></i>
-                                    {{ runningTrainingSessionsCount }} training session(s) are running. Inference may fail with GPU memory errors while training is active.
+                                    [[ runningTrainingSessionsCount ]] training session(s) are running. Inference may fail with GPU memory errors while training is active.
                                 </div>
 
                                 <div>
@@ -550,7 +550,7 @@
                                             <p class="text-xs text-gray-500">Click or Drag Image Here</p>
                                         </div>
                                         <div v-else class="text-sm font-medium text-blue-600 truncate px-2">
-                                            {{ inferenceFile.name }}
+                                            [[ inferenceFile.name ]]
                                         </div>
                                     </div>
                                 </div>
@@ -559,7 +559,7 @@
                             <div class="p-4 border-t border-gray-100 bg-gray-50/50 flex-none">
                                 <button @click="runInference" :disabled="!inferenceFile || isInferring" class="w-full bg-purple-600 text-white px-4 py-3 rounded-lg hover:bg-purple-700 transition disabled:opacity-50 font-medium shadow-sm flex justify-center items-center gap-2">
                                     <i v-if="isInferring" class="fas fa-spinner fa-spin"></i>
-                                    {{ isInferring ? 'Processing...' : 'Run Segmentation' }}
+                                    [[ isInferring ? 'Processing...' : 'Run Segmentation' ]]
                                 </button>
                             </div>
                          </div>
@@ -579,7 +579,7 @@
                              <!-- Legend -->
                              <transition name="fade">
                                  <div v-if="inferenceResult" class="absolute bottom-4 right-4 bg-black/80 backdrop-blur text-white text-xs px-3 py-1.5 rounded-full border border-white/10 shadow-lg">
-                                     <i class="fas fa-cubes text-purple-400 mr-1"></i> Found <b>{{ inferenceObjectCount }}</b> objects
+                                     <i class="fas fa-cubes text-purple-400 mr-1"></i> Found <b>[[ inferenceObjectCount ]]</b> objects
                                  </div>
                              </transition>
                          </div>
@@ -596,7 +596,7 @@
                 <div class="flex justify-between items-center mb-4 border-b border-gray-100 pb-4 flex-none">
                     <div>
                         <h3 class="text-lg font-bold text-gray-900">Artifact Explorer</h3>
-                        <p class="text-xs text-gray-500">{{ trainingParams.artifact || 'No artifact selected' }}</p>
+                        <p class="text-xs text-gray-500">[[ trainingParams.artifact || 'No artifact selected' ]]</p>
                     </div>
                     <button @click="showFileBrowser = false" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
                 </div>
@@ -604,7 +604,7 @@
                 <div class="flex-none bg-gray-50 p-2 rounded-lg mb-4 flex items-center gap-2 text-sm text-gray-600 border border-gray-200">
                     <button @click="browserNavigateUp" class="hover:bg-gray-200 p-1 rounded transition" :disabled="!browserPath"><i class="fas fa-arrow-up"></i></button>
                     <span class="font-mono text-gray-400">/</span>
-                    <span class="font-mono">{{ browserPath }}</span>
+                    <span class="font-mono">[[ browserPath ]]</span>
                 </div>
 
                 <div class="flex-grow overflow-y-auto min-h-0 bg-white border border-gray-100 rounded-lg">
@@ -612,7 +612,7 @@
                         <i class="fas fa-circle-notch fa-spin text-2xl mb-2"></i><br>Loading files...
                     </div>
                     <div v-else-if="browserError" class="p-8 text-center text-red-400">
-                        <i class="fas fa-exclamation-circle text-2xl mb-2"></i><br>{{ browserError }}
+                        <i class="fas fa-exclamation-circle text-2xl mb-2"></i><br>[[ browserError ]]
                     </div>
                     <ul v-else class="divide-y divide-gray-50">
                         <li v-if="browserPath" @click="browserNavigateUp" class="px-4 py-2 hover:bg-gray-50 cursor-pointer flex items-center gap-3 text-gray-500">
@@ -624,7 +624,7 @@
                             
                             <div class="flex items-center gap-3 overflow-hidden">
                                 <i :class="item.type === 'folder' ? 'fas fa-folder text-yellow-400' : 'fas fa-file text-gray-400'"></i>
-                                <span class="text-sm truncate" :class="item.type === 'folder' ? 'font-medium text-gray-700' : 'text-gray-500'">{{ item.name }}</span>
+                                <span class="text-sm truncate" :class="item.type === 'folder' ? 'font-medium text-gray-700' : 'text-gray-500'">[[ item.name ]]</span>
                             </div>
 
                             <div v-if="item.type === 'folder'" class="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -640,10 +640,10 @@
 
                 <div class="mt-4 pt-4 border-t border-gray-100 flex justify-between items-center text-xs text-gray-400">
                     <div class="flex items-center gap-3">
-                        <span>Current: /{{ browserPath }}</span>
+                        <span>Current: /[[ browserPath ]]</span>
                         <transition name="fade">
                             <span v-if="browserFeedback" class="text-green-600 font-bold bg-green-50 px-2 py-0.5 rounded border border-green-200">
-                                <i class="fas fa-check"></i> {{ browserFeedback }}
+                                <i class="fas fa-check"></i> [[ browserFeedback ]]
                             </span>
                         </transition>
                     </div>
@@ -675,12 +675,12 @@
                     <div v-if="isUploading" class="space-y-2 pt-2">
                          <div class="flex justify-between text-xs font-medium text-gray-600">
                             <span>Uploading...</span>
-                            <span>{{ uploadProgress }}%</span>
+                            <span>[[ uploadProgress ]]%</span>
                         </div>
                         <div class="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
                             <div class="bg-green-500 h-2 rounded-full transition-all duration-300" :style="{ width: uploadProgress + '%' }"></div>
                         </div>
-                        <div class="text-xs text-gray-400 truncate">{{ uploadStatus }}</div>
+                        <div class="text-xs text-gray-400 truncate">[[ uploadStatus ]]</div>
                     </div>
 
                     <div class="flex justify-end gap-3 pt-4 border-t border-gray-100">
@@ -696,7 +696,7 @@
     <script>
         const { createApp, ref, reactive, computed, onMounted, watch } = Vue;
 
-        createApp({
+        const app = createApp({
             setup() {
                 // Connection State
                 const serverUrl = ref('https://hypha.aicell.io');
@@ -1954,7 +1954,9 @@
                     statusTextColor, formatDuration, handleFolderSelect, getLatestLoss, formatDate,
                 };
             }
-        }).mount('#app');
+        });
+        app.config.compilerOptions.delimiters = ['[[', ']]'];
+        app.mount('#app');
     </script>
 </body>
 </html>

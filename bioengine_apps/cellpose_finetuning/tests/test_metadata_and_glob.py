@@ -35,6 +35,35 @@ def test_match_image_annotation_pairs_with_nested_globs() -> None:
     ]
 
 
+def test_match_image_annotation_pairs_with_mixed_ome_suffix_convention() -> None:
+    image_files = [
+        "images/108bb69d-2e52-4382-8100-e96173db24ee/t0000.ome.tif",
+        "images/108bb69d-2e52-4382-8100-e96173db24ee/t0001.ome.tif",
+    ]
+    annotation_files = [
+        "annotations/108bb69d-2e52-4382-8100-e96173db24ee/t0000_mask.ome.tif",
+        "annotations/108bb69d-2e52-4382-8100-e96173db24ee/t0001_mask.ome.tif",
+    ]
+
+    pairs = match_image_annotation_pairs(
+        image_files,
+        annotation_files,
+        "images/108bb69d-2e52-4382-8100-e96173db24ee/*.tif",
+        "annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif",
+    )
+
+    assert pairs == [
+        (
+            "images/108bb69d-2e52-4382-8100-e96173db24ee/t0000.ome.tif",
+            "annotations/108bb69d-2e52-4382-8100-e96173db24ee/t0000_mask.ome.tif",
+        ),
+        (
+            "images/108bb69d-2e52-4382-8100-e96173db24ee/t0001.ome.tif",
+            "annotations/108bb69d-2e52-4382-8100-e96173db24ee/t0001_mask.ome.tif",
+        ),
+    ]
+
+
 class _FakeArtifact:
     async def ls(self, folder_path: str):
         await asyncio.sleep(0)

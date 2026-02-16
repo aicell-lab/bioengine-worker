@@ -12,6 +12,7 @@
     <script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.30/dist/hypha-rpc-websocket.min.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
     <script>
@@ -392,11 +393,27 @@
                         <button @click="currentTab = 'dashboard'" class="text-gray-400 hover:text-gray-600 transition">
                             <i class="fas fa-arrow-left text-xl"></i>
                         </button>
-                        <div>
+                        <div class="flex-1">
                              <h2 class="text-2xl font-bold text-gray-900 flex items-center gap-3">
                                  Session Analysis
                                  <span class="text-sm font-mono font-normal text-gray-500 bg-gray-100 px-2 py-0.5 rounded">{{ selectedSessionId }}</span>
                              </h2>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button
+                                v-if="currentSession?.status_type === 'running'"
+                                @click="stopTraining(selectedSessionId)"
+                                class="px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition"
+                            >
+                                <i class="fas fa-stop mr-1"></i> Stop
+                            </button>
+                            <button
+                                v-if="currentSession && ['stopped','unknown','failed'].includes(currentSession.status_type)"
+                                @click="restartTraining(selectedSessionId)"
+                                class="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition"
+                            >
+                                <i class="fas fa-rotate-right mr-1"></i> Restart
+                            </button>
                         </div>
                     </div>
 
@@ -418,6 +435,19 @@
                             <div class="text-lg font-bold text-gray-800">{{ formatDuration(currentSession?.elapsed_seconds) }}</div>
                         </div>
                     </div>
+
+                    <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-8">
+                        <h3 class="font-bold text-gray-700 mb-3 px-2">Training Hyperparameters</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Model</span><div class="font-mono text-gray-800">{{ currentSession?.model || '-' }}</div></div>
+                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Epochs</span><div class="font-mono text-gray-800">{{ currentSession?.n_epochs ?? currentSession?.total_epochs ?? '-' }}</div></div>
+                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Samples</span><div class="font-mono text-gray-800">{{ currentSession?.n_samples ?? 'all' }}</div></div>
+                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Learning Rate</span><div class="font-mono text-gray-800">{{ currentSession?.learning_rate ?? '-' }}</div></div>
+                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Weight Decay</span><div class="font-mono text-gray-800">{{ currentSession?.weight_decay ?? '-' }}</div></div>
+                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Min Train Masks</span><div class="font-mono text-gray-800">{{ currentSession?.min_train_masks ?? '-' }}</div></div>
+                            <div class="bg-gray-50 rounded p-2"><span class="text-gray-500">Validation Interval</span><div class="font-mono text-gray-800">{{ currentSession?.validation_interval ?? 'default (10)' }}</div></div>
+                        </div>
+                    </div>
                 
                     <!-- Charts -->
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
@@ -428,8 +458,9 @@
                         <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
                             <h3 class="font-bold text-gray-700 mb-4 px-2">Validation Metrics</h3>
                             <div v-if="hasMetrics" id="metricsChart" class="w-full h-72"></div>
-                             <div v-else class="h-72 flex items-center justify-center text-gray-400 italic">
-                                No validation metrics available.
+                             <div v-else class="h-72 flex items-center justify-center text-gray-400 italic text-center px-6">
+                                <span v-if="hasValidationSet">Validation is enabled, metrics will appear after the first evaluated epoch.</span>
+                                <span v-else>Validation metrics require both test images and test annotations.</span>
                             </div>
                         </div>
                     </div>
@@ -749,6 +780,7 @@
                 const currentSession = computed(() => selectedSessionId.value ? sessions.value[selectedSessionId.value] : null);
                 const monitoredSession = computed(() => monitoringSessionId.value ? sessions.value[monitoringSessionId.value] : null);
                 const hasMetrics = computed(() => currentSession.value?.test_metrics?.length > 0);
+                const hasValidationSet = computed(() => (currentSession.value?.n_test || 0) > 0);
                 const runningTrainingSessionsCount = computed(() =>
                     Object.values(sessions.value).filter((s) => s && s.status_type === 'running').length
                 );
@@ -757,6 +789,52 @@
                     if (!maskValue) return null;
                     if (Array.isArray(maskValue) && Array.isArray(maskValue[0])) return maskValue;
                     if (Array.isArray(maskValue) && maskValue.length > 0 && typeof maskValue[0] === 'number') return null;
+                    if (typeof maskValue === 'object' && maskValue.encoding === 'ndarray_base64' && maskValue.shape && maskValue.data) {
+                        const shape = maskValue.shape;
+                        if (!Array.isArray(shape) || shape.length < 2) return null;
+                        const h = shape[shape.length - 2];
+                        const w = shape[shape.length - 1];
+                        if (!Number.isInteger(h) || !Number.isInteger(w) || h <= 0 || w <= 0) return null;
+
+                        const b64 = maskValue.data;
+                        const bin = atob(b64);
+                        const bytes = new Uint8Array(bin.length);
+                        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+
+                        let typed = null;
+                        const dtype = String(maskValue.dtype || '').toLowerCase();
+                        if (dtype.includes('uint16')) typed = new Uint16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
+                        else if (dtype.includes('uint32')) typed = new Uint32Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 4));
+                        else if (dtype.includes('int16')) typed = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
+                        else if (dtype.includes('int32')) typed = new Int32Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 4));
+                        else typed = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+                        if (!typed || typed.length < h * w) return null;
+                        const out = [];
+                        for (let y = 0; y < h; y++) {
+                            const rowStart = y * w;
+                            const row = new Array(w);
+                            for (let x = 0; x < w; x++) row[x] = typed[rowStart + x];
+                            out.push(row);
+                        }
+                        return out;
+                    }
+                    if (typeof maskValue === 'object' && maskValue.shape && maskValue.data) {
+                        const shape = maskValue.shape;
+                        const data = maskValue.data;
+                        if (Array.isArray(shape) && shape.length >= 2 && Array.isArray(data)) {
+                            const h = shape[shape.length - 2];
+                            const w = shape[shape.length - 1];
+                            if (Number.isInteger(h) && Number.isInteger(w) && h > 0 && w > 0 && data.length >= h * w) {
+                                const out = [];
+                                for (let y = 0; y < h; y++) {
+                                    const rowStart = y * w;
+                                    out.push(data.slice(rowStart, rowStart + w));
+                                }
+                                return out;
+                            }
+                        }
+                    }
                     return null;
                 };
 
@@ -990,16 +1068,19 @@
                     const runLoop = async () => {
                         if (isConnected.value && service.value) {
                             try {
-                                await refreshSessions(true);
-                                // If viewing a session, update charts
-                                if (currentTab.value === 'session_details' && selectedSessionId.value) {
-                                    renderCharts();
+                                const shouldPollSessions = !isInferring.value && currentTab.value !== 'inference';
+                                if (shouldPollSessions) {
+                                    await refreshSessions(true);
+                                    // If viewing a session, update charts
+                                    if (currentTab.value === 'session_details' && selectedSessionId.value) {
+                                        renderCharts();
+                                    }
                                 }
                             } catch (e) {
                                 console.warn("Auto-update loop error:", e);
                             }
                         }
-                        updateTimer = setTimeout(runLoop, 3000);
+                        updateTimer = setTimeout(runLoop, 4000);
                     };
                     runLoop();
                 };
@@ -1090,6 +1171,29 @@
                         trainingError.value = "Stop failed: " + errMsg;
                         syncError.value = "Stop failed: " + errMsg;
                         console.error("Stop training failed:", e);
+                    }
+                };
+
+                const restartTraining = async (id) => {
+                    try {
+                        const result = await service.value.restart_training(
+                            { session_id: id },
+                            { _rkwargs: true }
+                        );
+                        if (result && result.session_id) {
+                            sessions.value[result.session_id] = result;
+                            monitoringSessionId.value = result.session_id;
+                            viewSession(result.session_id);
+                            await refreshSessions(true);
+                            alert(`Training restarted. New session ID: ${result.session_id}`);
+                        } else {
+                            throw new Error(`Restart returned no session id: ${JSON.stringify(result)}`);
+                        }
+                    } catch (e) {
+                        const errMsg = formatServiceError(e, 'Restart training');
+                        trainingError.value = "Restart failed: " + errMsg;
+                        syncError.value = "Restart failed: " + errMsg;
+                        alert("Restart failed: " + errMsg);
                     }
                 };
 
@@ -1249,8 +1353,70 @@
                 };
 
                 // --- Inference ---
+                const toUint8Channel = (typedArray) => {
+                    if (!typedArray || typedArray.length === 0) return new Uint8Array();
+                    let min = Infinity;
+                    let max = -Infinity;
+                    for (let i = 0; i < typedArray.length; i++) {
+                        const v = typedArray[i];
+                        if (v < min) min = v;
+                        if (v > max) max = v;
+                    }
+                    if (!Number.isFinite(min) || !Number.isFinite(max)) return new Uint8Array(typedArray.length);
+                    const out = new Uint8Array(typedArray.length);
+                    if (max <= 255 && min >= 0) {
+                        for (let i = 0; i < typedArray.length; i++) out[i] = typedArray[i];
+                        return out;
+                    }
+                    const range = max - min || 1;
+                    for (let i = 0; i < typedArray.length; i++) {
+                        out[i] = Math.max(0, Math.min(255, Math.round(((typedArray[i] - min) / range) * 255)));
+                    }
+                    return out;
+                };
+
+                const makePngFromChannels = (width, height, channels) => {
+                    const r = toUint8Channel(channels[0] || channels[0]);
+                    const g = toUint8Channel(channels[1] || channels[0]);
+                    const b = toUint8Channel(channels[2] || channels[0]);
+                    const rgba = new Uint8ClampedArray(width * height * 4);
+                    for (let i = 0; i < width * height; i++) {
+                        const idx = i * 4;
+                        rgba[idx] = r[i] ?? 0;
+                        rgba[idx + 1] = g[i] ?? 0;
+                        rgba[idx + 2] = b[i] ?? 0;
+                        rgba[idx + 3] = 255;
+                    }
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    const imageData = new ImageData(rgba, width, height);
+                    ctx.putImageData(imageData, 0, 0);
+                    return canvas.toDataURL('image/png');
+                };
+
+                const createTiffPreviewGeoTiff = async (buffer) => {
+                    if (!window.GeoTIFF) throw new Error('GeoTIFF decoder unavailable');
+                    const tiff = await window.GeoTIFF.fromArrayBuffer(buffer);
+                    const image = await tiff.getImage();
+                    const width = image.getWidth();
+                    const height = image.getHeight();
+                    if (!width || !height) throw new Error('Invalid TIFF dimensions');
+                    const rasters = await image.readRasters({ interleave: false });
+                    if (!rasters || rasters.length === 0) throw new Error('No TIFF raster channels found');
+                    const channels = [rasters[0], rasters[1] || rasters[0], rasters[2] || rasters[0]];
+                    return makePngFromChannels(width, height, channels);
+                };
+
                 const createTiffPreview = async (file) => {
                     const buffer = await file.arrayBuffer();
+                    try {
+                        return await createTiffPreviewGeoTiff(buffer);
+                    } catch (geoError) {
+                        console.warn('GeoTIFF preview decode failed, trying UTIF fallback:', geoError);
+                    }
+
                     const ifds = UTIF.decode(buffer);
                     if (!ifds || ifds.length === 0) {
                         throw new Error("No TIFF image frames found.");
@@ -1277,7 +1443,7 @@
                         const isTiff = lowerName.endsWith('.tif') || lowerName.endsWith('.tiff');
 
                         try {
-                            if (isTiff && window.UTIF) {
+                            if (isTiff) {
                                 inferencePreview.value = await createTiffPreview(file);
                             } else {
                                 inferencePreview.value = URL.createObjectURL(file);
@@ -1298,19 +1464,40 @@
                     }
                 };
 
+                const syncOverlayToPreview = () => {
+                    const img = previewImg.value;
+                    const canvas = inferenceCanvas.value;
+                    if (!img || !canvas) return;
+
+                    const displayedWidth = img.clientWidth || img.naturalWidth;
+                    const displayedHeight = img.clientHeight || img.naturalHeight;
+
+                    canvasStyle.left = `${img.offsetLeft}px`;
+                    canvasStyle.top = `${img.offsetTop}px`;
+                    canvasStyle.width = `${displayedWidth}px`;
+                    canvasStyle.height = `${displayedHeight}px`;
+
+                    if (!canvas.width || !canvas.height) {
+                        canvas.width = img.naturalWidth;
+                        canvas.height = img.naturalHeight;
+                    }
+                };
+
                 const onImageLoad = () => {
-                    // Sync canvas size to image size
                     const img = previewImg.value;
                     const canvas = inferenceCanvas.value;
                     if (img && canvas) {
                         canvas.width = img.naturalWidth;
                         canvas.height = img.naturalHeight;
+                        syncOverlayToPreview();
                     }
                 };
 
                 const runInference = async () => {
                     if (!inferenceFile.value) return;
                     isInferring.value = true;
+                    inferenceResult.value = null;
+                    inferenceObjectCount.value = 0;
                     console.log("Starting inference...");
                     try {
                         const am = await getArtifactManager();
@@ -1356,9 +1543,9 @@
                                 cellprob_threshold: 0.0,
                                 niter: null,
                                 return_flows: false,
-                                json_safe: true,
-                                _rkwargs: true
-                            }
+                                json_safe: true
+                            },
+                            { _rkwargs: true }
                         );
                         
                         console.log("Inference Raw Result:", result);
@@ -1387,15 +1574,43 @@
                 const drawInference = (mask) => {
                     const canvas = inferenceCanvas.value;
                     if (!canvas || !mask) return;
+                    syncOverlayToPreview();
+
+                    if (typeof mask === 'object' && mask.encoding === 'mask_png_base64' && mask.png_base64) {
+                        const width = Number(mask.width || 0);
+                        const height = Number(mask.height || 0);
+                        if (width > 0 && height > 0) {
+                            canvas.width = width;
+                            canvas.height = height;
+                        }
+                        inferenceObjectCount.value = Number(mask.object_count || 0);
+                        const ctx = canvas.getContext('2d');
+                        const img = new Image();
+                        img.onload = () => {
+                            ctx.clearRect(0, 0, canvas.width, canvas.height);
+                            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        };
+                        img.src = `data:image/png;base64,${mask.png_base64}`;
+                        return;
+                    }
 
                     const mask2d = to2DMaskArray(mask);
                     if (!mask2d) {
                         throw new Error('Inference returned a mask payload that the UI cannot render.');
                     }
+
+                    const height = mask2d.length;
+                    const width = mask2d[0]?.length || 0;
+                    if (!width || !height) {
+                        throw new Error('Inference returned an empty mask.');
+                    }
+
+                    if (canvas.width !== width || canvas.height !== height) {
+                        canvas.width = width;
+                        canvas.height = height;
+                    }
                     
                     const ctx = canvas.getContext('2d');
-                    const width = canvas.width;
-                    const height = canvas.height;
                     
                     // Simple pixel manipulation
                     const idata = ctx.createImageData(width, height);
@@ -1723,7 +1938,7 @@
                     serverUrl, isConnected, isConnecting, workspace, showTokenInput, authToken, autoConnectError,
                     availableServices, selectedServiceId, service, isScanning, listServices, disconnect, connect, login,
                     currentTab, tabs,
-                    sessions, refreshSessions, refreshLoading, monitoringSessionId, monitoredSession, selectedSessionId, viewSession, currentSession, hasMetrics, stopTraining,
+                    sessions, refreshSessions, refreshLoading, monitoringSessionId, monitoredSession, selectedSessionId, viewSession, currentSession, hasMetrics, hasValidationSet, stopTraining, restartTraining,
                     runningTrainingSessionsCount,
                     trainingParams, startTraining, isStartingTraining,
                     applyTrainingGlobExample, applyTrainingFolderExample,

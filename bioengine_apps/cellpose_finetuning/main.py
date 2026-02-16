@@ -7,7 +7,9 @@ Cellpose model, and exposes training control and inference functions.
 from __future__ import annotations
 
 import asyncio
+import base64
 import fnmatch
+import io
 import json
 import logging
 import os
@@ -422,6 +424,73 @@ class PredictionItemModel(TypedDict, total=False):
     ]  # Optional: [HSV flow, XY flows, cellprob, final positions]
 
 
+class EncodedArrayPayload(TypedDict):
+    """Compact JSON-safe ndarray payload."""
+
+    encoding: str
+    dtype: str
+    shape: list[int]
+    data: str
+
+
+class EncodedMaskPngPayload(TypedDict):
+    """Compact browser-friendly mask overlay payload."""
+
+    encoding: str
+    width: int
+    height: int
+    object_count: int
+    png_base64: str
+
+
+def encode_array_payload(array: npt.NDArray[Any]) -> EncodedArrayPayload:
+    """Encode ndarray as base64 bytes with dtype/shape metadata."""
+    contiguous = np.ascontiguousarray(array)
+    return EncodedArrayPayload(
+        encoding="ndarray_base64",
+        dtype=str(contiguous.dtype),
+        shape=[int(dim) for dim in contiguous.shape],
+        data=base64.b64encode(contiguous.tobytes(order="C")).decode("ascii"),
+    )
+
+
+def encode_mask_png_payload(mask: npt.NDArray[Any]) -> EncodedMaskPngPayload:
+    """Encode a label mask into a transparent RGBA PNG overlay."""
+    from PIL import Image
+
+    mask_2d = np.asarray(mask)
+    if mask_2d.ndim != 2:
+        mask_2d = np.squeeze(mask_2d)
+    if mask_2d.ndim != 2:
+        raise ValueError(f"Expected 2D mask, got shape={mask_2d.shape}")
+
+    h, w = int(mask_2d.shape[0]), int(mask_2d.shape[1])
+    rgba = np.zeros((h, w, 4), dtype=np.uint8)
+
+    labels = np.unique(mask_2d)
+    labels = labels[labels > 0]
+    for label in labels:
+        label_int = int(label)
+        label_mask = mask_2d == label
+        rgba[label_mask, 0] = (label_int * 123) % 255
+        rgba[label_mask, 1] = (label_int * 231) % 255
+        rgba[label_mask, 2] = (label_int * 73) % 255
+        rgba[label_mask, 3] = 150
+
+    image = Image.fromarray(rgba, mode="RGBA")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG", optimize=True)
+    png_b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    return EncodedMaskPngPayload(
+        encoding="mask_png_base64",
+        width=w,
+        height=h,
+        object_count=int(len(labels)),
+        png_base64=png_b64,
+    )
+
+
 class ValidationMetrics(TypedDict, total=False):
     """Pixel-level binary foreground/background validation metrics.
 
@@ -472,6 +541,13 @@ class SessionStatus(TypedDict, total=False):
     total_batches: int  # Total number of batches per epoch
     exported_artifact_id: str  # Artifact ID if model has been exported
     model_modified: bool  # Flag indicating if model was modified since last export
+    model: str
+    n_samples: int | None
+    n_epochs: int
+    learning_rate: float
+    weight_decay: float
+    min_train_masks: int
+    validation_interval: int | None
 
 
 class SessionStatusWithId(TypedDict, total=False):
@@ -499,6 +575,13 @@ class SessionStatusWithId(TypedDict, total=False):
     total_batches: int
     exported_artifact_id: str
     model_modified: bool
+    model: str
+    n_samples: int | None
+    n_epochs: int
+    learning_rate: float
+    weight_decay: float
+    min_train_masks: int
+    validation_interval: int | None
 
 
 async def make_artifact_client(
@@ -536,18 +619,18 @@ def get_url_and_artifact_id(artifact_id: str | Any) -> tuple[str, str]:
         elif "artifact_id" in artifact_id:
             artifact_id = artifact_id["artifact_id"]
         elif "id" in artifact_id:
-                artifact_id = artifact_id["id"]
-    
+            artifact_id = artifact_id["id"]
+
     # If artifact_id is not a string, try to extract the ID as string
     if not isinstance(artifact_id, str):
         if hasattr(artifact_id, "id"):
             artifact_id = artifact_id.id
         elif isinstance(artifact_id, dict) and "id" in artifact_id:
             artifact_id = artifact_id["id"]
-        
+
         # As a fallback or if it's explicitly wrapper, try str() but be careful
         if not isinstance(artifact_id, str):
-                artifact_id = str(artifact_id)
+            artifact_id = str(artifact_id)
 
     parsed = urlparse(artifact_id)
     if parsed.scheme in ("http", "https"):
@@ -676,6 +759,13 @@ def update_status(
     elapsed_seconds: float | None = None,
     current_batch: int | None = None,
     total_batches: int | None = None,
+    model: str | None = None,
+    n_samples: int | None = None,
+    n_epochs: int | None = None,
+    learning_rate: float | None = None,
+    weight_decay: float | None = None,
+    min_train_masks: int | None = None,
+    validation_interval: int | None = None,
 ) -> None:
     """Update the status of a training session."""
     stop_requested = get_stop_request_path(session_id).exists()
@@ -725,6 +815,20 @@ def update_status(
         status_dict["current_batch"] = current_batch
     if total_batches is not None:
         status_dict["total_batches"] = total_batches
+    if model is not None:
+        status_dict["model"] = model
+    if n_samples is not None:
+        status_dict["n_samples"] = n_samples
+    if n_epochs is not None:
+        status_dict["n_epochs"] = n_epochs
+    if learning_rate is not None:
+        status_dict["learning_rate"] = learning_rate
+    if weight_decay is not None:
+        status_dict["weight_decay"] = weight_decay
+    if min_train_masks is not None:
+        status_dict["min_train_masks"] = min_train_masks
+    if validation_interval is not None:
+        status_dict["validation_interval"] = validation_interval
 
     status_json = json.dumps(status_dict)
     tmp_path = status_path.with_suffix(".json.tmp")
@@ -1887,7 +1991,11 @@ def _glob_base_folder(path_pattern: str) -> str:
     normalized = _normalize_artifact_relpath(path_pattern)
     wildcard_index = normalized.find("*")
     if wildcard_index < 0:
-        return normalized if normalized.endswith("/") else str(Path(normalized).parent) + "/"
+        return (
+            normalized
+            if normalized.endswith("/")
+            else str(Path(normalized).parent) + "/"
+        )
 
     slash_before = normalized.rfind("/", 0, wildcard_index)
     if slash_before < 0:
@@ -1929,7 +2037,11 @@ async def list_artifact_files_recursive(
             if current and normalized and not normalized.startswith(current):
                 normalized = _normalize_artifact_relpath(current + normalized)
 
-            is_dir = normalized.endswith("/") or entry_type in {"folder", "directory", "dir"}
+            is_dir = normalized.endswith("/") or entry_type in {
+                "folder",
+                "directory",
+                "dir",
+            }
             if is_dir:
                 next_dir = normalized if normalized.endswith("/") else normalized + "/"
                 if next_dir not in visited:
@@ -1961,8 +2073,14 @@ async def list_matching_artifact_paths(
             dir_entries = await artifact.ls(normalized_pattern)
             if isinstance(dir_entries, list):
                 names = await list_artifact_files(artifact, normalized_pattern)
-                folder = normalized_pattern if normalized_pattern.endswith("/") else normalized_pattern + "/"
-                return [_normalize_artifact_relpath(f"{folder}{name}") for name in names]
+                folder = (
+                    normalized_pattern
+                    if normalized_pattern.endswith("/")
+                    else normalized_pattern + "/"
+                )
+                return [
+                    _normalize_artifact_relpath(f"{folder}{name}") for name in names
+                ]
         except Exception:
             pass
         return [normalized_pattern]
@@ -2062,6 +2180,54 @@ def match_image_annotation_pairs(
         if match and match in annot_map:
             pairs.append((image_file, annot_map[match]))
 
+    if pairs:
+        logger.info(
+            f"Matched {len(pairs)} pairs from {len(image_files)} images "
+            f"and {len(annotation_files)} annotations"
+        )
+        return pairs
+
+    def _strip_known_suffixes(name: str) -> str:
+        lowered = name.lower()
+        for suffix in (
+            ".ome.tiff",
+            ".ome.tif",
+            ".tiff",
+            ".tif",
+            ".png",
+            ".jpg",
+            ".jpeg",
+        ):
+            if lowered.endswith(suffix):
+                return name[: -len(suffix)]
+        return Path(name).stem
+
+    def _image_key(path: str) -> str:
+        basename = Path(path).name
+        return _strip_known_suffixes(basename).lower()
+
+    def _annotation_key(path: str) -> str:
+        basename = Path(path).name
+        key = _strip_known_suffixes(basename).lower()
+        for marker in ("_mask", "-mask", "_label", "-label", "_annotation", "-annotation"):
+            if key.endswith(marker):
+                key = key[: -len(marker)]
+                break
+        return key
+
+    # Fallback matcher for mixed conventions like image '*.tif' vs annotation '*_mask.ome.tif'.
+    fallback_ann_map: dict[str, str] = {}
+    for annot_file in annotation_files:
+        key = _annotation_key(annot_file)
+        if key and key not in fallback_ann_map:
+            fallback_ann_map[key] = annot_file
+
+    for image_file in image_files:
+        key = _image_key(image_file)
+        annot_file = fallback_ann_map.get(key)
+        if annot_file:
+            pairs.append((image_file, annot_file))
+
     logger.info(
         f"Matched {len(pairs)} pairs from {len(image_files)} images "
         f"and {len(annotation_files)} annotations"
@@ -2145,7 +2311,9 @@ def _coerce_record_path(value: Any, metadata_parent: Path) -> Path | None:
     return strip_leading_slash(metadata_parent / raw)
 
 
-def _extract_metadata_pair(record: dict[str, Any], metadata_parent: Path) -> TrainingPair | None:
+def _extract_metadata_pair(
+    record: dict[str, Any], metadata_parent: Path
+) -> TrainingPair | None:
     image_keys = (
         "image",
         "image_path",
@@ -2278,7 +2446,9 @@ async def make_training_pairs_from_metadata(
         )
 
     if n_samples is not None and n_samples < len(train_pairs_raw):
-        subset_idx = np.random.default_rng().permutation(len(train_pairs_raw))[:n_samples]
+        subset_idx = np.random.default_rng().permutation(len(train_pairs_raw))[
+            :n_samples
+        ]
         train_pairs_raw = [train_pairs_raw[i] for i in subset_idx]
 
     train_pairs = await download_pairs_from_artifact(
@@ -2920,7 +3090,7 @@ def _predict_and_encode(
             mask_np = mask_np.astype(np.int32, copy=False)
 
         # Create output item
-        output_payload: Any = mask_np.tolist() if json_safe else mask_np
+        output_payload: Any = encode_mask_png_payload(mask_np) if json_safe else mask_np
 
         out_item = PredictionItemModel(
             input_path=path,
@@ -3119,7 +3289,9 @@ class CellposeFinetune:
 
         if isinstance(artifact, dict):
             wrapped = artifact
-            artifact = wrapped.get("artifact", wrapped.get("artifact_id", wrapped.get("id", artifact)))
+            artifact = wrapped.get(
+                "artifact", wrapped.get("artifact_id", wrapped.get("id", artifact))
+            )
             train_images = wrapped.get("train_images", train_images)
             train_annotations = wrapped.get("train_annotations", train_annotations)
             metadata_dir = wrapped.get("metadata_dir", metadata_dir)
@@ -3131,7 +3303,9 @@ class CellposeFinetune:
             learning_rate = wrapped.get("learning_rate", learning_rate)
             weight_decay = wrapped.get("weight_decay", weight_decay)
             min_train_masks = wrapped.get("min_train_masks", min_train_masks)
-            validation_interval = wrapped.get("validation_interval", validation_interval)
+            validation_interval = wrapped.get(
+                "validation_interval", validation_interval
+            )
 
         artifact = normalize_optional_param(artifact)
         train_images = normalize_optional_param(train_images)
@@ -3149,15 +3323,21 @@ class CellposeFinetune:
 
         if metadata_dir is None:
             if not isinstance(train_images, str) or not train_images:
-                raise ValueError("train_images must be a non-empty string when metadata_dir is not provided")
+                raise ValueError(
+                    "train_images must be a non-empty string when metadata_dir is not provided"
+                )
             if not isinstance(train_annotations, str) or not train_annotations:
-                raise ValueError("train_annotations must be a non-empty string when metadata_dir is not provided")
+                raise ValueError(
+                    "train_annotations must be a non-empty string when metadata_dir is not provided"
+                )
         else:
             if not isinstance(metadata_dir, str) or not metadata_dir:
                 raise ValueError("metadata_dir must be a non-empty string")
 
         if (test_images is None) ^ (test_annotations is None):
-            raise ValueError("test_images and test_annotations must be provided together")
+            raise ValueError(
+                "test_images and test_annotations must be provided together"
+            )
 
         if not isinstance(model, str) or not model:
             model = PretrainedModel.CPSAM.value
@@ -3189,6 +3369,13 @@ class CellposeFinetune:
             status_type=StatusType.PREPARING,
             message="Preparing for training...",
             dataset_artifact_id=artifact_id,
+            model=model_id,
+            n_samples=n_samples,
+            n_epochs=n_epochs,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            min_train_masks=min_train_masks,
+            validation_interval=validation_interval,
         )
 
         training_params = TrainingParams(
@@ -3310,7 +3497,26 @@ class CellposeFinetune:
         Use ``get_trained_model_path(session_id)`` to obtain the final saved model
         path once the session is completed.
         """
-        return await asyncio.to_thread(get_status, session_id)
+        session_id = str(session_id).strip().replace("\\", "/")
+        if session_id.endswith("/status.json"):
+            session_id = session_id[: -len("/status.json")]
+        session_id = Path(session_id).name
+
+        status = await asyncio.to_thread(get_status, session_id)
+        status_path = get_status_path(session_id)
+        try:
+            status_mtime = (
+                status_path.stat().st_mtime if status_path.exists() else time.time()
+            )
+        except OSError:
+            status_mtime = time.time()
+
+        normalized = self._normalize_session_status(
+            session_id=session_id,
+            session_data=dict(status),
+            status_mtime=status_mtime,
+        )
+        return SessionStatus(**normalized)
 
     def _normalize_session_status(
         self,
@@ -3334,12 +3540,94 @@ class CellposeFinetune:
 
         stale_for = time.time() - status_mtime
         if stale_for >= STATUS_STALE_SECONDS:
-            session_data["status_type"] = StatusType.UNKNOWN.value
+            session_data["status_type"] = StatusType.STOPPED.value
             session_data["message"] = (
-                "Session is not active in this service instance. "
-                "It may have stopped after a redeploy."
+                "Training was interrupted (likely due to service restart). "
+                "Use restart_training to resume with the saved checkpoint."
             )
         return session_data
+
+    @schema_method(arbitrary_types_allowed=True)  # type: ignore
+    async def restart_training(
+        self,
+        session_id: str = Field(description="Session ID to restart from"),
+        n_epochs: int | None = Field(
+            None,
+            description="Optional epoch override for restarted run",
+        ),
+    ) -> dict[str, Any]:
+        """Restart a stopped/interrupted/failed training session.
+
+        A new session is created. If a checkpoint exists for ``session_id``, the
+        new run uses that checkpoint as the starting model.
+        """
+        if isinstance(session_id, dict):
+            wrapped = session_id
+            session_id = wrapped.get("session_id", wrapped.get("id", session_id))
+            n_epochs = wrapped.get("n_epochs", n_epochs)
+
+        session_id = str(session_id).strip().replace("\\", "/")
+        if session_id.endswith("/status.json"):
+            session_id = session_id[: -len("/status.json")]
+        session_id = Path(session_id).name
+
+        current_status = get_status(session_id)
+        status_path = get_status_path(session_id)
+        try:
+            status_mtime = (
+                status_path.stat().st_mtime if status_path.exists() else time.time()
+            )
+        except OSError:
+            status_mtime = time.time()
+        current_status = self._normalize_session_status(
+            session_id=session_id,
+            session_data=dict(current_status),
+            status_mtime=status_mtime,
+        )
+        status_type = str(current_status.get("status_type") or "").lower()
+        allowed = {
+            StatusType.STOPPED.value,
+            StatusType.UNKNOWN.value,
+            StatusType.FAILED.value,
+            StatusType.COMPLETED.value,
+        }
+        if status_type not in allowed:
+            raise ValueError(
+                f"Session {session_id} has status '{status_type}'. "
+                "Only stopped/unknown/failed/completed sessions can be restarted."
+            )
+
+        params_path = get_session_path(session_id) / TRAINING_PARAMS_FILENAME
+        if not params_path.exists():
+            raise ValueError(
+                f"Cannot restart session {session_id}: {TRAINING_PARAMS_FILENAME} not found"
+            )
+
+        params = json.loads(params_path.read_text(encoding="utf-8"))
+        restart_model = (
+            session_id if get_model_path(session_id).exists() else params.get("model")
+        )
+        restart_epochs = (
+            int(n_epochs) if n_epochs is not None else int(params.get("n_epochs", 10))
+        )
+
+        restarted = await self.start_training(
+            artifact=params["artifact_id"],
+            train_images=params.get("train_images"),
+            train_annotations=params.get("train_annotations"),
+            metadata_dir=params.get("metadata_dir"),
+            test_images=params.get("test_images"),
+            test_annotations=params.get("test_annotations"),
+            model=restart_model,
+            n_samples=params.get("n_samples"),
+            n_epochs=restart_epochs,
+            learning_rate=float(params.get("learning_rate", 1e-6)),
+            weight_decay=float(params.get("weight_decay", 1e-4)),
+            min_train_masks=int(params.get("min_train_masks", 5)),
+            validation_interval=params.get("validation_interval"),
+        )
+        restarted["restarted_from"] = session_id
+        return restarted
 
     def _list_sessions_sync(
         self,
@@ -3411,6 +3699,13 @@ class CellposeFinetune:
                 total_batches=session_data.get("total_batches"),
                 exported_artifact_id=session_data.get("exported_artifact_id"),
                 model_modified=session_data.get("model_modified"),
+                model=session_data.get("model"),
+                n_samples=session_data.get("n_samples"),
+                n_epochs=session_data.get("n_epochs"),
+                learning_rate=session_data.get("learning_rate"),
+                weight_decay=session_data.get("weight_decay"),
+                min_train_masks=session_data.get("min_train_masks"),
+                validation_interval=session_data.get("validation_interval"),
             )
 
         return sessions
@@ -3698,7 +3993,6 @@ BSD-3-Clause (Cellpose license)
                     "server_url": training_params.get(
                         "server_url", "https://hypha.aicell.io"
                     ),
-                    "workspace": workspace,
                     "token": token,
                 }
             )
@@ -4044,7 +4338,9 @@ BSD-3-Clause (Cellpose license)
 
         if isinstance(artifact, dict):
             wrapped = artifact
-            artifact = wrapped.get("artifact", wrapped.get("artifact_id", wrapped.get("id", artifact)))
+            artifact = wrapped.get(
+                "artifact", wrapped.get("artifact_id", wrapped.get("id", artifact))
+            )
             image_paths = wrapped.get("image_paths", image_paths)
             input_arrays = wrapped.get("input_arrays", input_arrays)
             model = wrapped.get("model", model)

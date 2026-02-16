@@ -7,8 +7,10 @@ A BioEngine service for running Cellpose-SAM 4.0.7 inference and fine-tuning cel
 ## Features
 
 - **Inference**: Run cell segmentation on images using Cellpose-SAM
+- **Inference Overlay Alignment**: Mask overlays are aligned to the displayed preview bounds (including letterboxed images)
 - **Fine-tuning**: Train custom models on your annotated datasets
 - **Validation Metrics**: Per-epoch pixel-level metrics and end-of-training instance segmentation AP
+- **Session Hyperparameters**: Session details include model and training hyperparameters (epochs, LR, weight decay, sample limit, validation interval)
 - **Model Export**: Export trained models to BioImage.IO format for sharing and reuse
 - **Async API**: Monitor training progress in real-time
 - **GPU-accelerated**: Optimized for fast inference and training
@@ -208,6 +210,7 @@ Start asynchronous model fine-tuning.
 2. **Pattern paths** (for different naming conventions, including nested folders):
     - `train_images="images/*/*.tif"` and `train_annotations="annotations/*/*_mask.ome.tif"`
    - The `*` part must match between images and annotations
+    - The matcher supports both strict wildcard matching and mixed suffix conventions (e.g. `*.tif` with `*_mask.ome.tif`)
    - Example: `t0000.ome.tif` ↔ `t0000_mask.ome.tif`
 
 3. **Metadata-driven paths**:
@@ -350,6 +353,16 @@ Stop an ongoing training session.
 
 **Returns:** Dict with current session status (status_type will be "stopped")
 
+### `restart_training()`
+
+Restart a stopped/interrupted/failed session as a new session.
+
+**Parameters:**
+- `session_id` (str): Source session ID to restart from
+- `n_epochs` (int, optional): Override epochs for restarted run
+
+**Returns:** Dict with new `session_id` and `restarted_from`
+
 ### `list_training_sessions()`
 
 List all known training sessions with their status.
@@ -360,8 +373,10 @@ List all known training sessions with their status.
 **Returns:** Dict mapping `session_id` to `SessionStatus`.
 
 Notes:
-- Sessions with stale `waiting`/`preparing`/`running` states after a redeploy are normalized to `unknown`.
+- Sessions with stale `waiting`/`preparing`/`running` states after a redeploy are normalized to `stopped` (interrupted).
 - Running-session indicators in the UI only track sessions that are currently active.
+
+Validation metrics are only produced when both `test_images` and `test_annotations` are provided.
 
 ## Inference Parameters Guide
 
@@ -447,6 +462,14 @@ Export validates that the session status is `completed`. The service now retries
 **Inference says objects were found but mask overlay is missing**
 
 Use the latest UI build, which requests `json_safe=true` for inference output. This ensures browser-safe mask payloads so overlays render correctly.
+
+**Mask overlay looks bigger/smaller than the preview image**
+
+The latest UI anchors the mask canvas to the rendered image rectangle (not the full container), so overlays match previews even when the image is letterboxed with top/bottom bars.
+
+**Training says "No training pairs found" for known matching files**
+
+The matcher now falls back to basename pairing for mixed naming conventions, such as images `*.tif` and annotations `*_mask.ome.tif`.
 
 **Multiple tokens in `.env`**
 

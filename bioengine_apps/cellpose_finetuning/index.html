@@ -1205,20 +1205,15 @@
                         
                         // Pass manifest as positional args to match Hypha signature:
                         // create(alias, artifact_id, workspace, parent_id, manifest, type, config, secrets, version, comment, overwrite, stage, context)
-                        const artifact = await am.create(
-                            alias,          // alias
-                            null,           // artifact_id
-                            getUserWorkspace(), // workspace
-                            null,           // parent_id
-                            manifest,       // manifest
-                            "dataset",      // type
-                            null,           // config
-                            null,           // secrets
-                            null,           // version
-                            null,           // comment
-                            false,          // overwrite
-                            true            // stage
-                        );
+                        const artifact = await am.create({
+                            alias: alias,
+                            workspace: getUserWorkspace(),
+                            manifest: manifest,
+                            type: "dataset",
+                            overwrite: true,
+                            stage: true,
+                            _rkwargs: true
+                        });
                         
                         const files = Array.from(folderInput.value.files);
                         let completed = 0;
@@ -1331,20 +1326,16 @@
                         };
                         
                         console.log("Creating temp artifact:", tmpAlias);
-                        const art = await am.create(
-                            tmpAlias,       // alias
-                            null,           // artifact_id
-                            getServiceWorkspace() || getUserWorkspace(), // workspace
-                            null,           // parent_id
-                            manifest,       // manifest
-                            "temp",         // type
-                            { permissions: { "*": "r" } }, // config
-                            null,           // secrets
-                            null,           // version
-                            null,           // comment
-                            false,          // overwrite
-                            true            // stage
-                        );
+                        const art = await am.create({
+                            alias: tmpAlias,
+                            manifest: manifest,
+                            workspace: getServiceWorkspace() || getUserWorkspace(),
+                            config: { permissions: { "*": "r" } },
+                            type: "temp",
+                            stage: true,
+                            overwrite: true,
+                            _rkwargs: true,
+                        });
                         
                         const fname = inferenceFile.value.name;
                         const url = await am.put_file(art.id, fname);
@@ -1365,9 +1356,9 @@
                                 cellprob_threshold: 0.0,
                                 niter: null,
                                 return_flows: false,
-                                json_safe: true
-                            },
-                            { _rkwargs: true }
+                                json_safe: true,
+                                _rkwargs: true
+                            }
                         );
                         
                         console.log("Inference Raw Result:", result);

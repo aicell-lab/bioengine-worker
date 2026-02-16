@@ -794,20 +794,13 @@ class AppsManager:
             )
 
             # Pass the worker owner's token to the startup applications (if not already set)
-            try:
-                startup_applications_token = await self.server.generate_token(
-                    {
-                        "workspace": self.server.config.workspace,
-                        "permission": "read_write",
-                        "expires_in": 3600 * 24 * 30,  # support application for 30 days
-                    }
-                )
-            except Exception as e:
-                self.logger.warning(f"Failed to generate token for startup applications: {e}")
-                # Fallback to using the current token if possible, or None
-                # Note: We can't easily access the current raw token here without passing it down
-                # For now, we set it to None, and rely on app_config providing it or app handling missing token
-                startup_applications_token = None
+            startup_applications_token = await self.server.generate_token(
+                {
+                    "workspace": self.server.config.workspace,
+                    "permission": "read_write",
+                    "expires_in": 3600 * 24 * 30,  # support application for 30 days
+                }
+            )
 
             # Initialize deployment of each startup application
             application_ids = []

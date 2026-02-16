@@ -94,6 +94,7 @@ class DemoDeployment:
         - Must return a boolean value indicating whether the deployment is working correctly.
         """
         # Test importing a library set in the runtime environment
+        import pandas
 
         # Test accessing an environment variable set in the runtime environment
         os.environ["EXAMPLE_ENV_VAR"]

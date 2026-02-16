@@ -1,7 +1,9 @@
 import argparse
 import asyncio
+import json
 import os
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from hypha_rpc import connect_to_server, login
 
@@ -18,6 +20,7 @@ async def save_application(
     workspace: str = None,
     token: str = None,
     worker_service_id: str = None,
+    permissions: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Creates or updates a BioEngine application artifact in the Hypha artifact manager.
@@ -28,6 +31,7 @@ async def save_application(
         workspace: Hypha workspace to connect to
         token: Authentication token for Hypha server
         worker_service_id: Optional worker service ID to use creating/updating the artifact
+        permissions: Optional permissions to set on the artifact
 
     Returns:
         str: ID of the created artifact
@@ -101,13 +105,24 @@ async def save_application(
     else:
         # Create or update the artifact using the utility function
         try:
-            artifact_id = await create_application_from_files(
-                artifact_manager=artifact_manager,
-                files=files,
-                workspace=workspace,
-                user_id=user_id,
-                logger=logger,
-            )
+            create_kwargs = {
+                "artifact_manager": artifact_manager,
+                "files": files,
+                "workspace": workspace,
+                "user_id": user_id,
+                "logger": logger,
+            }
+            if permissions is not None:
+                create_kwargs["permissions"] = permissions
+
+            try:
+                artifact_id = await create_application_from_files(**create_kwargs)
+            except TypeError as e:
+                if "permissions" in str(e):
+                    create_kwargs.pop("permissions", None)
+                    artifact_id = await create_application_from_files(**create_kwargs)
+                else:
+                    raise
             return artifact_id
         except Exception as e:
             logger.error(f"Failed to create/update artifact: {e}")
@@ -148,8 +163,24 @@ if __name__ == "__main__":
         type=str,
         help="Optional worker service ID to use creating/updating the artifact",
     )
+    parser.add_argument(
+        "--public",
+        action="store_true",
+        help="Make the artifact publicly matching",
+    )
+    parser.add_argument(
+        "--permissions",
+        type=str,
+        help="JSON string of permissions to set on the artifact",
+    )
 
     args = parser.parse_args()
+
+    permissions = None
+    if args.permissions:
+        permissions = json.loads(args.permissions)
+    elif args.public:
+        permissions = {"*": "r"}
 
     asyncio.run(
         save_application(
@@ -158,5 +189,6 @@ if __name__ == "__main__":
             workspace=args.workspace,
             token=args.token,
             worker_service_id=args.worker_service_id,
+            permissions=permissions,
         )
     )

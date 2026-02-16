@@ -30,11 +30,11 @@ BioEngine app deployment guide: See project README for artifact structure requir
 """
 
 import asyncio
+import logging
 import os
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Union
-import logging
 
 from hypha_rpc.utils.schema import schema_method
 from ray import serve
@@ -188,7 +188,7 @@ class DemoDeployment:
             """|================================================================================================|""",
         ]
         return ascii_art
-    
+
     @schema_method
     async def list_datasets(self) -> Dict[str, List[str]]:
         """

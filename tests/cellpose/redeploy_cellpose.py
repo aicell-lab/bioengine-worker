@@ -1,0 +1,91 @@
+"""Redeploy the cellpose finetuning application with the latest code."""
+
+import argparse
+import asyncio
+import os
+
+from hypha_rpc import connect_to_server
+
+
+async def redeploy(artifact_id: str, application_id: str):
+    """Stop the old deployment and start a new one with the latest artifact."""
+    server_url = "https://hypha.aicell.io"
+    token = os.environ.get("HYPHA_TOKEN")
+    if not token:
+        raise ValueError("HYPHA_TOKEN environment variable is not set")
+
+    async with connect_to_server(
+        {"server_url": server_url, "token": token, "workspace": "ri-scale"}
+    ) as hypha:
+        workspace = hypha.config.workspace
+        print(f"Using workspace: {workspace}")
+
+        worker = await hypha.get_service("bioimage-io/bioengine-worker")
+
+        # Start the new deployment
+        print("Starting new deployment with latest artifact...")
+        app_id = await worker.run_application(
+            artifact_id=artifact_id,
+            application_id=application_id,
+            hypha_token=token,
+            version=None,  # latest version
+            disable_gpu=False,  # set True to force CPU-only
+            max_ongoing_requests=1,  # keep at 1 for GPU
+        )
+        print(f"App ID: {app_id}")
+
+        # Wait for services to become available
+        print("Waiting for services to start...")
+        import pprint
+
+        for i in range(10):
+            app_status = await worker.get_application_status(
+                application_ids=[application_id]
+            )
+            print(f"DEBUG: Status check {i}:")
+            pprint.pprint(app_status, indent=2)
+
+            # Try to find service_ids in nested structure if possible
+            if isinstance(app_status, dict):
+                # Check if it's a list of statuses or a single status dict keyed by app_id
+                if application_id in app_status:
+                    status = app_status[application_id]
+                    if status.get("status") == "RUNNING":
+                        print(f"Application is running! Details: {status}")
+                        return
+
+            service_ids = app_status.get("service_ids", [])
+            if service_ids:
+                print(f"Services: {service_ids}")
+                return service_ids
+            await asyncio.sleep(2)
+        print(
+            "Warning: Services not yet available. The deployment may still be starting up."
+        )
+        return []
+
+
+if __name__ == "__main__":
+    # add argparse argument artifact Id and application id
+    parser = argparse.ArgumentParser(
+        description="Redeploy the cellpose finetuning application with the latest code.",
+    )
+    parser.add_argument(
+        "--artifact-id",
+        type=str,
+        default="bioimage-io/cellpose-finetuning",
+        help="Artifact ID to deploy (default: bioimage-io/cellpose-finetuning)",
+    )
+    parser.add_argument(
+        "--application-id",
+        type=str,
+        default="cellpose-finetuning",
+        help="Application ID to deploy (default: cellpose-finetuning)",
+    )
+    args = parser.parse_args()
+    asyncio.run(
+        redeploy(
+            artifact_id=args.artifact_id,
+            application_id=args.application_id,
+        )
+    )

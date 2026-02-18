@@ -188,9 +188,6 @@ class RuntimeDeployment:
     async def _create_prediction_pipeline(self, cache_key: str):
         """Create and cache prediction pipeline for the given cache key."""
         cpu_before, gpu_before = self._get_memory_usage()
-        logger.info(
-            f"📊 [pipeline load] Memory before: CPU: {cpu_before / (1024 * 1024):.2f} MB, GPU: {gpu_before / (1024 * 1024):.2f} MB"
-        )
 
         from bioimageio.core import create_prediction_pipeline, load_model_description
 
@@ -254,6 +251,7 @@ class RuntimeDeployment:
             if not Path(rdf_path).exists():
                 raise FileNotFoundError(f"RDF not found: {rdf_path}")
 
+            logger.info(f"🚀 Starting prediction for model at {rdf_path} with device={device} and weights_format={weights_format}")
             cache_key = self._set_prediction_kwargs(
                 rdf_path=rdf_path,
                 weights_format=weights_format,

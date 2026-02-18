@@ -17,8 +17,10 @@ requirements = [
     "bioimageio.core==0.9.5",
     "careamics==0.0.16",
     "cellpose==3.1.1.2",
+    "nvidia-ml-py==12.555.43",
     "numpy==1.26.4",
     "onnxruntime==1.20.1",
+    "psutil==6.1.1",
     "tensorflow==2.16.1",
     "torch==2.5.1",
     "torchvision==0.20.1",
@@ -30,7 +32,7 @@ requirements = [
     ray_actor_options={
         "num_cpus": 1,
         "num_gpus": 0.5,
-        "memory": 32 * 1024 * 1024 * 1024,  # 32GB RAM limit
+        "memory": 12 * 1024 * 1024 * 1024,  # GB RAM limit
         "runtime_env": {
             "pip": requirements,
         },
@@ -57,6 +59,28 @@ class RuntimeDeployment:
     def __init__(self):
         self._kwargs_cache = {}
 
+    def _get_memory_usage(self) -> tuple:
+        """Return current (cpu_bytes, gpu_bytes) memory usage for this process."""
+        import psutil
+
+        cpu_mem = psutil.Process().memory_info().rss
+        gpu_mem = 0
+        try:
+            import pynvml
+
+            pynvml.nvmlInit()
+            try:
+                device_count = pynvml.nvmlDeviceGetCount()
+                for i in range(device_count):
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                    info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    gpu_mem += info.used
+            finally:
+                pynvml.nvmlShutdown()
+        except (ImportError, Exception):
+            pass
+        return cpu_mem, gpu_mem
+
     # === Model Testing ===
 
     def _test(self, rdf_path: str) -> dict:
@@ -78,6 +102,10 @@ class RuntimeDeployment:
         self, rdf_path: str, additional_requirements: Optional[List[str]] = None
     ) -> dict:
         """Test model inference using bioimageio.core with optional additional requirements."""
+        cpu_before, gpu_before = self._get_memory_usage()
+        logger.info(
+            f"📊 [test] Memory before: CPU: {cpu_before / (1024 * 1024):.2f} MB, GPU: {gpu_before / (1024 * 1024):.2f} MB"
+        )
         additional_packages = []
         if additional_requirements:
             if not isinstance(additional_requirements, list):
@@ -114,6 +142,16 @@ class RuntimeDeployment:
             # Run execution in this deployment without additional packages
             test_result = self._test(rdf_path)
 
+        cpu_after, gpu_after = self._get_memory_usage()
+        cpu_delta_mb = (cpu_after - cpu_before) / (1024 * 1024)
+        gpu_delta_mb = (gpu_after - gpu_before) / (1024 * 1024)
+        logger.info(
+            f"📊 [test] Memory after:  CPU: {cpu_after / (1024 * 1024):.2f} MB, GPU: {gpu_after / (1024 * 1024):.2f} MB"
+        )
+        logger.info(
+            f"📊 [test] Memory change:  CPU: {cpu_delta_mb:+.2f} MB, GPU: {gpu_delta_mb:+.2f} MB"
+        )
+
         return test_result
 
     # === Model Prediction ===
@@ -149,9 +187,13 @@ class RuntimeDeployment:
     )
     async def _create_prediction_pipeline(self, cache_key: str):
         """Create and cache prediction pipeline for the given cache key."""
+        cpu_before, gpu_before = self._get_memory_usage()
+        logger.info(
+            f"📊 [pipeline load] Memory before: CPU: {cpu_before / (1024 * 1024):.2f} MB, GPU: {gpu_before / (1024 * 1024):.2f} MB"
+        )
+
         from bioimageio.core import create_prediction_pipeline, load_model_description
 
-        # TODO: log CPU and GPU memory usage
         # Get model source and create_kwargs using the cache key
         pipeline_kwargs = self._kwargs_cache.get(cache_key)
         if not pipeline_kwargs:
@@ -168,10 +210,20 @@ class RuntimeDeployment:
             # Load the pipeline (this loads the model weights into memory/GPU)
             pipeline.load()
 
+            cpu_after, gpu_after = self._get_memory_usage()
+            cpu_delta_mb = (cpu_after - cpu_before) / (1024 * 1024)
+            gpu_delta_mb = (gpu_after - gpu_before) / (1024 * 1024)
+
             logger.info(
                 f"✅ Created and loaded prediction pipeline for model at {rdf_path}"
             )
-
+            logger.info(
+                f"📊 [pipeline load] Memory after:  CPU: {cpu_after / (1024 * 1024):.2f} MB, GPU: {gpu_after / (1024 * 1024):.2f} MB"
+            )
+            logger.info(
+                f"📊 [pipeline load] Memory change:  CPU: {cpu_delta_mb:+.2f} MB, GPU: {gpu_delta_mb:+.2f} MB"
+            )
+            
             return pipeline
         except Exception as e:
             logger.error(f"❌ Failed to create prediction pipeline: {str(e)}")
@@ -191,6 +243,11 @@ class RuntimeDeployment:
         latest_download: Optional[float] = None,
     ) -> Dict[str, np.ndarray]:
         """Run inference on model using bioimageio.core prediction pipeline."""
+        cpu_before, gpu_before = self._get_memory_usage()
+        logger.info(
+            f"📊 [predict] Memory before: CPU: {cpu_before / (1024 * 1024):.2f} MB, GPU: {gpu_before / (1024 * 1024):.2f} MB"
+        )
+
         from bioimageio.core.digest_spec import create_sample_for_model
 
         try:
@@ -219,6 +276,15 @@ class RuntimeDeployment:
                 result = pipeline.predict_sample_with_blocking(sample)
             else:
                 result = pipeline.predict_sample_without_blocking(sample)
+            cpu_after, gpu_after = self._get_memory_usage()
+            cpu_delta_mb = (cpu_after - cpu_before) / (1024 * 1024)
+            gpu_delta_mb = (gpu_after - gpu_before) / (1024 * 1024)
+            logger.info(
+                f"📊 [predict] Memory after:  CPU: {cpu_after / (1024 * 1024):.2f} MB, GPU: {gpu_after / (1024 * 1024):.2f} MB"
+            )
+            logger.info(
+                f"📊 [predict] Memory change: CPU: {cpu_delta_mb:+.2f} MB, GPU: {gpu_delta_mb:+.2f} MB"
+            )
 
             # Convert outputs back to numpy arrays
             outputs = {str(k): v.data.data for k, v in result.members.items()}
@@ -244,25 +310,31 @@ if __name__ == "__main__":
 
     model_runner = RuntimeDeployment.func_or_class()
 
+    # Log the memory usage before testing
+    cpu_before, gpu_before = model_runner._get_memory_usage()
+    logger.info(
+        f"📊 [main] Memory before testing: CPU: {cpu_before / (1024 * 1024):.2f} MB, GPU: {gpu_before / (1024 * 1024):.2f} MB"
+    )
+
     # Test the deployment with a model that should pass all checks
     model_id = "ambitious-ant"
-    rdf_path = deployment_workdir / "models" / f"bmz_model_{model_id}" / "rdf.yaml"
+    rdf_path = deployment_workdir / "models" / model_id / "rdf.yaml"
 
     # Run the model test (torch is already in requirements, should automatically be skipped)
     test_result = asyncio.run(
-        model_runner.test(str(rdf_path), additional_requirements=["torch==2.5.1"])
+        model_runner.test(str(rdf_path))  # , additional_requirements=["torch==2.5.1"]
     )
-    print("Model testing completed successfully")
+    logger.info("Model testing completed successfully")
 
     # Load the test image from the package
     model_rdf = yaml.safe_load(rdf_path.read_text())
     test_input_source = model_rdf["test_inputs"][0]
 
     test_image_path = str(
-        deployment_workdir / "models" / f"bmz_model_{model_id}" / test_input_source
+        deployment_workdir / "models" / model_id / test_input_source
     )
     test_image = np.load(test_image_path).astype("float32")
 
     # Run the prediction
     result = asyncio.run(model_runner.predict(str(rdf_path), inputs=test_image))
-    print(f"Model prediction result: {result}")
+    logger.info(f"Model prediction result: {result}")

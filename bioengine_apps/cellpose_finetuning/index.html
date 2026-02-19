@@ -394,7 +394,7 @@
                                     </div>
                                 </div>
 
-                                <div class="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                                <div v-if="trainingParams.dataset_source !== 'BioImage Archive'" class="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
                                     <div class="md:col-span-2">
                                         <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Train/Test Split</label>
                                         <div class="flex items-center gap-5 text-sm text-gray-700">
@@ -439,6 +439,9 @@
                                         <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Test Annotations (Opt)</label>
                                         <input v-model="trainingParams.test_annotations" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
                                     </div>
+                                </div>
+                                <div v-else class="md:col-span-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                                    BioImage Archive mode discovers image/mask pairs from the archive URL automatically, so path and split fields are not needed.
                                 </div>
                             </div>
                          </div>
@@ -1819,22 +1822,18 @@
                     isStartingTraining.value = true;
                     trainingError.value = '';
                     try {
+                        const isBioImageArchive = trainingParams.dataset_source === 'BioImage Archive';
                         const hasMetadataDir = !!(trainingParams.metadata_dir && trainingParams.metadata_dir.trim());
                         const hasTrainImages = !!(trainingParams.train_images && trainingParams.train_images.trim());
                         const hasTrainAnnotations = !!(trainingParams.train_annotations && trainingParams.train_annotations.trim());
 
-                        if (!hasMetadataDir && (!hasTrainImages || !hasTrainAnnotations)) {
-                           // If using BioImage Archive, we might not need explicit images/annotations if the archive has a standard structure OR we assume default?
-                           // But usually we still need them.
-                           // Actually, for BioImage Archive, the prompt says "allow the user to post a URL to bioimage archive".
-                           // Does the backend handle downloading?
-                           // If so, we pass the URL as 'artifact'? Or a new param?
-                           // The prompt implies "Dataset source" choice.
+                        if (!isBioImageArchive && !hasMetadataDir && (!hasTrainImages || !hasTrainAnnotations)) {
+                           throw new Error("Please provide either metadata folder or both train image and annotation paths.");
                         }
                         
                         // Determine the artifact value based on source
                             let artifactValue = trainingParams.artifact_input;
-                        if (trainingParams.dataset_source === 'BioImage Archive') {
+                        if (isBioImageArchive) {
                             artifactValue = trainingParams.bioimage_archive_url;
                             if (!artifactValue) throw new Error("Please enter a BioImage Archive URL.");
                         } else if (trainingParams.dataset_source === 'Upload') {
@@ -1846,13 +1845,13 @@
 
                         console.log("Invoking service.start_training with:", {
                             artifact: artifactValue,
-                            train_images: trainingParams.train_images,
-                            train_annotations: trainingParams.train_annotations,
-                            metadata_dir: trainingParams.metadata_dir || null,
-                            split_mode: trainingParams.split_mode,
-                            train_split_ratio: trainingParams.train_split_ratio,
-                            test_images: trainingParams.split_mode === 'manual' ? (trainingParams.test_images || null) : null,
-                            test_annotations: trainingParams.split_mode === 'manual' ? (trainingParams.test_annotations || null) : null,
+                            train_images: isBioImageArchive ? null : (trainingParams.train_images || null),
+                            train_annotations: isBioImageArchive ? null : (trainingParams.train_annotations || null),
+                            metadata_dir: isBioImageArchive ? null : (trainingParams.metadata_dir || null),
+                            split_mode: isBioImageArchive ? 'manual' : trainingParams.split_mode,
+                            train_split_ratio: isBioImageArchive ? 0.8 : trainingParams.train_split_ratio,
+                            test_images: (!isBioImageArchive && trainingParams.split_mode === 'manual') ? (trainingParams.test_images || null) : null,
+                            test_annotations: (!isBioImageArchive && trainingParams.split_mode === 'manual') ? (trainingParams.test_annotations || null) : null,
                             model: trainingParams.model,
                             n_epochs: trainingParams.n_epochs,
                             learning_rate: trainingParams.learning_rate,
@@ -1864,13 +1863,13 @@
                         const result = await service.value.start_training(
                             {
                                 artifact: artifactValue,
-                                train_images: trainingParams.train_images || null,
-                                train_annotations: trainingParams.train_annotations || null,
-                                metadata_dir: trainingParams.metadata_dir || null,
-                                split_mode: trainingParams.split_mode || 'manual',
-                                train_split_ratio: Number(trainingParams.train_split_ratio || 0.8),
-                                test_images: trainingParams.split_mode === 'manual' ? (trainingParams.test_images || null) : null,
-                                test_annotations: trainingParams.split_mode === 'manual' ? (trainingParams.test_annotations || null) : null,
+                                train_images: isBioImageArchive ? null : (trainingParams.train_images || null),
+                                train_annotations: isBioImageArchive ? null : (trainingParams.train_annotations || null),
+                                metadata_dir: isBioImageArchive ? null : (trainingParams.metadata_dir || null),
+                                split_mode: isBioImageArchive ? 'manual' : (trainingParams.split_mode || 'manual'),
+                                train_split_ratio: isBioImageArchive ? 0.8 : Number(trainingParams.train_split_ratio || 0.8),
+                                test_images: (!isBioImageArchive && trainingParams.split_mode === 'manual') ? (trainingParams.test_images || null) : null,
+                                test_annotations: (!isBioImageArchive && trainingParams.split_mode === 'manual') ? (trainingParams.test_annotations || null) : null,
                                 model: trainingParams.model || 'cpsam',
                                 n_samples: null,
                                 n_epochs: trainingParams.n_epochs,

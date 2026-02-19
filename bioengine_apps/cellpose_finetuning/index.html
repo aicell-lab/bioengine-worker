@@ -316,8 +316,9 @@
                                     <div class="space-y-1">
                                         <div class="flex gap-2 relative">
                                             <input 
-                                                v-model="trainingParams.artifact" 
+                                                v-model="trainingParams.artifact_input" 
                                                 @input="handleArtifactInput"
+                                                @focus="handleArtifactInput"
                                                 @blur="closeSuggestions"
                                                 @keydown.tab.prevent="acceptSuggestion"
                                                 required 
@@ -329,7 +330,12 @@
                                                 ]"
                                                 placeholder="workspace/dataset-alias"
                                             >
-                                            <button type="button" @click="openFileBrowser" class="px-3 py-2 bg-slate-100 border border-slate-300 rounded-lg hover:bg-slate-200 text-slate-600 transition" title="Browse Files">
+                                            <button type="button" @click="openFileBrowser" :disabled="artifactLookupPending || !artifactIdExists" :class="[
+                                                'px-3 py-2 border rounded-lg transition',
+                                                (artifactLookupPending || !artifactIdExists)
+                                                    ? 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
+                                                    : 'bg-slate-100 border-slate-300 hover:bg-slate-200 text-slate-600'
+                                            ]" :title="artifactLookupPending ? 'Checking artifact...' : (artifactIdExists ? 'Browse Files' : 'Enter a valid existing artifact ID first')">
                                                 <i class="fas fa-folder-open"></i>
                                             </button>
                                             
@@ -338,8 +344,7 @@
                                                 <div 
                                                     v-for="(suggestion, index) in suggestions" 
                                                     :key="index"
-                                                    @mousedown.prevent
-                                                    @click="selectSuggestion(suggestion)"
+                                                    @mousedown.prevent="selectSuggestion(suggestion)"
                                                     class="px-3 py-2 text-sm hover:bg-blue-50 cursor-pointer flex justify-between items-center"
                                                     :class="{'bg-blue-50': index === 0}"
                                                 >
@@ -355,8 +360,8 @@
                                 <div v-if="trainingParams.dataset_source === 'Upload'">
                                     <label class="block text-sm font-medium text-gray-700 mb-1">Upload Data</label>
                                     <div class="flex gap-2">
-                                        <div v-if="trainingParams.artifact" class="flex-grow bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-sm text-green-800 flex items-center">
-                                            <i class="fas fa-check-circle mr-2"></i> [[ trainingParams.artifact ]]
+                                        <div v-if="trainingParams.uploaded_artifact" class="flex-grow bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-sm text-green-800 flex items-center">
+                                            <i class="fas fa-check-circle mr-2"></i> [[ trainingParams.uploaded_artifact ]]
                                         </div>
                                         <div v-else class="flex-grow bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-400 italic">
                                             No dataset uploaded yet
@@ -369,7 +374,12 @@
 
                                 <div v-if="trainingParams.dataset_source === 'BioImage Archive'">
                                     <label class="block text-sm font-medium text-gray-700 mb-1">Archive URL <span class="text-red-500">*</span></label>
-                                    <input v-model="trainingParams.bioimage_archive_url" required class="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition" placeholder="https://www.ebi.ac.uk/biostudies/bioimages/studies/...">
+                                    <div class="flex gap-2">
+                                        <input v-model="trainingParams.bioimage_archive_url" required class="flex-grow bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition" placeholder="https://www.ebi.ac.uk/biostudies/bioimages/studies/...">
+                                        <a href="https://www.ebi.ac.uk/biostudies/bioimages" target="_blank" rel="noopener noreferrer" class="px-4 py-2 bg-slate-100 border border-slate-300 rounded-lg hover:bg-slate-200 text-slate-700 transition text-sm whitespace-nowrap">
+                                            <i class="fas fa-external-link-alt mr-1"></i> Search EBI
+                                        </a>
+                                    </div>
                                 </div>
                                 
                                 <div class="md:col-span-2 space-y-4">
@@ -390,7 +400,7 @@
                                         <input v-model="trainingParams.train_images" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. images/*/*.tif">
                                         <div class="mt-1 text-xs text-gray-500 flex flex-wrap items-center gap-2">
                                             <span>Examples:</span>
-                                            <button type="button" @click="applyTrainingGlobExample" class="text-blue-600 hover:underline">images/*/*.tif</button>
+                                            <button type="button" @click="applyTrainingGlobExample" class="text-blue-600 hover:underline">images/**/*.tif</button>
                                             <button type="button" @click="applyTrainingFolderExample" class="text-blue-600 hover:underline">images/ + annotations/</button>
                                         </div>
                                     </div>
@@ -673,7 +683,7 @@
                 <div class="flex justify-between items-center mb-4 border-b border-gray-100 pb-4 flex-none">
                     <div>
                         <h3 class="text-lg font-bold text-gray-900">Artifact Explorer</h3>
-                        <p class="text-xs text-gray-500">[[ trainingParams.artifact || 'No artifact selected' ]]</p>
+                        <p class="text-xs text-gray-500">[[ getSelectedArtifactId() || 'No artifact selected' ]]</p>
                     </div>
                     <button @click="showFileBrowser = false" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
                 </div>
@@ -808,7 +818,8 @@
                 // Form Data
                 const trainingParams = reactive({
                     dataset_source: 'Artifact',
-                    artifact: '',
+                    artifact_input: '',
+                    uploaded_artifact: '',
                     bioimage_archive_url: '',
                     model: 'cpsam',
                     train_images: 'images/',
@@ -860,6 +871,9 @@
                 const suggestions = ref([]);
                 const showSuggestions = ref(false);
                 const artifactInputError = ref('');
+                const artifactIdExists = ref(false);
+                const artifactLookupPending = ref(false);
+                const artifactLookupVersion = ref(0);
 
                 const workspaceSuggestionCache = ref([]);
                 const artifactInputVersion = ref(0);
@@ -924,6 +938,12 @@
                     if (!targetWorkspace) {
                         throw new Error('Workspace is required for artifact lookup.');
                     }
+
+                    const activeWorkspace = workspace.value || window.hyphaClient?.config?.workspace || '';
+                    if (activeWorkspace && targetWorkspace === activeWorkspace && window.hyphaClient) {
+                        return window.hyphaClient;
+                    }
+
                     if (workspaceClients[targetWorkspace]) return workspaceClients[targetWorkspace];
 
                     const config = {
@@ -931,8 +951,9 @@
                         workspace: targetWorkspace,
                         method_timeout: 120000,
                     };
-                    if (authToken.value) {
-                        config.token = authToken.value;
+                    const tokenForLookup = authToken.value || window.hyphaClient?.config?.token || null;
+                    if (tokenForLookup) {
+                        config.token = tokenForLookup;
                     } else {
                         throw new Error('Missing auth token for cross-workspace artifact lookup.');
                     }
@@ -969,6 +990,7 @@
                     const query = String(queryText || '').trim();
                     const keywords = query ? [query] : [];
                     let am = null;
+                    let lastAttemptError = null;
                     try {
                         const client = await getWorkspaceClient(workspaceId);
                         am = await client.getService('public/artifact-manager');
@@ -980,30 +1002,39 @@
                         return [];
                     }
                     
-                    try {
-                        const listed = await am.list({keywords, limit: 30, _rkwargs: true });
-                        const rawItems = normalizeArtifactListResponse(listed);
-                        const normalized = rawItems
-                            .map((item) => {
-                                const entry = normalizeArtifactEntry(item);
-                                if (!entry) return null;
-                                if (entry.workspace) return entry;
-                                return {
-                                    workspace: workspaceId,
-                                    alias: entry.alias,
-                                    fullId: `${workspaceId}/${entry.alias}`,
-                                };
-                            })
-                            .filter(Boolean);
+                    const attempts = [
+                        () => am.list({ keywords, limit: 30, _rkwargs: true }),
+                        () => am.list({ keywords, limit: 30 }),
+                        () => am.list(workspaceId, { keywords, limit: 30 }),
+                        () => am.list(workspaceId, { keywords }),
+                    ];
 
-                        artifactDebug.cacheSize = normalized.length;
-                        artifactDebug.lastError = '';
-                        return normalized;
-                    } catch (error) {
-                        lastAttemptError = error;
-                        artifactDebug.lastError = String(error?.message || error);
-                        if (isWorkspacePermissionError(error)) {
-                            artifactInputError.value = `Permission denied to workspace '${workspaceId}'.`;
+                    for (const attempt of attempts) {
+                        try {
+                            const listed = await attempt();
+                            const rawItems = normalizeArtifactListResponse(listed);
+                            const normalized = rawItems
+                                .map((item) => {
+                                    const entry = normalizeArtifactEntry(item);
+                                    if (!entry) return null;
+                                    if (entry.workspace) return entry;
+                                    return {
+                                        workspace: workspaceId,
+                                        alias: entry.alias,
+                                        fullId: `${workspaceId}/${entry.alias}`,
+                                    };
+                                })
+                                .filter(Boolean);
+
+                            artifactDebug.cacheSize = normalized.length;
+                            artifactDebug.lastError = '';
+                            return normalized;
+                        } catch (error) {
+                            lastAttemptError = error;
+                            artifactDebug.lastError = String(error?.message || error);
+                            if (isWorkspacePermissionError(error)) {
+                                artifactInputError.value = `Permission denied to workspace '${workspaceId}'.`;
+                            }
                         }
                     }
 
@@ -1013,6 +1044,56 @@
                     }
 
                     return [];
+                };
+
+                const checkArtifactExists = async (workspaceId, alias) => {
+                    const lookupVersion = ++artifactLookupVersion.value;
+                    const normalizedWorkspace = String(workspaceId || '').trim();
+                    const normalizedAlias = String(alias || '').trim();
+
+                    if (!normalizedWorkspace || !normalizedAlias) {
+                        artifactIdExists.value = false;
+                        artifactLookupPending.value = false;
+                        return false;
+                    }
+
+                    const artifactId = `${normalizedWorkspace}/${normalizedAlias}`;
+                    artifactLookupPending.value = true;
+
+                    try {
+                        const client = await getWorkspaceClient(normalizedWorkspace);
+                        const am = await client.getService('public/artifact-manager');
+                        const attempts = [
+                            () => am.get(artifactId, { _rkwargs: true }),
+                            () => am.get(artifactId),
+                            () => (typeof am.read === 'function' ? am.read(artifactId) : Promise.reject(new Error('read unavailable'))),
+                        ];
+
+                        for (const attempt of attempts) {
+                            try {
+                                const result = await attempt();
+                                if (lookupVersion !== artifactLookupVersion.value) return false;
+                                const exists = !!result;
+                                artifactIdExists.value = exists;
+                                return exists;
+                            } catch (error) {
+                                if (isWorkspacePermissionError(error)) {
+                                    artifactInputError.value = `Permission denied to workspace '${normalizedWorkspace}'.`;
+                                }
+                            }
+                        }
+                    } catch (_e) {
+                        // Keep exists=false; detailed errors are handled in autocomplete path.
+                    } finally {
+                        if (lookupVersion === artifactLookupVersion.value) {
+                            artifactLookupPending.value = false;
+                        }
+                    }
+
+                    if (lookupVersion === artifactLookupVersion.value) {
+                        artifactIdExists.value = false;
+                    }
+                    return false;
                 };
 
                 const normalizeArtifactEntry = (item) => {
@@ -1091,7 +1172,7 @@
 
                 const handleArtifactInput = async () => {
                      const requestVersion = ++artifactInputVersion.value;
-                     const val = String(trainingParams.artifact || '').trim();
+                     const val = String(trainingParams.artifact_input || '').trim();
                      artifactDebug.lastQuery = val;
                      artifactInputError.value = '';
 
@@ -1099,10 +1180,14 @@
                          suggestions.value = [];
                          showSuggestions.value = false;
                          artifactDebug.suggestions = 0;
+                         artifactIdExists.value = false;
+                         artifactLookupPending.value = false;
                          return;
                      }
 
                      if (!val.includes('/')) {
+                         artifactIdExists.value = false;
+                         artifactLookupPending.value = false;
                          const workspaces = await fetchWorkspaces();
                          if (requestVersion !== artifactInputVersion.value) return;
                          suggestions.value = workspaces
@@ -1121,6 +1206,7 @@
                      if (parts.length === 2) {
                          const ws = parts[0];
                          const query = parts[1].toLowerCase();
+                         checkArtifactExists(ws, parts[1]);
                          artifactDebug.lastWorkspace = ws;
                          const remoteMatches = await queryWorkspaceArtifacts(ws, query);
                          if (requestVersion !== artifactInputVersion.value) return;
@@ -1149,6 +1235,8 @@
                             sample: suggestions.value.slice(0, 5),
                         });
                      } else {
+                                artifactIdExists.value = false;
+                                artifactLookupPending.value = false;
                         suggestions.value = [];
                         showSuggestions.value = false;
                         artifactDebug.suggestions = 0;
@@ -1158,12 +1246,12 @@
                 const selectSuggestion = (s) => {
                      // If it's a workspace (no slash), add slash
                      if (!s.includes('/')) {
-                         trainingParams.artifact = s + '/';
+                         trainingParams.artifact_input = s + '/';
                          // Refocus input to keep typing?
                          // Ensure handleArtifactInput runs for the new value
                          handleArtifactInput();
                      } else {
-                         trainingParams.artifact = s;
+                         trainingParams.artifact_input = s;
                          showSuggestions.value = false;
                      }
                 };
@@ -1257,6 +1345,13 @@
                 const applyTrainingGlobExample = () => {
                     trainingParams.train_images = 'images/*/*.tif';
                     trainingParams.train_annotations = 'annotations/*/*_mask.ome.tif';
+                };
+
+                const getSelectedArtifactId = () => {
+                    if (trainingParams.dataset_source === 'Upload') {
+                        return trainingParams.uploaded_artifact;
+                    }
+                    return trainingParams.artifact_input;
                 };
 
                 const applyTrainingFolderExample = () => {
@@ -1717,11 +1812,12 @@
                         }
                         
                         // Determine the artifact value based on source
-                        let artifactValue = trainingParams.artifact;
+                            let artifactValue = trainingParams.artifact_input;
                         if (trainingParams.dataset_source === 'BioImage Archive') {
                             artifactValue = trainingParams.bioimage_archive_url;
                             if (!artifactValue) throw new Error("Please enter a BioImage Archive URL.");
                         } else if (trainingParams.dataset_source === 'Upload') {
+                                artifactValue = trainingParams.uploaded_artifact;
                              if (!artifactValue) throw new Error("Please upload a dataset first.");
                         } else {
                              if (!artifactValue) throw new Error("Please specify an Artifact ID.");
@@ -1857,7 +1953,7 @@
                         await am.commit(artifact.id);
                         
                         // Set fields in form
-                        trainingParams.artifact = artifact.id;
+                        trainingParams.uploaded_artifact = artifact.id;
                         showUploadModal.value = false;
                         alert(`Dataset '${artifact.id}' uploaded successfully!`);
                         
@@ -2161,7 +2257,8 @@
 
                 // --- File Browser ---
                 const openFileBrowser = async () => {
-                   if (!trainingParams.artifact) {
+                   const selectedArtifactId = getSelectedArtifactId();
+                   if (!selectedArtifactId) {
                        alert("Please enter an Artifact ID first (e.g. from the dashboard or your workspace).");
                        return;
                    }
@@ -2197,8 +2294,8 @@
                            // But `browserFiles` is the state for the whole tree currently.
                            // Let's optimize: When opening browser, fetch EVERYTHING.
                            
-                           console.log("Fetching file list for artifact:", trainingParams.artifact);
-                           rawFiles = await am.list_files(trainingParams.artifact);
+                           console.log("Fetching file list for artifact:", selectedArtifactId);
+                           rawFiles = await am.list_files(selectedArtifactId);
                            
                            // If rawFiles is just ["images", "annotations"], that means the artifact
                            // literally only contains those entries (maybe as empty file placeholders for folders?)
@@ -2208,7 +2305,7 @@
                         // Fallback: If list_files didn't work as expected or returned empty
                         if (!rawFiles || rawFiles.length === 0) {
                             console.log("list_files returned empty, trying to read manifest directly...");
-                            const art = await am.read(trainingParams.artifact);
+                            const art = await am.read(selectedArtifactId);
                             if (art.manifest && art.manifest.files) {
                                 rawFiles = art.manifest.files;
                             } else if (art.files) {
@@ -2276,7 +2373,7 @@
                              let newFiles = [];
                              try {
                                  // Try positional: list_files(id, path)
-                                 newFiles = await am.list_files(trainingParams.artifact, newPath);
+                                 newFiles = await am.list_files(getSelectedArtifactId(), newPath);
                              } catch (err) {
                                  console.warn("list_files(id, path) failed. Trying without path filtering or keyword args if object", err);
                              }
@@ -2468,10 +2565,10 @@
                     browserVisibleItems, browserNavigate, browserNavigateUp, selectFolderFor, browserFeedback,
 
                     // Autocomplete
-                    suggestions, showSuggestions, artifactInputError, handleArtifactInput, selectSuggestion, acceptSuggestion, closeSuggestions,
+                    suggestions, showSuggestions, artifactInputError, artifactIdExists, artifactLookupPending, handleArtifactInput, selectSuggestion, acceptSuggestion, closeSuggestions,
 
                     // Helpers
-                    statusTextColor, formatDuration, handleFolderSelect, getLatestLoss, formatDate,
+                    statusTextColor, formatDuration, handleFolderSelect, getLatestLoss, formatDate, getSelectedArtifactId,
                 };
             }
         });

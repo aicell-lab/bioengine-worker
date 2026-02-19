@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import fnmatch
+import hashlib
 import io
 import json
 import logging
@@ -47,6 +48,8 @@ RDF_FILENAME = "rdf.yaml"
 TRAINING_PARAMS_FILENAME = "training_params.json"
 STOP_REQUESTED_FILENAME = "stop.requested"
 STATUS_STALE_SECONDS = 300
+BIA_FTS_ENDPOINT = "https://beta.bioimagearchive.org/search/search/fts"
+BIA_IMAGE_ENDPOINT = "https://beta.bioimagearchive.org/search/search/fts/image"
 
 # Model template for BioImage.io export
 MODEL_TEMPLATE_PY = '''"""BioImage.io Model Wrapper for Cellpose 4.0.7 (Cellpose-SAM).
@@ -2003,6 +2006,226 @@ def _glob_base_folder(path_pattern: str) -> str:
     return normalized[: slash_before + 1]
 
 
+def _is_bioimage_archive_url(candidate: str) -> bool:
+    parsed = urlparse(str(candidate or ""))
+    return (
+        parsed.scheme in {"http", "https"}
+        and "bioimagearchive.org" in parsed.netloc.lower()
+    )
+
+
+def _extract_bia_accession(url: str) -> str | None:
+    match = re.search(r"(S-BIAD\d+)", str(url or ""), flags=re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
+def _iter_string_values(payload: Any) -> list[str]:
+    out: list[str] = []
+    stack = [payload]
+    seen: set[int] = set()
+
+    while stack:
+        current = stack.pop()
+        current_id = id(current)
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+
+        if isinstance(current, str):
+            out.append(current)
+            continue
+        if isinstance(current, dict):
+            stack.extend(current.values())
+            continue
+        if isinstance(current, list):
+            stack.extend(current)
+            continue
+
+    return out
+
+
+def _looks_like_image_url(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    return path.endswith((".tif", ".tiff", ".ome.tif", ".ome.tiff", ".png", ".jpg", ".jpeg"))
+
+
+def _looks_like_mask_url(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    return any(token in path for token in ("_mask", "-mask", "_label", "-label", "annotation", "segmentation"))
+
+
+def _pair_key_from_url(url: str, *, is_mask: bool) -> str:
+    path = urlparse(url).path.lower().strip("/")
+    for suffix in (
+        ".ome.tiff",
+        ".ome.tif",
+        ".tiff",
+        ".tif",
+        ".png",
+        ".jpg",
+        ".jpeg",
+    ):
+        if path.endswith(suffix):
+            path = path[: -len(suffix)]
+            break
+
+    if is_mask:
+        for marker in (
+            "_mask",
+            "-mask",
+            "_label",
+            "-label",
+            "_annotation",
+            "-annotation",
+        ):
+            if path.endswith(marker):
+                path = path[: -len(marker)]
+                break
+
+    for marker in ("/images/", "/annotations/", "/masks/", "/labels/"):
+        if marker in path:
+            path = path.split(marker, 1)[1]
+            break
+
+    return path
+
+
+async def _fetch_bia_payload(client: Any, endpoint: str, accession: str) -> Any:
+    attempts: list[tuple[str, dict[str, Any]]] = [
+        ("get", {"params": {"q": accession, "size": 1000}}),
+        ("get", {"params": {"query": accession, "size": 1000}}),
+        ("post", {"json": {"query": accession, "size": 1000}}),
+        ("post", {"json": {"q": accession, "size": 1000}}),
+    ]
+
+    for method, kwargs in attempts:
+        try:
+            if method == "get":
+                response = await client.get(endpoint, **kwargs)
+            else:
+                response = await client.post(endpoint, **kwargs)
+            if response.status_code // 100 == 2:
+                return response.json()
+        except Exception:
+            continue
+
+    return None
+
+
+def _local_path_for_remote_url(root: Path, category: str, remote_url: str) -> Path:
+    parsed = urlparse(remote_url)
+    basename = Path(parsed.path).name or "asset.bin"
+    stem = Path(basename).stem
+    suffix = "".join(Path(basename).suffixes) or ".bin"
+    digest = hashlib.md5(remote_url.encode("utf-8")).hexdigest()[:10]
+    filename = f"{stem}_{digest}{suffix}"
+    return root / category / filename
+
+
+def _is_test_url(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    return "/test/" in path or "_test" in path or "-test" in path
+
+
+async def make_training_pairs_from_bioimage_archive_url(
+    config: TrainingParams,
+    save_path: Path,
+) -> tuple[list[TrainingPair], list[TrainingPair]]:
+    import httpx
+
+    archive_url = config["artifact_id"]
+    accession = _extract_bia_accession(archive_url)
+    if not accession:
+        raise ValueError(
+            "Could not parse BioImage Archive accession (e.g. S-BIAD1234) from URL."
+        )
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        payloads = [
+            await _fetch_bia_payload(client, BIA_FTS_ENDPOINT, accession),
+            await _fetch_bia_payload(client, BIA_IMAGE_ENDPOINT, accession),
+        ]
+
+        candidates: set[str] = set()
+        for payload in payloads:
+            if payload is None:
+                continue
+            for value in _iter_string_values(payload):
+                if isinstance(value, str) and value.startswith(("http://", "https://")):
+                    if _looks_like_image_url(value):
+                        candidates.add(value)
+
+        if not candidates:
+            raise ValueError(
+                "No downloadable image assets were found from BioImage Archive APIs for this accession."
+            )
+
+        image_urls = sorted([url for url in candidates if not _looks_like_mask_url(url)])
+        mask_urls = sorted([url for url in candidates if _looks_like_mask_url(url)])
+
+        if not image_urls or not mask_urls:
+            raise ValueError(
+                "Found assets in BioImage Archive response, but could not identify both image and mask files."
+            )
+
+        mask_map: dict[str, str] = {}
+        for mask_url in mask_urls:
+            key = _pair_key_from_url(mask_url, is_mask=True)
+            if key and key not in mask_map:
+                mask_map[key] = mask_url
+
+        paired_urls: list[tuple[str, str]] = []
+        for image_url in image_urls:
+            key = _pair_key_from_url(image_url, is_mask=False)
+            mask_url = mask_map.get(key)
+            if mask_url:
+                paired_urls.append((image_url, mask_url))
+
+        if not paired_urls:
+            raise ValueError(
+                "No image/mask pairs could be inferred from BioImage Archive assets."
+            )
+
+        if config["n_samples"] is not None and config["n_samples"] < len(paired_urls):
+            subset_idx = np.random.default_rng().permutation(len(paired_urls))[ : config["n_samples"] ]
+            paired_urls = [paired_urls[i] for i in subset_idx]
+
+        bia_cache_root = save_path / "bia_download"
+        train_pairs: list[TrainingPair] = []
+        test_pairs: list[TrainingPair] = []
+
+        for image_url, mask_url in paired_urls:
+            local_image = _local_path_for_remote_url(bia_cache_root, "images", image_url)
+            local_mask = _local_path_for_remote_url(bia_cache_root, "annotations", mask_url)
+            local_image.parent.mkdir(parents=True, exist_ok=True)
+            local_mask.parent.mkdir(parents=True, exist_ok=True)
+
+            if not local_image.exists() or local_image.stat().st_size <= 0:
+                resp = await client.get(image_url)
+                resp.raise_for_status()
+                local_image.write_bytes(resp.content)
+
+            if not local_mask.exists() or local_mask.stat().st_size <= 0:
+                resp = await client.get(mask_url)
+                resp.raise_for_status()
+                local_mask.write_bytes(resp.content)
+
+            pair = TrainingPair(image=local_image, annotation=local_mask)
+            if _is_test_url(image_url) or _is_test_url(mask_url):
+                test_pairs.append(pair)
+            else:
+                train_pairs.append(pair)
+
+        if not train_pairs and test_pairs:
+            train_pairs = test_pairs
+            test_pairs = []
+
+        if not train_pairs:
+            raise ValueError("No training pairs found after downloading BioImage Archive assets")
+
+        return train_pairs, test_pairs
+
+
 async def list_artifact_files_recursive(
     artifact: AsyncHyphaArtifact,
     folder_path: str,
@@ -2042,6 +2265,19 @@ async def list_artifact_files_recursive(
                 "directory",
                 "dir",
             }
+            if not is_dir and not entry_type and normalized:
+                # Some artifact backends return directory entries without trailing '/'
+                # and without explicit type metadata. Probe such paths as directories.
+                probe_dir = normalized if normalized.endswith("/") else normalized + "/"
+                if probe_dir not in visited:
+                    try:
+                        probe_entries = await artifact.ls(probe_dir)
+                        if isinstance(probe_entries, list):
+                            queue.append(probe_dir)
+                            continue
+                    except Exception:
+                        pass
+
             if is_dir:
                 next_dir = normalized if normalized.endswith("/") else normalized + "/"
                 if next_dir not in visited:
@@ -2214,6 +2450,64 @@ def match_image_annotation_pairs(
                 key = key[: -len(marker)]
                 break
         return key
+
+    image_root = _normalize_artifact_relpath(_glob_base_folder(normalized_image_pattern))
+    annotation_root = _normalize_artifact_relpath(
+        _glob_base_folder(normalized_annotation_pattern)
+    )
+
+    def _relative_key(path: str, root: str, remove_label_suffix: bool) -> str:
+        normalized = _normalize_artifact_relpath(path).lower()
+        relative = normalized
+        if root and normalized.startswith(root):
+            relative = normalized[len(root) :]
+
+        for suffix in (
+            ".ome.tiff",
+            ".ome.tif",
+            ".tiff",
+            ".tif",
+            ".png",
+            ".jpg",
+            ".jpeg",
+        ):
+            if relative.endswith(suffix):
+                relative = relative[: -len(suffix)]
+                break
+
+        if remove_label_suffix:
+            for marker in (
+                "_mask",
+                "-mask",
+                "_label",
+                "-label",
+                "_annotation",
+                "-annotation",
+            ):
+                if relative.endswith(marker):
+                    relative = relative[: -len(marker)]
+                    break
+
+        return relative.strip("/")
+
+    relative_ann_map: dict[str, str] = {}
+    for annot_file in annotation_files:
+        key = _relative_key(annot_file, annotation_root, True)
+        if key and key not in relative_ann_map:
+            relative_ann_map[key] = annot_file
+
+    for image_file in image_files:
+        key = _relative_key(image_file, image_root, False)
+        annot_file = relative_ann_map.get(key)
+        if annot_file:
+            pairs.append((image_file, annot_file))
+
+    if pairs:
+        logger.info(
+            f"Matched {len(pairs)} pairs from {len(image_files)} images "
+            f"and {len(annotation_files)} annotations"
+        )
+        return pairs
 
     # Fallback matcher for mixed conventions like image '*.tif' vs annotation '*_mask.ome.tif'.
     fallback_ann_map: dict[str, str] = {}
@@ -2586,8 +2880,13 @@ async def make_training_pairs(
     Returns:
         Tuple of (train_pairs, test_pairs). test_pairs is empty if test folders not specified.
     """
+    artifact_id = config["artifact_id"]
+
+    if _is_bioimage_archive_url(artifact_id):
+        return await make_training_pairs_from_bioimage_archive_url(config, save_path)
+
     artifact = await make_artifact_client(
-        config["artifact_id"],
+        artifact_id,
         config["server_url"],
     )
 

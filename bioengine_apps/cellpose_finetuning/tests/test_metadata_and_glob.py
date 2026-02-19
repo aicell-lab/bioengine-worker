@@ -4,6 +4,8 @@ import asyncio
 from pathlib import Path
 
 from bioengine_apps.cellpose_finetuning.main import (
+    _extract_bia_accession,
+    _pair_key_from_url,
     list_matching_artifact_paths,
     make_training_pairs_from_metadata,
     match_image_annotation_pairs,
@@ -60,6 +62,35 @@ def test_match_image_annotation_pairs_with_mixed_ome_suffix_convention() -> None
         (
             "images/108bb69d-2e52-4382-8100-e96173db24ee/t0001.ome.tif",
             "annotations/108bb69d-2e52-4382-8100-e96173db24ee/t0001_mask.ome.tif",
+        ),
+    ]
+
+
+def test_match_image_annotation_pairs_with_many_nested_folders() -> None:
+    image_files = [
+        "images/folder1/sub1/img001.tif",
+        "images/folder2/sub2/img002.tif",
+    ]
+    annotation_files = [
+        "annotations/folder1/sub1/img001_mask.ome.tif",
+        "annotations/folder2/sub2/img002_mask.ome.tif",
+    ]
+
+    pairs = match_image_annotation_pairs(
+        image_files,
+        annotation_files,
+        "images/**/*.tif",
+        "annotations/**/*_mask.ome.tif",
+    )
+
+    assert pairs == [
+        (
+            "images/folder1/sub1/img001.tif",
+            "annotations/folder1/sub1/img001_mask.ome.tif",
+        ),
+        (
+            "images/folder2/sub2/img002.tif",
+            "annotations/folder2/sub2/img002_mask.ome.tif",
         ),
     ]
 
@@ -137,6 +168,33 @@ class _FakeArtifactNestedMetadata:
                                 local_path.write_bytes(b"dummy")
 
 
+class _FakeArtifactAmbiguousDirs:
+    async def ls(self, folder_path: str):
+        await asyncio.sleep(0)
+        folder = folder_path.rstrip("/") + "/"
+        if folder == "images/":
+            return [{"path": "images/108bb69d-2e52-4382-8100-e96173db24ee"}]
+        if folder == "images/108bb69d-2e52-4382-8100-e96173db24ee/":
+            return [
+                {
+                    "path": "images/108bb69d-2e52-4382-8100-e96173db24ee/t0000.ome.tif",
+                    "type": "file",
+                },
+                {
+                    "path": "images/108bb69d-2e52-4382-8100-e96173db24ee/t0001.ome.tif",
+                    "type": "file",
+                },
+            ]
+        return []
+
+    async def get(self, remote_paths, local_paths, on_error="ignore"):
+        await asyncio.sleep(0)
+        for local in local_paths:
+            local_path = Path(local)
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            local_path.write_bytes(b"dummy")
+
+
 def test_make_training_pairs_from_metadata(tmp_path: Path) -> None:
     artifact = _FakeArtifact()
     train_pairs, test_pairs = asyncio.run(
@@ -165,6 +223,15 @@ def test_list_matching_artifact_paths_directory_without_trailing_slash() -> None
     ]
 
 
+def test_list_matching_artifact_paths_with_ambiguous_directory_entries() -> None:
+    artifact = _FakeArtifactAmbiguousDirs()
+    matches = asyncio.run(list_matching_artifact_paths(artifact, "images/*/*.tif"))
+    assert matches == [
+        "images/108bb69d-2e52-4382-8100-e96173db24ee/t0000.ome.tif",
+        "images/108bb69d-2e52-4382-8100-e96173db24ee/t0001.ome.tif",
+    ]
+
+
 def test_make_training_pairs_from_nested_metadata_formats(tmp_path: Path) -> None:
     artifact = _FakeArtifactNestedMetadata()
     train_pairs, test_pairs = asyncio.run(
@@ -182,3 +249,14 @@ def test_make_training_pairs_from_nested_metadata_formats(tmp_path: Path) -> Non
     assert train_pairs[0]["annotation"].as_posix().endswith("annotations/train/t0010_mask.ome.tif")
     assert test_pairs[0]["image"].as_posix().endswith("images/test/t0011.tif")
     assert test_pairs[0]["annotation"].as_posix().endswith("annotations/test/t0011_mask.ome.tif")
+
+
+def test_extract_bia_accession_from_gallery_url() -> None:
+    url = "https://beta.bioimagearchive.org/bioimage-archive/galleries/ai/ai-ready-study/S-BIAD1392"
+    assert _extract_bia_accession(url) == "S-BIAD1392"
+
+
+def test_pair_key_from_url_handles_mask_suffix() -> None:
+    img = "https://example.org/data/images/folder1/t0001.ome.tif"
+    ann = "https://example.org/data/annotations/folder1/t0001_mask.ome.tif"
+    assert _pair_key_from_url(img, is_mask=False) == _pair_key_from_url(ann, is_mask=True)

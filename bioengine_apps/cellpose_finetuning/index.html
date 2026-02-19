@@ -395,6 +395,24 @@
                                 </div>
 
                                 <div class="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                                    <div class="md:col-span-2">
+                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Train/Test Split</label>
+                                        <div class="flex items-center gap-5 text-sm text-gray-700">
+                                            <label class="inline-flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" value="manual" v-model="trainingParams.split_mode" class="text-blue-600 focus:ring-blue-500">
+                                                <span>Manual test paths</span>
+                                            </label>
+                                            <label class="inline-flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" value="auto" v-model="trainingParams.split_mode" class="text-blue-600 focus:ring-blue-500">
+                                                <span>Auto split</span>
+                                            </label>
+                                            <div v-if="trainingParams.split_mode === 'auto'" class="inline-flex items-center gap-2">
+                                                <span class="text-xs text-gray-500">Train ratio</span>
+                                                <input v-model.number="trainingParams.train_split_ratio" type="number" min="0.1" max="0.95" step="0.05" class="w-24 bg-white border border-gray-300 rounded-md px-2 py-1 text-sm">
+                                            </div>
+                                        </div>
+                                        <p class="mt-1 text-xs text-gray-500" v-if="trainingParams.split_mode === 'auto'">Uses train paths only and splits into train/test (default 0.8).</p>
+                                    </div>
                                      <div>
                                         <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Train Images</label>
                                         <input v-model="trainingParams.train_images" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. images/*/*.tif">
@@ -413,11 +431,11 @@
                                         <input v-model="trainingParams.metadata_dir" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. metadata/">
                                         <p class="text-xs text-gray-500 mt-1">Use this to load image/annotation pairs from metadata JSON files; then explicit annotation masks are optional.</p>
                                     </div>
-                                    <div>
+                                    <div v-if="trainingParams.split_mode === 'manual'">
                                         <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Test Images (Opt)</label>
                                         <input v-model="trainingParams.test_images" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
                                     </div>
-                                    <div>
+                                    <div v-if="trainingParams.split_mode === 'manual'">
                                         <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Test Annotations (Opt)</label>
                                         <input v-model="trainingParams.test_annotations" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
                                     </div>
@@ -825,6 +843,8 @@
                     train_images: 'images/',
                     train_annotations: 'annotations/',
                     metadata_dir: '',
+                    split_mode: 'manual',
+                    train_split_ratio: 0.8,
                     test_images: '',
                     test_annotations: '',
                     n_epochs: 50,
@@ -862,6 +882,7 @@
                 // File Browser
                 const showFileBrowser = ref(false);
                 const browserFiles = ref([]);
+                const browserPathTypes = reactive({});
                 const browserPath = ref(''); 
                 const browserLoading = ref(false);
                 const browserError = ref('');
@@ -1828,8 +1849,10 @@
                             train_images: trainingParams.train_images,
                             train_annotations: trainingParams.train_annotations,
                             metadata_dir: trainingParams.metadata_dir || null,
-                            test_images: trainingParams.test_images || null,
-                            test_annotations: trainingParams.test_annotations || null,
+                            split_mode: trainingParams.split_mode,
+                            train_split_ratio: trainingParams.train_split_ratio,
+                            test_images: trainingParams.split_mode === 'manual' ? (trainingParams.test_images || null) : null,
+                            test_annotations: trainingParams.split_mode === 'manual' ? (trainingParams.test_annotations || null) : null,
                             model: trainingParams.model,
                             n_epochs: trainingParams.n_epochs,
                             learning_rate: trainingParams.learning_rate,
@@ -1844,8 +1867,10 @@
                                 train_images: trainingParams.train_images || null,
                                 train_annotations: trainingParams.train_annotations || null,
                                 metadata_dir: trainingParams.metadata_dir || null,
-                                test_images: trainingParams.test_images || null,
-                                test_annotations: trainingParams.test_annotations || null,
+                                split_mode: trainingParams.split_mode || 'manual',
+                                train_split_ratio: Number(trainingParams.train_split_ratio || 0.8),
+                                test_images: trainingParams.split_mode === 'manual' ? (trainingParams.test_images || null) : null,
+                                test_annotations: trainingParams.split_mode === 'manual' ? (trainingParams.test_annotations || null) : null,
                                 model: trainingParams.model || 'cpsam',
                                 n_samples: null,
                                 n_epochs: trainingParams.n_epochs,
@@ -2266,6 +2291,7 @@
                    browserPath.value = '';
                    browserError.value = '';
                    browserFiles.value = [];
+                   Object.keys(browserPathTypes).forEach((k) => delete browserPathTypes[k]);
                    browserLoading.value = true;
                    
                    try {
@@ -2320,12 +2346,33 @@
                             console.log("Service keys:", Object.keys(service.value));
                         }
                            
-                        browserFiles.value = rawFiles.map(f => {
+                           browserFiles.value = rawFiles.map(f => {
                             // Handle object format {name: "...", ...} or string
                             let p = typeof f === 'string' ? f : (f.path || f.name || f.key || "");
                             // Remove leading ./ or /
                             return p.replace(/^\.?\//, '');
                         }).filter(f => f && typeof f === 'string');
+
+                        const detectPathType = async (pathStr) => {
+                            const normalizedPath = String(pathStr || '').replace(/^\.?\//, '').replace(/\/$/, '');
+                            if (!normalizedPath) return;
+
+                            try {
+                                const listed = await am.list_files(selectedArtifactId, normalizedPath);
+                                if (Array.isArray(listed) && listed.length > 0) {
+                                    browserPathTypes[normalizedPath] = 'folder';
+                                    return;
+                                }
+                            } catch (_e) {
+                                // Ignore and try other heuristics
+                            }
+
+                            if (browserPathTypes[normalizedPath] !== 'folder') {
+                                browserPathTypes[normalizedPath] = 'file';
+                            }
+                        };
+
+                        await Promise.all(browserFiles.value.slice(0, 200).map((pathStr) => detectPathType(pathStr)));
                             
                         console.log("Loaded browser files:", browserFiles.value.length, browserFiles.value.slice(0, 10));
 
@@ -2401,6 +2448,22 @@
                                          browserFiles.value.push(pathStr);
                                          added++;
                                      }
+
+                                     const normalizedPath = String(pathStr || '').replace(/\/$/, '');
+                                     if (normalizedPath) {
+                                         try {
+                                             const listed = await am.list_files(getSelectedArtifactId(), normalizedPath);
+                                             if (Array.isArray(listed) && listed.length > 0) {
+                                                 browserPathTypes[normalizedPath] = 'folder';
+                                             } else if (browserPathTypes[normalizedPath] !== 'folder') {
+                                                 browserPathTypes[normalizedPath] = 'file';
+                                             }
+                                         } catch (_e) {
+                                             if (browserPathTypes[normalizedPath] !== 'folder') {
+                                                 browserPathTypes[normalizedPath] = 'file';
+                                             }
+                                         }
+                                     }
                                  }
                                  console.log(`Fetched ${added} new items for ${newPath}`);
                              }
@@ -2444,7 +2507,9 @@
                          if (parts.length > 1 && parts[1] !== "") {
                              // It is a directory containing stuff
                              if (!items.has(name)) {
-                                 items.set(name, { name, type: 'folder', fullPath: p + name });
+                                 const fullPath = (p + name).replace(/\/$/, '');
+                                 browserPathTypes[fullPath] = 'folder';
+                                 items.set(name, { name, type: 'folder', fullPath });
                              }
                          } else {
                              // It is a file or empty directory placeholder
@@ -2452,20 +2517,23 @@
                              // Check if it's a file
                              if (!items.has(name)) {
                                 const isExplicitFolder = f.endsWith('/');
+                                const fullPath = (p + name).replace(/\/$/, '');
+                                const knownType = browserPathTypes[fullPath];
                                 items.set(name, { 
                                     name, 
-                                    type: isExplicitFolder ? 'folder' : 'file', 
-                                    fullPath: p + name 
+                                    type: knownType || (isExplicitFolder ? 'folder' : 'file'), 
+                                    fullPath
                                 });
                              }
                          }
                     }
 
-                    // Heuristic: If we have files named "images", "masks" etc without extensions, treat as folders
+                    // Heuristic fallback only when type is still unknown
                     for (const [name, item] of items) {
-                        if (item.type === 'file' && !name.includes('.')) {
+                        if (!browserPathTypes[item.fullPath] && item.type === 'file' && !name.includes('.')) {
                              if (['images', 'annotations', 'masks', 'models', 'data', 'train', 'test', 'val'].includes(name.toLowerCase())) {
                                  item.type = 'folder';
+                                 browserPathTypes[item.fullPath] = 'folder';
                              }
                         }
                     }

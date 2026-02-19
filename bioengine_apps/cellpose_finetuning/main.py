@@ -259,6 +259,8 @@ class TrainingParams(TypedDict):
     metadata_dir: str | None
     test_images: str | None
     test_annotations: str | None
+    split_mode: str
+    train_split_ratio: float
     model: str | Path
     n_epochs: int
     learning_rate: float
@@ -2871,6 +2873,36 @@ def get_training_subset(
     return image_paths, annotation_paths
 
 
+def split_training_pairs(
+    train_pairs: list[TrainingPair],
+    train_ratio: float,
+) -> tuple[list[TrainingPair], list[TrainingPair]]:
+    """Split training pairs into train/test subsets using the provided ratio.
+
+    Keeps at least one sample in train; for datasets with >=2 samples, keeps at
+    least one sample in test.
+    """
+    if not train_pairs:
+        return [], []
+
+    n_total = len(train_pairs)
+    if n_total == 1:
+        return train_pairs, []
+
+    ratio = float(train_ratio)
+    ratio = max(0.05, min(0.95, ratio))
+
+    n_train = int(round(n_total * ratio))
+    n_train = max(1, min(n_total - 1, n_train))
+
+    indices = np.random.default_rng().permutation(n_total)
+    train_idx = set(indices[:n_train])
+
+    split_train = [pair for i, pair in enumerate(train_pairs) if i in train_idx]
+    split_test = [pair for i, pair in enumerate(train_pairs) if i not in train_idx]
+    return split_train, split_test
+
+
 async def make_training_pairs(
     config: TrainingParams,
     save_path: Path,
@@ -2981,6 +3013,13 @@ async def make_training_pairs(
             save_path,
             test_image_paths,
             test_annotation_paths,
+        )
+
+    split_mode = str(config.get("split_mode", "manual") or "manual").lower()
+    if split_mode == "auto" and not test_pairs:
+        train_pairs, test_pairs = split_training_pairs(
+            train_pairs,
+            float(config.get("train_split_ratio", 0.8)),
         )
 
     return train_pairs, test_pairs
@@ -3538,6 +3577,21 @@ class CellposeFinetune:
             ),
             examples=["annotations/test/", "annotations/test/*_mask.ome.tif"],
         ),
+        split_mode: str = Field(
+            "manual",
+            description=(
+                "Dataset split mode. 'manual' uses test_images/test_annotations; "
+                "'auto' creates test split from training pairs using train_split_ratio."
+            ),
+            examples=["manual", "auto"],
+        ),
+        train_split_ratio: float = Field(
+            0.8,
+            description=(
+                "Train ratio used only when split_mode='auto'. "
+                "Example: 0.8 means 80% train / 20% test."
+            ),
+        ),
         model: str = Field(
             PretrainedModel.CPSAM.value,
             description=(
@@ -3596,6 +3650,8 @@ class CellposeFinetune:
             metadata_dir = wrapped.get("metadata_dir", metadata_dir)
             test_images = wrapped.get("test_images", test_images)
             test_annotations = wrapped.get("test_annotations", test_annotations)
+            split_mode = wrapped.get("split_mode", split_mode)
+            train_split_ratio = wrapped.get("train_split_ratio", train_split_ratio)
             model = wrapped.get("model", model)
             n_samples = wrapped.get("n_samples", n_samples)
             n_epochs = wrapped.get("n_epochs", n_epochs)
@@ -3612,6 +3668,8 @@ class CellposeFinetune:
         metadata_dir = normalize_optional_param(metadata_dir)
         test_images = normalize_optional_param(test_images)
         test_annotations = normalize_optional_param(test_annotations)
+        split_mode = normalize_optional_param(split_mode)
+        train_split_ratio = normalize_optional_param(train_split_ratio)
         model = normalize_optional_param(model)
         n_samples = normalize_optional_param(n_samples)
         n_epochs = normalize_optional_param(n_epochs)
@@ -3633,10 +3691,24 @@ class CellposeFinetune:
             if not isinstance(metadata_dir, str) or not metadata_dir:
                 raise ValueError("metadata_dir must be a non-empty string")
 
-        if (test_images is None) ^ (test_annotations is None):
-            raise ValueError(
-                "test_images and test_annotations must be provided together"
-            )
+        if not isinstance(split_mode, str) or split_mode not in {"manual", "auto"}:
+            split_mode = "manual"
+
+        if train_split_ratio is None:
+            train_split_ratio = 0.8
+        train_split_ratio = float(train_split_ratio)
+        if not (0.0 < train_split_ratio < 1.0):
+            raise ValueError("train_split_ratio must be between 0 and 1")
+
+        if split_mode == "manual":
+            if (test_images is None) ^ (test_annotations is None):
+                raise ValueError(
+                    "test_images and test_annotations must be provided together in manual split mode"
+                )
+        else:
+            # In auto split mode, ignore explicitly provided test inputs.
+            test_images = None
+            test_annotations = None
 
         if not isinstance(model, str) or not model:
             model = PretrainedModel.CPSAM.value
@@ -3684,6 +3756,8 @@ class CellposeFinetune:
             metadata_dir=metadata_dir,
             test_images=test_images,
             test_annotations=test_annotations,
+            split_mode=split_mode,
+            train_split_ratio=train_split_ratio,
             model=model_id,
             n_epochs=n_epochs,
             learning_rate=learning_rate,
@@ -3917,6 +3991,8 @@ class CellposeFinetune:
             metadata_dir=params.get("metadata_dir"),
             test_images=params.get("test_images"),
             test_annotations=params.get("test_annotations"),
+            split_mode=params.get("split_mode", "manual"),
+            train_split_ratio=params.get("train_split_ratio", 0.8),
             model=restart_model,
             n_samples=params.get("n_samples"),
             n_epochs=restart_epochs,

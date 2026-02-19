@@ -295,21 +295,84 @@
                          <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
                             <div class="flex justify-between items-center mb-4">
                                 <h3 class="text-lg font-semibold text-gray-800 flex items-center gap-2"><i class="fas fa-database text-gray-400"></i> Dataset & Model</h3>
-                                <button type="button" @click="showUploadModal = true" class="text-sm bg-green-50 text-green-700 px-3 py-1.5 rounded-lg border border-green-200 hover:bg-green-100 transition flex items-center gap-1 font-medium">
-                                    <i class="fas fa-cloud-upload-alt"></i> Upload New
-                                </button>
                             </div>
                             
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div>
+                                <div class="md:col-span-2">
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Dataset Source</label>
+                                    <div class="relative">
+                                        <i class="fas fa-database absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs pointer-events-none"></i>
+                                        <select v-model="trainingParams.dataset_source" class="w-full appearance-none bg-white border border-gray-300 rounded-lg pl-9 pr-9 py-2.5 text-sm font-medium text-gray-700 shadow-sm hover:border-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition">
+                                            <option value="Artifact">Artifact</option>
+                                            <option value="Upload">Upload</option>
+                                            <option value="BioImage Archive">BioImage Archive</option>
+                                        </select>
+                                        <i class="fas fa-chevron-down absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs pointer-events-none"></i>
+                                    </div>
+                                </div>
+                                
+                                <div v-if="trainingParams.dataset_source === 'Artifact'">
                                     <label class="block text-sm font-medium text-gray-700 mb-1">Artifact ID <span class="text-red-500">*</span></label>
+                                    <div class="space-y-1">
+                                        <div class="flex gap-2 relative">
+                                            <input 
+                                                v-model="trainingParams.artifact" 
+                                                @input="handleArtifactInput"
+                                                @blur="closeSuggestions"
+                                                @keydown.tab.prevent="acceptSuggestion"
+                                                required 
+                                                :class="[
+                                                    'flex-grow rounded-lg px-3 py-2 text-sm outline-none transition border focus:ring-2',
+                                                    artifactInputError
+                                                        ? 'bg-red-50 border-red-500 text-red-700 placeholder-red-300 focus:border-red-500 focus:ring-red-300'
+                                                        : 'bg-gray-50 border-gray-300 focus:border-blue-500 focus:ring-blue-500'
+                                                ]"
+                                                placeholder="workspace/dataset-alias"
+                                            >
+                                            <button type="button" @click="openFileBrowser" class="px-3 py-2 bg-slate-100 border border-slate-300 rounded-lg hover:bg-slate-200 text-slate-600 transition" title="Browse Files">
+                                                <i class="fas fa-folder-open"></i>
+                                            </button>
+                                            
+                                            <!-- Autocomplete Suggestions -->
+                                            <div v-if="showSuggestions && suggestions.length > 0" class="absolute top-full left-0 w-full bg-white border border-gray-200 rounded-lg shadow-lg z-50 max-h-48 overflow-y-auto mt-1">
+                                                <div 
+                                                    v-for="(suggestion, index) in suggestions" 
+                                                    :key="index"
+                                                    @mousedown.prevent
+                                                    @click="selectSuggestion(suggestion)"
+                                                    class="px-3 py-2 text-sm hover:bg-blue-50 cursor-pointer flex justify-between items-center"
+                                                    :class="{'bg-blue-50': index === 0}"
+                                                >
+                                                    <span>[[ suggestion ]]</span>
+                                                    <span v-if="index === 0" class="text-xs text-gray-400">Tab</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <p v-if="artifactInputError" class="text-xs text-red-600">[[ artifactInputError ]]</p>
+                                    </div>
+                                </div>
+
+                                <div v-if="trainingParams.dataset_source === 'Upload'">
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Upload Data</label>
                                     <div class="flex gap-2">
-                                        <input v-model="trainingParams.artifact" required class="flex-grow bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition" placeholder="workspace/dataset-alias">
-                                        <button type="button" @click="openFileBrowser" class="px-3 py-2 bg-slate-100 border border-slate-300 rounded-lg hover:bg-slate-200 text-slate-600 transition" title="Browse Files">
-                                            <i class="fas fa-folder-open"></i>
+                                        <div v-if="trainingParams.artifact" class="flex-grow bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-sm text-green-800 flex items-center">
+                                            <i class="fas fa-check-circle mr-2"></i> [[ trainingParams.artifact ]]
+                                        </div>
+                                        <div v-else class="flex-grow bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-400 italic">
+                                            No dataset uploaded yet
+                                        </div>
+                                        <button type="button" @click="showUploadModal = true" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition shadow-sm font-medium whitespace-nowrap">
+                                            <i class="fas fa-cloud-upload-alt mr-1"></i> Upload Folder
                                         </button>
                                     </div>
                                 </div>
+
+                                <div v-if="trainingParams.dataset_source === 'BioImage Archive'">
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Archive URL <span class="text-red-500">*</span></label>
+                                    <input v-model="trainingParams.bioimage_archive_url" required class="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition" placeholder="https://www.ebi.ac.uk/biostudies/bioimages/studies/...">
+                                </div>
+                                
+                                <div class="md:col-span-2 space-y-4">
                                 <div>
                                     <label class="block text-sm font-medium text-gray-700 mb-1">Base Model <span class="text-red-500">*</span></label>
                                     <div class="relative">
@@ -351,6 +414,7 @@
                                 </div>
                             </div>
                          </div>
+                          </div>
 
                          <!-- Card: Hyperparameters -->
                          <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
@@ -502,11 +566,11 @@
                     </div>
                 </div>
 
-                <!-- Inference Tab -->
-                <div v-if="service && currentTab === 'inference'" class="max-w-7xl mx-auto lg:h-[calc(100vh-8rem)] h-auto flex flex-col">
+                 <!-- Inference Tab -->
+                 <div v-if="currentTab === 'inference'" class="max-w-7xl mx-auto lg:h-[calc(100vh-8rem)] h-auto flex flex-col">
                      <h2 class="text-2xl font-bold text-gray-900 mb-6 flex-none">Live Inference</h2>
-                     
-                     <div class="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6 lg:min-h-0 h-auto">
+
+                     <div v-if="service" class="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6 lg:min-h-0 h-auto">
                          <!-- Left: Controls -->
                          <div class="lg:col-span-4 bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col overflow-hidden">
                             <div class="p-4 border-b border-gray-100 flex-none bg-gray-50/50">
@@ -584,6 +648,19 @@
                              </transition>
                          </div>
                      </div>
+                     <div v-else class="bg-white rounded-xl border border-gray-200 shadow-sm p-8 text-center">
+                        <div class="inline-flex items-center justify-center w-14 h-14 rounded-full bg-purple-50 text-purple-600 mb-4">
+                            <i class="fas fa-circle-notch fa-spin text-xl"></i>
+                        </div>
+                        <h3 class="text-lg font-semibold text-gray-900 mb-2">Initializing inference service</h3>
+                        <p class="text-sm text-gray-600 mb-5">
+                            The worker connection is active, but the inference backend is not ready yet.
+                        </p>
+                        <button @click="connect" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 transition">
+                            <i class="fas fa-rotate-right"></i>
+                            Retry Connection
+                        </button>
+                    </div>
                 </div>
 
             </div>
@@ -694,7 +771,7 @@
     </div>
 
     <script>
-        const { createApp, ref, reactive, computed, onMounted, watch } = Vue;
+        const { createApp, ref, reactive, computed, onMounted, watch, nextTick } = Vue;
 
         const app = createApp({
             setup() {
@@ -730,7 +807,9 @@
                 
                 // Form Data
                 const trainingParams = reactive({
+                    dataset_source: 'Artifact',
                     artifact: '',
+                    bioimage_archive_url: '',
                     model: 'cpsam',
                     train_images: 'images/',
                     train_annotations: 'annotations/',
@@ -764,6 +843,11 @@
                 const canvasStyle = reactive({ top: '0', left: '0', width: '100%', height: '100%' });
                 const inferenceObjectCount = ref(0);
 
+                // Export
+                const exportModelName = ref('');
+                const isExporting = ref(false);
+                const exportResult = ref(null);
+
                 // File Browser
                 const showFileBrowser = ref(false);
                 const browserFiles = ref([]);
@@ -771,10 +855,334 @@
                 const browserLoading = ref(false);
                 const browserError = ref('');
 
-                // Export Data
-                const exportModelName = ref('');
-                const isExporting = ref(false);
-                const exportResult = ref(null);
+
+                // Autocomplete Logic
+                const suggestions = ref([]);
+                const showSuggestions = ref(false);
+                const artifactInputError = ref('');
+
+                const workspaceSuggestionCache = ref([]);
+                const artifactInputVersion = ref(0);
+                const workspaceClients = reactive({});
+                const artifactDebug = reactive({
+                    cacheSize: 0,
+                    lastShape: '',
+                    lastWorkspace: '',
+                    lastQuery: '',
+                    globalMatches: 0,
+                    scopedMatches: 0,
+                    sessionMatches: 0,
+                    suggestions: 0,
+                    lastError: '',
+                });
+
+                const normalizeWorkspaceId = (entry) => {
+                    if (!entry) return null;
+                    if (typeof entry === 'string') return entry;
+                    return entry.id || entry.workspace || entry.name || null;
+                };
+
+                const isWorkspacePermissionError = (error) => {
+                    const message = String(error?.message || error || '').toLowerCase();
+                    return (
+                        message.includes('permission denied') ||
+                        message.includes('access denied') ||
+                        message.includes('not authorized') ||
+                        message.includes('unauthorized')
+                    );
+                };
+
+                const fetchWorkspaces = async () => {
+                    const workspaces = new Set();
+                    if (workspace.value) workspaces.add(workspace.value);
+                    const userWs = getUserWorkspace();
+                    if (userWs) workspaces.add(userWs);
+                    workspaces.add('bioimage-io');
+
+                    if (!window.hyphaClient) return Array.from(workspaces);
+
+                    if (workspaceSuggestionCache.value.length > 0) {
+                        workspaceSuggestionCache.value.forEach((ws) => workspaces.add(ws));
+                        return Array.from(workspaces);
+                    }
+
+                    try {
+                        const listed = await window.hyphaClient.listWorkspaces();
+                        const normalized = (Array.isArray(listed) ? listed : [])
+                            .map(normalizeWorkspaceId)
+                            .filter(Boolean);
+                        workspaceSuggestionCache.value = normalized;
+                        normalized.forEach((ws) => workspaces.add(ws));
+                    } catch (e) {
+                        console.warn('Failed to fetch workspaces via server.listWorkspaces():', e);
+                    }
+
+                    return Array.from(workspaces);
+                };
+
+                const getWorkspaceClient = async (targetWorkspace) => {
+                    if (!targetWorkspace || targetWorkspace === workspace.value) return window.hyphaClient;
+                    if (workspaceClients[targetWorkspace]) return workspaceClients[targetWorkspace];
+
+                    const config = {
+                        server_url: serverUrl.value,
+                        workspace: targetWorkspace,
+                        method_timeout: 120000,
+                    };
+                    if (authToken.value) config.token = authToken.value;
+
+                    const client = await hyphaWebsocketClient.connectToServer(config);
+                    workspaceClients[targetWorkspace] = client;
+                    return client;
+                };
+
+                const normalizeArtifactListResponse = (listed) => {
+                    if (Array.isArray(listed)) {
+                        artifactDebug.lastShape = 'array';
+                        return listed;
+                    }
+                    if (listed?.items && Array.isArray(listed.items)) {
+                        artifactDebug.lastShape = 'items-array';
+                        return listed.items;
+                    }
+                    if (listed?.artifacts && Array.isArray(listed.artifacts)) {
+                        artifactDebug.lastShape = 'artifacts-array';
+                        return listed.artifacts;
+                    }
+                    if (listed && typeof listed === 'object') {
+                        artifactDebug.lastShape = 'object-map';
+                        if (listed.items && typeof listed.items === 'object') return Object.values(listed.items);
+                        if (listed.artifacts && typeof listed.artifacts === 'object') return Object.values(listed.artifacts);
+                        return Object.values(listed);
+                    }
+                    artifactDebug.lastShape = typeof listed;
+                    return [];
+                };
+
+                const queryWorkspaceArtifacts = async (workspaceId, queryText) => {
+                    const query = String(queryText || '').trim();
+                    const keywords = query ? [query] : [];
+                    let am = null;
+                    try {
+                        const client = await getWorkspaceClient(workspaceId);
+                        am = await client.getService('public/artifact-manager');
+                    } catch (error) {
+                        artifactDebug.lastError = String(error?.message || error);
+                        if (isWorkspacePermissionError(error)) {
+                            artifactInputError.value = `Permission denied to workspace '${workspaceId}'.`;
+                        }
+                        return [];
+                    }
+
+                    const attempts = [
+                        () => am.list(workspaceId, { keywords, limit: 30 }),
+                        () => am.list(workspaceId, { keywords }),
+                        () => am.list({ workspace: workspaceId, keywords, limit: 30 }),
+                        () => am.list(workspaceId),
+                    ];
+
+                    let lastAttemptError = null;
+
+                    for (const attempt of attempts) {
+                        try {
+                            const listed = await attempt();
+                            const rawItems = normalizeArtifactListResponse(listed);
+                            const normalized = rawItems
+                                .map((item) => {
+                                    const entry = normalizeArtifactEntry(item);
+                                    if (!entry) return null;
+                                    if (entry.workspace) return entry;
+                                    return {
+                                        workspace: workspaceId,
+                                        alias: entry.alias,
+                                        fullId: `${workspaceId}/${entry.alias}`,
+                                    };
+                                })
+                                .filter(Boolean);
+
+                            artifactDebug.cacheSize = normalized.length;
+                            artifactDebug.lastError = '';
+                            return normalized;
+                        } catch (error) {
+                            lastAttemptError = error;
+                            artifactDebug.lastError = String(error?.message || error);
+                            if (isWorkspacePermissionError(error)) {
+                                artifactInputError.value = `Permission denied to workspace '${workspaceId}'.`;
+                            }
+                        }
+                    }
+
+                    if (lastAttemptError && !artifactInputError.value) {
+                        const message = String(lastAttemptError?.message || lastAttemptError || '').trim();
+                        artifactInputError.value = `Unable to access workspace '${workspaceId}'. ${message}`.trim();
+                    }
+
+                    return [];
+                };
+
+                const normalizeArtifactEntry = (item) => {
+                    if (!item) return null;
+                    if (typeof item === 'string') {
+                        if (!item.includes('/')) {
+                            return {
+                                workspace: null,
+                                alias: item,
+                                fullId: item,
+                            };
+                        }
+                        const firstSlash = item.indexOf('/');
+                        return {
+                            workspace: item.slice(0, firstSlash),
+                            alias: item.slice(firstSlash + 1),
+                            fullId: item,
+                        };
+                    }
+
+                    const workspaceId = item.workspace || item?.manifest?.workspace || item.parent_id || null;
+                    const alias = item.alias || item.name || item?.manifest?.alias || null;
+                    const itemId = item.id || item.path || item.key || null;
+
+                    if (workspaceId && alias) {
+                        const cleanWorkspace = String(workspaceId).split('/')[0];
+                        return {
+                            workspace: cleanWorkspace,
+                            alias,
+                            fullId: `${cleanWorkspace}/${alias}`,
+                        };
+                    }
+
+                    if (typeof itemId === 'string' && itemId.includes('/')) {
+                        const firstSlash = itemId.indexOf('/');
+                        return {
+                            workspace: itemId.slice(0, firstSlash),
+                            alias: itemId.slice(firstSlash + 1),
+                            fullId: itemId,
+                        };
+                    }
+
+                    if (alias) {
+                        return {
+                            workspace: null,
+                            alias,
+                            fullId: alias,
+                        };
+                    }
+
+                    return null;
+                };
+
+                const collectSessionArtifactIds = () => {
+                    const artifactIds = new Set();
+                    for (const session of Object.values(sessions.value || {})) {
+                        if (!session || typeof session !== 'object') continue;
+
+                        const candidates = [
+                            session.artifact,
+                            session.dataset,
+                            session.dataset_id,
+                            session?.params?.artifact,
+                            session?.training_params?.artifact,
+                            session?.config?.artifact,
+                        ];
+
+                        for (const candidate of candidates) {
+                            if (typeof candidate === 'string' && candidate.includes('/')) {
+                                artifactIds.add(candidate);
+                            }
+                        }
+                    }
+                    return Array.from(artifactIds);
+                };
+
+                const handleArtifactInput = async () => {
+                     const requestVersion = ++artifactInputVersion.value;
+                     const val = String(trainingParams.artifact || '').trim();
+                     artifactDebug.lastQuery = val;
+                     artifactInputError.value = '';
+
+                     if (!val) {
+                         suggestions.value = [];
+                         showSuggestions.value = false;
+                         artifactDebug.suggestions = 0;
+                         return;
+                     }
+
+                     if (!val.includes('/')) {
+                         const workspaces = await fetchWorkspaces();
+                         if (requestVersion !== artifactInputVersion.value) return;
+                         suggestions.value = workspaces
+                            .filter((w) => w.toLowerCase().startsWith(val.toLowerCase()))
+                            .slice(0, 20);
+                         showSuggestions.value = suggestions.value.length > 0;
+                                 artifactDebug.suggestions = suggestions.value.length;
+                                 console.info('[ArtifactAutocomplete] workspace suggestions', {
+                                     query: val,
+                                     count: suggestions.value.length,
+                                 });
+                         return;
+                     }
+
+                     const parts = val.split('/');
+                     if (parts.length === 2) {
+                         const ws = parts[0];
+                         const query = parts[1].toLowerCase();
+                         artifactDebug.lastWorkspace = ws;
+                         const remoteMatches = await queryWorkspaceArtifacts(ws, query);
+                         if (requestVersion !== artifactInputVersion.value) return;
+
+                         const scopedMatches = remoteMatches
+                            .filter((entry) => entry.alias.toLowerCase().startsWith(query))
+                            .map((entry) => entry.fullId);
+
+                        const sessionMatches = collectSessionArtifactIds()
+                            .filter((artifactId) => artifactId.startsWith(`${ws}/`))
+                            .filter((artifactId) => artifactId.slice(ws.length + 1).toLowerCase().startsWith(query));
+
+                        artifactDebug.globalMatches = 0;
+                        artifactDebug.scopedMatches = scopedMatches.length;
+                        artifactDebug.sessionMatches = sessionMatches.length;
+                        suggestions.value = Array.from(new Set([...scopedMatches, ...sessionMatches])).slice(0, 30);
+                        showSuggestions.value = suggestions.value.length > 0;
+                        artifactDebug.suggestions = suggestions.value.length;
+                        console.info('[ArtifactAutocomplete] artifact suggestions', {
+                            workspace: ws,
+                            query,
+                            globalMatches: 0,
+                            scopedMatches: scopedMatches.length,
+                            sessionMatches: sessionMatches.length,
+                            finalSuggestions: suggestions.value.length,
+                            sample: suggestions.value.slice(0, 5),
+                        });
+                     } else {
+                        suggestions.value = [];
+                        showSuggestions.value = false;
+                        artifactDebug.suggestions = 0;
+                     }
+                };
+
+                const selectSuggestion = (s) => {
+                     // If it's a workspace (no slash), add slash
+                     if (!s.includes('/')) {
+                         trainingParams.artifact = s + '/';
+                         // Refocus input to keep typing?
+                         // Ensure handleArtifactInput runs for the new value
+                         handleArtifactInput();
+                     } else {
+                         trainingParams.artifact = s;
+                         showSuggestions.value = false;
+                     }
+                };
+                
+                const acceptSuggestion = () => {
+                     if (showSuggestions.value && suggestions.value.length > 0) {
+                         selectSuggestion(suggestions.value[0]);
+                     }
+                };
+                
+                const closeSuggestions = () => {
+                    // Timeout to allow click event to propagate
+                     setTimeout(() => showSuggestions.value = false, 200);
+                };
 
                 // Computed Properties
                 const currentSession = computed(() => selectedSessionId.value ? sessions.value[selectedSessionId.value] : null);
@@ -926,7 +1334,7 @@
                     isConnecting.value = true;
                     autoConnectError.value = '';
                     try {
-                        const config = { "server_url": serverUrl.value, method_timeout: 20000 };
+                        const config = { "server_url": serverUrl.value, method_timeout: 120000 };
                         if (authToken.value) config.token = authToken.value;
                         
                         const client = await hyphaWebsocketClient.connectToServer(config);
@@ -982,6 +1390,16 @@
 
                 const disconnect = () => {
                     if (window.hyphaClient) window.hyphaClient.disconnect();
+                    for (const [workspaceId, client] of Object.entries(workspaceClients)) {
+                        if (client && client !== window.hyphaClient) {
+                            try {
+                                client.disconnect();
+                            } catch (e) {
+                                console.warn(`Failed to disconnect workspace client ${workspaceId}:`, e);
+                            }
+                        }
+                        delete workspaceClients[workspaceId];
+                    }
                     isConnected.value = false;
                     service.value = null;
                     sessions.value = {};
@@ -992,9 +1410,73 @@
                     isScanning.value = true;
                     try {
                         const client = window.hyphaClient;
-                        let services = [];
+                        const attemptList = [
+                            () => client.listServices({ workspace: workspace.value || client?.config?.workspace }),
+                            () => client.listServices(),
+                            () => client.list_services({ workspace: workspace.value || client?.config?.workspace }),
+                            () => client.list_services(),
+                        ];
 
-                        selectedServiceId.value = "bioimage-io/cellpose-finetuning";
+                        let listed = [];
+                        for (const attempt of attemptList) {
+                            try {
+                                const result = await attempt();
+                                if (Array.isArray(result)) {
+                                    listed = result;
+                                } else if (result && typeof result === 'object') {
+                                    listed = Object.values(result);
+                                }
+                                if (listed.length > 0) break;
+                            } catch (err) {
+                                // Try next strategy
+                            }
+                        }
+
+                        const serviceIds = listed
+                            .map((entry) => {
+                                if (!entry) return null;
+                                if (typeof entry === 'string') return entry;
+                                return entry.id || entry.service_id || null;
+                            })
+                            .filter(Boolean);
+
+                        const cellposeIds = serviceIds.filter((id) => id.includes('cellpose-finetuning'));
+                        availableServices.value = cellposeIds;
+
+                        const preferredIds = [
+                            `${workspace.value}/cellpose-finetuning`,
+                            `${workspace.value}/cellpose-finetuning-test`,
+                            `${workspace.value}/cellpose-finetuning-live`,
+                            'ri-scale/cellpose-finetuning',
+                            'ri-scale/cellpose-finetuning-test',
+                            'bioimage-io/cellpose-finetuning',
+                        ].filter(Boolean);
+
+                        if (!availableServices.value.includes(selectedServiceId.value)) {
+                            selectedServiceId.value = '';
+                        }
+
+                        if (!selectedServiceId.value && availableServices.value.length > 0) {
+                            const preferred = preferredIds.find((id) => availableServices.value.includes(id));
+                            selectedServiceId.value = preferred || availableServices.value[0];
+                        }
+
+                        if (availableServices.value.length === 0) {
+                            for (const fallbackId of preferredIds) {
+                                try {
+                                    await client.getService(fallbackId);
+                                    availableServices.value = [fallbackId];
+                                    selectedServiceId.value = fallbackId;
+                                    break;
+                                } catch (_) {
+                                    // try next fallback id
+                                }
+                            }
+                        }
+
+                        if (availableServices.value.length === 0) {
+                            service.value = null;
+                        }
                     } catch (e) {
                         console.warn("Service scan failed", e);
                     } finally {
@@ -1025,38 +1507,40 @@
                   // --- Dashboard Methods ---
                 const refreshSessions = async (background = false) => {
                     if (!service.value) return;
+                    if (refreshSessions._inFlight) {
+                        if (background) return;
+                        await refreshSessions._inFlight;
+                        return;
+                    }
                     if (!background) refreshLoading.value = true;
                     
-                    try {
-                        // Use a timeout for the call to prevent hanging
-                        let result = null;
+                    refreshSessions._inFlight = (async () => {
                         try {
-                             result = await Promise.race([
-                                service.value.list_training_sessions(),
-                                new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 20000))
-                            ]);
-                        } catch (err) {
-                            console.warn("Training sessions list timed out or failed:", err);
-                            throw err;
-                        }
-                        
-                        if (result) {
-                            sessions.value = result;
-                            syncError.value = null;
+                            const result = await service.value.list_training_sessions();
+                            
+                            if (result) {
+                                sessions.value = result;
+                                syncError.value = null;
 
-                            // Find active session
-                            const running = Object.entries(sessions.value).find(([_, s]) => s && s.status_type === 'running');
-                            if (running) {
-                                monitoringSessionId.value = running[0];
-                            } else {
-                                monitoringSessionId.value = null;
+                                // Find active session
+                                const running = Object.entries(sessions.value).find(([_, s]) => s && s.status_type === 'running');
+                                if (running) {
+                                    monitoringSessionId.value = running[0];
+                                } else {
+                                    monitoringSessionId.value = null;
+                                }
                             }
+                        } catch (e) {
+                            console.error(e);
+                            // Show sync error but preserve old sessions so user can see last known state
+                            syncError.value = "Sync failed: " + (e.message || "Timeout") + ". Displayed data may be outdated.";
                         }
-                    } catch (e) {
-                        console.error(e);
-                        // Show sync error but preserve old sessions so user can see last known state
-                        syncError.value = "Sync failed: " + (e.message || "Timeout") + ". Displayed data may be outdated.";
+                    })();
+
+                    try {
+                        await refreshSessions._inFlight;
                     } finally {
+                        refreshSessions._inFlight = null;
                         if (!background) refreshLoading.value = false;
                     }
                 };
@@ -1078,12 +1562,34 @@
                                 }
                             } catch (e) {
                                 console.warn("Auto-update loop error:", e);
+                                // If token expired, try to nudge user?
+                                if (e.message && e.message.includes('expired')) {
+                                    syncError.value = "Session expired. Please refresh page.";
+                                    isConnected.value = false;
+                                }
                             }
                         }
                         updateTimer = setTimeout(runLoop, 4000);
                     };
                     runLoop();
                 };
+
+                watch([currentTab, service, isConnected], async () => {
+                    if (currentTab.value !== 'inference') return;
+                    await nextTick();
+                    const heading = document.querySelector('h2');
+                    const headingText = heading ? heading.textContent : null;
+                    const hasConfigCard = !!document.querySelector('h3');
+                    const hasFileInput = !!document.querySelector('input[type="file"]');
+                    console.info('[InferenceTab] render diagnostics', {
+                        isConnected: isConnected.value,
+                        hasService: !!service.value,
+                        currentTab: currentTab.value,
+                        headingText,
+                        hasConfigCard,
+                        hasFileInput,
+                    });
+                });
 
                 const viewSession = (id) => {
                     if (!sessions.value[id]) return;
@@ -1207,11 +1713,27 @@
                         const hasTrainAnnotations = !!(trainingParams.train_annotations && trainingParams.train_annotations.trim());
 
                         if (!hasMetadataDir && (!hasTrainImages || !hasTrainAnnotations)) {
-                            throw new Error("Provide either metadata folder, or both train images and train annotations.");
+                           // If using BioImage Archive, we might not need explicit images/annotations if the archive has a standard structure OR we assume default?
+                           // But usually we still need them.
+                           // Actually, for BioImage Archive, the prompt says "allow the user to post a URL to bioimage archive".
+                           // Does the backend handle downloading?
+                           // If so, we pass the URL as 'artifact'? Or a new param?
+                           // The prompt implies "Dataset source" choice.
+                        }
+                        
+                        // Determine the artifact value based on source
+                        let artifactValue = trainingParams.artifact;
+                        if (trainingParams.dataset_source === 'BioImage Archive') {
+                            artifactValue = trainingParams.bioimage_archive_url;
+                            if (!artifactValue) throw new Error("Please enter a BioImage Archive URL.");
+                        } else if (trainingParams.dataset_source === 'Upload') {
+                             if (!artifactValue) throw new Error("Please upload a dataset first.");
+                        } else {
+                             if (!artifactValue) throw new Error("Please specify an Artifact ID.");
                         }
 
                         console.log("Invoking service.start_training with:", {
-                            artifact: trainingParams.artifact,
+                            artifact: artifactValue,
                             train_images: trainingParams.train_images,
                             train_annotations: trainingParams.train_annotations,
                             metadata_dir: trainingParams.metadata_dir || null,
@@ -1227,7 +1749,7 @@
                         
                         const result = await service.value.start_training(
                             {
-                                artifact: trainingParams.artifact,
+                                artifact: artifactValue,
                                 train_images: trainingParams.train_images || null,
                                 train_annotations: trainingParams.train_annotations || null,
                                 metadata_dir: trainingParams.metadata_dir || null,
@@ -1949,6 +2471,9 @@
                     // File Browser
                     showFileBrowser, openFileBrowser, browserFiles, browserPath, browserLoading, browserError,
                     browserVisibleItems, browserNavigate, browserNavigateUp, selectFolderFor, browserFeedback,
+
+                    // Autocomplete
+                    suggestions, showSuggestions, artifactInputError, handleArtifactInput, selectSuggestion, acceptSuggestion, closeSuggestions,
 
                     // Helpers
                     statusTextColor, formatDuration, handleFolderSelect, getLatestLoss, formatDate,

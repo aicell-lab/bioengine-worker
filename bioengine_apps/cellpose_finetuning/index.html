@@ -385,13 +385,21 @@
                                 <div class="md:col-span-2 space-y-4">
                                 <div>
                                     <label class="block text-sm font-medium text-gray-700 mb-1">Base Model <span class="text-red-500">*</span></label>
-                                    <div class="relative">
-                                        <input v-model="trainingParams.model" required class="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition" placeholder="Pretrained ID or Session ID">
-                                        <div class="absolute right-2 top-2 text-xs text-gray-400 space-x-1">
-                                            <span class="cursor-pointer hover:text-blue-600" @click="trainingParams.model = 'cpsam'">cpsam</span>
-                                            <span class="cursor-pointer hover:text-blue-600" @click="trainingParams.model = 'cyto3'">cyto3</span>
-                                        </div>
-                                    </div>
+                                    <select v-model="trainingParams.model" required class="w-full bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                                        <optgroup label="Pretrained Models">
+                                            <option v-for="m in pretrainedModels" :key="`train-${m}`" :value="m">[[ m ]]</option>
+                                        </optgroup>
+                                        <optgroup label="Your Completed Sessions" v-if="Object.values(sessions).some(s => s.status_type === 'completed')">
+                                            <option
+                                                v-for="(s, id) in sessions"
+                                                :key="id"
+                                                :value="id"
+                                                v-show="s.status_type === 'completed'"
+                                            >
+                                                ⚫ [[ id.slice(0,8) ]]
+                                            </option>
+                                        </optgroup>
+                                    </select>
                                 </div>
 
                                 <div v-if="trainingParams.dataset_source !== 'BioImage Archive'" class="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">

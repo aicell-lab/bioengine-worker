@@ -921,7 +921,9 @@
                 };
 
                 const getWorkspaceClient = async (targetWorkspace) => {
-                    if (!targetWorkspace || targetWorkspace === workspace.value) return window.hyphaClient;
+                    if (!targetWorkspace) {
+                        throw new Error('Workspace is required for artifact lookup.');
+                    }
                     if (workspaceClients[targetWorkspace]) return workspaceClients[targetWorkspace];
 
                     const config = {
@@ -929,7 +931,11 @@
                         workspace: targetWorkspace,
                         method_timeout: 120000,
                     };
-                    if (authToken.value) config.token = authToken.value;
+                    if (authToken.value) {
+                        config.token = authToken.value;
+                    } else {
+                        throw new Error('Missing auth token for cross-workspace artifact lookup.');
+                    }
 
                     const client = await hyphaWebsocketClient.connectToServer(config);
                     workspaceClients[targetWorkspace] = client;
@@ -973,42 +979,31 @@
                         }
                         return [];
                     }
+                    
+                    try {
+                        const listed = await am.list({keywords, limit: 30, _rkwargs: true });
+                        const rawItems = normalizeArtifactListResponse(listed);
+                        const normalized = rawItems
+                            .map((item) => {
+                                const entry = normalizeArtifactEntry(item);
+                                if (!entry) return null;
+                                if (entry.workspace) return entry;
+                                return {
+                                    workspace: workspaceId,
+                                    alias: entry.alias,
+                                    fullId: `${workspaceId}/${entry.alias}`,
+                                };
+                            })
+                            .filter(Boolean);
 
-                    const attempts = [
-                        () => am.list(workspaceId, { keywords, limit: 30 }),
-                        () => am.list(workspaceId, { keywords }),
-                        () => am.list({ workspace: workspaceId, keywords, limit: 30 }),
-                        () => am.list(workspaceId),
-                    ];
-
-                    let lastAttemptError = null;
-
-                    for (const attempt of attempts) {
-                        try {
-                            const listed = await attempt();
-                            const rawItems = normalizeArtifactListResponse(listed);
-                            const normalized = rawItems
-                                .map((item) => {
-                                    const entry = normalizeArtifactEntry(item);
-                                    if (!entry) return null;
-                                    if (entry.workspace) return entry;
-                                    return {
-                                        workspace: workspaceId,
-                                        alias: entry.alias,
-                                        fullId: `${workspaceId}/${entry.alias}`,
-                                    };
-                                })
-                                .filter(Boolean);
-
-                            artifactDebug.cacheSize = normalized.length;
-                            artifactDebug.lastError = '';
-                            return normalized;
-                        } catch (error) {
-                            lastAttemptError = error;
-                            artifactDebug.lastError = String(error?.message || error);
-                            if (isWorkspacePermissionError(error)) {
-                                artifactInputError.value = `Permission denied to workspace '${workspaceId}'.`;
-                            }
+                        artifactDebug.cacheSize = normalized.length;
+                        artifactDebug.lastError = '';
+                        return normalized;
+                    } catch (error) {
+                        lastAttemptError = error;
+                        artifactDebug.lastError = String(error?.message || error);
+                        if (isWorkspacePermissionError(error)) {
+                            artifactInputError.value = `Permission denied to workspace '${workspaceId}'.`;
                         }
                     }
 

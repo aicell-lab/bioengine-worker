@@ -318,7 +318,7 @@
                                             <input 
                                                 v-model="trainingParams.artifact_input" 
                                                 @input="handleArtifactInput"
-                                                @focus="handleArtifactInput"
+                                                @focus="handleArtifactFocus"
                                                 @blur="closeSuggestions"
                                                 @keydown.tab.prevent="acceptSuggestion"
                                                 required 
@@ -326,7 +326,9 @@
                                                     'flex-grow rounded-lg px-3 py-2 text-sm outline-none transition border focus:ring-2',
                                                     artifactInputError
                                                         ? 'bg-red-50 border-red-500 text-red-700 placeholder-red-300 focus:border-red-500 focus:ring-red-300'
-                                                        : 'bg-gray-50 border-gray-300 focus:border-blue-500 focus:ring-blue-500'
+                                                        : (artifactIdExists && !artifactLookupPending
+                                                            ? 'bg-green-50 border-green-400 text-green-900 focus:border-green-500 focus:ring-green-400'
+                                                            : 'bg-gray-50 border-gray-300 focus:border-blue-500 focus:ring-blue-500')
                                                 ]"
                                                 placeholder="workspace/dataset-alias"
                                             >
@@ -354,29 +356,47 @@
                                             </div>
                                         </div>
                                         <p v-if="artifactInputError" class="text-xs text-red-600">[[ artifactInputError ]]</p>
+                                        <p v-else-if="artifactLookupPending" class="text-xs text-blue-600">Checking artifact…</p>
+                                        <p v-else-if="artifactIdExists" class="text-xs text-green-700 flex items-center gap-1"><i class="fas fa-check-circle"></i> Artifact found</p>
                                     </div>
                                 </div>
 
-                                <div v-if="trainingParams.dataset_source === 'Upload'">
+                                <div v-if="trainingParams.dataset_source === 'Upload'" class="md:col-span-2">
                                     <label class="block text-sm font-medium text-gray-700 mb-1">Upload Data</label>
-                                    <div class="flex gap-2">
-                                        <div v-if="trainingParams.uploaded_artifact" class="flex-grow bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-sm text-green-800 flex items-center">
-                                            <i class="fas fa-check-circle mr-2"></i> [[ trainingParams.uploaded_artifact ]]
+                                    <div class="flex items-center gap-2">
+                                        <div v-if="trainingParams.uploaded_artifact" class="flex-grow min-w-0 h-10 bg-green-50 border border-green-200 rounded-lg px-3 text-sm text-green-800 flex items-center">
+                                            <i class="fas fa-check-circle mr-2 shrink-0"></i>
+                                            <span class="truncate" :title="trainingParams.uploaded_artifact">[[ trainingParams.uploaded_artifact ]]</span>
                                         </div>
-                                        <div v-else class="flex-grow bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-400 italic">
+                                        <div v-else class="flex-grow min-w-0 h-10 bg-gray-50 border border-gray-300 rounded-lg px-3 text-sm text-gray-400 italic flex items-center">
                                             No dataset uploaded yet
                                         </div>
-                                        <button type="button" @click="showUploadModal = true" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition shadow-sm font-medium whitespace-nowrap">
+                                        <button type="button" @click="showUploadModal = true" class="h-10 px-4 inline-flex items-center bg-green-600 text-white rounded-lg hover:bg-green-700 transition shadow-sm font-medium whitespace-nowrap">
                                             <i class="fas fa-cloud-upload-alt mr-1"></i> Upload Folder
                                         </button>
+                                        <button
+                                            type="button"
+                                            @click="openFileBrowser"
+                                            :disabled="!trainingParams.uploaded_artifact"
+                                            :class="[
+                                                'h-10 px-4 inline-flex items-center border rounded-lg transition shadow-sm font-medium whitespace-nowrap',
+                                                trainingParams.uploaded_artifact
+                                                    ? 'bg-slate-100 border-slate-300 hover:bg-slate-200 text-slate-700'
+                                                    : 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
+                                            ]"
+                                            :title="trainingParams.uploaded_artifact ? 'Browse uploaded dataset files' : 'Upload a dataset first'"
+                                        >
+                                            <i class="fas fa-folder-open mr-1"></i> Browse Files
+                                        </button>
                                     </div>
+                                    <p class="mt-1 text-xs text-gray-500">Use Browse Files to pick image/annotation folders, same as Artifact source.</p>
                                 </div>
 
                                 <div v-if="trainingParams.dataset_source === 'BioImage Archive'">
                                     <label class="block text-sm font-medium text-gray-700 mb-1">Archive URL <span class="text-red-500">*</span></label>
                                     <div class="flex gap-2">
                                         <input v-model="trainingParams.bioimage_archive_url" required class="flex-grow bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition" placeholder="https://www.ebi.ac.uk/biostudies/bioimages/studies/...">
-                                        <a href="https://www.ebi.ac.uk/biostudies/bioimages" target="_blank" rel="noopener noreferrer" class="px-4 py-2 bg-slate-100 border border-slate-300 rounded-lg hover:bg-slate-200 text-slate-700 transition text-sm whitespace-nowrap">
+                                        <a href="https://beta.bioimagearchive.org/bioimage-archive/galleries/ai/ai-ready-studies" target="_blank" rel="noopener noreferrer" class="px-4 py-2 bg-slate-100 border border-slate-300 rounded-lg hover:bg-slate-200 text-slate-700 transition text-sm whitespace-nowrap">
                                             <i class="fas fa-external-link-alt mr-1"></i> Search EBI
                                         </a>
                                     </div>
@@ -396,13 +416,53 @@
                                                 :value="id"
                                                 v-show="s.status_type === 'completed'"
                                             >
-                                                ⚫ [[ id.slice(0,8) ]]
+                                                ✅ [[ id.slice(0,8) ]]
                                             </option>
                                         </optgroup>
                                     </select>
                                 </div>
 
                                 <div v-if="trainingParams.dataset_source !== 'BioImage Archive'" class="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                                     <div>
+                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Train Images</label>
+                                        <input v-model="trainingParams.train_images" @input="markPathFieldEdited('train_images')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. images/*/*.tif">
+                                        <div class="mt-1 text-xs text-gray-500 flex flex-wrap items-center gap-2">
+                                            <span>Examples:</span>
+                                            <button type="button" @click="applyTrainingGlobExample" class="text-blue-600 hover:underline">images/*/*.tif</button>
+                                            <button type="button" @click="applyTrainingFolderExample" class="text-blue-600 hover:underline">images/ + annotations/</button>
+                                            <button type="button" @click="validateTrainingPaths(true)" :disabled="isPathValidating" class="text-blue-600 hover:underline disabled:opacity-50">
+                                                [[ isPathValidating ? 'Checking…' : 'Validate paths' ]]
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Train Annotations</label>
+                                        <input v-model="trainingParams.train_annotations" @input="markPathFieldEdited('train_annotations')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. annotations/*/*_mask.ome.tif">
+                                    </div>
+                                    <div v-if="showAutoDetectButton" class="md:col-span-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 flex items-center justify-between gap-3">
+                                        <div class="text-xs text-blue-900">
+                                            <i class="fas fa-magic mr-1"></i>
+                                            Auto-detect paths by scanning this artifact
+                                        </div>
+                                        <button type="button" @click="runPathAutoDetection(true)" :disabled="isPathDetecting" class="px-3 py-1.5 rounded bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-50">
+                                            [[ isPathDetecting ? 'Detecting…' : 'Auto-detect paths' ]]
+                                        </button>
+                                    </div>
+                                    <div v-if="pathAutoError" class="md:col-span-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                                        <i class="fas fa-exclamation-triangle mr-1"></i> [[ pathAutoError ]]
+                                    </div>
+                                    <div v-else-if="pathValidationMessage" :class="[
+                                        'md:col-span-2 rounded-md border px-3 py-2 text-xs',
+                                        pathValidationOk ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-red-200 bg-red-50 text-red-800'
+                                    ]">
+                                        <i :class="pathValidationOk ? 'fas fa-check-circle mr-1' : 'fas fa-exclamation-triangle mr-1'"></i>
+                                        [[ pathValidationMessage ]]
+                                    </div>
+                                    <div class="md:col-span-2">
+                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Metadata Folder (Opt)</label>
+                                        <input v-model="trainingParams.metadata_dir" @input="markPathFieldEdited('metadata_dir')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. metadata/">
+                                        <p class="text-xs text-gray-500 mt-1">Use this to load image/annotation pairs from metadata JSON files; then explicit annotation masks are optional.</p>
+                                    </div>
                                     <div class="md:col-span-2">
                                         <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Train/Test Split</label>
                                         <div class="flex items-center gap-5 text-sm text-gray-700">
@@ -421,31 +481,13 @@
                                         </div>
                                         <p class="mt-1 text-xs text-gray-500" v-if="trainingParams.split_mode === 'auto'">Uses train paths only and splits into train/test (default 0.8).</p>
                                     </div>
-                                     <div>
-                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Train Images</label>
-                                        <input v-model="trainingParams.train_images" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. images/*/*.tif">
-                                        <div class="mt-1 text-xs text-gray-500 flex flex-wrap items-center gap-2">
-                                            <span>Examples:</span>
-                                            <button type="button" @click="applyTrainingGlobExample" class="text-blue-600 hover:underline">images/**/*.tif</button>
-                                            <button type="button" @click="applyTrainingFolderExample" class="text-blue-600 hover:underline">images/ + annotations/</button>
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Train Annotations</label>
-                                        <input v-model="trainingParams.train_annotations" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. annotations/*/*_mask.ome.tif">
-                                    </div>
-                                    <div class="md:col-span-2">
-                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Metadata Folder (Opt)</label>
-                                        <input v-model="trainingParams.metadata_dir" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. metadata/">
-                                        <p class="text-xs text-gray-500 mt-1">Use this to load image/annotation pairs from metadata JSON files; then explicit annotation masks are optional.</p>
-                                    </div>
                                     <div v-if="trainingParams.split_mode === 'manual'">
                                         <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Test Images (Opt)</label>
-                                        <input v-model="trainingParams.test_images" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
+                                        <input v-model="trainingParams.test_images" @input="markPathFieldEdited('test_images')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
                                     </div>
                                     <div v-if="trainingParams.split_mode === 'manual'">
                                         <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Test Annotations (Opt)</label>
-                                        <input v-model="trainingParams.test_annotations" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
+                                        <input v-model="trainingParams.test_annotations" @input="markPathFieldEdited('test_annotations')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
                                     </div>
                                 </div>
                                 <div v-else class="md:col-span-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
@@ -476,7 +518,7 @@
 
                          <div class="flex justify-end gap-4">
                              <button type="button" @click="currentTab = 'dashboard'" class="px-6 py-2.5 text-gray-600 font-medium hover:bg-gray-100 rounded-lg transition">Cancel</button>
-                             <button type="submit" :disabled="isStartingTraining" class="bg-blue-600 text-white px-8 py-2.5 rounded-lg shadow-sm hover:bg-blue-700 hover:shadow-md transition-all font-medium disabled:opacity-50 flex items-center gap-2">
+                             <button type="submit" :disabled="isTrainingStartDisabled" class="bg-blue-600 text-white px-8 py-2.5 rounded-lg shadow-sm hover:bg-blue-700 hover:shadow-md transition-all font-medium disabled:opacity-50 flex items-center gap-2">
                                 <i v-if="isStartingTraining" class="fas fa-circle-notch fa-spin"></i>
                                 [[ isStartingTraining ? 'Starting...' : 'Start Training' ]]
                             </button>
@@ -784,7 +826,18 @@
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1">Select Folder</label>
-                        <input type="file" ref="folderInput" @change="handleFolderSelect" webkitdirectory directory multiple required class="w-full text-sm border border-gray-300 rounded-lg p-2 bg-gray-50">
+                        <input id="upload-folder-input" type="file" ref="folderInput" @change="handleFolderSelect" webkitdirectory directory multiple required class="hidden">
+                        <label for="upload-folder-input" class="inline-flex items-center gap-2 px-4 py-2 border border-gray-300 bg-gray-50 hover:bg-gray-100 text-gray-700 rounded-lg text-sm font-medium cursor-pointer transition">
+                            <i class="fas fa-folder-open text-gray-500"></i>
+                            Choose Folder
+                        </label>
+                        <p class="text-xs text-gray-600 mt-2">
+                            <span v-if="selectedFileCount > 0">
+                                <i class="fas fa-check-circle text-green-600"></i>
+                                [[ selectedFolderName ]] ([[ selectedFileCount ]] files)
+                            </span>
+                            <span v-else class="text-gray-400">No folder selected</span>
+                        </p>
                         <p class="text-xs text-gray-500 mt-1.5"><i class="fas fa-info-circle"></i> Folder should contain images and mask files.</p>
                     </div>
                     
@@ -872,10 +925,12 @@
                 const uploadProgress = ref(0);
                 const uploadStatus = ref('');
                 const folderInput = ref(null);
+                const selectedFolderName = ref('');
+                const selectedFileCount = ref(0);
 
                 // Inference Data
                 const inferenceParams = reactive({ model: 'cpsam', diameter: null });
-                const pretrainedModels = ['cpsam', 'cyto3', 'nuclei', 'tissuenet'];
+                const pretrainedModels = ['cpsam'];
                 const inferenceFile = ref(null);
                 const inferencePreview = ref(null);
                 const isInferring = ref(false);
@@ -897,6 +952,23 @@
                 const browserPath = ref(''); 
                 const browserLoading = ref(false);
                 const browserError = ref('');
+                const isPathDetecting = ref(false);
+                const isPathValidating = ref(false);
+                const pathAutoHint = ref('');
+                const pathValidationMessage = ref('');
+                const pathValidationOk = ref(false);
+                const pathFieldsDirty = reactive({
+                    train_images: false,
+                    train_annotations: false,
+                    metadata_dir: false,
+                    test_images: false,
+                    test_annotations: false,
+                });
+                const lastAutoPathArtifact = ref('');
+                const autoDetectedPathsPristine = ref(false);
+                let continuousValidationTimer = null;
+
+                const SUPPORTED_IMAGE_EXT_RE = /\.(ome\.)?(tif|tiff|png|jpg|jpeg)$/i;
 
 
                 // Autocomplete Logic
@@ -1021,6 +1093,8 @@
                 const queryWorkspaceArtifacts = async (workspaceId, queryText) => {
                     const query = String(queryText || '').trim();
                     const keywords = query ? [query] : [];
+                    const pageLimit = 200;
+                    const maxArtifacts = 2000;
                     let am = null;
                     let lastAttemptError = null;
                     try {
@@ -1033,34 +1107,58 @@
                         }
                         return [];
                     }
-                    
+
+                    const normalizeEntries = (rawItems) => rawItems
+                        .map((item) => {
+                            const entry = normalizeArtifactEntry(item);
+                            if (!entry) return null;
+                            if (entry.workspace) return entry;
+                            return {
+                                workspace: workspaceId,
+                                alias: entry.alias,
+                                fullId: `${workspaceId}/${entry.alias}`,
+                            };
+                        })
+                        .filter(Boolean);
+
+                    const fetchPaged = async (buildAttempt) => {
+                        const collected = [];
+                        const seen = new Set();
+
+                        for (let offset = 0; offset < maxArtifacts; offset += pageLimit) {
+                            const listed = await buildAttempt(offset);
+                            const rawItems = normalizeArtifactListResponse(listed);
+                            const normalized = normalizeEntries(rawItems);
+
+                            if (normalized.length === 0) break;
+
+                            for (const entry of normalized) {
+                                const id = entry.fullId;
+                                if (!id || seen.has(id)) continue;
+                                seen.add(id);
+                                collected.push(entry);
+                            }
+
+                            if (normalized.length < pageLimit) break;
+                            if (collected.length >= maxArtifacts) break;
+                        }
+
+                        return collected;
+                    };
+
                     const attempts = [
-                        () => am.list({ keywords, limit: 30, _rkwargs: true }),
-                        () => am.list({ keywords, limit: 30 }),
-                        () => am.list(workspaceId, { keywords, limit: 30 }),
-                        () => am.list(workspaceId, { keywords }),
+                        (offset) => am.list({ keywords, limit: pageLimit, offset, stage: 'all', _rkwargs: true }),
+                        (offset) => am.list({ keywords, limit: pageLimit, offset, stage: 'all' }),
+                        (offset) => am.list({ keywords, limit: pageLimit, offset }),
                     ];
 
+                    let normalizedResult = [];
                     for (const attempt of attempts) {
                         try {
-                            const listed = await attempt();
-                            const rawItems = normalizeArtifactListResponse(listed);
-                            const normalized = rawItems
-                                .map((item) => {
-                                    const entry = normalizeArtifactEntry(item);
-                                    if (!entry) return null;
-                                    if (entry.workspace) return entry;
-                                    return {
-                                        workspace: workspaceId,
-                                        alias: entry.alias,
-                                        fullId: `${workspaceId}/${entry.alias}`,
-                                    };
-                                })
-                                .filter(Boolean);
-
-                            artifactDebug.cacheSize = normalized.length;
+                            normalizedResult = await fetchPaged(attempt);
+                            artifactDebug.cacheSize = normalizedResult.length;
                             artifactDebug.lastError = '';
-                            return normalized;
+                            break;
                         } catch (error) {
                             lastAttemptError = error;
                             artifactDebug.lastError = String(error?.message || error);
@@ -1068,6 +1166,33 @@
                                 artifactInputError.value = `Permission denied to workspace '${workspaceId}'.`;
                             }
                         }
+                    }
+
+                    if (query && normalizedResult.length === 0) {
+                        const broadAttempts = [
+                            (offset) => am.list({ limit: pageLimit, offset, stage: 'all', _rkwargs: true }),
+                            (offset) => am.list({ limit: pageLimit, offset, stage: 'all' }),
+                            (offset) => am.list({ limit: pageLimit, offset }),
+                        ];
+
+                        for (const attempt of broadAttempts) {
+                            try {
+                                normalizedResult = await fetchPaged(attempt);
+                                artifactDebug.cacheSize = normalizedResult.length;
+                                artifactDebug.lastError = '';
+                                break;
+                            } catch (error) {
+                                lastAttemptError = error;
+                                artifactDebug.lastError = String(error?.message || error);
+                                if (isWorkspacePermissionError(error)) {
+                                    artifactInputError.value = `Permission denied to workspace '${workspaceId}'.`;
+                                }
+                            }
+                        }
+                    }
+
+                    if (normalizedResult.length > 0) {
+                        return normalizedResult;
                     }
 
                     if (lastAttemptError && !artifactInputError.value) {
@@ -1238,7 +1363,6 @@
                      if (parts.length === 2) {
                          const ws = parts[0];
                          const query = parts[1].toLowerCase();
-                         checkArtifactExists(ws, parts[1]);
                          artifactDebug.lastWorkspace = ws;
                          const remoteMatches = await queryWorkspaceArtifacts(ws, query);
                          if (requestVersion !== artifactInputVersion.value) return;
@@ -1273,6 +1397,30 @@
                         showSuggestions.value = false;
                         artifactDebug.suggestions = 0;
                      }
+                };
+
+                const handleArtifactFocus = async () => {
+                    const requestVersion = ++artifactInputVersion.value;
+                    const val = String(trainingParams.artifact_input || '').trim();
+
+                    if (val) {
+                        await handleArtifactInput();
+                        return;
+                    }
+
+                    artifactInputError.value = '';
+                    artifactIdExists.value = false;
+                    artifactLookupPending.value = false;
+
+                    const workspaces = await fetchWorkspaces();
+                    if (requestVersion !== artifactInputVersion.value) return;
+
+                    suggestions.value = workspaces.slice(0, 100);
+                    showSuggestions.value = suggestions.value.length > 0;
+                    artifactDebug.suggestions = suggestions.value.length;
+                    console.info('[ArtifactAutocomplete] workspace suggestions on focus', {
+                        count: suggestions.value.length,
+                    });
                 };
 
                 const selectSuggestion = (s) => {
@@ -1377,6 +1525,8 @@
                 const applyTrainingGlobExample = () => {
                     trainingParams.train_images = 'images/*/*.tif';
                     trainingParams.train_annotations = 'annotations/*/*_mask.ome.tif';
+                    markPathFieldEdited('train_images');
+                    markPathFieldEdited('train_annotations');
                 };
 
                 const getSelectedArtifactId = () => {
@@ -1386,9 +1536,482 @@
                     return trainingParams.artifact_input;
                 };
 
+                const isCompleteArtifactId = (artifactId) => {
+                    const normalized = String(artifactId || '').trim();
+                    if (!normalized) return false;
+                    const parts = normalized.split('/');
+                    return parts.length === 2 && !!parts[0] && !!parts[1];
+                };
+
+                const isAutoDetectReady = () => {
+                    const artifactId = String(getSelectedArtifactId() || '').trim();
+                    if (!isCompleteArtifactId(artifactId)) return false;
+
+                    if (trainingParams.dataset_source === 'Artifact') {
+                        return artifactIdExists.value && !artifactLookupPending.value;
+                    }
+
+                    if (trainingParams.dataset_source === 'Upload') {
+                        return !!trainingParams.uploaded_artifact && isCompleteArtifactId(trainingParams.uploaded_artifact);
+                    }
+
+                    return false;
+                };
+
+                const hasFreshAutoDetectedPaths = computed(() => {
+                    const artifactId = String(getSelectedArtifactId() || '').trim();
+                    return !!artifactId && autoDetectedPathsPristine.value && artifactId === lastAutoPathArtifact.value;
+                });
+                const showAutoDetectButton = computed(() => isAutoDetectReady() && !hasFreshAutoDetectedPaths.value);
+                const pathAutoError = computed(() => {
+                    const msg = String(pathAutoHint.value || '').trim();
+                    if (!msg) return '';
+                    if (/auto-detect failed|no supported image|no supported mask|does not exist|permission/i.test(msg)) {
+                        return msg;
+                    }
+                    return '';
+                });
+                const isTrainingStartDisabled = computed(() => {
+                    if (isStartingTraining.value) return true;
+                    if (trainingParams.dataset_source === 'BioImage Archive') {
+                        return !String(trainingParams.bioimage_archive_url || '').trim();
+                    }
+                    return !pathValidationOk.value || isPathValidating.value;
+                });
+
                 const applyTrainingFolderExample = () => {
                     trainingParams.train_images = 'images/';
                     trainingParams.train_annotations = 'annotations/';
+                    markPathFieldEdited('train_images');
+                    markPathFieldEdited('train_annotations');
+                };
+
+                const markPathFieldEdited = (field) => {
+                    autoDetectedPathsPristine.value = false;
+                    if (pathFieldsDirty[field] === false) pathFieldsDirty[field] = true;
+                };
+
+                const resetPathDirtyFlags = () => {
+                    pathFieldsDirty.train_images = false;
+                    pathFieldsDirty.train_annotations = false;
+                    pathFieldsDirty.metadata_dir = false;
+                    pathFieldsDirty.test_images = false;
+                    pathFieldsDirty.test_annotations = false;
+                };
+
+                const hasNestedUnderRoot = (paths, root) => {
+                    const prefix = `${String(root || '').toLowerCase()}/`;
+                    return paths.some((pathStr) => {
+                        const normalized = String(pathStr || '').toLowerCase();
+                        if (!normalized.startsWith(prefix)) return false;
+                        const rest = normalized.slice(prefix.length);
+                        return rest.includes('/');
+                    });
+                };
+
+                const hasDirectFilesUnderRoot = (paths, root) => {
+                    const prefix = `${String(root || '').toLowerCase()}/`;
+                    return paths.some((pathStr) => {
+                        const normalized = String(pathStr || '').toLowerCase();
+                        if (!normalized.startsWith(prefix)) return false;
+                        const rest = normalized.slice(prefix.length);
+                        return rest.length > 0 && !rest.includes('/');
+                    });
+                };
+
+                const choosePreferredSpec = (paths, roots) => {
+                    const candidates = Array.isArray(roots) ? roots : [];
+                    for (const root of candidates) {
+                        if (hasNestedUnderRoot(paths, root)) return `${root}/*/`;
+                    }
+                    for (const root of candidates) {
+                        if (hasDirectFilesUnderRoot(paths, root)) return `${root}/*`;
+                    }
+                    return '';
+                };
+
+                const normalizeListedPath = (entry) => {
+                    const raw = typeof entry === 'string'
+                        ? entry
+                        : (entry?.name || entry?.path || entry?.key || '');
+                    return String(raw || '').replace(/^\.?\//, '').trim();
+                };
+
+                const hasFileExtension = (pathStr) => baseName(pathStr).includes('.');
+
+                const normalizeListEntry = (entry, parentDir = '') => {
+                    let normalized = normalizeListedPath(entry);
+                    if (!normalized) return null;
+
+                    const parent = String(parentDir || '').replace(/^\.?\//, '').replace(/\/+$/, '');
+                    if (parent && !normalized.startsWith(parent + '/')) {
+                        normalized = `${parent}/${normalized}`;
+                    }
+
+                    const explicitFolder =
+                        (typeof entry === 'object' && (entry?.type === 'folder' || entry?.type === 'directory')) ||
+                        normalized.endsWith('/');
+                    const inferredFolder = !hasFileExtension(normalized);
+
+                    return {
+                        path: normalized.replace(/\/+$/, ''),
+                        isFolder: explicitFolder || inferredFolder,
+                    };
+                };
+
+                const listFilesPage = async (am, artifactId, dirPath = '', limit = 1000, offset = 0) => {
+                    const argsDir = dirPath ? dirPath.replace(/\/+$/, '') : null;
+                    const attempts = [
+                        () => am.list_files({ artifact_id: artifactId, dir_path: argsDir, limit, offset, _rkwargs: true }),
+                        () => am.list_files(artifactId, argsDir, limit, offset),
+                        () => am.list_files(artifactId, argsDir),
+                        () => am.list_files(artifactId),
+                    ];
+
+                    for (const attempt of attempts) {
+                        try {
+                            const result = await attempt();
+                            if (Array.isArray(result)) return result;
+                        } catch (_error) {
+                            // try next attempt
+                        }
+                    }
+                    return [];
+                };
+
+                const listFilesPaged = async (am, artifactId, dirPath = '') => {
+                    const limit = 1000;
+                    let offset = 0;
+                    const all = [];
+
+                    while (offset <= 50000) {
+                        const page = await listFilesPage(am, artifactId, dirPath, limit, offset);
+                        if (!Array.isArray(page) || page.length === 0) break;
+                        all.push(...page);
+                        if (page.length < limit) break;
+                        offset += limit;
+                    }
+
+                    return all;
+                };
+
+                const loadArtifactFiles = async (artifactId) => {
+                    const am = await getArtifactManager();
+                    const fileSet = new Set();
+                    const folderQueue = [];
+                    const visitedFolders = new Set();
+
+                    const rootItems = await listFilesPaged(am, artifactId, '');
+                    const normalizedRoot = rootItems
+                        .map((item) => normalizeListEntry(item, ''))
+                        .filter(Boolean);
+
+                    for (const item of normalizedRoot) {
+                        if (item.isFolder) folderQueue.push(item.path);
+                        else fileSet.add(item.path);
+                    }
+
+                    while (folderQueue.length > 0 && visitedFolders.size < 500) {
+                        const folder = folderQueue.shift();
+                        if (!folder || visitedFolders.has(folder)) continue;
+                        visitedFolders.add(folder);
+
+                        const folderItems = await listFilesPaged(am, artifactId, folder);
+                        const normalizedFolder = folderItems
+                            .map((item) => normalizeListEntry(item, folder))
+                            .filter(Boolean);
+
+                        for (const item of normalizedFolder) {
+                            if (item.path === folder) continue;
+                            if (item.isFolder) {
+                                if (!visitedFolders.has(item.path)) folderQueue.push(item.path);
+                            } else {
+                                fileSet.add(item.path);
+                            }
+                        }
+                    }
+
+                    let paths = Array.from(fileSet).filter((p) => p && !p.endsWith('/'));
+
+                    if (paths.length === 0) {
+                        const artifact = await am.read(artifactId);
+                        const fallback = artifact?.manifest?.files || artifact?.files || [];
+                        paths = (Array.isArray(fallback) ? fallback : []).map(normalizeListedPath).filter(Boolean);
+                    }
+
+                    return Array.from(new Set(paths.filter((p) => !p.endsWith('/'))));
+                };
+
+                const baseName = (pathStr) => String(pathStr || '').split('/').pop() || '';
+                const parentDir = (pathStr) => {
+                    const normalized = String(pathStr || '').replace(/\/+$/, '');
+                    const idx = normalized.lastIndexOf('/');
+                    return idx >= 0 ? normalized.slice(0, idx) : '';
+                };
+
+                const isSupportedImagePath = (pathStr) => SUPPORTED_IMAGE_EXT_RE.test(String(pathStr || ''));
+
+                const isMaskPath = (pathStr) => {
+                    const value = String(pathStr || '').toLowerCase();
+                    return (
+                        value.includes('/mask') || value.includes('/masks') ||
+                        value.includes('/annotation') || value.includes('/annotations') ||
+                        value.includes('/label') || value.includes('/labels') ||
+                        /(^|[\/_-])(mask|masks|label|labels|annotation|annotations|seg|segmentation)([\/_-]|$)/.test(value)
+                    );
+                };
+
+                const scoreDir = (dir, count, keywords) => {
+                    const text = String(dir || '').toLowerCase();
+                    let score = count;
+                    if (text.includes('/train/') || text.startsWith('train/')) score += 2;
+                    for (const keyword of keywords) {
+                        if (text.includes(keyword)) score += 3;
+                    }
+                    return score;
+                };
+
+                const chooseBestDir = (files, keywords) => {
+                    if (!files || files.length === 0) return '';
+                    const counts = new Map();
+                    files.forEach((pathStr) => {
+                        const dir = parentDir(pathStr);
+                        counts.set(dir, (counts.get(dir) || 0) + 1);
+                    });
+
+                    let bestDir = '';
+                    let bestScore = -Infinity;
+                    for (const [dir, count] of counts.entries()) {
+                        const score = scoreDir(dir, count, keywords);
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestDir = dir;
+                        }
+                    }
+                    return bestDir;
+                };
+
+                const globToRegex = (pattern) => {
+                    const normalized = String(pattern || '').replace(/^\.?\//, '').trim();
+                    const escaped = normalized
+                        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+                        .replace(/\*\*/g, '::DOUBLE_STAR::')
+                        .replace(/\*/g, '[^/]*')
+                        .replace(/\?/g, '.')
+                        .replace(/::DOUBLE_STAR::/g, '.*');
+                    return new RegExp(`^${escaped}$`, 'i');
+                };
+
+                const fileMatcherFromSpec = (spec) => {
+                    const value = String(spec || '').trim().replace(/^\.?\//, '');
+                    if (!value) return () => false;
+                    if (value.includes('*') || value.includes('?')) {
+                        const wildcardPattern = value.endsWith('/') ? `${value}**` : value;
+                        const regex = globToRegex(wildcardPattern);
+                        return (pathStr) => regex.test(pathStr);
+                    }
+
+                    const normalized = value.replace(/\/+$/, '');
+                    const isLikelyDirectory = value.endsWith('/') || !baseName(normalized).includes('.');
+                    if (isLikelyDirectory) {
+                        const prefix = normalized ? `${normalized}/` : '';
+                        return (pathStr) => String(pathStr).startsWith(prefix);
+                    }
+
+                    return (pathStr) => String(pathStr) === normalized;
+                };
+
+                const normalizePairStem = (pathStr) => {
+                    const file = baseName(pathStr).toLowerCase();
+                    const withoutExt = file.replace(/\.(ome\.)?(tif|tiff|png|jpg|jpeg)$/i, '');
+                    return withoutExt
+                        .replace(/([._-])(mask|masks|label|labels|annotation|annotations|seg|segmentation)$/i, '')
+                        .replace(/\s+/g, '');
+                };
+
+                const validatePairSpecs = (allFiles, imageSpec, annotationSpec, phaseLabel) => {
+                    const imageMatcher = fileMatcherFromSpec(imageSpec);
+                    const annotationMatcher = fileMatcherFromSpec(annotationSpec);
+                    const imageFiles = allFiles.filter((pathStr) => isSupportedImagePath(pathStr) && imageMatcher(pathStr) && !isMaskPath(pathStr));
+                    const annotationFiles = allFiles.filter((pathStr) => isSupportedImagePath(pathStr) && annotationMatcher(pathStr));
+
+                    if (imageFiles.length === 0) {
+                        throw new Error(`${phaseLabel}: no supported image files found for '${imageSpec}'.`);
+                    }
+                    if (annotationFiles.length === 0) {
+                        throw new Error(`${phaseLabel}: no supported mask/annotation files found for '${annotationSpec}'.`);
+                    }
+
+                    const annotationStemSet = new Set(annotationFiles.map((pathStr) => normalizePairStem(pathStr)));
+                    const pairedCount = imageFiles.filter((pathStr) => annotationStemSet.has(normalizePairStem(pathStr))).length;
+                    if (pairedCount === 0) {
+                        throw new Error(`${phaseLabel}: found files, but no image/mask pairs matched by filename stem.`);
+                    }
+
+                    return {
+                        imageCount: imageFiles.length,
+                        annotationCount: annotationFiles.length,
+                        pairedCount,
+                    };
+                };
+
+                const runPathAutoDetection = async (manualTrigger = false) => {
+                    const artifactId = String(getSelectedArtifactId() || '').trim();
+                    if (!isCompleteArtifactId(artifactId)) {
+                        if (manualTrigger) {
+                            pathAutoHint.value = 'Finish entering a valid artifact ID (workspace/alias) before auto-detecting paths.';
+                        }
+                        return;
+                    }
+
+                    if (!isAutoDetectReady()) {
+                        if (manualTrigger) {
+                            pathAutoHint.value = 'Auto-detect is available after the artifact ID is resolved to an existing artifact.';
+                        }
+                        return;
+                    }
+
+                    const userEditedAnyPath = Object.values(pathFieldsDirty).some(Boolean);
+                    if (userEditedAnyPath && !manualTrigger) {
+                        return;
+                    }
+
+                    isPathDetecting.value = true;
+                    pathAutoHint.value = '';
+                    autoDetectedPathsPristine.value = false;
+
+                    try {
+                        const files = await loadArtifactFiles(artifactId);
+                        const supported = files.filter((pathStr) => isSupportedImagePath(pathStr));
+                        const masks = supported.filter((pathStr) => isMaskPath(pathStr));
+                        const images = supported.filter((pathStr) => !isMaskPath(pathStr));
+
+                        if (images.length === 0 || masks.length === 0) {
+                            pathAutoHint.value = 'Auto-detect tried, but no supported image/mask files were found (supported: tif/tiff/png/jpg/jpeg).';
+                            return;
+                        }
+
+                        const trainImageDir = chooseBestDir(images, ['images', '/img', '/raw', '/train']);
+                        const trainMaskDir = chooseBestDir(masks, ['annotations', '/masks', '/labels', '/train']);
+                        const preferredTrainImages = choosePreferredSpec(images, ['images']);
+                        const preferredTrainAnnotations = choosePreferredSpec(masks, ['annotations', 'masks', 'labels']);
+                        const testImageDir = chooseBestDir(images.filter((pathStr) => /(^|\/)test(\/|$)|(^|\/)val(\/|$)|(^|\/)validation(\/|$)/i.test(pathStr)), ['test', 'val', 'validation']);
+                        const testMaskDir = chooseBestDir(masks.filter((pathStr) => /(^|\/)test(\/|$)|(^|\/)val(\/|$)|(^|\/)validation(\/|$)/i.test(pathStr)), ['test', 'val', 'validation']);
+
+                        trainingParams.train_images = preferredTrainImages || (trainImageDir ? `${trainImageDir}/` : '');
+                        trainingParams.train_annotations = preferredTrainAnnotations || (trainMaskDir ? `${trainMaskDir}/` : '');
+
+                        if (trainingParams.split_mode === 'manual' && testImageDir && testMaskDir) {
+                            trainingParams.test_images = `${testImageDir}/`;
+                            trainingParams.test_annotations = `${testMaskDir}/`;
+                        }
+
+                        resetPathDirtyFlags();
+                        autoDetectedPathsPristine.value = true;
+                        pathAutoHint.value = '';
+                        lastAutoPathArtifact.value = artifactId;
+                        await validateTrainingPaths(true);
+                    } catch (error) {
+                        autoDetectedPathsPristine.value = false;
+                        pathAutoHint.value = `Auto-detect failed: ${String(error?.message || error)}`;
+                    } finally {
+                        isPathDetecting.value = false;
+                    }
+                };
+
+                const validateTrainingPaths = async (showSuccess = true) => {
+                    const isBioImageArchive = trainingParams.dataset_source === 'BioImage Archive';
+                    if (isBioImageArchive) {
+                        pathValidationOk.value = true;
+                        pathValidationMessage.value = '';
+                        return true;
+                    }
+
+                    const artifactId = String(getSelectedArtifactId() || '').trim();
+                    if (!artifactId) {
+                        pathValidationOk.value = false;
+                        pathValidationMessage.value = showSuccess ? 'Select an artifact first.' : '';
+                        return false;
+                    }
+
+                    if (!isCompleteArtifactId(artifactId) || !isAutoDetectReady()) {
+                        pathValidationOk.value = false;
+                        pathValidationMessage.value = showSuccess
+                            ? 'Finish entering a valid, existing artifact ID before validating paths.'
+                            : '';
+                        return false;
+                    }
+
+                    const hasMetadataDir = !!String(trainingParams.metadata_dir || '').trim();
+                    const hasTrainImages = !!String(trainingParams.train_images || '').trim();
+                    const hasTrainAnnotations = !!String(trainingParams.train_annotations || '').trim();
+                    const hasTestImages = !!String(trainingParams.test_images || '').trim();
+                    const hasTestAnnotations = !!String(trainingParams.test_annotations || '').trim();
+
+                    if (!hasMetadataDir && (!hasTrainImages || !hasTrainAnnotations)) {
+                        pathValidationOk.value = false;
+                        pathValidationMessage.value = showSuccess ? 'Provide either metadata folder, or both train image and train annotation paths.' : '';
+                        return false;
+                    }
+
+                    if (trainingParams.split_mode === 'manual' && (hasTestImages !== hasTestAnnotations)) {
+                        pathValidationOk.value = false;
+                        pathValidationMessage.value = showSuccess ? 'For manual split, provide both test image and test annotation paths (or leave both empty).' : '';
+                        return false;
+                    }
+
+                    isPathValidating.value = true;
+                    pathValidationMessage.value = '';
+
+                    try {
+                        const files = await loadArtifactFiles(artifactId);
+                        const supportedFileCount = files.filter((pathStr) => isSupportedImagePath(pathStr)).length;
+
+                        if (!hasMetadataDir) {
+                            const trainResult = validatePairSpecs(files, trainingParams.train_images, trainingParams.train_annotations, 'Train set');
+                            let message = `Train pairs found: ${trainResult.pairedCount} (images: ${trainResult.imageCount}, masks: ${trainResult.annotationCount}).`;
+
+                            const hasManualTestPaths = trainingParams.split_mode === 'manual' &&
+                                String(trainingParams.test_images || '').trim() &&
+                                String(trainingParams.test_annotations || '').trim();
+
+                            if (hasManualTestPaths) {
+                                const testResult = validatePairSpecs(files, trainingParams.test_images, trainingParams.test_annotations, 'Test set');
+                                message += ` Test pairs found: ${testResult.pairedCount}.`;
+                            }
+
+                            pathValidationOk.value = true;
+                            pathValidationMessage.value = `${message} Supported files in artifact: ${supportedFileCount}.`;
+                        } else {
+                            if (supportedFileCount === 0) {
+                                throw new Error('No supported image/mask files found in artifact (supported: tif/tiff/png/jpg/jpeg).');
+                            }
+                            pathValidationOk.value = true;
+                            pathValidationMessage.value = `Metadata mode enabled. Found ${supportedFileCount} supported files in artifact.`;
+                        }
+
+                        return true;
+                    } catch (error) {
+                        pathValidationOk.value = false;
+                        pathValidationMessage.value = String(error?.message || error);
+                        return false;
+                    } finally {
+                        isPathValidating.value = false;
+                    }
+                };
+
+                const scheduleContinuousPathValidation = () => {
+                    if (continuousValidationTimer) {
+                        clearTimeout(continuousValidationTimer);
+                    }
+                    continuousValidationTimer = setTimeout(async () => {
+                        if (trainingParams.dataset_source === 'BioImage Archive') {
+                            pathValidationOk.value = true;
+                            pathValidationMessage.value = '';
+                            return;
+                        }
+                        await validateTrainingPaths(true);
+                    }, 250);
                 };
 
                 const getUserWorkspace = () => {
@@ -1713,6 +2336,77 @@
                     });
                 });
 
+                watch(
+                    () => trainingParams.split_mode,
+                    (mode) => {
+                        if (mode === 'auto') {
+                            trainingParams.test_images = '';
+                            trainingParams.test_annotations = '';
+                        }
+                        autoDetectedPathsPristine.value = false;
+                        scheduleContinuousPathValidation();
+                    }
+                );
+
+                watch(
+                    () => [trainingParams.dataset_source, trainingParams.artifact_input, trainingParams.uploaded_artifact, artifactIdExists.value, artifactLookupPending.value],
+                    async () => {
+                        const artifactId = String(getSelectedArtifactId() || '').trim();
+                        if (artifactId !== lastAutoPathArtifact.value) {
+                            autoDetectedPathsPristine.value = false;
+                        }
+                        if (trainingParams.dataset_source === 'BioImage Archive') return;
+                        if (!isCompleteArtifactId(artifactId)) return;
+                        if (!isAutoDetectReady()) return;
+                        if (artifactId === lastAutoPathArtifact.value) return;
+                        await runPathAutoDetection(false);
+                    }
+                );
+
+                watch(
+                    () => [trainingParams.dataset_source, trainingParams.artifact_input],
+                    async () => {
+                        if (trainingParams.dataset_source !== 'Artifact') return;
+
+                        const artifactId = String(trainingParams.artifact_input || '').trim();
+                        const parts = artifactId.split('/');
+                        if (parts.length !== 2) {
+                            artifactIdExists.value = false;
+                            artifactLookupPending.value = false;
+                            return;
+                        }
+
+                        const workspaceId = String(parts[0] || '').trim();
+                        const alias = String(parts[1] || '').trim();
+                        if (!workspaceId || !alias) {
+                            artifactIdExists.value = false;
+                            artifactLookupPending.value = false;
+                            return;
+                        }
+
+                        await checkArtifactExists(workspaceId, alias);
+                    }
+                );
+
+                watch(
+                    () => [
+                        trainingParams.dataset_source,
+                        trainingParams.artifact_input,
+                        trainingParams.uploaded_artifact,
+                        trainingParams.train_images,
+                        trainingParams.train_annotations,
+                        trainingParams.metadata_dir,
+                        trainingParams.test_images,
+                        trainingParams.test_annotations,
+                        trainingParams.split_mode,
+                        artifactIdExists.value,
+                        artifactLookupPending.value,
+                    ],
+                    () => {
+                        scheduleContinuousPathValidation();
+                    }
+                );
+
                 const viewSession = (id) => {
                     if (!sessions.value[id]) return;
                     selectedSessionId.value = id;
@@ -1838,46 +2532,29 @@
                         if (!isBioImageArchive && !hasMetadataDir && (!hasTrainImages || !hasTrainAnnotations)) {
                            throw new Error("Please provide either metadata folder or both train image and annotation paths.");
                         }
+
+                        if (!isBioImageArchive) {
+                            const pathsOk = await validateTrainingPaths(true);
+                            if (!pathsOk) {
+                                throw new Error(pathValidationMessage.value || 'Training path validation failed.');
+                            }
+                        }
                         
                         // Determine the artifact value based on source
-                            let artifactValue = trainingParams.artifact_input;
+                        let artifactValue = trainingParams.artifact_input;
                         if (isBioImageArchive) {
-                            artifactValue = trainingParams.bioimage_archive_url;
+                            artifactValue = String(trainingParams.bioimage_archive_url || '').trim();
                             if (!artifactValue) throw new Error("Please enter a BioImage Archive URL.");
                         } else if (trainingParams.dataset_source === 'Upload') {
-                                artifactValue = trainingParams.uploaded_artifact;
-                             if (!artifactValue) throw new Error("Please upload a dataset first.");
+                            artifactValue = trainingParams.uploaded_artifact;
+                            if (!artifactValue) throw new Error("Please upload a dataset first.");
                         } else {
-                             if (!artifactValue) throw new Error("Please specify an Artifact ID.");
+                            if (!artifactValue) throw new Error("Please specify an Artifact ID.");
                         }
 
-                        console.log("Invoking service.start_training with:", {
-                            artifact: artifactValue,
-                            train_images: isBioImageArchive ? null : (trainingParams.train_images || null),
-                            train_annotations: isBioImageArchive ? null : (trainingParams.train_annotations || null),
-                            metadata_dir: isBioImageArchive ? null : (trainingParams.metadata_dir || null),
-                            split_mode: isBioImageArchive ? 'manual' : trainingParams.split_mode,
-                            train_split_ratio: isBioImageArchive ? 0.8 : trainingParams.train_split_ratio,
-                            test_images: (!isBioImageArchive && trainingParams.split_mode === 'manual') ? (trainingParams.test_images || null) : null,
-                            test_annotations: (!isBioImageArchive && trainingParams.split_mode === 'manual') ? (trainingParams.test_annotations || null) : null,
-                            model: trainingParams.model,
-                            n_epochs: trainingParams.n_epochs,
-                            learning_rate: trainingParams.learning_rate,
-                            min_train_masks: trainingParams.min_train_masks
-                        });
-                        
-                        console.log("Calling start_training with keyword args via _rkwargs.");
-                        
-                        const result = await service.value.start_training(
-                            {
+                        const payload = isBioImageArchive
+                            ? {
                                 artifact: artifactValue,
-                                train_images: isBioImageArchive ? null : (trainingParams.train_images || null),
-                                train_annotations: isBioImageArchive ? null : (trainingParams.train_annotations || null),
-                                metadata_dir: isBioImageArchive ? null : (trainingParams.metadata_dir || null),
-                                split_mode: isBioImageArchive ? 'manual' : (trainingParams.split_mode || 'manual'),
-                                train_split_ratio: isBioImageArchive ? 0.8 : Number(trainingParams.train_split_ratio || 0.8),
-                                test_images: (!isBioImageArchive && trainingParams.split_mode === 'manual') ? (trainingParams.test_images || null) : null,
-                                test_annotations: (!isBioImageArchive && trainingParams.split_mode === 'manual') ? (trainingParams.test_annotations || null) : null,
                                 model: trainingParams.model || 'cpsam',
                                 n_samples: null,
                                 n_epochs: trainingParams.n_epochs,
@@ -1885,9 +2562,30 @@
                                 weight_decay: 1e-4,
                                 min_train_masks: trainingParams.min_train_masks,
                                 validation_interval: null
-                            },
-                            { _rkwargs: true }
-                        );
+                            }
+                            : {
+                                artifact: artifactValue,
+                                train_images: trainingParams.train_images || null,
+                                train_annotations: trainingParams.train_annotations || null,
+                                metadata_dir: trainingParams.metadata_dir || null,
+                                split_mode: trainingParams.split_mode || 'manual',
+                                train_split_ratio: Number(trainingParams.train_split_ratio || 0.8),
+                                test_images: trainingParams.split_mode === 'manual' ? (trainingParams.test_images || null) : null,
+                                test_annotations: trainingParams.split_mode === 'manual' ? (trainingParams.test_annotations || null) : null,
+                                model: trainingParams.model || 'cpsam',
+                                n_samples: null,
+                                n_epochs: trainingParams.n_epochs,
+                                learning_rate: trainingParams.learning_rate,
+                                weight_decay: 1e-4,
+                                min_train_masks: trainingParams.min_train_masks,
+                                validation_interval: null
+                            };
+
+                        console.log("Invoking service.start_training with:", payload);
+                        
+                        console.log("Calling start_training with keyword args via _rkwargs.");
+                        
+                        const result = await service.value.start_training(payload, { _rkwargs: true });
 
                         console.log("start_training result:", result);
                         
@@ -1919,10 +2617,17 @@
                 const handleFolderSelect = (event) => {
                      const files = event.target.files;
                      if (files && files.length > 0) {
+                         selectedFileCount.value = files.length;
+                         const rootFolder = String(files[0].webkitRelativePath || '').split('/')[0] || '';
+                         selectedFolderName.value = rootFolder || 'Selected folder';
+
                          // Generate a readable alias
                          const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
                          const rand = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
                          uploadParams.alias = `dataset-${date}-${rand}`;
+                     } else {
+                         selectedFileCount.value = 0;
+                         selectedFolderName.value = '';
                      }
                 };
 
@@ -1958,6 +2663,11 @@
                             alias: alias,
                             workspace: getUserWorkspace(),
                             manifest: manifest,
+                            config: {
+                                permissions: {
+                                    "*": ["read", "list", "list_files", "get_file"]
+                                }
+                            },
                             type: "dataset",
                             overwrite: true,
                             stage: true,
@@ -2162,7 +2872,11 @@
                             alias: tmpAlias,
                             manifest: manifest,
                             workspace: getServiceWorkspace() || getUserWorkspace(),
-                            config: { permissions: { "*": "r" } },
+                            config: {
+                                permissions: {
+                                    "*": ["read", "list", "list_files", "get_file"]
+                                }
+                            },
                             type: "temp",
                             stage: true,
                             overwrite: true,
@@ -2630,8 +3344,8 @@
                     sessions, refreshSessions, refreshLoading, monitoringSessionId, monitoredSession, selectedSessionId, viewSession, currentSession, hasMetrics, hasValidationSet, stopTraining, restartTraining,
                     runningTrainingSessionsCount,
                     trainingParams, startTraining, isStartingTraining,
-                    applyTrainingGlobExample, applyTrainingFolderExample,
-                    showUploadModal, uploadParams, uploadDataset, isUploading, uploadProgress, uploadStatus, folderInput,
+                    applyTrainingGlobExample, applyTrainingFolderExample, runPathAutoDetection, validateTrainingPaths,
+                    showUploadModal, uploadParams, uploadDataset, isUploading, uploadProgress, uploadStatus, folderInput, selectedFolderName, selectedFileCount,
                     inferenceParams, pretrainedModels, inferenceFile, handleInferenceFile, inferencePreview, isInferring, runInference, inferenceCanvas, previewImg, onImageLoad, canvasStyle, inferenceObjectCount, inferenceResult,
                     exportModelName, isExporting, exportResult, exportModel,
                     
@@ -2640,7 +3354,10 @@
                     browserVisibleItems, browserNavigate, browserNavigateUp, selectFolderFor, browserFeedback,
 
                     // Autocomplete
-                    suggestions, showSuggestions, artifactInputError, artifactIdExists, artifactLookupPending, handleArtifactInput, selectSuggestion, acceptSuggestion, closeSuggestions,
+                    suggestions, showSuggestions, artifactInputError, artifactIdExists, artifactLookupPending, handleArtifactInput, handleArtifactFocus, selectSuggestion, acceptSuggestion, closeSuggestions,
+
+                    // Path auto-detect + validation
+                    isPathDetecting, isPathValidating, pathAutoHint, pathAutoError, showAutoDetectButton, pathValidationMessage, pathValidationOk, markPathFieldEdited, isTrainingStartDisabled,
 
                     // Helpers
                     statusTextColor, formatDuration, handleFolderSelect, getLatestLoss, formatDate, getSelectedArtifactId,

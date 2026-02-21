@@ -79,8 +79,8 @@ def test_match_image_annotation_pairs_with_many_nested_folders() -> None:
     pairs = match_image_annotation_pairs(
         image_files,
         annotation_files,
-        "images/**/*.tif",
-        "annotations/**/*_mask.ome.tif",
+        "images/*/*.tif",
+        "annotations/*/*_mask.ome.tif",
     )
 
     assert pairs == [
@@ -129,22 +129,22 @@ class _FakeArtifact:
 
 
 class _FakeArtifactNestedMetadata:
-        async def ls(self, folder_path: str):
-                await asyncio.sleep(0)
-                folder = folder_path.rstrip("/") + "/"
-                if folder == "metadata/":
-                        return [{"path": "metadata/records.json", "type": "file"}]
-                return []
+    async def ls(self, folder_path: str):
+        await asyncio.sleep(0)
+        folder = folder_path.rstrip("/") + "/"
+        if folder == "metadata/":
+            return [{"path": "metadata/records.json", "type": "file"}]
+        return []
 
-        async def get(self, remote_paths, local_paths, on_error="ignore"):
-                await asyncio.sleep(0)
-                for remote, local in zip(remote_paths, local_paths):
-                        local_path = Path(local)
-                        local_path.parent.mkdir(parents=True, exist_ok=True)
+    async def get(self, remote_paths, local_paths, on_error="ignore"):
+        await asyncio.sleep(0)
+        for remote, local in zip(remote_paths, local_paths):
+            local_path = Path(local)
+            local_path.parent.mkdir(parents=True, exist_ok=True)
 
-                        if str(remote).endswith("metadata/records.json"):
-                                local_path.write_text(
-                                        """
+            if str(remote).endswith("metadata/records.json"):
+                local_path.write_text(
+                    """
 {
     "payload": {
         "items": [
@@ -162,10 +162,10 @@ class _FakeArtifactNestedMetadata:
     }
 }
                                         """.strip(),
-                                        encoding="utf-8",
-                                )
-                        else:
-                                local_path.write_bytes(b"dummy")
+                    encoding="utf-8",
+                )
+            else:
+                local_path.write_bytes(b"dummy")
 
 
 class _FakeArtifactAmbiguousDirs:
@@ -246,9 +246,17 @@ def test_make_training_pairs_from_nested_metadata_formats(tmp_path: Path) -> Non
     assert len(train_pairs) == 1
     assert len(test_pairs) == 1
     assert train_pairs[0]["image"].as_posix().endswith("images/train/t0010.tif")
-    assert train_pairs[0]["annotation"].as_posix().endswith("annotations/train/t0010_mask.ome.tif")
+    assert (
+        train_pairs[0]["annotation"]
+        .as_posix()
+        .endswith("annotations/train/t0010_mask.ome.tif")
+    )
     assert test_pairs[0]["image"].as_posix().endswith("images/test/t0011.tif")
-    assert test_pairs[0]["annotation"].as_posix().endswith("annotations/test/t0011_mask.ome.tif")
+    assert (
+        test_pairs[0]["annotation"]
+        .as_posix()
+        .endswith("annotations/test/t0011_mask.ome.tif")
+    )
 
 
 def test_extract_bia_accession_from_gallery_url() -> None:
@@ -259,4 +267,6 @@ def test_extract_bia_accession_from_gallery_url() -> None:
 def test_pair_key_from_url_handles_mask_suffix() -> None:
     img = "https://example.org/data/images/folder1/t0001.ome.tif"
     ann = "https://example.org/data/annotations/folder1/t0001_mask.ome.tif"
-    assert _pair_key_from_url(img, is_mask=False) == _pair_key_from_url(ann, is_mask=True)
+    assert _pair_key_from_url(img, is_mask=False) == _pair_key_from_url(
+        ann, is_mask=True
+    )

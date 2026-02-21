@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
 import fnmatch
 import hashlib
 import io
@@ -639,6 +640,9 @@ def get_url_and_artifact_id(artifact_id: str | Any) -> tuple[str, str]:
 
     parsed = urlparse(artifact_id)
     if parsed.scheme in ("http", "https"):
+        if _is_bioimage_archive_url(artifact_id):
+            return DEFAULT_SERVER_URL, artifact_id
+
         path_parts = parsed.path.lstrip("/").split("/")
         if path_parts[1] != "artifacts":
             msg = (
@@ -1856,7 +1860,7 @@ def load_model(
 
     If `identifier` points to an existing file, it is treated as a path to a
     finetuned model. Otherwise, it is treated as a builtin model name
-    (e.g., "cyto3").
+    (e.g., "cpsam").
     """
     from cellpose import core, models  # type: ignore
 
@@ -2021,6 +2025,55 @@ def _extract_bia_accession(url: str) -> str | None:
     return match.group(1).upper() if match else None
 
 
+def _bia_ftp_base_url(accession: str) -> str:
+    accession_number = int(accession.split("S-BIAD", 1)[1])
+    suffix = accession_number % 1000
+    return f"https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/{suffix}/{accession}"
+
+
+def _extract_tsv_pairs(tsv_content: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    reader = csv.DictReader(io.StringIO(tsv_content), delimiter="\t")
+    for row in reader:
+        label_path = str(row.get("Files") or "").strip()
+        source_image = str(row.get("Source image") or "").strip()
+        if not label_path or not source_image:
+            continue
+        pairs.append((source_image, label_path))
+    return pairs
+
+
+async def _fetch_bia_tsv_pairs(client: Any, accession: str) -> list[tuple[str, str]]:
+    base_url = _bia_ftp_base_url(accession)
+    candidate_paths = [
+        f"{base_url}/Files/ps_ovule_labels.tsv",
+        f"{base_url}/Files/labels.tsv",
+        f"{base_url}/Files/{accession}_labels.tsv",
+    ]
+
+    for tsv_url in candidate_paths:
+        try:
+            response = await client.get(tsv_url)
+            if response.status_code // 100 != 2 or not response.text.strip():
+                continue
+
+            pairs = _extract_tsv_pairs(response.text)
+            if not pairs:
+                continue
+
+            return [
+                (
+                    f"{base_url}/Files/{image_rel.lstrip('/')}",
+                    f"{base_url}/Files/{label_rel.lstrip('/')}",
+                )
+                for image_rel, label_rel in pairs
+            ]
+        except Exception:
+            continue
+
+    return []
+
+
 def _iter_string_values(payload: Any) -> list[str]:
     out: list[str] = []
     stack = [payload]
@@ -2143,50 +2196,55 @@ async def make_training_pairs_from_bioimage_archive_url(
         )
 
     async with httpx.AsyncClient(timeout=120) as client:
-        payloads = [
-            await _fetch_bia_payload(client, BIA_FTS_ENDPOINT, accession),
-            await _fetch_bia_payload(client, BIA_IMAGE_ENDPOINT, accession),
-        ]
-
-        candidates: set[str] = set()
-        for payload in payloads:
-            if payload is None:
-                continue
-            for value in _iter_string_values(payload):
-                if isinstance(value, str) and value.startswith(("http://", "https://")):
-                    if _looks_like_image_url(value):
-                        candidates.add(value)
-
-        if not candidates:
-            raise ValueError(
-                "No downloadable image assets were found from BioImage Archive APIs for this accession."
-            )
-
-        image_urls = sorted([url for url in candidates if not _looks_like_mask_url(url)])
-        mask_urls = sorted([url for url in candidates if _looks_like_mask_url(url)])
-
-        if not image_urls or not mask_urls:
-            raise ValueError(
-                "Found assets in BioImage Archive response, but could not identify both image and mask files."
-            )
-
-        mask_map: dict[str, str] = {}
-        for mask_url in mask_urls:
-            key = _pair_key_from_url(mask_url, is_mask=True)
-            if key and key not in mask_map:
-                mask_map[key] = mask_url
-
-        paired_urls: list[tuple[str, str]] = []
-        for image_url in image_urls:
-            key = _pair_key_from_url(image_url, is_mask=False)
-            mask_url = mask_map.get(key)
-            if mask_url:
-                paired_urls.append((image_url, mask_url))
+        paired_urls = await _fetch_bia_tsv_pairs(client, accession)
 
         if not paired_urls:
-            raise ValueError(
-                "No image/mask pairs could be inferred from BioImage Archive assets."
-            )
+            payloads = [
+                await _fetch_bia_payload(client, BIA_FTS_ENDPOINT, accession),
+                await _fetch_bia_payload(client, BIA_IMAGE_ENDPOINT, accession),
+            ]
+
+            candidates: set[str] = set()
+            for payload in payloads:
+                if payload is None:
+                    continue
+                for value in _iter_string_values(payload):
+                    if isinstance(value, str) and value.startswith(("http://", "https://")):
+                        if _looks_like_image_url(value) and accession in value.upper():
+                            candidates.add(value)
+
+            if not candidates:
+                raise ValueError(
+                    "No downloadable image assets were found from BioImage Archive for this accession."
+                )
+
+            image_urls = sorted([
+                url for url in candidates if not _looks_like_mask_url(url)
+            ])
+            mask_urls = sorted([url for url in candidates if _looks_like_mask_url(url)])
+
+            if not image_urls or not mask_urls:
+                raise ValueError(
+                    "Found BioImage Archive assets, but could not identify both image and mask files."
+                )
+
+            mask_map: dict[str, str] = {}
+            for mask_url in mask_urls:
+                key = _pair_key_from_url(mask_url, is_mask=True)
+                if key and key not in mask_map:
+                    mask_map[key] = mask_url
+
+            paired_urls = []
+            for image_url in image_urls:
+                key = _pair_key_from_url(image_url, is_mask=False)
+                mask_url = mask_map.get(key)
+                if mask_url:
+                    paired_urls.append((image_url, mask_url))
+
+            if not paired_urls:
+                raise ValueError(
+                    "No image/mask pairs could be inferred from BioImage Archive assets."
+                )
 
         if config["n_samples"] is not None and config["n_samples"] < len(paired_urls):
             subset_idx = np.random.default_rng().permutation(len(paired_urls))[ : config["n_samples"] ]
@@ -2300,9 +2358,23 @@ async def list_matching_artifact_paths(
     normalized_pattern = _normalize_artifact_relpath(path_pattern)
 
     if normalized_pattern.endswith("/"):
-        folder = normalized_pattern
-        names = await list_artifact_files(artifact, folder)
-        return [_normalize_artifact_relpath(f"{folder}{name}") for name in names]
+        # Folder-like patterns should match files recursively to stay consistent
+        # with UI validation/path suggestions.
+        if not _contains_glob(normalized_pattern):
+            return await list_artifact_files_recursive(artifact, normalized_pattern)
+
+        base_folder = _glob_base_folder(normalized_pattern)
+        candidates = await list_artifact_files_recursive(artifact, base_folder)
+
+        matched = []
+        for candidate in candidates:
+            parent = _normalize_artifact_relpath(str(Path(candidate).parent))
+            if parent and not parent.endswith("/"):
+                parent += "/"
+            if fnmatch.fnmatch(parent, normalized_pattern):
+                matched.append(candidate)
+
+        return sorted(set(matched))
 
     if not _contains_glob(normalized_pattern):
         # If caller passed a directory without trailing slash (common in UI/manual input),
@@ -3679,14 +3751,16 @@ class CellposeFinetune:
         validation_interval = normalize_optional_param(validation_interval)
 
         if metadata_dir is None:
-            if not isinstance(train_images, str) or not train_images:
-                raise ValueError(
-                    "train_images must be a non-empty string when metadata_dir is not provided"
-                )
-            if not isinstance(train_annotations, str) or not train_annotations:
-                raise ValueError(
-                    "train_annotations must be a non-empty string when metadata_dir is not provided"
-                )
+            is_bia = isinstance(artifact, str) and _is_bioimage_archive_url(artifact)
+            if not is_bia:
+                if not isinstance(train_images, str) or not train_images:
+                    raise ValueError(
+                        "train_images must be a non-empty string when metadata_dir is not provided"
+                    )
+                if not isinstance(train_annotations, str) or not train_annotations:
+                    raise ValueError(
+                        "train_annotations must be a non-empty string when metadata_dir is not provided"
+                    )
         else:
             if not isinstance(metadata_dir, str) or not metadata_dir:
                 raise ValueError("metadata_dir must be a non-empty string")
@@ -4834,7 +4908,7 @@ async def test_cellpose_finetune() -> None:
     # Reverting to original call style but casting:
     cellpose_tuner = CellposeFinetune.func_or_class()
 
-    await infer(cellpose_tuner, model="cyto3")
+    await infer(cellpose_tuner, model="cpsam")
 
     session_status = await cellpose_tuner.start_training(
         artifact="ri-scale/zarr-demo",

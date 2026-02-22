@@ -1006,6 +1006,7 @@
                 const browserPath = ref(''); 
                 const browserLoading = ref(false);
                 const browserError = ref('');
+                const artifactFilesCache = reactive({});
                 const isPathDetecting = ref(false);
                 const isPathValidating = ref(false);
                 const pathAutoHint = ref('');
@@ -1711,7 +1712,7 @@
                     if (trainingParams.dataset_source === 'BioImage Archive') {
                         return !String(trainingParams.bioimage_archive_url || '').trim();
                     }
-                    return !pathValidationOk.value || isPathValidating.value;
+                    return !pathValidationOk.value;
                 });
 
                 const applyTrainingFolderExample = () => {
@@ -1831,6 +1832,11 @@
                 };
 
                 const loadArtifactFiles = async (artifactId) => {
+                    const cacheKey = String(artifactId || '').trim();
+                    if (cacheKey && artifactFilesCache[cacheKey]?.files?.length > 0) {
+                        return Array.from(artifactFilesCache[cacheKey].files);
+                    }
+
                     const am = await getArtifactManager();
                     const fileSet = new Set();
                     const folderQueue = [];
@@ -1874,7 +1880,14 @@
                         paths = (Array.isArray(fallback) ? fallback : []).map(normalizeListedPath).filter(Boolean);
                     }
 
-                    return Array.from(new Set(paths.filter((p) => !p.endsWith('/'))));
+                    const uniquePaths = Array.from(new Set(paths.filter((p) => !p.endsWith('/'))));
+                    if (cacheKey) {
+                        artifactFilesCache[cacheKey] = {
+                            files: uniquePaths,
+                            updatedAt: Date.now(),
+                        };
+                    }
+                    return uniquePaths;
                 };
 
                 const baseName = (pathStr) => String(pathStr || '').split('/').pop() || '';
@@ -2036,6 +2049,21 @@
                         trainingParams.train_images = preferredTrainImages || (trainImageDir ? `${trainImageDir}/` : '');
                         trainingParams.train_annotations = preferredTrainAnnotations || (trainMaskDir ? `${trainMaskDir}/` : '');
 
+                        const quickTrainResult = validatePairSpecs(
+                            files,
+                            trainingParams.train_images,
+                            trainingParams.train_annotations,
+                            'Train set'
+                        );
+                        sampleInventory.trainPairs = quickTrainResult.pairedCount;
+                        sampleInventory.testPairs = 0;
+                        sampleInventory.totalPairs = quickTrainResult.pairedCount;
+                        sampleInventory.known = true;
+                        if (quickTrainResult.pairedCount > 0) {
+                            pathValidationOk.value = true;
+                            pathValidationMessage.value = `Train pairs found: ${quickTrainResult.pairedCount}. Finishing full validation…`;
+                        }
+
                         if (trainingParams.split_mode === 'manual' && testImageDir && testMaskDir) {
                             trainingParams.test_images = `${testImageDir}/`;
                             trainingParams.test_annotations = `${testMaskDir}/`;
@@ -2100,6 +2128,7 @@
                     }
 
                     isPathValidating.value = true;
+                    pathValidationOk.value = false;
                     pathValidationMessage.value = '';
 
                     try {
@@ -2110,6 +2139,11 @@
                             const trainResult = validatePairSpecs(files, trainingParams.train_images, trainingParams.train_annotations, 'Train set');
                             let message = `Train pairs found: ${trainResult.pairedCount} (images: ${trainResult.imageCount}, masks: ${trainResult.annotationCount}).`;
                             let testPairCount = 0;
+
+                            if (trainResult.pairedCount > 0) {
+                                pathValidationOk.value = true;
+                                pathValidationMessage.value = `Train pairs found: ${trainResult.pairedCount}. Finishing full validation…`;
+                            }
 
                             const hasManualTestPaths = trainingParams.split_mode === 'manual' &&
                                 String(trainingParams.test_images || '').trim() &&
@@ -2565,8 +2599,6 @@
                         trainingParams.test_images,
                         trainingParams.test_annotations,
                         trainingParams.split_mode,
-                        trainingParams.train_split_ratio,
-                        trainingParams.sample_usage_percent,
                         artifactIdExists.value,
                         artifactLookupPending.value,
                     ],

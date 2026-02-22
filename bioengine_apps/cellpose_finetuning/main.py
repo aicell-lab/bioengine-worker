@@ -267,7 +267,7 @@ class TrainingParams(TypedDict):
     learning_rate: float
     weight_decay: float
     server_url: str
-    n_samples: int | None
+    n_samples: int | float | None
     session_id: str
     min_train_masks: int
     validation_interval: int | None
@@ -548,7 +548,7 @@ class SessionStatus(TypedDict, total=False):
     exported_artifact_id: str  # Artifact ID if model has been exported
     model_modified: bool  # Flag indicating if model was modified since last export
     model: str
-    n_samples: int | None
+    n_samples: int | float | None
     n_epochs: int
     learning_rate: float
     weight_decay: float
@@ -582,7 +582,7 @@ class SessionStatusWithId(TypedDict, total=False):
     exported_artifact_id: str
     model_modified: bool
     model: str
-    n_samples: int | None
+    n_samples: int | float | None
     n_epochs: int
     learning_rate: float
     weight_decay: float
@@ -769,7 +769,7 @@ def update_status(
     current_batch: int | None = None,
     total_batches: int | None = None,
     model: str | None = None,
-    n_samples: int | None = None,
+    n_samples: int | float | None = None,
     n_epochs: int | None = None,
     learning_rate: float | None = None,
     weight_decay: float | None = None,
@@ -2101,12 +2101,24 @@ def _iter_string_values(payload: Any) -> list[str]:
 
 def _looks_like_image_url(url: str) -> bool:
     path = urlparse(url).path.lower()
-    return path.endswith((".tif", ".tiff", ".ome.tif", ".ome.tiff", ".png", ".jpg", ".jpeg"))
+    return path.endswith(
+        (".tif", ".tiff", ".ome.tif", ".ome.tiff", ".png", ".jpg", ".jpeg")
+    )
 
 
 def _looks_like_mask_url(url: str) -> bool:
     path = urlparse(url).path.lower()
-    return any(token in path for token in ("_mask", "-mask", "_label", "-label", "annotation", "segmentation"))
+    return any(
+        token in path
+        for token in (
+            "_mask",
+            "-mask",
+            "_label",
+            "-label",
+            "annotation",
+            "segmentation",
+        )
+    )
 
 
 def _pair_key_from_url(url: str, *, is_mask: bool) -> str:
@@ -2209,7 +2221,9 @@ async def make_training_pairs_from_bioimage_archive_url(
                 if payload is None:
                     continue
                 for value in _iter_string_values(payload):
-                    if isinstance(value, str) and value.startswith(("http://", "https://")):
+                    if isinstance(value, str) and value.startswith(
+                        ("http://", "https://")
+                    ):
                         if _looks_like_image_url(value) and accession in value.upper():
                             candidates.add(value)
 
@@ -2218,9 +2232,9 @@ async def make_training_pairs_from_bioimage_archive_url(
                     "No downloadable image assets were found from BioImage Archive for this accession."
                 )
 
-            image_urls = sorted([
-                url for url in candidates if not _looks_like_mask_url(url)
-            ])
+            image_urls = sorted(
+                [url for url in candidates if not _looks_like_mask_url(url)]
+            )
             mask_urls = sorted([url for url in candidates if _looks_like_mask_url(url)])
 
             if not image_urls or not mask_urls:
@@ -2246,17 +2260,17 @@ async def make_training_pairs_from_bioimage_archive_url(
                     "No image/mask pairs could be inferred from BioImage Archive assets."
                 )
 
-        if config["n_samples"] is not None and config["n_samples"] < len(paired_urls):
-            subset_idx = np.random.default_rng().permutation(len(paired_urls))[ : config["n_samples"] ]
-            paired_urls = [paired_urls[i] for i in subset_idx]
-
         bia_cache_root = save_path / "bia_download"
         train_pairs: list[TrainingPair] = []
         test_pairs: list[TrainingPair] = []
 
         for image_url, mask_url in paired_urls:
-            local_image = _local_path_for_remote_url(bia_cache_root, "images", image_url)
-            local_mask = _local_path_for_remote_url(bia_cache_root, "annotations", mask_url)
+            local_image = _local_path_for_remote_url(
+                bia_cache_root, "images", image_url
+            )
+            local_mask = _local_path_for_remote_url(
+                bia_cache_root, "annotations", mask_url
+            )
             local_image.parent.mkdir(parents=True, exist_ok=True)
             local_mask.parent.mkdir(parents=True, exist_ok=True)
 
@@ -2281,7 +2295,9 @@ async def make_training_pairs_from_bioimage_archive_url(
             test_pairs = []
 
         if not train_pairs:
-            raise ValueError("No training pairs found after downloading BioImage Archive assets")
+            raise ValueError(
+                "No training pairs found after downloading BioImage Archive assets"
+            )
 
         return train_pairs, test_pairs
 
@@ -2519,13 +2535,22 @@ def match_image_annotation_pairs(
     def _annotation_key(path: str) -> str:
         basename = Path(path).name
         key = _strip_known_suffixes(basename).lower()
-        for marker in ("_mask", "-mask", "_label", "-label", "_annotation", "-annotation"):
+        for marker in (
+            "_mask",
+            "-mask",
+            "_label",
+            "-label",
+            "_annotation",
+            "-annotation",
+        ):
             if key.endswith(marker):
                 key = key[: -len(marker)]
                 break
         return key
 
-    image_root = _normalize_artifact_relpath(_glob_base_folder(normalized_image_pattern))
+    image_root = _normalize_artifact_relpath(
+        _glob_base_folder(normalized_image_pattern)
+    )
     annotation_root = _normalize_artifact_relpath(
         _glob_base_folder(normalized_annotation_pattern)
     )
@@ -2766,7 +2791,7 @@ async def make_training_pairs_from_metadata(
     artifact: AsyncHyphaArtifact,
     metadata_dir: str,
     save_path: Path,
-    n_samples: int | None,
+    n_samples: int | float | None,
 ) -> tuple[list[TrainingPair], list[TrainingPair]]:
     metadata_root = _normalize_artifact_relpath(metadata_dir)
     if metadata_root and not metadata_root.endswith("/"):
@@ -2812,12 +2837,6 @@ async def make_training_pairs_from_metadata(
             "No training pairs found from metadata JSON files. "
             "Expected keys like image_path/mask_path (also supports camelCase variants)."
         )
-
-    if n_samples is not None and n_samples < len(train_pairs_raw):
-        subset_idx = np.random.default_rng().permutation(len(train_pairs_raw))[
-            :n_samples
-        ]
-        train_pairs_raw = [train_pairs_raw[i] for i in subset_idx]
 
     train_pairs = await download_pairs_from_artifact(
         artifact,
@@ -2945,6 +2964,87 @@ def get_training_subset(
     return image_paths, annotation_paths
 
 
+def resolve_requested_sample_count(
+    n_samples: int | float | None,
+    total_count: int,
+) -> int | None:
+    """Resolve requested sample usage into an absolute count.
+
+    If ``0 < n_samples <= 1``, it is treated as a decimal fraction of
+    ``total_count``. Values greater than 1 are treated as absolute counts.
+    """
+    if n_samples is None:
+        return None
+    if total_count <= 0:
+        return 0
+
+    requested = float(n_samples)
+    if requested <= 0:
+        raise ValueError("n_samples must be > 0")
+
+    if requested <= 1.0:
+        resolved = int(round(total_count * requested))
+    else:
+        resolved = int(round(requested))
+
+    return max(1, min(total_count, resolved))
+
+
+def random_subset_pairs(pairs: list[TrainingPair], count: int) -> list[TrainingPair]:
+    """Return a random subset of ``pairs`` of size ``count``."""
+    if count >= len(pairs):
+        return pairs
+    idx = np.random.default_rng().permutation(len(pairs))[:count]
+    return [pairs[i] for i in idx]
+
+
+def proportional_manual_sample_counts(
+    train_available: int,
+    test_available: int,
+    requested_total: int,
+) -> tuple[int, int]:
+    """Allocate requested manual-split samples across train/test pools."""
+    total_available = train_available + test_available
+    if total_available <= 0:
+        return 0, 0
+
+    requested_total = max(0, min(requested_total, total_available))
+    if requested_total == 0:
+        return 0, 0
+
+    if test_available <= 0:
+        return min(train_available, requested_total), 0
+    if train_available <= 0:
+        return 0, min(test_available, requested_total)
+
+    train_target = int(round(requested_total * (train_available / total_available)))
+    train_target = max(0, min(train_available, train_target))
+    test_target = requested_total - train_target
+
+    if test_target > test_available:
+        overflow = test_target - test_available
+        test_target = test_available
+        train_target = min(train_available, train_target + overflow)
+    if train_target > train_available:
+        overflow = train_target - train_available
+        train_target = train_available
+        test_target = min(test_available, test_target + overflow)
+
+    assigned = train_target + test_target
+    if assigned < requested_total:
+        remaining = requested_total - assigned
+        train_room = train_available - train_target
+        add_train = min(train_room, remaining)
+        train_target += add_train
+        remaining -= add_train
+        if remaining > 0:
+            test_room = test_available - test_target
+            add_test = min(test_room, remaining)
+            test_target += add_test
+
+    return train_target, test_target
+
+
 def split_training_pairs(
     train_pairs: list[TrainingPair],
     train_ratio: float,
@@ -3039,14 +3139,6 @@ async def make_training_pairs(
     train_image_paths = [Path(img) for img, _ in train_matched]
     train_annotation_paths = [Path(ann) for _, ann in train_matched]
 
-    # Apply n_samples if specified
-    if config["n_samples"] is not None and config["n_samples"] < len(train_image_paths):
-        train_image_paths, train_annotation_paths = get_training_subset(
-            train_image_paths,
-            train_annotation_paths,
-            config["n_samples"],
-        )
-
     # Download training pairs
     train_pairs = await download_pairs_from_artifact(
         artifact,
@@ -3088,11 +3180,27 @@ async def make_training_pairs(
         )
 
     split_mode = str(config.get("split_mode", "manual") or "manual").lower()
-    if split_mode == "auto" and not test_pairs:
-        train_pairs, test_pairs = split_training_pairs(
-            train_pairs,
-            float(config.get("train_split_ratio", 0.8)),
-        )
+    train_split_ratio = float(config.get("train_split_ratio", 0.8))
+
+    requested_total = resolve_requested_sample_count(
+        config.get("n_samples"),
+        len(train_pairs) + len(test_pairs),
+    )
+
+    if split_mode == "auto":
+        combined_pairs = [*train_pairs, *test_pairs]
+        if requested_total is not None and requested_total < len(combined_pairs):
+            combined_pairs = random_subset_pairs(combined_pairs, requested_total)
+        train_pairs, test_pairs = split_training_pairs(combined_pairs, train_split_ratio)
+    elif requested_total is not None:
+        if requested_total < len(train_pairs) + len(test_pairs):
+            train_target, test_target = proportional_manual_sample_counts(
+                len(train_pairs),
+                len(test_pairs),
+                requested_total,
+            )
+            train_pairs = random_subset_pairs(train_pairs, train_target)
+            test_pairs = random_subset_pairs(test_pairs, test_target)
 
     return train_pairs, test_pairs
 
@@ -3676,11 +3784,13 @@ class CellposeFinetune:
                 *PretrainedModel.values(),
             ],
         ),
-        n_samples: int | None = Field(
+        n_samples: int | float | None = Field(
             None,
             description=(
-                "Optional number of samples to use from the dataset. If None, "
-                "all available samples are used."
+                "Optional number of samples to use from the dataset. "
+                "If 0 < value <= 1, treated as decimal fraction of total samples "
+                "(e.g., 0.6 means 60%). If value > 1, treated as absolute count. "
+                "If None, all available samples are used."
             ),
         ),
         n_epochs: int = Field(10, description="Number of training epochs"),
@@ -3765,8 +3875,12 @@ class CellposeFinetune:
             if not isinstance(metadata_dir, str) or not metadata_dir:
                 raise ValueError("metadata_dir must be a non-empty string")
 
+        is_bia = isinstance(artifact, str) and _is_bioimage_archive_url(artifact)
+
         if not isinstance(split_mode, str) or split_mode not in {"manual", "auto"}:
             split_mode = "manual"
+        if is_bia:
+            split_mode = "auto"
 
         if train_split_ratio is None:
             train_split_ratio = 0.8
@@ -3795,7 +3909,9 @@ class CellposeFinetune:
         if min_train_masks is None:
             min_train_masks = 5
         if n_samples is not None:
-            n_samples = int(n_samples)
+            n_samples = float(n_samples)
+            if n_samples <= 0:
+                raise ValueError("n_samples must be > 0")
         if validation_interval is not None:
             validation_interval = int(validation_interval)
 

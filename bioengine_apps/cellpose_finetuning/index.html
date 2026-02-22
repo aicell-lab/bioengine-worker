@@ -463,10 +463,40 @@
                                         <input v-model="trainingParams.metadata_dir" @input="markPathFieldEdited('metadata_dir')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. metadata/">
                                         <p class="text-xs text-gray-500 mt-1">Use this to load image/annotation pairs from metadata JSON files; then explicit annotation masks are optional.</p>
                                     </div>
-                                    <div class="md:col-span-2">
+                                </div>
+                                <div v-else class="md:col-span-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                                    BioImage Archive mode discovers image/mask pairs from the archive URL automatically.
+                                </div>
+
+                                <div class="md:col-span-2 rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-4">
+                                    <div>
+                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Total Samples Used (Train + Validation)</label>
+                                        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
+                                            <input v-model.number="sampleUsagePercent" type="range" min="1" max="100" step="1" class="w-full md:col-span-2 accent-blue-600">
+                                            <div class="flex gap-2">
+                                                <div class="flex-1">
+                                                    <label class="block text-[11px] text-gray-500 mb-1">Percent</label>
+                                                    <div class="relative">
+                                                        <input v-model.number="sampleUsagePercent" type="number" min="1" max="100" step="1" class="w-full bg-white border border-gray-300 rounded-md px-2 py-1.5 pr-7 text-sm">
+                                                        <span class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-400">%</span>
+                                                    </div>
+                                                </div>
+                                                <div class="flex-1">
+                                                    <label class="block text-[11px] text-gray-500 mb-1">Decimal</label>
+                                                    <input v-model.number="sampleUsageDecimal" type="number" min="0.01" max="1" step="0.01" class="w-full bg-white border border-gray-300 rounded-md px-2 py-1.5 text-sm">
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <p class="mt-2 text-xs text-gray-600">
+                                            Selected samples: <span class="font-semibold">[[ selectedTotalSampleCount ?? '-' ]]</span>
+                                            <span class="text-gray-400"> / [[ availableTotalSampleCount ?? '-' ]] total</span>
+                                        </p>
+                                    </div>
+
+                                    <div>
                                         <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Train/Test Split</label>
-                                        <div class="flex items-center gap-5 text-sm text-gray-700">
-                                            <label class="inline-flex items-center gap-2 cursor-pointer">
+                                        <div class="flex flex-wrap items-center gap-5 text-sm text-gray-700">
+                                            <label v-if="trainingParams.dataset_source !== 'BioImage Archive'" class="inline-flex items-center gap-2 cursor-pointer">
                                                 <input type="radio" value="manual" v-model="trainingParams.split_mode" class="text-blue-600 focus:ring-blue-500">
                                                 <span>Manual test paths</span>
                                             </label>
@@ -474,24 +504,41 @@
                                                 <input type="radio" value="auto" v-model="trainingParams.split_mode" class="text-blue-600 focus:ring-blue-500">
                                                 <span>Auto split</span>
                                             </label>
-                                            <div v-if="trainingParams.split_mode === 'auto'" class="inline-flex items-center gap-2">
-                                                <span class="text-xs text-gray-500">Train ratio</span>
-                                                <input v-model.number="trainingParams.train_split_ratio" type="number" min="0.1" max="0.95" step="0.05" class="w-24 bg-white border border-gray-300 rounded-md px-2 py-1 text-sm">
-                                            </div>
+                                            <span v-if="trainingParams.dataset_source === 'BioImage Archive'" class="text-xs text-blue-700 bg-blue-100 border border-blue-200 px-2 py-0.5 rounded">BioImage Archive uses auto split</span>
                                         </div>
-                                        <p class="mt-1 text-xs text-gray-500" v-if="trainingParams.split_mode === 'auto'">Uses train paths only and splits into train/test (default 0.8).</p>
+
+                                        <div v-if="trainingParams.split_mode === 'auto'" class="mt-3 space-y-2">
+                                            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
+                                                <input v-model.number="trainSplitPercent" type="range" min="5" max="95" step="1" class="w-full md:col-span-2 accent-blue-600">
+                                                <div class="flex gap-2">
+                                                    <div class="flex-1">
+                                                        <label class="block text-[11px] text-gray-500 mb-1">Train %</label>
+                                                        <div class="relative">
+                                                            <input v-model.number="trainSplitPercent" type="number" min="5" max="95" step="1" class="w-full bg-white border border-gray-300 rounded-md px-2 py-1.5 pr-7 text-sm">
+                                                            <span class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-400">%</span>
+                                                        </div>
+                                                    </div>
+                                                    <div class="flex-1">
+                                                        <label class="block text-[11px] text-gray-500 mb-1">Train ratio</label>
+                                                        <input v-model.number="trainingParams.train_split_ratio" type="number" min="0.05" max="0.95" step="0.01" class="w-full bg-white border border-gray-300 rounded-md px-2 py-1.5 text-sm">
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <p class="text-xs text-gray-600">Estimated split from selected samples: train <span class="font-semibold">[[ selectedTrainSampleCount ?? '-' ]]</span>, validation <span class="font-semibold">[[ selectedValidationSampleCount ?? '-' ]]</span>.</p>
+                                        </div>
+
+                                        <div v-else-if="trainingParams.dataset_source !== 'BioImage Archive'" class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div>
+                                                <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Test Images (Opt)</label>
+                                                <input v-model="trainingParams.test_images" @input="markPathFieldEdited('test_images')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Test Annotations (Opt)</label>
+                                                <input v-model="trainingParams.test_annotations" @input="markPathFieldEdited('test_annotations')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
+                                            </div>
+                                            <p class="md:col-span-2 text-xs text-gray-600">Estimated split from selected samples: train <span class="font-semibold">[[ selectedTrainSampleCount ?? '-' ]]</span>, validation <span class="font-semibold">[[ selectedValidationSampleCount ?? '-' ]]</span>.</p>
+                                        </div>
                                     </div>
-                                    <div v-if="trainingParams.split_mode === 'manual'">
-                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Test Images (Opt)</label>
-                                        <input v-model="trainingParams.test_images" @input="markPathFieldEdited('test_images')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
-                                    </div>
-                                    <div v-if="trainingParams.split_mode === 'manual'">
-                                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Test Annotations (Opt)</label>
-                                        <input v-model="trainingParams.test_annotations" @input="markPathFieldEdited('test_annotations')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
-                                    </div>
-                                </div>
-                                <div v-else class="md:col-span-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-                                    BioImage Archive mode discovers image/mask pairs from the archive URL automatically, so path and split fields are not needed.
                                 </div>
                             </div>
                          </div>
@@ -908,6 +955,7 @@
                     train_annotations: 'annotations/',
                     metadata_dir: '',
                     split_mode: 'manual',
+                    sample_usage_percent: 100,
                     train_split_ratio: 0.8,
                     test_images: '',
                     test_annotations: '',
@@ -917,6 +965,12 @@
                 });
                 const isStartingTraining = ref(false);
                 const trainingError = ref('');
+                const sampleInventory = reactive({
+                    trainPairs: 0,
+                    testPairs: 0,
+                    totalPairs: 0,
+                    known: false,
+                });
 
                 // Upload Data
                 const showUploadModal = ref(false);
@@ -1456,6 +1510,87 @@
                     Object.values(sessions.value).filter((s) => s && s.status_type === 'running').length
                 );
 
+                const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+                const sampleUsagePercent = computed({
+                    get: () => clamp(Number(trainingParams.sample_usage_percent || 100), 1, 100),
+                    set: (value) => {
+                        const numeric = Number(value);
+                        if (!Number.isFinite(numeric)) return;
+                        trainingParams.sample_usage_percent = clamp(Math.round(numeric), 1, 100);
+                    },
+                });
+
+                const sampleUsageDecimal = computed({
+                    get: () => Number((sampleUsagePercent.value / 100).toFixed(2)),
+                    set: (value) => {
+                        const numeric = Number(value);
+                        if (!Number.isFinite(numeric)) return;
+                        sampleUsagePercent.value = clamp(Math.round(numeric * 100), 1, 100);
+                    },
+                });
+
+                const trainSplitPercent = computed({
+                    get: () => clamp(Math.round(Number(trainingParams.train_split_ratio || 0.8) * 100), 5, 95),
+                    set: (value) => {
+                        const numeric = Number(value);
+                        if (!Number.isFinite(numeric)) return;
+                        trainingParams.train_split_ratio = clamp(Math.round(numeric), 5, 95) / 100;
+                    },
+                });
+
+                const availableTotalSampleCount = computed(() => sampleInventory.known ? sampleInventory.totalPairs : null);
+
+                const selectedTotalSampleCount = computed(() => {
+                    if (!sampleInventory.known) return null;
+                    const total = sampleInventory.totalPairs;
+                    if (total <= 0) return 0;
+                    const target = Math.round(total * (sampleUsagePercent.value / 100));
+                    return clamp(target, 1, total);
+                });
+
+                const selectedTrainSampleCount = computed(() => {
+                    if (!sampleInventory.known) return null;
+                    const selectedTotal = selectedTotalSampleCount.value;
+                    if (!selectedTotal || selectedTotal <= 0) return 0;
+
+                    if (trainingParams.split_mode === 'auto' || trainingParams.dataset_source === 'BioImage Archive') {
+                        if (selectedTotal === 1) return 1;
+                        const ratio = clamp(Number(trainingParams.train_split_ratio || 0.8), 0.05, 0.95);
+                        return clamp(Math.round(selectedTotal * ratio), 1, selectedTotal - 1);
+                    }
+
+                    const trainAvailable = sampleInventory.trainPairs;
+                    const testAvailable = sampleInventory.testPairs;
+                    const totalAvailable = trainAvailable + testAvailable;
+                    if (totalAvailable <= 0) return 0;
+                    if (testAvailable <= 0) return selectedTotal;
+
+                    let trainTarget = Math.round(selectedTotal * (trainAvailable / totalAvailable));
+                    trainTarget = clamp(trainTarget, 0, Math.min(trainAvailable, selectedTotal));
+                    let testTarget = selectedTotal - trainTarget;
+
+                    if (testTarget > testAvailable) {
+                        const overflow = testTarget - testAvailable;
+                        testTarget = testAvailable;
+                        trainTarget = clamp(trainTarget + overflow, 0, trainAvailable);
+                    }
+                    if (trainTarget > trainAvailable) {
+                        const overflow = trainTarget - trainAvailable;
+                        trainTarget = trainAvailable;
+                        testTarget = clamp(testTarget + overflow, 0, testAvailable);
+                    }
+                    return trainTarget;
+                });
+
+                const selectedValidationSampleCount = computed(() => {
+                    if (!sampleInventory.known) return null;
+                    const selectedTotal = selectedTotalSampleCount.value;
+                    const selectedTrain = selectedTrainSampleCount.value;
+                    if (selectedTotal == null || selectedTrain == null) return null;
+                    return Math.max(0, selectedTotal - selectedTrain);
+                });
+
                 const to2DMaskArray = (maskValue) => {
                     if (!maskValue) return null;
                     if (Array.isArray(maskValue) && Array.isArray(maskValue[0])) return maskValue;
@@ -1924,6 +2059,10 @@
                     if (isBioImageArchive) {
                         pathValidationOk.value = true;
                         pathValidationMessage.value = '';
+                        sampleInventory.trainPairs = 0;
+                        sampleInventory.testPairs = 0;
+                        sampleInventory.totalPairs = 0;
+                        sampleInventory.known = false;
                         return true;
                     }
 
@@ -1970,6 +2109,7 @@
                         if (!hasMetadataDir) {
                             const trainResult = validatePairSpecs(files, trainingParams.train_images, trainingParams.train_annotations, 'Train set');
                             let message = `Train pairs found: ${trainResult.pairedCount} (images: ${trainResult.imageCount}, masks: ${trainResult.annotationCount}).`;
+                            let testPairCount = 0;
 
                             const hasManualTestPaths = trainingParams.split_mode === 'manual' &&
                                 String(trainingParams.test_images || '').trim() &&
@@ -1978,7 +2118,13 @@
                             if (hasManualTestPaths) {
                                 const testResult = validatePairSpecs(files, trainingParams.test_images, trainingParams.test_annotations, 'Test set');
                                 message += ` Test pairs found: ${testResult.pairedCount}.`;
+                                testPairCount = testResult.pairedCount;
                             }
+
+                            sampleInventory.trainPairs = trainResult.pairedCount;
+                            sampleInventory.testPairs = testPairCount;
+                            sampleInventory.totalPairs = trainResult.pairedCount + testPairCount;
+                            sampleInventory.known = true;
 
                             pathValidationOk.value = true;
                             pathValidationMessage.value = `${message} Supported files in artifact: ${supportedFileCount}.`;
@@ -1986,12 +2132,20 @@
                             if (supportedFileCount === 0) {
                                 throw new Error('No supported image/mask files found in artifact (supported: tif/tiff/png/jpg/jpeg).');
                             }
+                            sampleInventory.trainPairs = 0;
+                            sampleInventory.testPairs = 0;
+                            sampleInventory.totalPairs = 0;
+                            sampleInventory.known = false;
                             pathValidationOk.value = true;
                             pathValidationMessage.value = `Metadata mode enabled. Found ${supportedFileCount} supported files in artifact.`;
                         }
 
                         return true;
                     } catch (error) {
+                        sampleInventory.trainPairs = 0;
+                        sampleInventory.testPairs = 0;
+                        sampleInventory.totalPairs = 0;
+                        sampleInventory.known = false;
                         pathValidationOk.value = false;
                         pathValidationMessage.value = String(error?.message || error);
                         return false;
@@ -2339,6 +2493,10 @@
                 watch(
                     () => trainingParams.split_mode,
                     (mode) => {
+                        if (trainingParams.dataset_source === 'BioImage Archive' && mode !== 'auto') {
+                            trainingParams.split_mode = 'auto';
+                            return;
+                        }
                         if (mode === 'auto') {
                             trainingParams.test_images = '';
                             trainingParams.test_annotations = '';
@@ -2366,6 +2524,14 @@
                 watch(
                     () => [trainingParams.dataset_source, trainingParams.artifact_input],
                     async () => {
+                        if (trainingParams.dataset_source === 'BioImage Archive') {
+                            trainingParams.split_mode = 'auto';
+                            sampleInventory.trainPairs = 0;
+                            sampleInventory.testPairs = 0;
+                            sampleInventory.totalPairs = 0;
+                            sampleInventory.known = false;
+                        }
+
                         if (trainingParams.dataset_source !== 'Artifact') return;
 
                         const artifactId = String(trainingParams.artifact_input || '').trim();
@@ -2399,6 +2565,8 @@
                         trainingParams.test_images,
                         trainingParams.test_annotations,
                         trainingParams.split_mode,
+                        trainingParams.train_split_ratio,
+                        trainingParams.sample_usage_percent,
                         artifactIdExists.value,
                         artifactLookupPending.value,
                     ],
@@ -2552,11 +2720,15 @@
                             if (!artifactValue) throw new Error("Please specify an Artifact ID.");
                         }
 
+                        const sampleUsageRatio = Number((sampleUsagePercent.value / 100).toFixed(4));
+
                         const payload = isBioImageArchive
                             ? {
                                 artifact: artifactValue,
+                                split_mode: 'auto',
+                                train_split_ratio: Number(trainingParams.train_split_ratio || 0.8),
                                 model: trainingParams.model || 'cpsam',
-                                n_samples: null,
+                                n_samples: sampleUsageRatio,
                                 n_epochs: trainingParams.n_epochs,
                                 learning_rate: trainingParams.learning_rate,
                                 weight_decay: 1e-4,
@@ -2573,7 +2745,7 @@
                                 test_images: trainingParams.split_mode === 'manual' ? (trainingParams.test_images || null) : null,
                                 test_annotations: trainingParams.split_mode === 'manual' ? (trainingParams.test_annotations || null) : null,
                                 model: trainingParams.model || 'cpsam',
-                                n_samples: null,
+                                n_samples: sampleUsageRatio,
                                 n_epochs: trainingParams.n_epochs,
                                 learning_rate: trainingParams.learning_rate,
                                 weight_decay: 1e-4,
@@ -3344,6 +3516,8 @@
                     sessions, refreshSessions, refreshLoading, monitoringSessionId, monitoredSession, selectedSessionId, viewSession, currentSession, hasMetrics, hasValidationSet, stopTraining, restartTraining,
                     runningTrainingSessionsCount,
                     trainingParams, startTraining, isStartingTraining,
+                    sampleUsagePercent, sampleUsageDecimal, trainSplitPercent,
+                    availableTotalSampleCount, selectedTotalSampleCount, selectedTrainSampleCount, selectedValidationSampleCount,
                     applyTrainingGlobExample, applyTrainingFolderExample, runPathAutoDetection, validateTrainingPaths,
                     showUploadModal, uploadParams, uploadDataset, isUploading, uploadProgress, uploadStatus, folderInput, selectedFolderName, selectedFileCount,
                     inferenceParams, pretrainedModels, inferenceFile, handleInferenceFile, inferencePreview, isInferring, runInference, inferenceCanvas, previewImg, onImageLoad, canvasStyle, inferenceObjectCount, inferenceResult,

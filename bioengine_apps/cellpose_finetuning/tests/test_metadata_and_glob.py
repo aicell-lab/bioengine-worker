@@ -9,6 +9,8 @@ from bioengine_apps.cellpose_finetuning.main import (
     list_matching_artifact_paths,
     make_training_pairs_from_metadata,
     match_image_annotation_pairs,
+    proportional_manual_sample_counts,
+    resolve_requested_sample_count,
 )
 
 
@@ -270,3 +272,50 @@ def test_pair_key_from_url_handles_mask_suffix() -> None:
     assert _pair_key_from_url(img, is_mask=False) == _pair_key_from_url(
         ann, is_mask=True
     )
+
+
+def test_resolve_requested_sample_count_supports_decimal_fraction() -> None:
+    assert resolve_requested_sample_count(0.5, 10) == 5
+    assert resolve_requested_sample_count(0.01, 10) == 1
+    assert resolve_requested_sample_count(1.0, 10) == 10
+
+
+def test_resolve_requested_sample_count_supports_absolute_count() -> None:
+    assert resolve_requested_sample_count(4, 10) == 4
+    assert resolve_requested_sample_count(20, 10) == 10
+
+
+def test_resolve_requested_sample_count_rejects_non_positive_values() -> None:
+    try:
+        resolve_requested_sample_count(0, 10)
+        assert False, "Expected ValueError for n_samples=0"
+    except ValueError as e:
+        assert "n_samples must be > 0" in str(e)
+
+    try:
+        resolve_requested_sample_count(-0.2, 10)
+        assert False, "Expected ValueError for n_samples<0"
+    except ValueError as e:
+        assert "n_samples must be > 0" in str(e)
+
+
+def test_proportional_manual_sample_counts_basic_allocation() -> None:
+    train_count, test_count = proportional_manual_sample_counts(
+        train_available=8,
+        test_available=2,
+        requested_total=5,
+    )
+    assert train_count + test_count == 5
+    assert train_count == 4
+    assert test_count == 1
+
+
+def test_proportional_manual_sample_counts_respects_capacity_limits() -> None:
+    train_count, test_count = proportional_manual_sample_counts(
+        train_available=1,
+        test_available=9,
+        requested_total=6,
+    )
+    assert train_count + test_count == 6
+    assert train_count == 1
+    assert test_count == 5

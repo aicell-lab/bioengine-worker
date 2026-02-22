@@ -191,9 +191,11 @@ Start asynchronous model fine-tuning.
 - `metadata_dir` (str, optional): Folder containing metadata JSON files with image/annotation paths (e.g. `image_path` + `mask_path`). If provided, explicit `train_annotations` can be omitted.
 - `test_images` (str, optional): Optional test images path (same format as train_images). Providing test data enables per-epoch pixel-level validation metrics and end-of-training instance segmentation metrics (AP@0.5/0.75/0.9).
 - `test_annotations` (str, optional): Optional test annotations (label masks). Required together with `test_images`.
+- `split_mode` (str): Dataset split mode (`"manual"` or `"auto"`, default: `"manual"`). In `"auto"`, the service creates train/validation split from the selected sample pool.
+- `train_split_ratio` (float): Train ratio used when `split_mode="auto"` (default: `0.8`, i.e. 80% train / 20% validation).
 - `model` (str): Pretrained model to start from (default: "cpsam")
 - `n_epochs` (int): Number of training epochs (default: 10)
-- `n_samples` (int, optional): Limit number of samples to use
+- `n_samples` (int | float, optional): Limit sample usage. If `n_samples > 1`, treated as absolute count. If `0 < n_samples <= 1`, treated as decimal fraction of all available samples (e.g. `0.6` = 60%).
 - `learning_rate` (float): Learning rate (default: 1e-6)
 - `weight_decay` (float): Weight decay (default: 0.0001)
 - `min_train_masks` (int): Minimum number of masks per training batch (default: 5). Lower values speed up training.
@@ -430,7 +432,7 @@ The recommended way to deploy (whether for the first time or to update) is to us
 source .env
 
 # Deploy to production
-python tests/cellpose_legacy_scripts/redeploy_cellpose.py \
+python tests/cellpose/redeploy_cellpose.py \
     --artifact-id ri-scale/cellpose-finetuning \
     --application-id cellpose-finetuning
 ```

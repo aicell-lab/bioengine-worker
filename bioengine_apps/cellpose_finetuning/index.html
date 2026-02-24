@@ -216,15 +216,35 @@
                         <div v-if="syncError" class="text-red-500 text-sm px-4 py-1 bg-red-50 rounded-full border border-red-200 flex items-center" title="Connection to worker is unstable">
                             <i class="fas fa-exclamation-triangle mr-2"></i> [[ syncError ]]
                         </div>
-                        <button @click="refreshSessions(false)" class="text-gray-500 hover:text-blue-600 transition text-sm font-medium bg-white px-3 py-1.5 rounded-lg border border-gray-200 shadow-sm">
-                            <i class="fas fa-sync-alt mr-1" :class="{'fa-spin': refreshLoading}"></i> Refresh
-                        </button>
+                        <div class="flex items-center gap-2">
+                            <button
+                                v-if="selectedSessionIds.length > 0"
+                                @click="deleteSelectedSessions"
+                                :disabled="isDeletingSession"
+                                class="text-slate-700 hover:text-slate-900 transition text-sm font-medium bg-white px-3 py-1.5 rounded-lg border border-slate-300 shadow-sm disabled:opacity-50"
+                            >
+                                <i class="fas fa-trash mr-1"></i> Delete Selected ([[ selectedSessionIds.length ]])
+                            </button>
+                            <button @click="refreshSessions(false)" class="text-gray-500 hover:text-blue-600 transition text-sm font-medium bg-white px-3 py-1.5 rounded-lg border border-gray-200 shadow-sm">
+                                <i class="fas fa-sync-alt mr-1" :class="{'fa-spin': refreshLoading}"></i> Refresh
+                            </button>
+                        </div>
                     </div>
 
                     <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                          <table class="min-w-full divide-y divide-gray-200">
                             <thead class="bg-gray-50/50">
                                 <tr>
+                                    <th class="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                                        <input
+                                            type="checkbox"
+                                            :checked="allNonRunningSelected"
+                                            @change="toggleSelectAllNonRunning($event.target.checked)"
+                                            title="Select all non-running sessions"
+                                            aria-label="Select all non-running sessions"
+                                            class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                        >
+                                    </th>
                                     <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Session ID</th>
                                     <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
                                     <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Progress</th>
@@ -235,6 +255,17 @@
                             </thead>
                             <tbody class="bg-white divide-y divide-gray-200">
                                 <tr v-for="(session, id) in sessions" :key="id" class="hover:bg-slate-50 transition-colors cursor-pointer group" @click="viewSession(id)">
+                                    <td class="px-4 py-4 whitespace-nowrap" @click.stop>
+                                        <input
+                                            type="checkbox"
+                                            :checked="selectedSessionIds.includes(id)"
+                                            :disabled="session.status_type === 'running'"
+                                            @change="toggleSessionSelection(id, $event.target.checked)"
+                                            title="Select for batch delete"
+                                            aria-label="Select for batch delete"
+                                            class="rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-40"
+                                        >
+                                    </td>
                                     <td class="px-6 py-4 whitespace-nowrap">
                                         <div class="flex items-center">
                                             <span class="font-mono text-sm text-blue-600 font-medium group-hover:underline">[[ id.slice(0, 8) ]]</span>
@@ -267,12 +298,36 @@
                                         [[ formatDate(session.start_time) ]]
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium" @click.stop>
-                                         <button @click="viewSession(id)" class="text-blue-600 hover:text-blue-900 mr-3">Details</button>
-                                         <button v-if="session.status_type === 'running'" @click="stopTraining(id)" class="text-red-600 hover:text-red-900">Stop</button>
+                                                      <button
+                                                          @click="viewSession(id)"
+                                                          class="inline-flex items-center justify-center w-8 h-8 rounded text-blue-600 hover:text-blue-900 hover:bg-blue-50 mr-1"
+                                                          title="View session details"
+                                                          aria-label="View session details"
+                                                      >
+                                                          <i class="fas fa-chart-area"></i>
+                                                      </button>
+                                                      <button
+                                                          v-if="session.status_type === 'running'"
+                                                          @click="stopTraining(id)"
+                                                          class="inline-flex items-center justify-center w-8 h-8 rounded text-red-600 hover:text-red-900 hover:bg-red-50 mr-1"
+                                                          title="Stop session"
+                                                          aria-label="Stop session"
+                                                      >
+                                                          <i class="fas fa-stop"></i>
+                                                      </button>
+                                                      <button
+                                                          v-if="session.status_type !== 'running'"
+                                                          @click="deleteTrainingSession(id)"
+                                                          class="inline-flex items-center justify-center w-8 h-8 rounded text-slate-700 hover:text-slate-900 hover:bg-slate-100"
+                                                          title="Delete session"
+                                                          aria-label="Delete session"
+                                                      >
+                                                          <i class="fas fa-trash"></i>
+                                                      </button>
                                     </td>
                                 </tr>
                                 <tr v-if="Object.keys(sessions).length === 0">
-                                    <td colspan="6" class="px-6 py-12 text-center text-gray-500 bg-gray-50 rounded-b-xl">
+                                    <td colspan="7" class="px-6 py-12 text-center text-gray-500 bg-gray-50 rounded-b-xl">
                                         <div class="text-4xl mb-2">📭</div>
                                         <p>No training sessions found.</p>
                                         <button @click="currentTab = 'training'" class="mt-4 text-blue-600 font-medium hover:underline">Start a new training session</button>
@@ -463,6 +518,10 @@
                                         <input v-model="trainingParams.metadata_dir" @input="markPathFieldEdited('metadata_dir')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="e.g. metadata/">
                                         <p class="text-xs text-gray-500 mt-1">Use this to load image/annotation pairs from metadata JSON files; then explicit annotation masks are optional.</p>
                                     </div>
+                                    <div v-if="trainingParams.dataset_source !== 'BioImage Archive' && configControlsLocked" class="md:col-span-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                                        <i class="fas fa-info-circle mr-1"></i>
+                                        Path settings changed. Click <span class="font-semibold">Validate paths</span> to unlock split and sample controls.
+                                    </div>
                                 </div>
                                 <div v-else class="md:col-span-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
                                     BioImage Archive mode discovers image/mask pairs from the archive URL automatically.
@@ -472,18 +531,18 @@
                                     <div>
                                         <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Total Samples Used (Train + Validation)</label>
                                         <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
-                                            <input v-model.number="sampleUsagePercent" type="range" min="1" max="100" step="1" class="w-full md:col-span-2 accent-blue-600">
+                                            <input v-model.number="sampleUsagePercent" :disabled="configControlsLocked" type="range" min="1" max="100" step="1" class="w-full md:col-span-2 accent-blue-600 disabled:opacity-50 disabled:cursor-not-allowed">
                                             <div class="flex gap-2">
                                                 <div class="flex-1">
                                                     <label class="block text-[11px] text-gray-500 mb-1">Percent</label>
                                                     <div class="relative">
-                                                        <input v-model.number="sampleUsagePercent" type="number" min="1" max="100" step="1" class="w-full bg-white border border-gray-300 rounded-md px-2 py-1.5 pr-7 text-sm">
+                                                        <input v-model.number="sampleUsagePercent" :disabled="configControlsLocked" type="number" min="1" max="100" step="1" class="w-full bg-white border border-gray-300 rounded-md px-2 py-1.5 pr-7 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
                                                         <span class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-400">%</span>
                                                     </div>
                                                 </div>
                                                 <div class="flex-1">
                                                     <label class="block text-[11px] text-gray-500 mb-1">Decimal</label>
-                                                    <input v-model.number="sampleUsageDecimal" type="number" min="0.01" max="1" step="0.01" class="w-full bg-white border border-gray-300 rounded-md px-2 py-1.5 text-sm">
+                                                    <input v-model.number="sampleUsageDecimal" :disabled="configControlsLocked" type="number" min="0.01" max="1" step="0.01" class="w-full bg-white border border-gray-300 rounded-md px-2 py-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
                                                 </div>
                                             </div>
                                         </div>
@@ -497,11 +556,11 @@
                                         <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Train/Test Split</label>
                                         <div class="flex flex-wrap items-center gap-5 text-sm text-gray-700">
                                             <label v-if="trainingParams.dataset_source !== 'BioImage Archive'" class="inline-flex items-center gap-2 cursor-pointer">
-                                                <input type="radio" value="manual" v-model="trainingParams.split_mode" class="text-blue-600 focus:ring-blue-500">
+                                                <input type="radio" value="manual" v-model="trainingParams.split_mode" :disabled="configControlsLocked" class="text-blue-600 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed">
                                                 <span>Manual test paths</span>
                                             </label>
                                             <label class="inline-flex items-center gap-2 cursor-pointer">
-                                                <input type="radio" value="auto" v-model="trainingParams.split_mode" class="text-blue-600 focus:ring-blue-500">
+                                                <input type="radio" value="auto" v-model="trainingParams.split_mode" :disabled="configControlsLocked" class="text-blue-600 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed">
                                                 <span>Auto split</span>
                                             </label>
                                             <span v-if="trainingParams.dataset_source === 'BioImage Archive'" class="text-xs text-blue-700 bg-blue-100 border border-blue-200 px-2 py-0.5 rounded">BioImage Archive uses auto split</span>
@@ -509,18 +568,18 @@
 
                                         <div v-if="trainingParams.split_mode === 'auto'" class="mt-3 space-y-2">
                                             <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
-                                                <input v-model.number="trainSplitPercent" type="range" min="5" max="95" step="1" class="w-full md:col-span-2 accent-blue-600">
+                                                <input v-model.number="trainSplitPercent" :disabled="configControlsLocked" type="range" min="5" max="95" step="1" class="w-full md:col-span-2 accent-blue-600 disabled:opacity-50 disabled:cursor-not-allowed">
                                                 <div class="flex gap-2">
                                                     <div class="flex-1">
                                                         <label class="block text-[11px] text-gray-500 mb-1">Train %</label>
                                                         <div class="relative">
-                                                            <input v-model.number="trainSplitPercent" type="number" min="5" max="95" step="1" class="w-full bg-white border border-gray-300 rounded-md px-2 py-1.5 pr-7 text-sm">
+                                                            <input v-model.number="trainSplitPercent" :disabled="configControlsLocked" type="number" min="5" max="95" step="1" class="w-full bg-white border border-gray-300 rounded-md px-2 py-1.5 pr-7 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
                                                             <span class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-400">%</span>
                                                         </div>
                                                     </div>
                                                     <div class="flex-1">
                                                         <label class="block text-[11px] text-gray-500 mb-1">Train ratio</label>
-                                                        <input v-model.number="trainingParams.train_split_ratio" type="number" min="0.05" max="0.95" step="0.01" class="w-full bg-white border border-gray-300 rounded-md px-2 py-1.5 text-sm">
+                                                        <input v-model.number="trainingParams.train_split_ratio" :disabled="configControlsLocked" type="number" min="0.05" max="0.95" step="0.01" class="w-full bg-white border border-gray-300 rounded-md px-2 py-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
                                                     </div>
                                                 </div>
                                             </div>
@@ -530,11 +589,11 @@
                                         <div v-else-if="trainingParams.dataset_source !== 'BioImage Archive'" class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
                                             <div>
                                                 <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Test Images (Opt)</label>
-                                                <input v-model="trainingParams.test_images" @input="markPathFieldEdited('test_images')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
+                                                <input v-model="trainingParams.test_images" :disabled="configControlsLocked" @input="markPathFieldEdited('test_images')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed" placeholder="Optional">
                                             </div>
                                             <div>
                                                 <label class="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Test Annotations (Opt)</label>
-                                                <input v-model="trainingParams.test_annotations" @input="markPathFieldEdited('test_annotations')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm" placeholder="Optional">
+                                                <input v-model="trainingParams.test_annotations" :disabled="configControlsLocked" @input="markPathFieldEdited('test_annotations')" class="w-full bg-white border border-gray-300 rounded-md px-3 py-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed" placeholder="Optional">
                                             </div>
                                             <p class="md:col-span-2 text-xs text-gray-600">Estimated split from selected samples: train <span class="font-semibold">[[ selectedTrainSampleCount ?? '-' ]]</span>, validation <span class="font-semibold">[[ selectedValidationSampleCount ?? '-' ]]</span>.</p>
                                         </div>
@@ -565,6 +624,10 @@
 
                          <div class="flex justify-end gap-4">
                              <button type="button" @click="currentTab = 'dashboard'" class="px-6 py-2.5 text-gray-600 font-medium hover:bg-gray-100 rounded-lg transition">Cancel</button>
+                                      <button type="button" @click="copyTrainingParams" class="px-6 py-2.5 text-blue-700 bg-blue-50 border border-blue-200 font-medium hover:bg-blue-100 rounded-lg transition flex items-center gap-2">
+                                          <i class="fas fa-copy"></i>
+                                          Copy Params
+                                     </button>
                              <button type="submit" :disabled="isTrainingStartDisabled" class="bg-blue-600 text-white px-8 py-2.5 rounded-lg shadow-sm hover:bg-blue-700 hover:shadow-md transition-all font-medium disabled:opacity-50 flex items-center gap-2">
                                 <i v-if="isStartingTraining" class="fas fa-circle-notch fa-spin"></i>
                                 [[ isStartingTraining ? 'Starting...' : 'Start Training' ]]
@@ -600,11 +663,18 @@
                                 <i class="fas fa-stop mr-1"></i> Stop
                             </button>
                             <button
-                                v-if="currentSession && ['stopped','unknown','failed'].includes(currentSession.status_type)"
+                                v-if="currentSession && ['stopped','unknown','failed','completed'].includes(currentSession.status_type)"
                                 @click="restartTraining(selectedSessionId)"
                                 class="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition"
                             >
                                 <i class="fas fa-rotate-right mr-1"></i> Restart
+                            </button>
+                            <button
+                                v-if="currentSession && currentSession.status_type !== 'running'"
+                                @click="deleteTrainingSession(selectedSessionId)"
+                                class="px-4 py-2 rounded-lg bg-slate-700 text-white text-sm font-medium hover:bg-slate-800 transition"
+                            >
+                                <i class="fas fa-trash mr-1"></i> Delete
                             </button>
                         </div>
                     </div>
@@ -941,6 +1011,7 @@
                 // Training Data
                 const syncError = ref(null);
                 const sessions = ref({});
+                const selectedSessionIds = ref([]);
                 const selectedSessionId = ref(null);
                 const refreshLoading = ref(false);
                 
@@ -964,6 +1035,7 @@
                     min_train_masks: 5,
                 });
                 const isStartingTraining = ref(false);
+                const isDeletingSession = ref(false);
                 const trainingError = ref('');
                 const sampleInventory = reactive({
                     trainPairs: 0,
@@ -1021,7 +1093,6 @@
                 });
                 const lastAutoPathArtifact = ref('');
                 const autoDetectedPathsPristine = ref(false);
-                let continuousValidationTimer = null;
 
                 const SUPPORTED_IMAGE_EXT_RE = /\.(ome\.)?(tif|tiff|png|jpg|jpeg)$/i;
 
@@ -1070,7 +1141,6 @@
                     if (workspace.value) workspaces.add(workspace.value);
                     const userWs = getUserWorkspace();
                     if (userWs) workspaces.add(userWs);
-                    workspaces.add('bioimage-io');
 
                     if (!window.hyphaClient) return Array.from(workspaces);
 
@@ -1507,6 +1577,14 @@
                 const monitoredSession = computed(() => monitoringSessionId.value ? sessions.value[monitoringSessionId.value] : null);
                 const hasMetrics = computed(() => currentSession.value?.test_metrics?.length > 0);
                 const hasValidationSet = computed(() => (currentSession.value?.n_test || 0) > 0);
+                const nonRunningSessionIds = computed(() => Object.entries(sessions.value)
+                    .filter(([_, session]) => session && session.status_type !== 'running')
+                    .map(([id]) => id));
+                const allNonRunningSelected = computed(() => {
+                    const candidates = nonRunningSessionIds.value;
+                    if (candidates.length === 0) return false;
+                    return candidates.every((id) => selectedSessionIds.value.includes(id));
+                });
                 const runningTrainingSessionsCount = computed(() =>
                     Object.values(sessions.value).filter((s) => s && s.status_type === 'running').length
                 );
@@ -1715,6 +1793,11 @@
                     return !pathValidationOk.value;
                 });
 
+                const configControlsLocked = computed(() => {
+                    if (trainingParams.dataset_source === 'BioImage Archive') return false;
+                    return !pathValidationOk.value || isPathValidating.value;
+                });
+
                 const applyTrainingFolderExample = () => {
                     trainingParams.train_images = 'images/';
                     trainingParams.train_annotations = 'annotations/';
@@ -1725,6 +1808,12 @@
                 const markPathFieldEdited = (field) => {
                     autoDetectedPathsPristine.value = false;
                     if (pathFieldsDirty[field] === false) pathFieldsDirty[field] = true;
+                    pathValidationOk.value = false;
+                    pathValidationMessage.value = 'Path settings changed. Click "Validate paths" to continue.';
+                    sampleInventory.trainPairs = 0;
+                    sampleInventory.testPairs = 0;
+                    sampleInventory.totalPairs = 0;
+                    sampleInventory.known = false;
                 };
 
                 const resetPathDirtyFlags = () => {
@@ -1990,10 +2079,10 @@
                         throw new Error(`${phaseLabel}: no supported mask/annotation files found for '${annotationSpec}'.`);
                     }
 
-                    const annotationStemSet = new Set(annotationFiles.map((pathStr) => normalizePairStem(pathStr)));
-                    const pairedCount = imageFiles.filter((pathStr) => annotationStemSet.has(normalizePairStem(pathStr))).length;
+                    const pairedCount = Math.min(imageFiles.length, annotationFiles.length);
+
                     if (pairedCount === 0) {
-                        throw new Error(`${phaseLabel}: found files, but no image/mask pairs matched by filename stem.`);
+                        throw new Error(`${phaseLabel}: found files, but no trainable pairs can be assumed from file counts.`);
                     }
 
                     return {
@@ -2001,6 +2090,44 @@
                         annotationCount: annotationFiles.length,
                         pairedCount,
                     };
+                };
+
+                const callBackendTrainingPreflight = async (artifactId) => {
+                    if (!service.value || typeof service.value.preflight_training_dataset !== 'function') {
+                        return null;
+                    }
+
+                    const payload = {
+                        artifact: artifactId,
+                        train_images: String(trainingParams.train_images || '').trim() || null,
+                        train_annotations: String(trainingParams.train_annotations || '').trim() || null,
+                        metadata_dir: String(trainingParams.metadata_dir || '').trim() || null,
+                        test_images: String(trainingParams.test_images || '').trim() || null,
+                        test_annotations: String(trainingParams.test_annotations || '').trim() || null,
+                        split_mode: trainingParams.dataset_source === 'BioImage Archive'
+                            ? 'auto'
+                            : String(trainingParams.split_mode || 'manual').toLowerCase(),
+                        n_samples: Number(sampleUsageDecimal.value || 0) > 0
+                            ? Number(sampleUsageDecimal.value)
+                            : null,
+                        max_candidates: 500,
+                    };
+
+                    const attempts = [
+                        () => service.value.preflight_training_dataset(payload, { _rkwargs: true }),
+                        () => service.value.preflight_training_dataset(payload),
+                    ];
+
+                    for (const attempt of attempts) {
+                        try {
+                            const result = await attempt();
+                            if (result && typeof result === 'object') return result;
+                        } catch (_error) {
+                            // Try fallback call signature.
+                        }
+                    }
+
+                    return null;
                 };
 
                 const runPathAutoDetection = async (manualTrigger = false) => {
@@ -2060,8 +2187,8 @@
                         sampleInventory.totalPairs = quickTrainResult.pairedCount;
                         sampleInventory.known = true;
                         if (quickTrainResult.pairedCount > 0) {
-                            pathValidationOk.value = true;
-                            pathValidationMessage.value = `Train pairs found: ${quickTrainResult.pairedCount}. Finishing full validation…`;
+                            pathValidationOk.value = false;
+                            pathValidationMessage.value = `Auto-detect hint: train files images=${quickTrainResult.imageCount}, masks=${quickTrainResult.annotationCount}, assumed pairs=${quickTrainResult.pairedCount}. Click Validate for backend confirmation.`;
                         }
 
                         if (trainingParams.split_mode === 'manual' && testImageDir && testMaskDir) {
@@ -2132,12 +2259,35 @@
                     pathValidationMessage.value = '';
 
                     try {
+                        const backendPreflight = await callBackendTrainingPreflight(artifactId);
+                        if (backendPreflight) {
+                            const trainPairs = Number(backendPreflight.train_pair_count || 0);
+                            const testPairs = Number(backendPreflight.test_pair_count || 0);
+                            const totalPairs = Number(backendPreflight.sampled_total_count ?? (trainPairs + testPairs));
+
+                            sampleInventory.trainPairs = Math.max(0, trainPairs);
+                            sampleInventory.testPairs = Math.max(0, testPairs);
+                            sampleInventory.totalPairs = Math.max(0, totalPairs);
+                            sampleInventory.known = true;
+
+                            if (!backendPreflight.ok) {
+                                throw new Error(String(backendPreflight.message || 'Dataset preflight failed.'));
+                            }
+
+                            pathValidationOk.value = true;
+                            pathValidationMessage.value = String(
+                                backendPreflight.message ||
+                                `Dataset preflight passed. Train pairs=${trainPairs}, test pairs=${testPairs}.`
+                            );
+                            return true;
+                        }
+
                         const files = await loadArtifactFiles(artifactId);
                         const supportedFileCount = files.filter((pathStr) => isSupportedImagePath(pathStr)).length;
 
                         if (!hasMetadataDir) {
                             const trainResult = validatePairSpecs(files, trainingParams.train_images, trainingParams.train_annotations, 'Train set');
-                            let message = `Train pairs found: ${trainResult.pairedCount} (images: ${trainResult.imageCount}, masks: ${trainResult.annotationCount}).`;
+                            let message = `Train files: images=${trainResult.imageCount}, masks=${trainResult.annotationCount}, assumed pairs=${trainResult.pairedCount}.`;
                             let testPairCount = 0;
 
                             if (trainResult.pairedCount > 0) {
@@ -2151,7 +2301,7 @@
 
                             if (hasManualTestPaths) {
                                 const testResult = validatePairSpecs(files, trainingParams.test_images, trainingParams.test_annotations, 'Test set');
-                                message += ` Test pairs found: ${testResult.pairedCount}.`;
+                                message += ` Test files: images=${testResult.imageCount}, masks=${testResult.annotationCount}, assumed pairs=${testResult.pairedCount}.`;
                                 testPairCount = testResult.pairedCount;
                             }
 
@@ -2189,17 +2339,7 @@
                 };
 
                 const scheduleContinuousPathValidation = () => {
-                    if (continuousValidationTimer) {
-                        clearTimeout(continuousValidationTimer);
-                    }
-                    continuousValidationTimer = setTimeout(async () => {
-                        if (trainingParams.dataset_source === 'BioImage Archive') {
-                            pathValidationOk.value = true;
-                            pathValidationMessage.value = '';
-                            return;
-                        }
-                        await validateTrainingPaths(true);
-                    }, 250);
+                    return;
                 };
 
                 const getUserWorkspace = () => {
@@ -2455,6 +2595,13 @@
                                 sessions.value = result;
                                 syncError.value = null;
 
+                                const existingNonRunning = new Set(
+                                    Object.entries(sessions.value)
+                                        .filter(([_, session]) => session && session.status_type !== 'running')
+                                        .map(([id]) => id)
+                                );
+                                selectedSessionIds.value = selectedSessionIds.value.filter((id) => existingNonRunning.has(id));
+
                                 // Find active session
                                 const running = Object.entries(sessions.value).find(([_, s]) => s && s.status_type === 'running');
                                 if (running) {
@@ -2536,7 +2683,6 @@
                             trainingParams.test_annotations = '';
                         }
                         autoDetectedPathsPristine.value = false;
-                        scheduleContinuousPathValidation();
                     }
                 );
 
@@ -2546,6 +2692,14 @@
                         const artifactId = String(getSelectedArtifactId() || '').trim();
                         if (artifactId !== lastAutoPathArtifact.value) {
                             autoDetectedPathsPristine.value = false;
+                            if (trainingParams.dataset_source !== 'BioImage Archive') {
+                                pathValidationOk.value = false;
+                                pathValidationMessage.value = 'Artifact changed. Click "Validate paths" to continue.';
+                                sampleInventory.trainPairs = 0;
+                                sampleInventory.testPairs = 0;
+                                sampleInventory.totalPairs = 0;
+                                sampleInventory.known = false;
+                            }
                         }
                         if (trainingParams.dataset_source === 'BioImage Archive') return;
                         if (!isCompleteArtifactId(artifactId)) return;
@@ -2585,25 +2739,6 @@
                         }
 
                         await checkArtifactExists(workspaceId, alias);
-                    }
-                );
-
-                watch(
-                    () => [
-                        trainingParams.dataset_source,
-                        trainingParams.artifact_input,
-                        trainingParams.uploaded_artifact,
-                        trainingParams.train_images,
-                        trainingParams.train_annotations,
-                        trainingParams.metadata_dir,
-                        trainingParams.test_images,
-                        trainingParams.test_annotations,
-                        trainingParams.split_mode,
-                        artifactIdExists.value,
-                        artifactLookupPending.value,
-                    ],
-                    () => {
-                        scheduleContinuousPathValidation();
                     }
                 );
 
@@ -2696,6 +2831,25 @@
                     }
                 };
 
+                const toggleSessionSelection = (id, checked) => {
+                    if (!id) return;
+                    const session = sessions.value[id];
+                    if (!session || session.status_type === 'running') return;
+
+                    const set = new Set(selectedSessionIds.value);
+                    if (checked) set.add(id);
+                    else set.delete(id);
+                    selectedSessionIds.value = Array.from(set);
+                };
+
+                const toggleSelectAllNonRunning = (checked) => {
+                    if (checked) {
+                        selectedSessionIds.value = [...nonRunningSessionIds.value];
+                    } else {
+                        selectedSessionIds.value = [];
+                    }
+                };
+
                 const restartTraining = async (id) => {
                     try {
                         const result = await service.value.restart_training(
@@ -2716,6 +2870,130 @@
                         trainingError.value = "Restart failed: " + errMsg;
                         syncError.value = "Restart failed: " + errMsg;
                         alert("Restart failed: " + errMsg);
+                    }
+                };
+
+                const deleteTrainingSession = async (id) => {
+                    if (isDeletingSession.value) return;
+                    if (!id) return;
+                    if (!confirm(`Delete session ${id}? This removes local session history, status, and checkpoints for this service instance.`)) return;
+
+                    isDeletingSession.value = true;
+                    try {
+                        await service.value.delete_training_session(
+                            { session_id: id, force_stop_if_blocked: true },
+                            { _rkwargs: true }
+                        );
+
+                        if (monitoringSessionId.value === id) {
+                            monitoringSessionId.value = null;
+                        }
+                        if (selectedSessionId.value === id) {
+                            selectedSessionId.value = null;
+                            currentTab.value = 'dashboard';
+                        }
+                        if (sessions.value[id]) {
+                            delete sessions.value[id];
+                        }
+                        selectedSessionIds.value = selectedSessionIds.value.filter((value) => value !== id);
+
+                        await refreshSessions(true);
+                    } catch (e) {
+                        const errMsg = formatServiceError(e, 'Delete session');
+                        trainingError.value = "Delete failed: " + errMsg;
+                        alert("Delete failed: " + errMsg);
+                    } finally {
+                        isDeletingSession.value = false;
+                    }
+                };
+
+                const deleteSelectedSessions = async () => {
+                    if (isDeletingSession.value) return;
+                    const targets = selectedSessionIds.value.filter((id) => {
+                        const session = sessions.value[id];
+                        return session && session.status_type !== 'running';
+                    });
+                    if (targets.length === 0) return;
+
+                    if (!confirm(`Delete ${targets.length} selected session(s)? This removes local session history, status, and checkpoints for this service instance.`)) {
+                        return;
+                    }
+
+                    isDeletingSession.value = true;
+                    const failures = [];
+                    try {
+                        for (const id of targets) {
+                            try {
+                                await service.value.delete_training_session(
+                                    { session_id: id, force_stop_if_blocked: true },
+                                    { _rkwargs: true }
+                                );
+                                if (monitoringSessionId.value === id) monitoringSessionId.value = null;
+                                if (selectedSessionId.value === id) {
+                                    selectedSessionId.value = null;
+                                    currentTab.value = 'dashboard';
+                                }
+                                if (sessions.value[id]) delete sessions.value[id];
+                            } catch (error) {
+                                failures.push({ id, error: formatServiceError(error, 'Delete session') });
+                            }
+                        }
+
+                        selectedSessionIds.value = [];
+                        await refreshSessions(true);
+
+                        if (failures.length > 0) {
+                            const lines = failures.slice(0, 5).map((f) => `- ${f.id}: ${f.error}`);
+                            alert(`Deleted ${targets.length - failures.length}/${targets.length} sessions.\n\nFailures:\n${lines.join('\n')}`);
+                        }
+                    } finally {
+                        isDeletingSession.value = false;
+                    }
+                };
+
+                const getTrainingCopyPayload = () => {
+                    const source = trainingParams.dataset_source;
+                    const artifactOrUrl = source === 'BioImage Archive'
+                        ? String(trainingParams.bioimage_archive_url || '').trim()
+                        : String(getSelectedArtifactId() || '').trim();
+                    const sampleUsageRatio = Number((sampleUsagePercent.value / 100).toFixed(4));
+
+                    return {
+                        dataset_source: source,
+                        artifact_or_bia_url: artifactOrUrl,
+                        artifact_id: source === 'BioImage Archive' ? null : artifactOrUrl,
+                        bioimage_archive_url: source === 'BioImage Archive' ? artifactOrUrl : null,
+                        model: trainingParams.model || 'cpsam',
+                        train_images: source === 'BioImage Archive' ? null : (trainingParams.train_images || null),
+                        train_annotations: source === 'BioImage Archive' ? null : (trainingParams.train_annotations || null),
+                        metadata_dir: source === 'BioImage Archive' ? null : (trainingParams.metadata_dir || null),
+                        split_mode: source === 'BioImage Archive' ? 'auto' : (trainingParams.split_mode || 'manual'),
+                        train_split_ratio: Number(trainingParams.train_split_ratio || 0.8),
+                        test_images: (source !== 'BioImage Archive' && trainingParams.split_mode === 'manual') ? (trainingParams.test_images || null) : null,
+                        test_annotations: (source !== 'BioImage Archive' && trainingParams.split_mode === 'manual') ? (trainingParams.test_annotations || null) : null,
+                        n_samples_ratio: sampleUsageRatio,
+                        n_samples_percent: Number(sampleUsagePercent.value || 0),
+                        selected_samples_estimate: selectedTotalSampleCount.value,
+                        selected_train_samples_estimate: selectedTrainSampleCount.value,
+                        selected_validation_samples_estimate: selectedValidationSampleCount.value,
+                        available_pairs_total: availableTotalSampleCount.value,
+                        available_pairs_train: sampleInventory.known ? sampleInventory.trainPairs : null,
+                        available_pairs_test: sampleInventory.known ? sampleInventory.testPairs : null,
+                        n_epochs: trainingParams.n_epochs,
+                        learning_rate: trainingParams.learning_rate,
+                        weight_decay: 1e-4,
+                        min_train_masks: trainingParams.min_train_masks,
+                        validation_interval: null,
+                    };
+                };
+
+                const copyTrainingParams = async () => {
+                    const payload = getTrainingCopyPayload();
+                    const text = JSON.stringify(payload, null, 2);
+                    try {
+                        await navigator.clipboard.writeText(text);
+                    } catch (_e) {
+                        window.prompt('Copy training parameters:', text);
                     }
                 };
 
@@ -3545,9 +3823,9 @@
                     serverUrl, isConnected, isConnecting, workspace, showTokenInput, authToken, autoConnectError,
                     availableServices, selectedServiceId, service, isScanning, listServices, disconnect, connect, login,
                     currentTab, tabs,
-                    sessions, refreshSessions, refreshLoading, monitoringSessionId, monitoredSession, selectedSessionId, viewSession, currentSession, hasMetrics, hasValidationSet, stopTraining, restartTraining,
+                    sessions, selectedSessionIds, allNonRunningSelected, toggleSessionSelection, toggleSelectAllNonRunning, deleteSelectedSessions, refreshSessions, refreshLoading, monitoringSessionId, monitoredSession, selectedSessionId, viewSession, currentSession, hasMetrics, hasValidationSet, stopTraining, restartTraining, deleteTrainingSession,
                     runningTrainingSessionsCount,
-                    trainingParams, startTraining, isStartingTraining,
+                    trainingParams, startTraining, isStartingTraining, copyTrainingParams,
                     sampleUsagePercent, sampleUsageDecimal, trainSplitPercent,
                     availableTotalSampleCount, selectedTotalSampleCount, selectedTrainSampleCount, selectedValidationSampleCount,
                     applyTrainingGlobExample, applyTrainingFolderExample, runPathAutoDetection, validateTrainingPaths,
@@ -3563,7 +3841,7 @@
                     suggestions, showSuggestions, artifactInputError, artifactIdExists, artifactLookupPending, handleArtifactInput, handleArtifactFocus, selectSuggestion, acceptSuggestion, closeSuggestions,
 
                     // Path auto-detect + validation
-                    isPathDetecting, isPathValidating, pathAutoHint, pathAutoError, showAutoDetectButton, pathValidationMessage, pathValidationOk, markPathFieldEdited, isTrainingStartDisabled,
+                    isPathDetecting, isPathValidating, pathAutoHint, pathAutoError, showAutoDetectButton, pathValidationMessage, pathValidationOk, markPathFieldEdited, isTrainingStartDisabled, configControlsLocked,
 
                     // Helpers
                     statusTextColor, formatDuration, handleFolderSelect, getLatestLoss, formatDate, getSelectedArtifactId,

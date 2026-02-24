@@ -195,7 +195,7 @@ Start asynchronous model fine-tuning.
 - `train_split_ratio` (float): Train ratio used when `split_mode="auto"` (default: `0.8`, i.e. 80% train / 20% validation).
 - `model` (str): Pretrained model to start from (default: "cpsam")
 - `n_epochs` (int): Number of training epochs (default: 10)
-- `n_samples` (int | float, optional): Limit sample usage. If `n_samples > 1`, treated as absolute count. If `0 < n_samples <= 1`, treated as decimal fraction of all available samples (e.g. `0.6` = 60%).
+- `n_samples` (int | float, optional): Limit sample usage. If `n_samples > 1`, treated as absolute count. If `0 < n_samples <= 1`, treated as decimal fraction of available samples (e.g. `0.05` = 5%).
 - `learning_rate` (float): Learning rate (default: 1e-6)
 - `weight_decay` (float): Weight decay (default: 0.0001)
 - `min_train_masks` (int): Minimum number of masks per training batch (default: 5). Lower values speed up training.
@@ -377,6 +377,31 @@ List all known training sessions with their status.
 Notes:
 - Sessions with stale `waiting`/`preparing`/`running` states after a redeploy are normalized to `stopped` (interrupted).
 - Running-session indicators in the UI only track sessions that are currently active.
+
+### `delete_training_session()`
+
+Delete a non-running training session and its local artifacts.
+
+**Parameters:**
+- `session_id` (str): Session ID to delete
+- `force_stop_if_blocked` (bool, optional): If true, stop a blocked `running`/`preparing` session first, then delete
+
+**Returns:** Dict with `deleted` (bool) and `session_id` (str)
+
+### `preflight_training_dataset()`
+
+Run a lightweight backend preflight over training path configuration without starting training.
+
+**Parameters:**
+- `artifact` (str): Artifact ID or BioImage Archive URL
+- `train_images`, `train_annotations` (str, optional): Training path specs
+- `metadata_dir` (str, optional): Metadata mode directory
+- `test_images`, `test_annotations` (str, optional): Optional test path specs
+- `split_mode` (str): `manual` or `auto`
+- `n_samples` (int | float, optional): Optional sample limit/count
+- `max_candidates` (int): Cap for path matching candidates during preflight
+
+**Returns:** Dict including `ok`, pair counts (`train_pair_count`, `test_pair_count`), and an explanatory `message`.
 
 Validation metrics are only produced when both `test_images` and `test_annotations` are provided.
 

@@ -174,3 +174,4 @@ bioimageio_test_reports/
 
 # MacOS
 .DS_STORE
+demo-dataset/

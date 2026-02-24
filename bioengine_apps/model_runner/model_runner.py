@@ -1008,7 +1008,7 @@ class ModelCache:
     ray_actor_options={
         "num_cpus": 1,
         "num_gpus": 0,
-        # "memory": 16 * 1024 * 1024 * 1024,  # 16GB RAM limit
+        "memory": 16 * 1024 * 1024 * 1024,  # 16GB RAM limit
         "runtime_env": {
             "pip": [
                 "bioimageio.core==0.9.5",

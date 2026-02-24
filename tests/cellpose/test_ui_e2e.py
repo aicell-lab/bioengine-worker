@@ -1,0 +1,396 @@
+import os
+import re
+import time
+from pathlib import Path
+
+import pytest
+from playwright.sync_api import Page, expect
+
+SERVER_URL = "https://hypha.aicell.io"
+APP_WORKSPACE = os.environ.get("HYPHA_TEST_WORKSPACE", "ri-scale")
+APP_ID = os.environ.get("HYPHA_TEST_APP_ID", "cellpose-finetuning")
+APP_URL = f"{SERVER_URL}/{APP_WORKSPACE}/view/{APP_ID}"
+APP_FALLBACK_URL = f"{SERVER_URL}/{APP_WORKSPACE}/view/cellpose-finetuning-test"
+RUN_LIVE_REGRESSION_TESTS = os.environ.get("RUN_LIVE_REGRESSION_TESTS") == "1"
+
+
+def open_and_connect(page: Page) -> None:
+    token = os.environ.get("HYPHA_TOKEN")
+    if token:
+        page.add_init_script(f"window.localStorage.setItem('hypha_token', {token!r});")
+    response = page.goto(APP_URL, timeout=60000)
+    if not (response and response.ok) and APP_URL != APP_FALLBACK_URL:
+        response = page.goto(APP_FALLBACK_URL, timeout=60000)
+    assert (
+        response and response.ok
+    ), f"Failed to load app at {APP_URL} (fallback attempted: {APP_FALLBACK_URL})"
+    expect(page).to_have_title(re.compile(r"Cellpose Fine-Tuning"), timeout=15000)
+    expect(page.locator("text=Connected").first).to_be_visible(timeout=30000)
+
+
+def capture_dialog(page: Page):
+    captured = {"message": None}
+
+    def _handle(dialog):
+        captured["message"] = dialog.message
+        dialog.accept()
+
+    page.on("dialog", _handle)
+    return captured
+
+
+def capture_console_logs(page: Page, marker: str):
+    captured = []
+
+    def _on_console(msg):
+        try:
+            text = msg.text
+        except Exception:
+            text = str(msg)
+        if marker in text:
+            captured.append(text)
+
+    page.on("console", _on_console)
+    return captured
+
+
+def test_app_loads(page: Page):
+    """App loads and connects to Hypha."""
+    open_and_connect(page)
+
+
+def test_navigation(page: Page):
+    """Basic tab navigation works."""
+    open_and_connect(page)
+
+    # Default is Dashboard
+    expect(page.locator("h2:has-text('Dashboard')")).to_be_visible()
+
+    # Click New Training
+    page.click("text=New Training")
+    expect(page.locator("h2:has-text('New Training Session')")).to_be_visible()
+
+    # Click Inference
+    page.click("text=Inference")
+    expect(page.locator("h2:has-text('Live Inference')")).to_be_visible()
+
+
+def test_file_browser(page: Page):
+    """File browser opens and lists artifact content."""
+    open_and_connect(page)
+
+    # Go to Training
+    page.click("text=New Training")
+
+    artifact_id = "ri-scale/cellpose-finetuning"
+    page.fill("input[placeholder='workspace/dataset-alias']", artifact_id)
+
+    # Open Browser
+    page.click("button[title='Browse Files']")
+
+    # Wait for modal
+    expect(page.locator("text=Artifact Explorer")).to_be_visible()
+
+    # Wait for loading to finish
+    expect(page.locator("text=Loading files...")).not_to_be_visible()
+
+    # Should see "index.html"
+    expect(page.locator("text=index.html")).to_be_visible()
+
+    page.locator("div:has(h3:has-text('Artifact Explorer')) button").last.click()
+
+
+def test_start_training_button_and_result(page: Page):
+    """Clicks Start Training and validates the returned UI result."""
+    open_and_connect(page)
+
+    page.click("text=New Training")
+    page.fill("input[placeholder='workspace/dataset-alias']", "ri-scale/zarr-demo")
+    page.fill(
+        "input[placeholder='e.g. images/*/*.tif']",
+        "images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif",
+    )
+    page.fill(
+        "input[placeholder='e.g. annotations/*/*_mask.ome.tif']",
+        "annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif",
+    )
+    page.fill("input[placeholder='Optional']", "")
+    page.locator("input[placeholder='Optional']").nth(1).fill("")
+    page.fill("input[placeholder='Pretrained ID or Session ID']", "cpsam")
+
+    dialogs = capture_dialog(page)
+    page.click("button:has-text('Start Training')")
+
+    deadline = time.time() + 60
+    while dialogs["message"] is None and time.time() < deadline:
+        page.wait_for_timeout(250)
+    assert dialogs["message"] is not None, "No Start Training dialog received"
+    msg = dialogs["message"] or ""
+    assert "Start Training Failed" not in msg
+    assert "Training started successfully" in msg
+    expect(page.locator("h2:has-text('Session Analysis')")).to_be_visible(timeout=20000)
+
+
+def test_infer_button_and_result(page: Page):
+    """Clicks Run Segmentation with a real file and validates output/alert."""
+    open_and_connect(page)
+    page.click("text=Inference")
+
+    image_path = Path(
+        "/Users/hugokallander/github-repos/bioengine-worker/tests/cellpose_legacy_scripts/t0000.ome.tif"
+    )
+    assert image_path.exists(), f"Inference image not found: {image_path}"
+
+    infer_input = page.locator("input[type='file']").first
+    infer_input.set_input_files(str(image_path))
+    expect(page.locator("text=t0000.ome.tif")).to_be_visible(timeout=10000)
+    expect(
+        page.locator("img[src^='blob:'], img[src^='data:image/png;base64']").first
+    ).to_be_visible(timeout=10000)
+
+    dialogs = capture_dialog(page)
+    page.click("button:has-text('Run Segmentation')")
+
+    page.wait_for_timeout(12000)
+    if dialogs["message"]:
+        assert "Inference fail" not in dialogs["message"]
+
+    infer_panel = page.locator("text=Found").first
+    expect(infer_panel).to_be_visible(timeout=30000)
+
+
+def test_no_raw_template_markers(page: Page):
+    """The rendered UI should not leak template raw markers."""
+    if not RUN_LIVE_REGRESSION_TESTS:
+        pytest.skip(
+            "Set RUN_LIVE_REGRESSION_TESTS=1 to run live template-marker regression"
+        )
+
+    open_and_connect(page)
+    html = page.content()
+    assert "{% raw %}" not in html
+    assert "{% endraw %}" not in html
+
+
+def test_stop_training_persists_after_reload(page: Page):
+    """Start then stop a session, and ensure status does not revert to running after refresh/reload."""
+    if not RUN_LIVE_REGRESSION_TESTS:
+        pytest.skip(
+            "Set RUN_LIVE_REGRESSION_TESTS=1 to run live stop-persistence regression"
+        )
+
+    open_and_connect(page)
+
+    page.click("text=New Training")
+    page.fill("input[placeholder='workspace/dataset-alias']", "ri-scale/zarr-demo")
+    page.fill(
+        "input[placeholder='e.g. images/*/*.tif']",
+        "images/108bb69d-2e52-4382-8100-e96173db24ee/*.ome.tif",
+    )
+    page.fill(
+        "input[placeholder='e.g. annotations/*/*_mask.ome.tif']",
+        "annotations/108bb69d-2e52-4382-8100-e96173db24ee/*_mask.ome.tif",
+    )
+    page.fill("input[placeholder='Optional']", "")
+    page.locator("input[placeholder='Optional']").nth(1).fill("")
+    page.fill("input[placeholder='Pretrained ID or Session ID']", "cpsam")
+
+    start_dialogs = capture_dialog(page)
+    page.click("button:has-text('Start Training')")
+
+    deadline = time.time() + 60
+    while start_dialogs["message"] is None and time.time() < deadline:
+        page.wait_for_timeout(250)
+    assert start_dialogs["message"] is not None, "No Start Training dialog received"
+
+    match = re.search(r"Session ID:\s*([a-zA-Z0-9-]+)", start_dialogs["message"] or "")
+    assert (
+        match is not None
+    ), f"Could not parse session id from: {start_dialogs['message']}"
+    session_id = match.group(1)
+
+    page.click("text=Dashboard")
+    row = page.locator("tr", has=page.locator(f"text={session_id[:8]}"))
+    expect(row.first).to_be_visible(timeout=20000)
+
+    stop_dialogs = capture_dialog(page)
+    row.first.locator("button:has-text('Stop')").click()
+
+    deadline = time.time() + 30
+    while stop_dialogs["message"] is None and time.time() < deadline:
+        page.wait_for_timeout(250)
+    assert stop_dialogs["message"] == "Stop this training session?"
+
+    for _ in range(8):
+        page.click("button:has-text('Refresh')")
+        page.wait_for_timeout(1000)
+        status_text = row.first.locator("td").nth(1).inner_text().strip().lower()
+        if "running" not in status_text:
+            break
+    else:
+        raise AssertionError("Session still running after stop + refresh attempts")
+
+    page.reload(timeout=60000)
+    expect(page.locator("text=Connected").first).to_be_visible(timeout=30000)
+    page.click("text=Dashboard")
+    row_after_reload = page.locator("tr", has=page.locator(f"text={session_id[:8]}"))
+    expect(row_after_reload.first).to_be_visible(timeout=20000)
+    status_after_reload = (
+        row_after_reload.first.locator("td").nth(1).inner_text().strip().lower()
+    )
+    assert (
+        "running" not in status_after_reload
+    ), f"Status reverted to running: {status_after_reload}"
+
+
+def test_dataset_source_options(page: Page):
+    """Test switching between Artifact, Upload, and BioImage Archive options."""
+    open_and_connect(page)
+    page.click("text=New Training")
+
+    # Locate the dataset source dropdown
+    # Try finding by label text and getting the select in the parent container
+    # Or simply finding the select that contains 'BioImage Archive' option
+    dropdown = page.locator("select:has(option:has-text('BioImage Archive'))")
+    expect(dropdown).to_be_visible()
+
+    # 1. Default should be Artifact
+    expect(dropdown).to_have_value("Artifact")
+    # Verify Artifact ID input is visible
+    expect(page.locator("input[placeholder='workspace/dataset-alias']")).to_be_visible()
+
+    # 2. Switch to BioImage Archive
+    dropdown.select_option("BioImage Archive")
+    # Verify Archive URL input is visible and Artifact ID input is hidden
+    archive_input = page.locator("input[placeholder*='ebi.ac.uk']")
+    expect(archive_input).to_be_visible()
+    expect(
+        page.locator("input[placeholder='workspace/dataset-alias']")
+    ).not_to_be_visible()
+
+    # 3. Switch to Upload
+    dropdown.select_option("Upload")
+    # Verify Upload button is visible and Archive URL input is hidden
+    upload_btn = page.locator("button:has-text('Upload Folder')")
+    expect(upload_btn).to_be_visible()
+    expect(archive_input).not_to_be_visible()
+
+    # Check Upload Modal opens
+    upload_btn.click()
+    expect(page.locator("h3:has-text('Upload Dataset')")).to_be_visible()
+    page.click("button:has-text('Cancel')")
+    expect(page.locator("h3:has-text('Upload Dataset')")).not_to_be_visible()
+
+
+def test_inference_panel_not_blank_live(page: Page):
+    """Inference tab should render configuration controls, not an empty panel."""
+    if not RUN_LIVE_REGRESSION_TESTS:
+        pytest.skip(
+            "Set RUN_LIVE_REGRESSION_TESTS=1 to run live inference-panel regression"
+        )
+
+    inference_logs = capture_console_logs(page, "[InferenceTab]")
+    open_and_connect(page)
+    page.click("text=Inference")
+
+    expect(page.locator("h2:has-text('Live Inference')")).to_be_visible(timeout=20000)
+
+    has_config = False
+    has_init_state = False
+    for _ in range(8):
+        page.wait_for_timeout(1500)
+        has_config = page.locator("h3:has-text('Configuration')").count() > 0
+        has_init_state = (
+            page.locator("h3:has-text('Initializing inference service')").count() > 0
+        )
+        if has_config or has_init_state:
+            break
+
+    if not (has_config or has_init_state):
+        body_preview = page.locator("body").inner_text()[:1200]
+        raise AssertionError(
+            "Inference tab rendered blank (neither configuration nor initializing state visible). "
+            f"Captured logs: {inference_logs[-12:]}. Body preview: {body_preview}"
+        )
+
+    if has_config:
+        expect(page.locator("button:has-text('Run Segmentation')")).to_be_visible(
+            timeout=15000
+        )
+    if has_init_state:
+        expect(page.locator("button:has-text('Retry Connection')")).to_be_visible(
+            timeout=15000
+        )
+
+    page.wait_for_timeout(1000)
+    assert (
+        inference_logs
+    ), "No [InferenceTab] diagnostic logs captured after opening Inference tab"
+
+
+def test_workspace_autocomplete_suggestions_live(page: Page):
+    """Workspace autocomplete should show options while typing workspace prefix."""
+    if not RUN_LIVE_REGRESSION_TESTS:
+        pytest.skip(
+            "Set RUN_LIVE_REGRESSION_TESTS=1 to run live workspace-autocomplete regression"
+        )
+
+    artifact_logs = capture_console_logs(page, "[ArtifactAutocomplete]")
+    open_and_connect(page)
+    page.click("text=New Training")
+
+    artifact_input = page.locator("input[placeholder='workspace/dataset-alias']")
+    expect(artifact_input).to_be_visible(timeout=15000)
+    artifact_input.fill(APP_WORKSPACE[:2])
+
+    suggestions = page.locator(
+        "input[placeholder='workspace/dataset-alias'] + button + div > div"
+    )
+    try:
+        expect(suggestions.first).to_be_visible(timeout=30000)
+    except AssertionError as exc:
+        raise AssertionError(
+            "Workspace suggestions were not visible. "
+            f"Captured diagnostic logs: {artifact_logs[-12:]}"
+        ) from exc
+
+    first_text = suggestions.first.inner_text().strip()
+    assert (
+        "/" not in first_text
+    ), f"Expected workspace-only suggestion, got: {first_text}"
+
+
+def test_artifact_autocomplete_suggestions_live(page: Page):
+    """Artifact autocomplete should show suggestions after entering workspace/ prefix."""
+    if not RUN_LIVE_REGRESSION_TESTS:
+        pytest.skip(
+            "Set RUN_LIVE_REGRESSION_TESTS=1 to run live artifact-autocomplete regression"
+        )
+
+    artifact_logs = capture_console_logs(page, "[ArtifactAutocomplete]")
+    open_and_connect(page)
+    page.click("text=New Training")
+
+    artifact_input = page.locator("input[placeholder='workspace/dataset-alias']")
+    expect(artifact_input).to_be_visible(timeout=15000)
+
+    artifact_input.fill(f"{APP_WORKSPACE}/c")
+
+    suggestions = page.locator(
+        "input[placeholder='workspace/dataset-alias'] + button + div > div"
+    )
+    try:
+        expect(suggestions.first).to_be_visible(timeout=30000)
+    except AssertionError as exc:
+        raise AssertionError(
+            "Autocomplete suggestions were not visible. "
+            f"Captured diagnostic logs: {artifact_logs[-12:]}"
+        ) from exc
+
+    first_text = suggestions.first.inner_text()
+    assert first_text.startswith(
+        f"{APP_WORKSPACE}/"
+    ), f"Unexpected suggestion: {first_text}"
+    assert (
+        artifact_logs
+    ), "No [ArtifactAutocomplete] diagnostic logs captured during autocomplete flow"

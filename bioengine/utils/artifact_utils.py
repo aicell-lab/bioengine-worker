@@ -122,18 +122,19 @@ async def ensure_applications_collection(
     collection_id = f"{workspace}/applications"
 
     try:
-        col = await artifact_manager.read(collection_id)
+        collection = await artifact_manager.read(collection_id)
         logger.info(f"Collection '{collection_id}' already exists")
 
         # Check and fix permissions if needed
-        # We want permissions to be public read: {'*': 'r'}
-        perms = col.config.get("permissions", {})
-        if perms.get("*") != "r":
+        # We want permissions to be public read: {"*": "r"}
+        collection_config = collection.config or {}
+        permissions = collection_config.get("permissions", {})
+        if permissions.get("*") != "r":
             logger.info("Updating collection permissions for public access")
-            existing_config = col.config or {}
-            existing_config.update({"permissions": {"*": "r"}})
+            permissions["*"] = "r"
+            collection_config["permissions"] = permissions
             await artifact_manager.edit(
-                artifact_id=collection_id, config=existing_config
+                artifact_id=collection_id, config=collection_config
             )
 
     except Exception as collection_error:
@@ -384,15 +385,10 @@ async def stage_artifact(
                 "stage": True,
             }
             if permissions:
-                # Add permissions to config as requested
-                current_config = getattr(existing_artifact, "config", {}) or {}
-                # Ensure we have a dict
-                if not isinstance(current_config, dict):
-                    current_config = {}
-
-                updated_config = current_config.copy()
-                updated_config["permissions"] = permissions
-                edit_kwargs["config"] = updated_config
+                # Set permissions in existing config
+                artifact_config = existing_artifact.config or {}
+                artifact_config["permissions"] = permissions
+                edit_kwargs["config"] = artifact_config
 
             artifact = await artifact_manager.edit(**edit_kwargs)
             logger.info(f"Editing existing artifact '{artifact_id}'")

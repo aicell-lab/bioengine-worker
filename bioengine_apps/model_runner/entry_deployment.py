@@ -5,12 +5,15 @@ import os
 import random
 import shutil
 import time
+import uuid
+from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union
 
 import httpx
 import numpy as np
 import yaml
+from hypha_rpc import connect_to_server
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 from ray import serve
@@ -34,26 +37,31 @@ class BioimageioPackage:
         self.source = str(self.package_path / "rdf.yaml")
         self.latest_download = latest_download
         self.replica_id = replica_id
-        self._access_file = None
+        self._lock_file: Optional[Path] = None
 
     async def __aenter__(self):
-        """Create access lock when model is being used."""
-        self._access_file = self.package_path / ".last_access"
-        current_time = time.time()
+        """Create a per-use lock file so the model is not evicted while in use."""
+        token = int(time.time() * 1_000_000)
+        self._lock_file = self.package_path / f".in_use_{self.replica_id}_{token}"
         try:
-            await asyncio.to_thread(self._access_file.write_text, str(current_time))
+            await asyncio.to_thread(self._lock_file.write_text, str(token))
         except (OSError, IOError) as e:
-            logger.warning(f"⚠️ Failed to update access time on enter: {e}")
+            logger.warning(f"⚠️ Failed to create in-use lock file: {e}")
+            self._lock_file = None
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Update access time when model usage is complete."""
-        if self._access_file and await asyncio.to_thread(self._access_file.exists):
-            current_time = time.time()
+        """Remove the per-use lock file and update the last-access timestamp."""
+        if self._lock_file is not None:
             try:
-                await asyncio.to_thread(self._access_file.write_text, str(current_time))
+                await asyncio.to_thread(self._lock_file.unlink, True)  # missing_ok=True
             except (OSError, IOError) as e:
-                logger.warning(f"⚠️ Failed to update access time on exit: {e}")
+                logger.warning(f"⚠️ Failed to remove in-use lock file: {e}")
+        access_file = self.package_path / ".last_access"
+        try:
+            await asyncio.to_thread(access_file.write_text, str(time.time()))
+        except (OSError, IOError) as e:
+            logger.warning(f"⚠️ Failed to update access time on exit: {e}")
 
 
 class ModelCache:
@@ -192,7 +200,7 @@ class ModelCache:
                     # Sleep with exponential backoff before retrying
                     logger.warning(
                         f"Attempt {attempt}/{max_attempts} failed for URL {url}, "
-                        f"params: {params}, error: {e}. Retrying in {backoff:.2f}s..."
+                        f"params: {params}, error: {e}. Retrying in {backoff:.1f}s..."
                     )
                     await asyncio.sleep(backoff)
                     backoff *= backoff_multiplier
@@ -367,15 +375,41 @@ class ModelCache:
 
                 # Get last access time
                 last_access = 0
-                is_locked = False
                 if await asyncio.to_thread(access_file.exists):
                     try:
                         access_content = await asyncio.to_thread(access_file.read_text)
                         last_access = float(access_content.strip())
-                        # Consider locked if accessed very recently (within 10 seconds)
-                        is_locked = (time.time() - last_access) < 10
                     except (ValueError, FileNotFoundError, OSError, IOError):
                         last_access = 0
+
+                # A model is locked if any non-stale per-use lock file exists
+                # (created by BioimageioPackage.__aenter__, removed by __aexit__).
+                # Lock files older than 10 minutes are treated as stale (e.g. from
+                # a crashed replica) and ignored to prevent indefinite eviction block.
+                in_use_lock_max_age_s = 600  # 10 minutes
+                in_use_files = await asyncio.to_thread(
+                    lambda: list(item.glob(".in_use_*"))
+                )
+                is_locked = False
+                for lock_file in in_use_files:
+                    try:
+                        # Filename format: .in_use_{replica_id}_{token_microseconds}
+                        token_us = int(lock_file.name.rsplit("_", 1)[-1])
+                        age_s = time.time() - token_us / 1_000_000
+                        if age_s < in_use_lock_max_age_s:
+                            is_locked = True
+                            break
+                        else:
+                            logger.warning(
+                                f"⚠️ Ignoring stale in-use lock '{lock_file.name}' "
+                                f"({age_s:.0f}s old > {in_use_lock_max_age_s}s limit)"
+                            )
+                    except (ValueError, IndexError):
+                        # Unrecognised filename format – ignore
+                        logger.warning(
+                            f"⚠️ Ignoring in-use lock file with unrecognised format: '{lock_file.name}'"
+                        )
+                        continue
 
                 # Get download time from file metadata
                 download_time = 0
@@ -459,18 +493,11 @@ class ModelCache:
 
             models_info = await self._get_cached_models_info()
 
-            # Calculate current cache size in bytes
+            # Calculate current cache size in bytes.
             current_size_bytes = sum(model["size_bytes"] for model in models_info)
 
-            # Check if we need to account for the downloading model
-            downloading_marker = self.cache_dir / f".downloading_{model_id}.lock"
-            if await asyncio.to_thread(downloading_marker.exists):
-                current_size_bytes += (
-                    model_size_bytes  # Account for the model we're about to download
-                )
-
             logger.info(
-                f"📊 Current cache usage: {current_size_bytes / (1024*1024*1024):.2f} GB / {self.cache_size_bytes / (1024*1024*1024):.2f} GB"
+                f"📊 Current cache usage: {current_size_bytes / (1024*1024*1024):.3f} GB / {self.cache_size_bytes / (1024*1024*1024):.3f} GB"
             )
 
             if current_size_bytes + model_size_bytes <= self.cache_size_bytes:
@@ -1011,10 +1038,11 @@ class ModelCache:
         "memory": 16 * 1024 * 1024 * 1024,  # 16GB RAM limit
         "runtime_env": {
             "pip": [
+                "aiofiles>=23.0.0",
                 "bioimageio.core==0.9.5",
+                "imageio>=2.37.0",
                 "numpy==1.26.4",
                 "tqdm>=4.64.0",
-                "aiofiles>=23.0.0",
             ],
         },
     },
@@ -1031,7 +1059,7 @@ class ModelCache:
     graceful_shutdown_timeout_s=300.0,
     graceful_shutdown_wait_loop_s=2.0,
 )
-class ModelRunner:
+class EntryDeployment:
     """
     Ray Serve deployment for bioimage.io model operations.
 
@@ -1056,7 +1084,9 @@ class ModelRunner:
 
         # Set Hypha server and workspace
         self.server_url = "https://hypha.aicell.io"
-        self.workspace = "bioimage-io"
+        self._hypha_token = os.getenv("HYPHA_TOKEN")
+        if not self._hypha_token:
+            raise RuntimeError("HYPHA_TOKEN environment variable is not set")
 
         # Get replica identifier for logging
         try:
@@ -1071,11 +1101,20 @@ class ModelRunner:
         )
 
         logger.info(
-            f"🚀 ModelRunner initialized with models directory: "
-            f"{self.model_cache.cache_dir} (cache_size={self.model_cache.cache_size_bytes / (1024*1024*1024):.1f} GB)"
+            f"🚀 {self.__class__.__name__} initialized with models directory: "
+            f"{self.model_cache.cache_dir} (cache_size={self.model_cache.cache_size_bytes / (1024*1024*1024):.3f} GB)"
         )
 
     # === BioEngine App Method - will be called when the deployment is started ===
+
+    async def async_init(self) -> None:
+        self.hypha_client = await connect_to_server(
+            {
+                "server_url": self.server_url,
+                "token": self._hypha_token,
+            }
+        )
+        logger.info(f"Connected to Hypha Server at {self.server_url}")
 
     async def test_deployment(
         self,
@@ -1132,6 +1171,86 @@ class ModelRunner:
         infer_duration = time.time() - infer_start
         logger.info(f"✅ Inference completed ({infer_duration:.2f}s)")
 
+    # === Ray Serve Health Check Method - will be called periodically to check the health of the deployment ===
+
+    async def check_health(self) -> None:
+        # Test connection to the Hypha server
+        await self.hypha_client.echo("ping")
+
+    # === Internal Helper Methods ===
+
+    async def _load_image_from_source(self, source: str) -> np.ndarray:
+        """
+        Load an image from a URL or a temporary S3 file path into a numpy array.
+
+        Accepts either:
+        - A direct HTTP/HTTPS URL (fetched as-is), or
+        - A temporary file path returned by ``get_upload_url`` (resolved to a
+          presigned S3 download URL via BioEngine S3 storage).
+
+        The file content is decoded based on the file extension.
+
+        Args:
+            source: Direct URL (``http://…`` / ``https://…``) or temporary
+                    file path returned by ``get_upload_url``
+
+        Returns:
+            NumPy array containing the image data
+
+        Raises:
+            FileNotFoundError: If the remote resource does not exist or has expired
+            ValueError: If the file extension is not supported
+        """
+        # Check file extension for supported formats
+        ext = Path(
+            source.split("?")[0]
+        ).suffix.lower()  # strip query string for URL sources
+        if ext not in (".npy", ".png", ".tiff", ".tif", ".jpeg", ".jpg"):
+            raise ValueError(
+                f"Unsupported file extension '{ext}' in source '{source}'. Supported extensions: .npy, .png, .tiff, .tif, .jpeg, .jpg"
+            )
+
+        logger.info(f"📥 Loading image from source '{source}'...")
+
+        if source.startswith(("http://", "https://")):
+            # Direct URL — fetch without S3 indirection
+            download_url = source
+        else:
+            # Temporary S3 file path — resolve to a presigned download URL
+            try:
+                s3controller = await self.hypha_client.get_service("public/s3-storage")
+                download_url = await s3controller.get_file(
+                    file_path=source, use_proxy=True
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to get download URL for temporary file '{source}': {e}"
+                ) from e
+
+        # Download file content
+        response = await self.model_cache._get_url_with_retry(download_url, params=None)
+
+        if response.status_code == 404:
+            raise FileNotFoundError(f"Source '{source}' does not exist or has expired.")
+        try:
+            response.raise_for_status()
+        except Exception as e:
+            raise FileNotFoundError(f"Failed to download source '{source}': {e}") from e
+
+        # Parse and load based on file extension
+        buf = BytesIO(response.content)
+        if ext == ".npy":
+            array = await asyncio.to_thread(np.load, buf)
+        else:
+            import imageio.v3 as iio
+
+            array = await asyncio.to_thread(iio.imread, buf)
+
+        logger.info(
+            f"✅ Loaded image from '{source}': shape={array.shape}, dtype={array.dtype}"
+        )
+        return array
+
     # === Exposed BioEngine App Methods - all methods decorated with @schema_method will be exposed as API endpoints ===
     # Note: Parameter type hints and docstrings will be used to generate the API documentation.
 
@@ -1167,9 +1286,7 @@ class ModelRunner:
         """
         logger.info(f"📋 Downloading RDF for model '{model_id}' (stage={stage}).")
 
-        rdf_url = (
-            f"{self.server_url}/{self.workspace}/artifacts/{model_id}/files/rdf.yaml"
-        )
+        rdf_url = f"{self.server_url}/bioimage-io/artifacts/{model_id}/files/rdf.yaml"
         response = await self.model_cache._get_url_with_retry(
             rdf_url, params={"stage": str(stage).lower()}
         )
@@ -1359,15 +1476,69 @@ class ModelRunner:
         logger.info(f"✅ Model test completed for '{model_id}'.")
         return test_result
 
+    @schema_method
+    async def get_upload_url(
+        self,
+        file_type: Literal["npy", "png", "tiff", "jpeg", "jpg"] = Field(
+            ...,
+            description='File type for the upload. Supported types: "npy" (NumPy array), "png" (PNG image), "tiff" (TIFF image), "jpeg"/"jpg" (JPEG image)',
+        ),
+    ) -> Dict[str, str]:
+        """
+        Request a presigned upload URL for uploading an input image to temporary storage.
+
+        Creates a unique temporary file in BioEngine S3 storage with a 1-hour TTL.
+        Upload the file to the returned URL via an HTTP PUT request, then pass the
+        returned ``file_path`` as the ``inputs`` parameter of the ``infer`` endpoint.
+
+        Returns:
+            Dictionary containing:
+            - upload_url: Presigned URL for uploading the file via HTTP PUT
+            - file_path: Unique temporary file path to reference the uploaded file
+
+        Example::
+            import httpx, imageio.v3 as iio, io
+
+            result = await model_runner_service.get_upload_url(file_type="png")
+            buf = io.BytesIO()
+            iio.imwrite(buf, image, extension=".png")
+            async with httpx.AsyncClient() as client:
+                await client.put(result["upload_url"], content=buf.getvalue())
+            output = await model_runner_service.infer(model_id="...", inputs=result["file_path"])
+        """
+        unique_id = str(uuid.uuid4())
+        file_path = f"temp/{unique_id}.{file_type}"
+
+        logger.info(f"📤 Requesting presigned upload URL for '{file_path}'...")
+
+        try:
+            s3controller = await self.hypha_client.get_service("public/s3-storage")
+            upload_url = await s3controller.put_file(
+                file_path=file_path,
+                ttl=3600,  # 1-hour TTL
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to get upload URL for temporary file '{file_path}': {e}"
+            ) from e
+
+        logger.info(f"✅ Presigned upload URL generated for '{file_path}'.")
+        return {"upload_url": upload_url, "file_path": file_path}
+
     @schema_method(arbitrary_types_allowed=True)
     async def infer(
         self,
         model_id: str = Field(
             ..., description="Unique identifier of the published bioimage.io model"
         ),
-        inputs: Union[np.ndarray, Dict[str, np.ndarray]] = Field(
+        inputs: Union[np.ndarray, Dict[str, Union[np.ndarray, str]], str] = Field(
             ...,
-            description="Input data as numpy array or dictionary of named arrays. Must match the model's input specification for shape and data type. For single input models, provide np.ndarray. For multi-input models, provide dict with input names as keys.",
+            description="Input data as numpy array, dictionary mapping input names to arrays/strings, or a single string. "
+            "Accepted string formats: a direct HTTP/HTTPS URL (fetched as-is) or a temporary file path returned by "
+            "``get_upload_url`` (resolved via S3 storage). "
+            "Must match the model's input specification for shape and data type. "
+            "For single-input models, provide a np.ndarray or a string. "
+            "For multi-input models, provide a dict with input names as keys; each value may be a np.ndarray or a string.",
         ),
         weights_format: Optional[str] = Field(
             None,
@@ -1405,13 +1576,30 @@ class ModelRunner:
 
         Raises:
             ValueError: If model_id is a URL (only model IDs allowed) or inputs don't match specification
+            FileNotFoundError: If a URL or temporary file path is provided but the resource does not exist or has expired
             RuntimeError: If model loading, preprocessing, inference, or postprocessing fails
 
         Note:
             Only published models from the bioimage.io model zoo are supported for inference.
             This method delegates to the model_inference deployment for optimized execution.
+            String inputs are resolved via ``_load_image_from_source``: direct HTTP/HTTPS URLs are
+            fetched as-is; all other strings are treated as temporary S3 file paths and resolved
+            through BioEngine S3 storage. To upload large inputs, first call ``get_upload_url``
+            to obtain a presigned URL, upload the file, then pass the returned ``file_path`` as ``inputs``.
         """
         logger.info(f"🤖 Running inference for model '{model_id}'...")
+
+        # Resolve any URL or temporary file path strings to numpy arrays
+        if isinstance(inputs, str):
+            inputs = await self._load_image_from_source(inputs)
+        elif isinstance(inputs, dict):
+            resolved: Dict[str, np.ndarray] = {}
+            for key, value in inputs.items():
+                if isinstance(value, str):
+                    resolved[key] = await self._load_image_from_source(value)
+                else:
+                    resolved[key] = value
+            inputs = resolved
 
         try:
             # Get model package with access tracking
@@ -1447,6 +1635,7 @@ class ModelRunner:
 
 
 if __name__ == "__main__":
+    import imageio.v3 as iio
 
     async def run_deployment_test():
 
@@ -1458,7 +1647,7 @@ if __name__ == "__main__":
                 logger.info(
                     f"🎭 Mocked method '{self.name}' called with args={args}, kwargs={kwargs}"
                 )
-                return {"status": "success", "data": "mocked data"}
+                return {"mock_result": True}
 
         class MockHandle:
             def __getattr__(self, name):
@@ -1480,16 +1669,16 @@ if __name__ == "__main__":
         serve.get_replica_context = lambda: MockReplicaContext()
 
         try:
-            model_runner = ModelRunner.func_or_class(
+            model_runner = EntryDeployment.func_or_class(
                 runtime_deployment=MockHandle(),
-                cache_size_in_gb=0.23,  # 230 MB cache for testing
+                cache_size_in_gb=0.230,  # 230 MB cache for testing
             )
 
-            # Test result caching of "test" method
-            await model_runner.test(model_id="fearless-deer")
-            await model_runner.test(model_id="fearless-deer")
+            await model_runner.async_init()
+            await model_runner.check_health()
 
-            await model_runner.test_deployment(model_id="ambitious-ant")
+            # Test all methods of the deployment
+            await model_runner.test_deployment(model_id="ambitious-ant")  # ~18 MB
 
             # Simulate newer remote files for testing updates
             file_metadata_path = (
@@ -1504,11 +1693,57 @@ if __name__ == "__main__":
             with open(file_metadata_path, "w") as f:
                 json.dump(metadata, f, indent=2)
 
-            # Run test again
-            await model_runner.test(model_id="ambitious-ant")  # ~18 MB
+            await model_runner.test(model_id="ambitious-ant")
 
-            # This should exceed the cache size limit of 230 MB
-            await model_runner.test(model_id="charismatic-whale")  # ~225 MB
+            # Test result caching of "test" method
+            await model_runner.test(model_id="ambitious-ant")
+
+            # Load a test image from the model package to upload
+            image_path = (
+                model_runner.model_cache.cache_dir / "ambitious-ant" / "test-input.npy"
+            )
+            array = np.load(image_path)
+
+            # Test image upload to temporary storage
+            upload_info_npy = await model_runner.get_upload_url(file_type="npy")
+
+            buffer = BytesIO()
+            np.save(buffer, array)
+            # Bash equivalent (upload .npy from filesystem file):
+            # curl -X PUT "<upload_url>" --data-binary @/path/to/file.npy
+            async with httpx.AsyncClient() as client:
+                await client.put(upload_info_npy["upload_url"], data=buffer.getvalue())
+
+            result = await model_runner.infer(
+                model_id="ambitious-ant", inputs=upload_info_npy["file_path"]
+            )
+            logger.info(f"Inference result: {result}")
+
+            # Test image upload as PNG to temporary storage
+            upload_info_png = await model_runner.get_upload_url(file_type="png")
+
+            buffer = BytesIO()
+            array_png = array[0, 0, :, :]
+            array_png = (array_png - array_png.min()) / (
+                array_png.max() - array_png.min() + 1e-8
+            )  # Normalize to [0, 1]
+            array_png = (array_png * 255).clip(0, 255).astype(np.uint8)
+            iio.imwrite(buffer, array_png, extension=".png")
+            # Bash equivalent (upload image from filesystem file; works for .png, .tiff, .tif, .jpeg, .jpg):
+            # curl -X PUT "<upload_url>" --data-binary @/path/to/file.png
+            async with httpx.AsyncClient() as client:
+                await client.put(
+                    upload_info_png["upload_url"], content=buffer.getvalue()
+                )
+
+            result = await model_runner.infer(
+                model_id="ambitious-ant", inputs=upload_info_png["file_path"]
+            )
+            logger.info(f"Inference result: {result}")
+
+            # This should exceed the cache size limit of 230 MB and trigger eviction of the older model
+            await model_runner.test(model_id="charismatic-whale")  # ~224 MB
+
         finally:
             # Restore original function
             serve.get_replica_context = original_get_replica_context

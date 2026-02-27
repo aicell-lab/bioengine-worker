@@ -1114,6 +1114,10 @@ class EntryDeployment:
                 "token": self._hypha_token,
             }
         )
+        self.artifact_manager = await self.hypha_client.get_service(
+            "public/artifact-manager"
+        )
+        self.s3_controller = await self.hypha_client.get_service("public/s3-storage")
         logger.info(f"Connected to Hypha Server at {self.server_url}")
 
     async def test_deployment(
@@ -1218,8 +1222,7 @@ class EntryDeployment:
         else:
             # Temporary S3 file path — resolve to a presigned download URL
             try:
-                s3controller = await self.hypha_client.get_service("public/s3-storage")
-                download_url = await s3controller.get_file(
+                download_url = await self.s3_controller.get_file(
                     file_path=source, use_proxy=True
                 )
             except Exception as e:
@@ -1253,6 +1256,51 @@ class EntryDeployment:
 
     # === Exposed BioEngine App Methods - all methods decorated with @schema_method will be exposed as API endpoints ===
     # Note: Parameter type hints and docstrings will be used to generate the API documentation.
+
+    @schema_method
+    async def search_models(
+        self,
+        keywords: Optional[List[str]] = Field(
+            None,
+            description="List of keywords to filter models by (e.g., ['cell', 'nuclei', 'segmentation']",
+        ),
+        limit: Optional[int] = Field(
+            10, description="Maximum number of models to return in the search results"
+        ),
+    ) -> List[Dict[str, str]]:
+        """
+        Search for models in the bioimage.io collection.
+
+        Returns a list of model identifiers with their descriptions that match the search query.
+        """
+        logger.info(f"🔍 Searching models with keywords={keywords}, limit={limit}")
+
+        try:
+            results = await self.artifact_manager.list(
+                parent_id="bioimage-io/bioimage.io",
+                filters={"type": "model"},
+                keywords=keywords,
+                limit=limit,
+                stage=False,
+            )
+
+            models = []
+            for artifact in results:
+                manifest = artifact["manifest"]
+                models.append(
+                    {
+                        "model_id": artifact["alias"],
+                        "description": manifest.get("description", ""),
+                    }
+                )
+
+            logger.info(f"✅ Found {len(models)} models matching query.")
+            return models
+
+        except Exception as e:
+            error_msg = f"Failed to search models: {e}"
+            logger.error(f"❌ {error_msg}")
+            raise RuntimeError(error_msg)
 
     @schema_method
     async def get_model_rdf(
@@ -1512,8 +1560,7 @@ class EntryDeployment:
         logger.info(f"📤 Requesting presigned upload URL for '{file_path}'...")
 
         try:
-            s3controller = await self.hypha_client.get_service("public/s3-storage")
-            upload_url = await s3controller.put_file(
+            upload_url = await self.s3_controller.put_file(
                 file_path=file_path,
                 ttl=3600,  # 1-hour TTL
             )
@@ -1676,6 +1723,12 @@ if __name__ == "__main__":
 
             await model_runner.async_init()
             await model_runner.check_health()
+
+            # Search for segmentation models in the bioimage.io collection
+            search_results = await model_runner.search_models(
+                keywords=["cell", "nuclei", "segmentation"], limit=5
+            )
+            logger.info(f"Search results: {search_results}")
 
             # Test all methods of the deployment
             await model_runner.test_deployment(model_id="ambitious-ant")  # ~18 MB

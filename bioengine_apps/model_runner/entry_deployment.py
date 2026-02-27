@@ -1035,7 +1035,7 @@ class ModelCache:
     ray_actor_options={
         "num_cpus": 1,
         "num_gpus": 0,
-        "memory": 16 * 1024 * 1024 * 1024,  # 16GB RAM limit
+        "memory": 4 * 1024 * 1024 * 1024,  # 4GB RAM limit
         "runtime_env": {
             "pip": [
                 "aiofiles>=23.0.0",

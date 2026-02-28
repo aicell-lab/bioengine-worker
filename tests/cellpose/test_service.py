@@ -39,11 +39,16 @@ import argparse
 import asyncio
 import logging
 import os
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 # from dotenv import load_dotenv
 from hypha_rpc import connect_to_server, login
+
+sys.path.append(str(Path(__file__).resolve().parent))
+from live_test_utils import resolve_cellpose_service
 
 if TYPE_CHECKING:
     from hypha_rpc.rpc import RemoteService
@@ -67,9 +72,22 @@ async def get_cellpose_service(
     resolved_service_id = service_id or f"{workspace}/{application_id}"
     logger.info("Using cellpose service id: %s", resolved_service_id)
 
-    cellpose_service = await server.get_service(resolved_service_id)
-    logger.info("Obtained Cellpose Fine-Tuning service")
-    return cellpose_service
+    try:
+        cellpose_service = await resolve_cellpose_service(
+            server,
+            workspace,
+            application_id=application_id,
+            requested_service_id=resolved_service_id,
+        )
+        logger.info("Obtained Cellpose Fine-Tuning service")
+        return cellpose_service
+    except Exception as original_error:
+        msg = (
+            f"Could not resolve Cellpose service '{resolved_service_id}'. "
+            "Verify deployment and websocket service ids in "
+            "worker.get_application_status(...)[application_id]['service_ids']."
+        )
+        raise RuntimeError(msg) from original_error
 
 
 async def infer(
@@ -318,7 +336,9 @@ async def start_training(
     test_images: str | None,
     test_annotations: str | None,
     n_epochs: int,
-    n_samples: int | None,
+    n_samples: float | None,
+    split_mode: str,
+    train_split_ratio: float,
     learning_rate: float,
     min_train_masks: int,
     validation_interval: int | None,
@@ -333,6 +353,8 @@ async def start_training(
         "learning_rate": learning_rate,
         "n_samples": n_samples,
         "min_train_masks": min_train_masks,
+        "split_mode": split_mode,
+        "train_split_ratio": train_split_ratio,
     }
     if validation_interval is not None:
         kwargs["validation_interval"] = validation_interval
@@ -379,7 +401,19 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--test-annotations", default=None)
 
     p.add_argument("--n-epochs", type=int, default=10)
-    p.add_argument("--n-samples", type=int, default=None)
+    p.add_argument("--n-samples", type=float, default=None)
+    p.add_argument(
+        "--split-mode",
+        default="manual",
+        choices=["manual", "auto"],
+        help="Dataset split mode for training.",
+    )
+    p.add_argument(
+        "--train-split-ratio",
+        type=float,
+        default=0.8,
+        help="Train split ratio when --split-mode auto.",
+    )
     p.add_argument("--learning-rate", type=float, default=1e-5)
     p.add_argument("--min-train-masks", type=int, default=5)
     p.add_argument(
@@ -471,6 +505,8 @@ async def main() -> None:
                 test_annotations=args.test_annotations,
                 n_epochs=args.n_epochs,
                 n_samples=args.n_samples,
+                split_mode=args.split_mode,
+                train_split_ratio=args.train_split_ratio,
                 learning_rate=args.learning_rate,
                 min_train_masks=args.min_train_masks,
                 validation_interval=args.validation_interval,

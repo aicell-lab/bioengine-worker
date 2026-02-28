@@ -8,7 +8,7 @@ import time
 import uuid
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Union
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 import httpx
 import numpy as np
@@ -22,6 +22,8 @@ from ray.serve.handle import DeploymentHandle
 
 logger = logging.getLogger("ray.serve")
 logger.setLevel("INFO")
+
+SUPPORTED_FILES_TYPES = Literal[".npy", ".png", ".tiff", ".tif", ".jpeg", ".jpg"]
 
 
 class BioimageioPackage:
@@ -1183,6 +1185,18 @@ class EntryDeployment:
 
     # === Internal Helper Methods ===
 
+    async def _get_download_url(self, file_path: str) -> str:
+        # Temporary S3 file path — resolve to a presigned download URL
+        try:
+            download_url = await self.s3_controller.get_file(
+                file_path=file_path, use_proxy=True
+            )
+            return download_url
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to get download URL for temporary file '{file_path}': {e}"
+            ) from e
+
     async def _load_image_from_source(self, source: str) -> np.ndarray:
         """
         Load an image from a URL or a temporary S3 file path into a numpy array.
@@ -1199,7 +1213,7 @@ class EntryDeployment:
                     file path returned by ``get_upload_url``
 
         Returns:
-            NumPy array containing the image data
+            np.ndarray: NumPy array containing the image data
 
         Raises:
             FileNotFoundError: If the remote resource does not exist or has expired
@@ -1209,9 +1223,10 @@ class EntryDeployment:
         ext = Path(
             source.split("?")[0]
         ).suffix.lower()  # strip query string for URL sources
-        if ext not in (".npy", ".png", ".tiff", ".tif", ".jpeg", ".jpg"):
+        if ext not in SUPPORTED_FILES_TYPES.__args__:
             raise ValueError(
-                f"Unsupported file extension '{ext}' in source '{source}'. Supported extensions: .npy, .png, .tiff, .tif, .jpeg, .jpg"
+                f"Unsupported file extension '{ext}' in source '{source}'. "
+                f"Supported extensions: {SUPPORTED_FILES_TYPES.__args__}"
             )
 
         logger.info(f"📥 Loading image from source '{source}'...")
@@ -1220,15 +1235,7 @@ class EntryDeployment:
             # Direct URL — fetch without S3 indirection
             download_url = source
         else:
-            # Temporary S3 file path — resolve to a presigned download URL
-            try:
-                download_url = await self.s3_controller.get_file(
-                    file_path=source, use_proxy=True
-                )
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to get download URL for temporary file '{source}': {e}"
-                ) from e
+            download_url = await self._get_download_url(source)
 
         # Download file content
         response = await self.model_cache._get_url_with_retry(download_url, params=None)
@@ -1241,18 +1248,60 @@ class EntryDeployment:
             raise FileNotFoundError(f"Failed to download source '{source}': {e}") from e
 
         # Parse and load based on file extension
-        buf = BytesIO(response.content)
-        if ext == ".npy":
-            array = await asyncio.to_thread(np.load, buf)
-        else:
-            import imageio.v3 as iio
+        try:
+            buffer = BytesIO(response.content)
+            if ext == ".npy":
+                array = await asyncio.to_thread(np.load, buffer)
+            else:
+                import imageio.v3 as iio
 
-            array = await asyncio.to_thread(iio.imread, buf)
+                array = await asyncio.to_thread(iio.imread, buffer)
+        except Exception as e:
+            raise ValueError(
+                f"Failed to parse image from source '{source}': {e}"
+            ) from e
 
         logger.info(
             f"✅ Loaded image from '{source}': shape={array.shape}, dtype={array.dtype}"
         )
         return array
+
+    async def _save_array_to_temp_file(self, array: np.ndarray) -> str:
+        """
+        Save a NumPy array to a temporary ``.npy`` file in S3 and return a presigned download URL.
+
+        The array is serialised with ``numpy.save`` and uploaded to BioEngine S3 storage using a
+        presigned upload URL obtained from ``get_upload_url``. The file is given a 1-hour TTL.
+
+        Args:
+            array: NumPy array to save
+
+        Returns:
+            str: Presigned download URL for the uploaded ``.npy`` file (valid for 1 hour)
+
+        Raises:
+            RuntimeError: If saving the array to a temporary file fails
+        """
+        try:
+            upload_info = await self.get_upload_url(file_type=".npy")
+            logger.info(
+                f"💾 Saving array (shape: {array.shape}, dtype: {array.dtype}) "
+                f"to temporary file '{upload_info['file_path']}'..."
+            )
+            buffer = BytesIO()
+            np.save(buffer, array)
+            await self.model_cache.client.put(
+                upload_info["upload_url"], data=buffer.getvalue()
+            )
+            logger.info(
+                f"✅ Array saved to temporary file '{upload_info['file_path']}'"
+            )
+
+            download_url = await self._get_download_url(upload_info["file_path"])
+        except Exception as e:
+            raise RuntimeError(f"Failed to save array to temporary file: {e}") from e
+
+        return download_url
 
     # === Exposed BioEngine App Methods - all methods decorated with @schema_method will be exposed as API endpoints ===
     # Note: Parameter type hints and docstrings will be used to generate the API documentation.
@@ -1266,6 +1315,10 @@ class EntryDeployment:
         ),
         limit: Optional[int] = Field(
             10, description="Maximum number of models to return in the search results"
+        ),
+        ignore_checks: Optional[bool] = Field(
+            False,
+            description="Whether to ignore bioengine inference checks and return all models (True) or only models that passed checks (False)",
         ),
     ) -> List[Dict[str, str]]:
         """
@@ -1284,9 +1337,22 @@ class EntryDeployment:
                 stage=False,
             )
 
+            if not ignore_checks:
+                collection = await self.artifact_manager.read("bioimage-io/bioimage.io")
+                bioengine_inference_results = collection["manifest"][
+                    "bioengine_inference"
+                ]
+                runnable_models = {
+                    model_id
+                    for model_id, result in bioengine_inference_results.items()
+                    if result.get("status") == "passed"
+                }
+
             models = []
             for artifact in results:
                 manifest = artifact["manifest"]
+                if not ignore_checks and artifact["alias"] not in runnable_models:
+                    continue
                 models.append(
                     {
                         "model_id": artifact["alias"],
@@ -1527,9 +1593,9 @@ class EntryDeployment:
     @schema_method
     async def get_upload_url(
         self,
-        file_type: Literal["npy", "png", "tiff", "jpeg", "jpg"] = Field(
+        file_type: SUPPORTED_FILES_TYPES = Field(
             ...,
-            description='File type for the upload. Supported types: "npy" (NumPy array), "png" (PNG image), "tiff" (TIFF image), "jpeg"/"jpg" (JPEG image)',
+            description='File type for the upload. Supported types: ".npy" (NumPy array), ".png" (PNG image), ".tiff"/".tif" (TIFF image), ",jpeg"/".jpg" (JPEG image)',
         ),
     ) -> Dict[str, str]:
         """
@@ -1547,7 +1613,7 @@ class EntryDeployment:
         Example::
             import httpx, imageio.v3 as iio, io
 
-            result = await model_runner_service.get_upload_url(file_type="png")
+            result = await model_runner_service.get_upload_url(file_type=".png")
             buf = io.BytesIO()
             iio.imwrite(buf, image, extension=".png")
             async with httpx.AsyncClient() as client:
@@ -1555,7 +1621,7 @@ class EntryDeployment:
             output = await model_runner_service.infer(model_id="...", inputs=result["file_path"])
         """
         unique_id = str(uuid.uuid4())
-        file_path = f"temp/{unique_id}.{file_type}"
+        file_path = f"temp/{unique_id}{file_type}"
 
         logger.info(f"📤 Requesting presigned upload URL for '{file_path}'...")
 
@@ -1606,7 +1672,11 @@ class EntryDeployment:
         skip_cache: Optional[bool] = Field(
             False, description="Force re-download of model package before inference"
         ),
-    ) -> Dict[str, np.ndarray]:
+        return_download_url: Optional[bool] = Field(
+            False,
+            description="If True, each array in the output will be saved to a temporary .npy file in S3 and the output value will be a presigned download URL (str) instead of the raw np.ndarray. The URL is valid for 1 hour.",
+        ),
+    ) -> Dict[str, Union[np.ndarray, str]]:
         """
         Execute inference on a bioimage.io model with provided input data.
 
@@ -1617,9 +1687,11 @@ class EntryDeployment:
         - Memory-efficient processing for large inputs using tiling if supported
 
         Returns:
-            Dictionary mapping output names to numpy arrays containing the inference results.
-            Output shapes and data types match the model's output specification.
-            For single-output models, typically returns {"output": result_array}.
+            Dictionary mapping output names to inference results. By default each value is a
+            ``np.ndarray`` whose shape and data type match the model's output specification
+            (e.g. ``{"output": result_array}``). When ``return_download_url=True``, each value
+            is instead a presigned S3 download URL (``str``) pointing to the result serialised
+            as a ``.npy`` file; the URL is valid for 1 hour.
 
         Raises:
             ValueError: If model_id is a URL (only model IDs allowed) or inputs don't match specification
@@ -1643,7 +1715,8 @@ class EntryDeployment:
             resolved: Dict[str, np.ndarray] = {}
             for key, value in inputs.items():
                 if isinstance(value, str):
-                    resolved[key] = await self._load_image_from_source(value)
+                    array = await self._load_image_from_source(value)
+                    resolved[key] = array
                 else:
                     resolved[key] = value
             inputs = resolved
@@ -1677,6 +1750,12 @@ class EntryDeployment:
             logger.error(f"❌ {error_msg}")
             raise RuntimeError(error_msg)
 
+        if return_download_url:
+            new_result = {}
+            for key, value in result.items():
+                new_result[key] = await self._save_array_to_temp_file(value)
+            result = new_result
+
         logger.info(f"✅ Inference completed for model '{model_id}'.")
         return result
 
@@ -1694,9 +1773,19 @@ if __name__ == "__main__":
                 logger.info(
                     f"🎭 Mocked method '{self.name}' called with args={args}, kwargs={kwargs}"
                 )
-                return {"mock_result": True}
+                if self.name == "test":
+                    # Return a mock test result
+                    return {
+                        "status": "passed",
+                        "details": "All tests passed successfully.",
+                    }
+                elif self.name == "predict":
+                    # Return a mock prediction result
+                    return {"output": np.zeros((1, 1, 64, 64), dtype=np.float32)}
+                else:
+                    return {"mock_result": True}
 
-        class MockHandle:
+        class MockDeploymentHandle:
             def __getattr__(self, name):
                 return MockMethod(name)
 
@@ -1717,7 +1806,7 @@ if __name__ == "__main__":
 
         try:
             model_runner = EntryDeployment.func_or_class(
-                runtime_deployment=MockHandle(),
+                runtime_deployment=MockDeploymentHandle(),
                 cache_size_in_gb=0.230,  # 230 MB cache for testing
             )
 
@@ -1758,22 +1847,36 @@ if __name__ == "__main__":
             array = np.load(image_path)
 
             # Test image upload to temporary storage
-            upload_info_npy = await model_runner.get_upload_url(file_type="npy")
+            upload_info_npy = await model_runner.get_upload_url(file_type=".npy")
 
             buffer = BytesIO()
             np.save(buffer, array)
-            # Bash equivalent (upload .npy from filesystem file):
-            # curl -X PUT "<upload_url>" --data-binary @/path/to/file.npy
+            # Bash equivalent (upload .npy from filesystem file; works for .npy, .png, .tiff, .tif, .jpeg, .jpg):
+            # curl -fsSL -X PUT --data-binary @/path/to/file.npy "<upload_url>"
             async with httpx.AsyncClient() as client:
                 await client.put(upload_info_npy["upload_url"], data=buffer.getvalue())
 
             result = await model_runner.infer(
-                model_id="ambitious-ant", inputs=upload_info_npy["file_path"]
+                model_id="ambitious-ant",
+                inputs=upload_info_npy["file_path"],
+                return_download_url=True,
             )
             logger.info(f"Inference result: {result}")
 
+            # Bash equivalent (download .npy result from URL):
+            # curl -fsSL --compressed --output output.npy "<download_url>"
+            async with httpx.AsyncClient() as client:
+                response = await client.get(result["output"])
+                response.raise_for_status()
+
+            buffer = BytesIO(response.content)
+            array_result = np.load(buffer)
+            logger.info(
+                f"Result array shape: {array_result.shape}, dtype: {array_result.dtype}"
+            )
+
             # Test image upload as PNG to temporary storage
-            upload_info_png = await model_runner.get_upload_url(file_type="png")
+            upload_info_png = await model_runner.get_upload_url(file_type=".png")
 
             buffer = BytesIO()
             array_png = array[0, 0, :, :]
@@ -1782,8 +1885,6 @@ if __name__ == "__main__":
             )  # Normalize to [0, 1]
             array_png = (array_png * 255).clip(0, 255).astype(np.uint8)
             iio.imwrite(buffer, array_png, extension=".png")
-            # Bash equivalent (upload image from filesystem file; works for .png, .tiff, .tif, .jpeg, .jpg):
-            # curl -X PUT "<upload_url>" --data-binary @/path/to/file.png
             async with httpx.AsyncClient() as client:
                 await client.put(
                     upload_info_png["upload_url"], content=buffer.getvalue()

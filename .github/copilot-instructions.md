@@ -22,29 +22,51 @@ BioEngine Worker is an enterprise distributed AI platform with 3-tier architectu
 ## Development Workflows
 
 ### Environment Setup
+Use the existing `bioengine-worker` conda environment — do not create a new one.
 ```bash
-conda create -n bioengine-worker python=3.11.9
 conda activate bioengine-worker
 pip install -r requirements.txt
 pip install -r requirements-test.txt
 ```
 
-### Testing Patterns
+The `HYPHA_TOKEN` required for tests and Hypha service access is stored in the `.env` file at the workspace root. Load it before running commands:
 ```bash
-# Run end-to-end tests (requires HYPHA_TOKEN in .env)
-pytest tests/test_end_to_end/ -v
-
-# Test single component
-pytest tests/test_end_to_end/test_app_manager.py -v
-
-# Use bioengine-worker conda environment for tests
-conda run -n bioengine-worker pytest tests/ -v
+source .env
 ```
 
 ### Local Development
 ```bash
-# Start worker locally
-python -m bioengine.worker --mode single-machine --debug
+# Start worker locally (single-machine mode)
+python -m bioengine.worker \
+    --mode single-machine \
+    --head-num-gpus 1 \
+    --head-num-cpus 4 \
+    --head-memory-in-gb 24 \
+    --workspace-dir /home/nmechtel/.bioengine \
+    --startup-applications '{"artifact_id": "ws-user-github|49943582/demo-app", "disable_gpu": true}' \
+    --client-id "<debug-client-id>" \
+    --debug
+```
+
+> **Note:** Do not reuse the same `--client-id` in a short period of time to avoid service registration conflicts.
+
+Once running, the worker service is accessible at:
+```
+https://hypha.aicell.io/ws-user-github%7C49943582/services/<debug-client-id>:bioengine-worker
+```
+
+To deploy an application on a running worker, call `run_application` via the service URL, e.g.:
+```
+https://hypha.aicell.io/ws-user-github%7C49943582/services/<debug-client-id>:bioengine-worker/run_application?artifact_id=ws-user-github|49943582/model-runner
+```
+
+If `BIOENGINE_LOCAL_ARTIFACT_PATH` is set, the worker loads the app from the local path instead of the artifact registry. The path must contain the app directory — e.g.:
+- `bioengine_apps/` for apps like `model-runner` and `cellpose-finetuning`
+- `tests/` for the `demo-app` and `composition-app`
+
+```bash
+# When working on BioEngine apps, set the local artifact path:
+export BIOENGINE_LOCAL_ARTIFACT_PATH=/data/nmechtel/bioengine-worker/bioengine_apps
 
 # With Docker Compose
 UID=$(id -u) GID=$(id -g) docker compose up
@@ -52,6 +74,27 @@ UID=$(id -u) GID=$(id -g) docker compose up
 # HPC mode with Apptainer
 bash scripts/start_hpc_worker.sh --mode slurm
 ```
+
+### Worker Service API
+
+The BioEngine worker exposes the following Hypha service endpoints:
+
+| Method | Description | Admin required |
+|--------|-------------|:--------------:|
+| `get_status` | Get overall worker status | |
+| `stop_worker` | Stop the worker | ✓ |
+| `check_access` | Check caller's access level | |
+| `get_logs` | Retrieve worker logs | ✓ |
+| `list_datasets` | List available datasets | |
+| `execute_python_code` | Execute Python code in a Ray task | ✓ |
+| `save_application` | Save/update an application artifact | ✓ |
+| `list_applications` | List deployed applications | ✓ |
+| `get_application_manifest` | Get manifest for an application | ✓ |
+| `delete_application` | Delete an application | ✓ |
+| `run_application` | Deploy and start an application | ✓ |
+| `stop_application` | Stop a running application | ✓ |
+| `stop_all_applications` | Stop all running applications | ✓ |
+| `get_application_status` | Get status of a specific application | |
 
 ## Code Patterns & Conventions
 
@@ -131,7 +174,7 @@ Ray auto-allocates ports starting from defaults (6379, 8000, etc.). Check `ray_c
 Worker containers mount `${HOME}/bioengine`. Check `slurm_workers.py` for job submission patterns.
 
 ### Hypha Connection
-Authentication via `HYPHA_TOKEN` env var or interactive login. Service discovery uses workspace-scoped IDs.
+Authentication via `HYPHA_TOKEN` env var (loaded from `.env` file) or interactive login. Service discovery uses workspace-scoped IDs.
 
 ### Resource Allocation
 Apps check available resources before deployment. SLURM mode can scale up workers if resources insufficient.

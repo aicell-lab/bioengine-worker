@@ -1179,7 +1179,7 @@ class AppsManager:
         ),
         application_kwargs: Optional[Dict[str, Dict[str, Any]]] = Field(
             None,
-            description='Keyword arguments to set for each deployment. Dictionary where keys are deployment class names and values are dictionaries of keyword arguments. If not specified, uses default parameters for a new deployment, or preserves previous values if updating an existing application (only when application_id is specified).',
+            description="Keyword arguments to set for each deployment. Dictionary where keys are deployment class names and values are dictionaries of keyword arguments. If not specified, uses default parameters for a new deployment, or preserves previous values if updating an existing application (only when application_id is specified).",
             examples=[
                 {"DeploymentClass": {"init_parameter": 50.0}},
                 {
@@ -1190,7 +1190,7 @@ class AppsManager:
         ),
         application_env_vars: Optional[Dict[str, Dict[str, str]]] = Field(
             None,
-            description='Environment variables to set for each deployment. Dictionary where keys are deployment class names and values are dictionaries of environment variables. If not specified, uses defaults for a new deployment, or preserves previous values if updating an existing application (only when application_id is specified).',
+            description="Environment variables to set for each deployment. Dictionary where keys are deployment class names and values are dictionaries of environment variables. If not specified, uses defaults for a new deployment, or preserves previous values if updating an existing application (only when application_id is specified).",
             examples=[
                 {"DeploymentClass": {"KEY": "VALUE"}},
                 {

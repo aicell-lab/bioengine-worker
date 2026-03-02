@@ -1,23 +1,36 @@
+import asyncio
 import logging
 from typing import Dict, Optional
 
-from .network import get_url_with_retry
+import httpx
 
 
-def calculate_region_centroid_coordinates(
+async def _get(
+    url: str,
+    params: Optional[Dict[str, str]] = None,
+) -> httpx.Response:
+    """Perform a single async GET request with a 10-second timeout."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(url, params=params)
+        response.raise_for_status()
+        return response
+
+
+async def fetch_centroid_coordinates(
+    country: str,
     region: Optional[str] = None,
-    country: Optional[str] = None,
     logger: Optional[logging.Logger] = None,
-) -> Optional[Dict[str, float]]:
+) -> Dict[str, Optional[float]]:
     """
-    Calculate the centroid coordinates (latitude and longitude) for a given location.
+    Fetch the centroid coordinates (latitude and longitude) for a given location
+    from the Nominatim geocoding API.
 
     Args:
-        region (Optional[str]): The name of the region (e.g., state, province, city).
-        country (Optional[str]): The name of the country.
+        country: The name of the country (required).
+        region: The name of the region (e.g., state, province, city).
+        logger: Optional logger instance.
     Returns:
-        Optional[Dict[str, float]]: A dictionary with 'latitude' and 'longitude' keys,
-        or None if the location is not found.
+        A dictionary with 'latitude' and 'longitude' keys (values may be None on failure).
     """
     if logger is None:
         logger = logging.getLogger(__name__)
@@ -26,46 +39,46 @@ def calculate_region_centroid_coordinates(
     query_parts = []
     if region:
         query_parts.append(region)
-    if country:
-        query_parts.append(country)
-
-    if not query_parts:
-        logger.warning("No location information provided for centroid calculation")
-        return None
+    query_parts.append(country)
 
     query = ", ".join(query_parts)
 
     latitude = None
     longitude = None
     try:
-        response = get_url_with_retry(
+        response = await _get(
             url="https://nominatim.openstreetmap.org/search",
             params={"q": query, "format": "json", "limit": 1},
-            raise_for_status=True,
-            logger=logger,
         )
         data = response.json()
         if data:
             latitude = float(data[0]["lat"])
             longitude = float(data[0]["lon"])
+            logger.info(
+                f"Coordinates fetched for '{query}': ({latitude:.4f}, {longitude:.4f})"
+            )
     except Exception as e:
         logger.warning(
-            f"Failed to calculate centroid coordinates for location: {query}. Error: {e}"
+            f"Failed to calculate centroid coordinates for location '{query}': {e}"
         )
 
     return {"latitude": latitude, "longitude": longitude}
 
 
-def run_geolocation(logger: Optional[logging.Logger] = None) -> Dict[str, str]:
+async def fetch_geolocation(
+    logger: Optional[logging.Logger] = None,
+) -> Dict[str, Optional[str]]:
     """
     Fetch geo location information from ipapi.co.
 
     Attempts to retrieve geographical location data based on the current IP address.
+    Coordinates (latitude/longitude) are NOT fetched here; call
+    fetch_centroid_coordinates separately when country information is available.
     """
     if logger is None:
         logger = logging.getLogger(__name__)
 
-    geo_info = {
+    geo_info: Dict[str, Optional[str]] = {
         "region": None,
         "country_name": None,
         "country_code": None,
@@ -76,46 +89,30 @@ def run_geolocation(logger: Optional[logging.Logger] = None) -> Dict[str, str]:
     }
 
     try:
-        response = get_url_with_retry(
-            url="https://ipapi.co/json/", raise_for_status=True, logger=logger
-        )
+        response = await _get(url="https://ipapi.co/json/")
         data = response.json()
 
-        geo_info = {
-            "region": data.get("region"),
-            "country_name": data.get("country_name"),
-            "country_code": data.get("country_code") or data.get("country"),
-            "continent_code": data.get("continent_code"),
-            "timezone": data.get("timezone"),
-        }
+        geo_info.update(
+            {
+                "region": data.get("region"),
+                "country_name": data.get("country_name"),
+                "country_code": data.get("country_code") or data.get("country"),
+                "continent_code": data.get("continent_code"),
+                "timezone": data.get("timezone"),
+            }
+        )
+        logger.info(
+            f"Geographic location detected: {geo_info['region']}, "
+            f"{geo_info['country_name']}, "
+            f"{geo_info['continent_code']} "
+            f"(Timezone: {geo_info['timezone']})"
+        )
     except Exception as e:
         logger.error(f"Failed to fetch geo location information: {e}")
-
-    # Calculate coordinates for the region
-    coordinates = calculate_region_centroid_coordinates(
-        region=geo_info.get("region"),
-        country=geo_info.get("country_name"),
-        logger=logger,
-    )
-    geo_info.update(coordinates)
-
-    msg = (
-        f"Geographic location detected: {geo_info['region']}, "
-        f"{geo_info['country_name']}, "
-        f"{geo_info['continent_code']} "
-        f"(Timezone: {geo_info['timezone']})"
-    )
-
-    if coordinates["latitude"] and coordinates["longitude"]:
-        msg += f" at ({geo_info['latitude']:.4f}, {geo_info['longitude']:.4f})"
-    else:
-        msg += " at (latitude/longitude not available)"
-
-    logger.info(msg)
 
     return geo_info
 
 
 if __name__ == "__main__":
-    geo_info = run_geolocation()
+    geo_info = asyncio.run(fetch_geolocation())
     print(f"Result: {geo_info}")

@@ -1,10 +1,6 @@
-import logging
 import socket
-import time
 from copy import copy
-from typing import Dict, Optional, Tuple
-
-import httpx
+from typing import Optional, Tuple
 
 
 def get_internal_ip() -> str:
@@ -63,73 +59,6 @@ def acquire_free_port(
         except OSError:
             s.close()
             port += step
-
-
-def get_url_with_retry(
-    url: str,
-    params: Optional[Dict[str, str]] = None,
-    raise_for_status: bool = False,
-    http_client: Optional[httpx.Client] = None,
-    logger: Optional[logging.Logger] = None,
-) -> httpx.Response:
-    """
-    Helper method to fetch a URL with retries.
-
-    Implements a simple retry mechanism for HTTP GET requests to handle
-    transient network issues. Retries the request up to 3 times with
-    exponential backoff.
-
-    Args:
-        url: The URL to fetch
-    Returns:
-        The HTTP response object
-    Raises:
-        httpx.HTTPError: If all retry attempts fail
-    """
-    if http_client is None:
-        http_client = httpx.Client(timeout=10.0)  # seconds
-
-    if logger is None:
-        logger = logging.getLogger(__name__)
-
-    max_attempts = 4
-    backoff = 1.0  # backoff: 1.0s, 2.0s, 4.0s
-    backoff_multiplier = 2.0
-
-    for attempt in range(1, max_attempts + 1):
-        try:
-            response = http_client.get(url, params=params)
-            response.raise_for_status()
-            return response
-        except Exception as e:
-            # Don't retry on 4xx client errors (except 429 Too Many Requests)
-            if isinstance(e, httpx.HTTPStatusError):
-                if (
-                    400 <= e.response.status_code < 500
-                    and e.response.status_code != 429
-                ):
-                    if raise_for_status:
-                        raise e
-
-                    return response
-
-            if attempt < max_attempts:
-                # Sleep with exponential backoff before retrying
-                logger.warning(
-                    f"Attempt {attempt}/{max_attempts} failed for URL {url}, "
-                    f"params: {params}, error: {e}. Retrying in {backoff:.2f}s..."
-                )
-                time.sleep(backoff)
-                backoff *= backoff_multiplier
-            else:
-                # If we get here, all retries failed due to errors (network, transport, etc.)
-                logger.error(
-                    f"Failed to fetch URL {url}, params: {params} after {max_attempts} attempts: {e}"
-                )
-                if not isinstance(e, httpx.HTTPStatusError) or raise_for_status:
-                    raise e
-
-                return response
 
 
 if __name__ == "__main__":

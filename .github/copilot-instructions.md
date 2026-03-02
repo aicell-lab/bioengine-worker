@@ -180,3 +180,85 @@ Authentication via `HYPHA_TOKEN` env var (loaded from `.env` file) or interactiv
 Apps check available resources before deployment. SLURM mode can scale up workers if resources insufficient.
 
 Always check component logs - each manager has detailed logging for troubleshooting distributed operations.
+
+## Agent Workflow Guidelines
+
+### Core Principles
+- **Simplicity First:** Make every change as simple as possible. Touch minimal code.
+- **No Laziness:** Find root causes. Avoid temporary fixes. Maintain senior-level standards.
+- **Minimal Impact:** Only change what's necessary. Avoid introducing regressions.
+- **Clarity Over Cleverness:** Prefer readable, obvious solutions over clever ones.
+- **Consistency Over Preference:** Follow existing patterns unless there is a strong reason to improve them.
+- **Prove It Works:** Evidence beats assumption — test and verify.
+- **Long-Term Thinking:** Optimize for maintainability and team comprehension, not speed of completion.
+
+### Workflow Orchestration
+
+**Plan Mode Default**
+- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions).
+- If something goes sideways, STOP and re-plan — don't push through a flawed approach.
+- Use plan mode for verification, not just implementation.
+- Write clear specs upfront to reduce ambiguity.
+- Planning lives in model context — do NOT create planning files in the repo.
+
+**Subagent Strategy**
+- Use subagents to keep the main context window clean.
+- Offload research, exploration, and parallel analysis.
+- For complex problems, prefer structured reasoning over muddling through.
+- One focused task per subagent for clarity and execution quality.
+
+**Self-Improvement Loop (Durable Only)**
+- After corrections, pause and ask: "Is there a reusable, repo-level lesson here?"
+- Only create a lesson if it will matter for future work in this repo and is useful for other contributors (not just this session).
+- Convert those into clear, durable rules in `tasks/lessons.md`.
+- Do not log small mistakes, one-off decisions, or temporary context.
+
+**Verification Before Done**
+- Never mark a task complete without proving it works.
+- Diff behavior between main and your changes when relevant.
+- Ask: "Would a staff engineer approve this?"
+- Run tests, check logs, and demonstrate correctness.
+- If you cannot prove it works, it is not done.
+
+**Demand Elegance (Balanced)**
+- For non-trivial changes: pause and ask "Is there a more elegant way?"
+- If a fix feels hacky, implement the clean solution.
+- Skip over-engineering for simple, obvious fixes.
+- Challenge your own work before presenting it.
+
+**Autonomous Bug Fixing**
+- When given a bug report: aim to fix it without hand-holding.
+- Identify logs, errors, failing tests — then resolve them.
+- Minimize context switching required from the user.
+- Proactively fix failing CI tests.
+
+### Task Management
+
+1. **Plan First:** Create a clear plan with checkable steps (kept in model context).
+2. **Verify Plan:** Confirm direction before heavy implementation when appropriate.
+3. **Track Progress:** Mark steps complete as you go (in-context).
+4. **Explain Changes:** Provide high-level summaries at meaningful milestones.
+5. **Document Results:** Capture rationale and outcomes in PR descriptions or commits.
+6. **Capture Lessons:** Update `tasks/lessons.md` only when a durable, repo-level rule emerges.
+
+No persistent task tracking files.
+
+### Lessons Management (`tasks/lessons.md`)
+
+`tasks/lessons.md` is the single source of truth for durable lessons. Each lesson must capture a recurring pattern, be useful to future contributors, and stand alone without relying on session context.
+
+**Promote a lesson when:**
+- It would have prevented a real bug or painful rework.
+- The same class of mistake is likely to recur.
+- It changes how future work should be done.
+- It qualifies as institutional knowledge.
+
+**Do not log:**
+- One-off debugging stories.
+- Temporary design decisions.
+- Minor implementation details.
+- Planning artifacts.
+
+**Writing rules:** Short and specific. Written as rules, constraints, or patterns. Focused on prevention and better defaults. No anecdotes.
+
+**Review discipline:** Skim `tasks/lessons.md` before substantial work. Merge or prune redundant lessons. Delete lessons that stop being true or useful.

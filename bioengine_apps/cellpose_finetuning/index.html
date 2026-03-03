@@ -885,6 +885,26 @@
                     const params = new URLSearchParams(window.location.search);
                     if (params.has('server_url')) serverUrl.value = params.get('server_url');
                     
+                    // Migrate malformed hypha_token: older versions stored a JSON object
+                    // {tokenString, token, ...profile} instead of a plain JWT string.
+                    // Detect and fix this to prevent "Error decoding token headers" on the server.
+                    const rawToken = localStorage.getItem('hypha_token');
+                    if (rawToken) {
+                        try {
+                            const parsed = JSON.parse(rawToken);
+                            if (parsed && typeof parsed === 'object') {
+                                const jwt = parsed.token || parsed.tokenString || null;
+                                if (jwt) {
+                                    localStorage.setItem('hypha_token', jwt);
+                                } else {
+                                    localStorage.removeItem('hypha_token');
+                                }
+                            }
+                        } catch {
+                            // Not JSON — already a plain JWT string, nothing to fix
+                        }
+                    }
+
                     // Check URL token first, then localStorage
                     if (params.has('token')) {
                         authToken.value = params.get('token');

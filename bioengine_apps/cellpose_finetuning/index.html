@@ -891,12 +891,7 @@
                     } else {
                         const savedToken = localStorage.getItem('hypha_token');
                         if (savedToken) {
-                            try {
-                                const parsedToken = JSON.parse(savedToken);
-                                authToken.value = parsedToken?.tokenString || parsedToken?.token || savedToken;
-                            } catch {
-                                authToken.value = savedToken;
-                            }
+                            authToken.value = savedToken;
                         }
                     }
                     
@@ -963,14 +958,7 @@
                             : (loginResult?.token || loginResult?.tokenString || null);
                         if (token) {
                             authToken.value = token;
-                            if (typeof loginResult === 'string') {
-                                localStorage.setItem('hypha_token', token);
-                            } else {
-                                localStorage.setItem('hypha_token', JSON.stringify({
-                                    tokenString: token,
-                                    ...loginResult,
-                                }));
-                            }
+                            localStorage.setItem('hypha_token', token);
                             await connect();
                         }
                     } catch (e) {

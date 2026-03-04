@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
 import fnmatch
+import hashlib
 import io
 import json
 import logging
@@ -47,6 +49,13 @@ RDF_FILENAME = "rdf.yaml"
 TRAINING_PARAMS_FILENAME = "training_params.json"
 STOP_REQUESTED_FILENAME = "stop.requested"
 STATUS_STALE_SECONDS = 300
+BIA_FTS_ENDPOINT = "https://beta.bioimagearchive.org/search/search/fts"
+BIA_IMAGE_ENDPOINT = "https://beta.bioimagearchive.org/search/search/fts/image"
+MIN_FREE_GPU_MEMORY_TO_START_BYTES = 2 * GB
+BIA_RESOLVE_URL_SERVICE_ID = os.environ.get("BIA_RESOLVE_URL_SERVICE_ID")
+BIA_RESOLVE_URL_APPLICATION_ID = os.environ.get(
+    "BIA_RESOLVE_URL_APPLICATION_ID", "bia-resolve-url-proxy"
+)
 
 # Model template for BioImage.io export
 MODEL_TEMPLATE_PY = '''"""BioImage.io Model Wrapper for Cellpose 4.0.7 (Cellpose-SAM).
@@ -256,12 +265,14 @@ class TrainingParams(TypedDict):
     metadata_dir: str | None
     test_images: str | None
     test_annotations: str | None
+    split_mode: str
+    train_split_ratio: float
     model: str | Path
     n_epochs: int
     learning_rate: float
     weight_decay: float
     server_url: str
-    n_samples: int | None
+    n_samples: int | float | None
     session_id: str
     min_train_masks: int
     validation_interval: int | None
@@ -542,7 +553,7 @@ class SessionStatus(TypedDict, total=False):
     exported_artifact_id: str  # Artifact ID if model has been exported
     model_modified: bool  # Flag indicating if model was modified since last export
     model: str
-    n_samples: int | None
+    n_samples: int | float | None
     n_epochs: int
     learning_rate: float
     weight_decay: float
@@ -576,7 +587,7 @@ class SessionStatusWithId(TypedDict, total=False):
     exported_artifact_id: str
     model_modified: bool
     model: str
-    n_samples: int | None
+    n_samples: int | float | None
     n_epochs: int
     learning_rate: float
     weight_decay: float
@@ -634,6 +645,9 @@ def get_url_and_artifact_id(artifact_id: str | Any) -> tuple[str, str]:
 
     parsed = urlparse(artifact_id)
     if parsed.scheme in ("http", "https"):
+        if _is_bioimage_archive_url(artifact_id):
+            return DEFAULT_SERVER_URL, artifact_id
+
         path_parts = parsed.path.lstrip("/").split("/")
         if path_parts[1] != "artifacts":
             msg = (
@@ -760,7 +774,7 @@ def update_status(
     current_batch: int | None = None,
     total_batches: int | None = None,
     model: str | None = None,
-    n_samples: int | None = None,
+    n_samples: int | float | None = None,
     n_epochs: int | None = None,
     learning_rate: float | None = None,
     weight_decay: float | None = None,
@@ -1103,6 +1117,12 @@ def train_seg_with_callbacks(
         nimg_test_val if nimg_test_per_epoch is None else nimg_test_per_epoch
     )
 
+    if nimg_per_epoch_val <= 0:
+        raise ValueError(
+            "No training samples available after dataset filtering. "
+            "Try increasing n_samples or lowering min_train_masks."
+        )
+
     # learning rate schedule
     learning_rate_schedule = np.linspace(0, learning_rate, 10)
     learning_rate_schedule = np.append(
@@ -1399,7 +1419,86 @@ def run_blocking_task(
     """Run the blocking training task."""
     import time
 
+    from cellpose import io as cp_io  # type: ignore
+
     session_id = training_params["session_id"]
+
+    def _is_readable_pair(
+        image_path: Path, label_path: Path
+    ) -> tuple[bool, str | None]:
+        try:
+            image_array = cp_io.imread(str(image_path))
+            label_array = cp_io.imread(str(label_path))
+        except Exception as exc:
+            return False, str(exc)
+
+        if image_array is None:
+            return False, "image could not be decoded"
+        if label_array is None:
+            return False, "annotation could not be decoded"
+
+        if not hasattr(image_array, "ndim") or int(image_array.ndim) < 2:
+            return False, "image has invalid ndim"
+        if not hasattr(label_array, "ndim") or int(label_array.ndim) < 2:
+            return False, "annotation has invalid ndim"
+
+        return True, None
+
+    train_files = list(dataset_split["train_files"])
+    train_labels_files = list(dataset_split["train_labels_files"])
+    test_files = list(dataset_split["test_files"] or [])
+    test_labels_files = list(dataset_split["test_labels_files"] or [])
+
+    filtered_train_files: list[Path] = []
+    filtered_train_labels: list[Path] = []
+    dropped_train: list[str] = []
+    for image_path, label_path in zip(train_files, train_labels_files):
+        ok, reason = _is_readable_pair(image_path, label_path)
+        if ok:
+            filtered_train_files.append(image_path)
+            filtered_train_labels.append(label_path)
+        else:
+            dropped_train.append(f"{image_path} <-> {label_path} ({reason})")
+
+    filtered_test_files: list[Path] = []
+    filtered_test_labels: list[Path] = []
+    dropped_test: list[str] = []
+    for image_path, label_path in zip(test_files, test_labels_files):
+        ok, reason = _is_readable_pair(image_path, label_path)
+        if ok:
+            filtered_test_files.append(image_path)
+            filtered_test_labels.append(label_path)
+        else:
+            dropped_test.append(f"{image_path} <-> {label_path} ({reason})")
+
+    if dropped_train or dropped_test:
+        append_info(
+            session_id,
+            (
+                f"Skipped unreadable pairs: train={len(dropped_train)}, "
+                f"test={len(dropped_test)}"
+            ),
+            with_time=True,
+        )
+        logger.warning(
+            "Session %s: skipped unreadable pairs (train=%d, test=%d)",
+            session_id,
+            len(dropped_train),
+            len(dropped_test),
+        )
+
+    if len(filtered_train_files) == 0:
+        raise ValueError(
+            "No readable training pairs remain after file validation. "
+            "Please verify that selected image/annotation files are valid TIFF/PNG/JPEG masks and images."
+        )
+
+    dataset_split = DatasetSplit(
+        train_files=filtered_train_files,
+        train_labels_files=filtered_train_labels,
+        test_files=filtered_test_files if filtered_test_files else None,
+        test_labels_files=filtered_test_labels if filtered_test_labels else None,
+    )
 
     # Calculate dataset sizes
     n_train = len(dataset_split["train_files"])
@@ -1851,7 +1950,7 @@ def load_model(
 
     If `identifier` points to an existing file, it is treated as a path to a
     finetuned model. Otherwise, it is treated as a builtin model name
-    (e.g., "cyto3").
+    (e.g., "cpsam").
     """
     from cellpose import core, models  # type: ignore
 
@@ -1987,6 +2086,26 @@ def _contains_glob(path_pattern: str) -> bool:
     return "*" in path_pattern
 
 
+SUPPORTED_DATASET_IMAGE_SUFFIXES = (
+    ".ome.tiff",
+    ".ome.tif",
+    ".tiff",
+    ".tif",
+    ".png",
+    ".jpg",
+    ".jpeg",
+)
+
+
+def _is_supported_dataset_image_path(path_value: str) -> bool:
+    normalized = _normalize_artifact_relpath(path_value).lower().rstrip("/")
+    return normalized.endswith(SUPPORTED_DATASET_IMAGE_SUFFIXES)
+
+
+def _filter_supported_dataset_image_paths(paths: list[str]) -> list[str]:
+    return [path for path in paths if _is_supported_dataset_image_path(path)]
+
+
 def _glob_base_folder(path_pattern: str) -> str:
     normalized = _normalize_artifact_relpath(path_pattern)
     wildcard_index = normalized.find("*")
@@ -2003,18 +2122,537 @@ def _glob_base_folder(path_pattern: str) -> str:
     return normalized[: slash_before + 1]
 
 
+def _is_bioimage_archive_url(candidate: str) -> bool:
+    parsed = urlparse(str(candidate or ""))
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    return parsed.scheme in {"http", "https"} and (
+        "bioimagearchive.org" in host
+        or ("ebi.ac.uk" in host and "/biostudies/bioimages" in path)
+    )
+
+
+async def _get_bia_resolver_service() -> tuple[Any, Any]:
+    """Connect to Hypha and resolve the BIA URL resolver service."""
+    from hypha_rpc import connect_to_server
+
+    server_url = os.environ.get("HYPHA_SERVER_URL", DEFAULT_SERVER_URL)
+    workspace = os.environ.get("BIA_RESOLVE_URL_WORKSPACE", "ri-scale")
+    token = (
+        os.environ.get("RI_SCALE_TOKEN")
+        or os.environ.get("HYPHA_TOKEN")
+        or os.environ.get("BIOENGINE_HYPHA_TOKEN")
+    )
+    if not token:
+        raise RuntimeError(
+            "Missing token for resolver service connection. "
+            "Set RI_SCALE_TOKEN or HYPHA_TOKEN in environment."
+        )
+
+    server: Any = await connect_to_server(
+        {
+            "server_url": server_url,
+            "token": token,
+            "workspace": workspace,
+        }
+    )
+
+    resolved_service_id = BIA_RESOLVE_URL_SERVICE_ID
+    if not resolved_service_id:
+        worker_id = os.environ.get("HYPHA_WORKER_SERVICE_ID", "bioimage-io/bioengine-worker")
+        worker: Any = await server.get_service(worker_id)
+        app_status = await worker.get_application_status(
+            application_ids=[BIA_RESOLVE_URL_APPLICATION_ID]
+        )
+        app = (app_status or {}).get(BIA_RESOLVE_URL_APPLICATION_ID, {})
+        service_ids = app.get("service_ids") or []
+        for item in service_ids:
+            if isinstance(item, dict) and item.get("websocket_service_id"):
+                resolved_service_id = item.get("websocket_service_id")
+                break
+            if isinstance(item, str) and item:
+                resolved_service_id = item
+                break
+
+    if not isinstance(resolved_service_id, str) or not resolved_service_id:
+        await server.disconnect()
+        raise RuntimeError(
+            "Could not resolve BIA resolver service ID. "
+            "Set BIA_RESOLVE_URL_SERVICE_ID or ensure application "
+            f"'{BIA_RESOLVE_URL_APPLICATION_ID}' is running on the worker."
+        )
+
+    service: Any = await server.get_service(resolved_service_id)
+    return server, service
+
+
+async def _download_remote_bytes_via_resolver(
+    resolver_service: Any,
+    url: str,
+    *,
+    timeout_seconds: float = 120.0,
+) -> bytes:
+    """Download binary content through resolver service."""
+    payload = await resolver_service.resolve_url(
+        url=url,
+        method="GET",
+        timeout=timeout_seconds,
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Resolver returned invalid payload type for {url}")
+
+    if not payload.get("ok"):
+        error = payload.get("error") or f"HTTP {payload.get('status_code', 'unknown')}"
+        raise RuntimeError(f"Resolver request failed for {url}: {error}")
+
+    content_base64 = payload.get("content_base64")
+    if isinstance(content_base64, str) and content_base64:
+        return base64.b64decode(content_base64)
+
+    text_value = payload.get("text")
+    if isinstance(text_value, str):
+        return text_value.encode("utf-8")
+
+    raise RuntimeError(f"Resolver returned no content for {url}")
+
+
+def _extract_bia_accession(url: str) -> str | None:
+    match = re.search(r"(S-BIAD\d+)", str(url or ""), flags=re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
+def _bia_ftp_base_url(accession: str) -> str:
+    accession_number = int(accession.split("S-BIAD", 1)[1])
+    suffix = accession_number % 1000
+    return f"https://ftp.ebi.ac.uk/biostudies/fire/S-BIAD/{suffix}/{accession}"
+
+
+def _extract_tsv_pairs(tsv_content: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    reader = csv.DictReader(io.StringIO(tsv_content), delimiter="\t")
+    for row in reader:
+        label_path = str(row.get("Files") or "").strip()
+        source_image = str(row.get("Source image") or "").strip()
+        if not label_path or not source_image:
+            continue
+        pairs.append((source_image, label_path))
+    return pairs
+
+
+def _bia_pair_cap_from_n_samples(n_samples: Any) -> int | None:
+    if isinstance(n_samples, bool):
+        return None
+    if isinstance(n_samples, int) and n_samples > 0:
+        return max(20, n_samples * 8)
+    if isinstance(n_samples, float) and float(n_samples).is_integer() and n_samples > 0:
+        as_int = int(n_samples)
+        return max(20, as_int * 8)
+    return None
+
+
+async def _fetch_bia_tsv_pairs(
+    client: Any,
+    accession: str,
+    max_pairs: int | None = None,
+) -> list[tuple[str, str]]:
+    base_url = _bia_ftp_base_url(accession)
+    candidate_paths = [
+        f"{base_url}/Files/ps_ovule_labels.tsv",
+        f"{base_url}/Files/labels.tsv",
+        f"{base_url}/Files/{accession}_labels.tsv",
+    ]
+
+    for tsv_url in candidate_paths:
+        try:
+            pairs: list[tuple[str, str]] = []
+            async with client.stream("GET", tsv_url) as response:
+                if response.status_code // 100 != 2:
+                    continue
+
+                header: list[str] | None = None
+                label_idx: int | None = None
+                source_idx: int | None = None
+
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+
+                    row = next(csv.reader([line], delimiter="\t"), [])
+                    if not row:
+                        continue
+
+                    if header is None:
+                        header = [str(col).strip().lower() for col in row]
+                        try:
+                            label_idx = header.index("files")
+                            source_idx = header.index("source image")
+                        except ValueError:
+                            label_idx = None
+                            source_idx = None
+                            break
+                        continue
+
+                    if label_idx is None or source_idx is None:
+                        continue
+                    if len(row) <= max(label_idx, source_idx):
+                        continue
+
+                    label_path = str(row[label_idx] or "").strip()
+                    source_image = str(row[source_idx] or "").strip()
+                    if not label_path or not source_image:
+                        continue
+
+                    pairs.append((source_image, label_path))
+                    if max_pairs is not None and len(pairs) >= max_pairs:
+                        break
+
+            if not pairs:
+                continue
+
+            return [
+                (
+                    f"{base_url}/Files/{image_rel.lstrip('/')}",
+                    f"{base_url}/Files/{label_rel.lstrip('/')}",
+                )
+                for image_rel, label_rel in pairs
+            ]
+        except Exception:
+            continue
+
+    return []
+
+
+def _iter_string_values(payload: Any) -> list[str]:
+    out: list[str] = []
+    stack = [payload]
+    seen: set[int] = set()
+
+    while stack:
+        current = stack.pop()
+        current_id = id(current)
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+
+        if isinstance(current, str):
+            out.append(current)
+            continue
+        if isinstance(current, dict):
+            stack.extend(current.values())
+            continue
+        if isinstance(current, list):
+            stack.extend(current)
+            continue
+
+    return out
+
+
+def _looks_like_image_url(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    return path.endswith(
+        (".tif", ".tiff", ".ome.tif", ".ome.tiff", ".png", ".jpg", ".jpeg")
+    )
+
+
+def _looks_like_mask_url(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    return any(
+        token in path
+        for token in (
+            "_mask",
+            "-mask",
+            "_label",
+            "-label",
+            "annotation",
+            "segmentation",
+        )
+    )
+
+
+def _pair_key_from_url(url: str, *, is_mask: bool) -> str:
+    path = urlparse(url).path.lower().strip("/")
+    for suffix in (
+        ".ome.tiff",
+        ".ome.tif",
+        ".tiff",
+        ".tif",
+        ".png",
+        ".jpg",
+        ".jpeg",
+    ):
+        if path.endswith(suffix):
+            path = path[: -len(suffix)]
+            break
+
+    if is_mask:
+        for marker in (
+            "_mask",
+            "-mask",
+            "_label",
+            "-label",
+            "_annotation",
+            "-annotation",
+        ):
+            if path.endswith(marker):
+                path = path[: -len(marker)]
+                break
+
+    for marker in ("/images/", "/annotations/", "/masks/", "/labels/"):
+        if marker in path:
+            path = path.split(marker, 1)[1]
+            break
+
+    return path
+
+
+async def _fetch_bia_payload(client: Any, endpoint: str, accession: str) -> Any:
+    attempts: list[tuple[str, dict[str, Any]]] = [
+        ("get", {"params": {"q": accession, "size": 1000}}),
+        ("get", {"params": {"query": accession, "size": 1000}}),
+        ("post", {"json": {"query": accession, "size": 1000}}),
+        ("post", {"json": {"q": accession, "size": 1000}}),
+    ]
+
+    for method, kwargs in attempts:
+        try:
+            if method == "get":
+                response = await client.get(endpoint, **kwargs)
+            else:
+                response = await client.post(endpoint, **kwargs)
+            if response.status_code // 100 == 2:
+                return response.json()
+        except Exception:
+            continue
+
+    return None
+
+
+def _local_path_for_remote_url(root: Path, category: str, remote_url: str) -> Path:
+    parsed = urlparse(remote_url)
+    basename = Path(parsed.path).name or "asset.bin"
+    stem = Path(basename).stem
+    suffix = "".join(Path(basename).suffixes) or ".bin"
+    digest = hashlib.md5(remote_url.encode("utf-8")).hexdigest()[:10]
+    filename = f"{stem}_{digest}{suffix}"
+    return root / category / filename
+
+
+def _is_test_url(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    return "/test/" in path or "_test" in path or "-test" in path
+
+
+async def make_training_pairs_from_bioimage_archive_url(
+    config: TrainingParams,
+    save_path: Path,
+) -> tuple[list[TrainingPair], list[TrainingPair]]:
+    import httpx
+
+    archive_url = config["artifact_id"]
+    accession = _extract_bia_accession(archive_url)
+    if not accession:
+        raise ValueError(
+            "Could not parse BioImage Archive accession (e.g. S-BIAD1234) from URL."
+        )
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        pair_cap = _bia_pair_cap_from_n_samples(config.get("n_samples"))
+        paired_urls = await _fetch_bia_tsv_pairs(client, accession, max_pairs=pair_cap)
+
+        if not paired_urls:
+            payloads = [
+                await _fetch_bia_payload(client, BIA_FTS_ENDPOINT, accession),
+                await _fetch_bia_payload(client, BIA_IMAGE_ENDPOINT, accession),
+            ]
+
+            candidates: set[str] = set()
+            for payload in payloads:
+                if payload is None:
+                    continue
+                for value in _iter_string_values(payload):
+                    if isinstance(value, str) and value.startswith(
+                        ("http://", "https://")
+                    ):
+                        if _looks_like_image_url(value) and accession in value.upper():
+                            candidates.add(value)
+
+            if not candidates:
+                raise ValueError(
+                    "No downloadable image assets were found from BioImage Archive for this accession."
+                )
+
+            image_urls = sorted(
+                [url for url in candidates if not _looks_like_mask_url(url)]
+            )
+            mask_urls = sorted([url for url in candidates if _looks_like_mask_url(url)])
+
+            if not image_urls or not mask_urls:
+                raise ValueError(
+                    "Found BioImage Archive assets, but could not identify both image and mask files."
+                )
+
+            mask_map: dict[str, str] = {}
+            for mask_url in mask_urls:
+                key = _pair_key_from_url(mask_url, is_mask=True)
+                if key and key not in mask_map:
+                    mask_map[key] = mask_url
+
+            paired_urls = []
+            for image_url in image_urls:
+                key = _pair_key_from_url(image_url, is_mask=False)
+                mask_url = mask_map.get(key)
+                if mask_url:
+                    paired_urls.append((image_url, mask_url))
+
+            if not paired_urls:
+                raise ValueError(
+                    "No image/mask pairs could be inferred from BioImage Archive assets."
+                )
+
+        train_url_pairs: list[tuple[str, str]] = []
+        test_url_pairs: list[tuple[str, str]] = []
+        for image_url, mask_url in paired_urls:
+            if _is_test_url(image_url) or _is_test_url(mask_url):
+                test_url_pairs.append((image_url, mask_url))
+            else:
+                train_url_pairs.append((image_url, mask_url))
+
+        if not train_url_pairs and test_url_pairs:
+            train_url_pairs = test_url_pairs
+            test_url_pairs = []
+
+        if not train_url_pairs:
+            raise ValueError(
+                "No training pairs found after downloading BioImage Archive assets"
+            )
+
+        split_mode = str(config.get("split_mode", "manual") or "manual").lower()
+        train_split_ratio = float(config.get("train_split_ratio", 0.8))
+        requested_total = resolve_requested_sample_count(
+            config.get("n_samples"),
+            len(train_url_pairs) + len(test_url_pairs),
+        )
+
+        selected_train_url_pairs = list(train_url_pairs)
+        selected_test_url_pairs = list(test_url_pairs)
+
+        if requested_total is not None:
+            if split_mode == "auto":
+                combined_pairs = [*selected_train_url_pairs, *selected_test_url_pairs]
+                if requested_total < len(combined_pairs):
+                    indices = np.random.default_rng().permutation(len(combined_pairs))[  # type: ignore[index]
+                        :requested_total
+                    ]
+                    combined_pairs = [combined_pairs[i] for i in indices]
+
+                if len(combined_pairs) <= 1:
+                    selected_train_url_pairs = combined_pairs
+                    selected_test_url_pairs = []
+                else:
+                    ratio = max(0.05, min(0.95, float(train_split_ratio)))
+                    n_train = int(round(len(combined_pairs) * ratio))
+                    n_train = max(1, min(len(combined_pairs) - 1, n_train))
+                    shuffled = np.random.default_rng().permutation(len(combined_pairs))
+                    train_idx = set(shuffled[:n_train])
+                    selected_train_url_pairs = [
+                        pair
+                        for idx, pair in enumerate(combined_pairs)
+                        if idx in train_idx
+                    ]
+                    selected_test_url_pairs = [
+                        pair
+                        for idx, pair in enumerate(combined_pairs)
+                        if idx not in train_idx
+                    ]
+            else:
+                train_target, test_target = proportional_manual_sample_counts(
+                    len(selected_train_url_pairs),
+                    len(selected_test_url_pairs),
+                    requested_total,
+                )
+                if train_target < len(selected_train_url_pairs):
+                    train_idx = np.random.default_rng().permutation(
+                        len(selected_train_url_pairs)
+                    )[:train_target]
+                    selected_train_url_pairs = [
+                        selected_train_url_pairs[i] for i in train_idx
+                    ]
+                if test_target < len(selected_test_url_pairs):
+                    test_idx = np.random.default_rng().permutation(
+                        len(selected_test_url_pairs)
+                    )[:test_target]
+                    selected_test_url_pairs = [
+                        selected_test_url_pairs[i] for i in test_idx
+                    ]
+
+        selected_train_lookup = set(selected_train_url_pairs)
+
+        bia_cache_root = save_path / "bia_download"
+        train_pairs: list[TrainingPair] = []
+        test_pairs: list[TrainingPair] = []
+
+        resolver_server, resolver_service = await _get_bia_resolver_service()
+        try:
+            for image_url, mask_url in [
+                *selected_train_url_pairs,
+                *selected_test_url_pairs,
+            ]:
+                local_image = _local_path_for_remote_url(
+                    bia_cache_root, "images", image_url
+                )
+                local_mask = _local_path_for_remote_url(
+                    bia_cache_root, "annotations", mask_url
+                )
+                local_image.parent.mkdir(parents=True, exist_ok=True)
+                local_mask.parent.mkdir(parents=True, exist_ok=True)
+
+                if not local_image.exists() or local_image.stat().st_size <= 0:
+                    image_bytes = await _download_remote_bytes_via_resolver(
+                        resolver_service,
+                        image_url,
+                    )
+                    local_image.write_bytes(image_bytes)
+
+                if not local_mask.exists() or local_mask.stat().st_size <= 0:
+                    mask_bytes = await _download_remote_bytes_via_resolver(
+                        resolver_service,
+                        mask_url,
+                    )
+                    local_mask.write_bytes(mask_bytes)
+
+                pair = TrainingPair(image=local_image, annotation=local_mask)
+                if (image_url, mask_url) in selected_train_lookup:
+                    train_pairs.append(pair)
+                else:
+                    test_pairs.append(pair)
+        finally:
+            await resolver_server.disconnect()
+
+        if not train_pairs:
+            raise ValueError(
+                "No training pairs found after downloading BioImage Archive assets"
+            )
+
+        return train_pairs, test_pairs
+
+
 async def list_artifact_files_recursive(
     artifact: AsyncHyphaArtifact,
     folder_path: str,
+    max_results: int | None = None,
 ) -> list[str]:
     """Recursively list artifact file paths (relative paths, not folders)."""
+    limit = None
+    if isinstance(max_results, int) and max_results > 0:
+        limit = max_results
+
     root = _normalize_artifact_relpath(folder_path)
     if root and not root.endswith("/"):
         root += "/"
 
     queue = [root]
     visited: set[str] = set()
-    collected: list[str] = []
+    collected: set[str] = set()
 
     while queue:
         current = queue.pop(0)
@@ -2042,6 +2680,19 @@ async def list_artifact_files_recursive(
                 "directory",
                 "dir",
             }
+            if not is_dir and not entry_type and normalized:
+                # Some artifact backends return directory entries without trailing '/'
+                # and without explicit type metadata. Probe such paths as directories.
+                probe_dir = normalized if normalized.endswith("/") else normalized + "/"
+                if probe_dir not in visited:
+                    try:
+                        probe_entries = await artifact.ls(probe_dir)
+                        if isinstance(probe_entries, list):
+                            queue.append(probe_dir)
+                            continue
+                    except Exception:
+                        pass
+
             if is_dir:
                 next_dir = normalized if normalized.endswith("/") else normalized + "/"
                 if next_dir not in visited:
@@ -2049,22 +2700,153 @@ async def list_artifact_files_recursive(
                 continue
 
             if normalized:
-                collected.append(normalized)
+                collected.add(normalized)
+                if limit is not None and len(collected) >= limit:
+                    return sorted(collected)
 
-    return sorted(set(collected))
+    return sorted(collected)
 
 
 async def list_matching_artifact_paths(
     artifact: AsyncHyphaArtifact,
     path_pattern: str,
+    max_results: int | None = None,
 ) -> list[str]:
     """List artifact files that match a folder path or glob path pattern."""
     normalized_pattern = _normalize_artifact_relpath(path_pattern)
+    limit = max_results if isinstance(max_results, int) and max_results > 0 else None
+
+    def _cap(values: list[str]) -> list[str]:
+        if limit is None:
+            return values
+        return values[:limit]
+
+    def _path_depth(path: str) -> int:
+        stripped = path.strip("/")
+        if not stripped:
+            return 0
+        return len([segment for segment in stripped.split("/") if segment])
+
+    async def _list_matching_artifact_dirs(dir_pattern: str) -> list[str]:
+        base_folder = _glob_base_folder(dir_pattern)
+        target_depth = _path_depth(dir_pattern)
+        queue = [base_folder]
+        visited: set[str] = set()
+        matched: set[str] = set()
+
+        while queue:
+            current_dir = queue.pop(0)
+            if current_dir in visited:
+                continue
+            visited.add(current_dir)
+
+            try:
+                entries = await artifact.ls(current_dir)
+            except Exception:
+                continue
+
+            for entry in entries:
+                entry_type = ""
+                if isinstance(entry, dict):
+                    entry_type = str(entry.get("type") or "").lower()
+                    raw_path = str(entry.get("path") or entry.get("name") or "")
+                else:
+                    raw_path = str(entry)
+
+                if raw_path and "/" not in raw_path and current_dir:
+                    raw_path = f"{current_dir.rstrip('/')}/{raw_path}"
+
+                normalized = _normalize_artifact_relpath(raw_path)
+                if not normalized:
+                    continue
+
+                candidate_dir = (
+                    normalized if normalized.endswith("/") else normalized + "/"
+                )
+                is_dir = entry_type in {"directory", "dir"} or normalized.endswith("/")
+                if not is_dir:
+                    try:
+                        probe_entries = await artifact.ls(candidate_dir)
+                        is_dir = (
+                            isinstance(probe_entries, list) and len(probe_entries) > 0
+                        )
+                    except Exception:
+                        is_dir = False
+
+                if not is_dir:
+                    continue
+
+                if fnmatch.fnmatch(candidate_dir, dir_pattern):
+                    matched.add(candidate_dir)
+
+                if (
+                    _path_depth(candidate_dir) < target_depth
+                    and candidate_dir not in visited
+                ):
+                    queue.append(candidate_dir)
+
+        return sorted(matched)
 
     if normalized_pattern.endswith("/"):
-        folder = normalized_pattern
-        names = await list_artifact_files(artifact, folder)
-        return [_normalize_artifact_relpath(f"{folder}{name}") for name in names]
+        # Folder-like patterns should match files recursively to stay consistent
+        # with UI validation/path suggestions.
+        if not _contains_glob(normalized_pattern):
+            scan_limit = limit * 5 if limit is not None else None
+            candidates = await list_artifact_files_recursive(
+                artifact,
+                normalized_pattern,
+                max_results=scan_limit,
+            )
+            return _cap(_filter_supported_dataset_image_paths(candidates))
+
+        matched_dirs = await _list_matching_artifact_dirs(normalized_pattern)
+        if matched_dirs:
+            matched_files: list[str] = []
+            seen: set[str] = set()
+            for folder in matched_dirs:
+                try:
+                    names = await list_artifact_files(artifact, folder)
+                except Exception:
+                    continue
+
+                folder_prefix = folder if folder.endswith("/") else f"{folder}/"
+                for name in names:
+                    candidate = _normalize_artifact_relpath(f"{folder_prefix}{name}")
+                    if not candidate or not _is_supported_dataset_image_path(candidate):
+                        continue
+                    if candidate in seen:
+                        continue
+                    seen.add(candidate)
+                    matched_files.append(candidate)
+                    if limit is not None and len(matched_files) >= limit:
+                        return _cap(sorted(matched_files))
+
+            if matched_files:
+                return _cap(sorted(matched_files))
+
+            return _cap(matched_dirs)
+
+        base_folder = _glob_base_folder(normalized_pattern)
+        scan_limit = limit * 5 if limit is not None else None
+        candidates = await list_artifact_files_recursive(
+            artifact,
+            base_folder,
+            max_results=scan_limit,
+        )
+        matched = []
+        for candidate in candidates:
+            parent = Path(candidate).parent.as_posix()
+            parent_pattern_value = parent + "/" if parent and parent != "." else ""
+            if fnmatch.fnmatch(parent_pattern_value, normalized_pattern):
+                matched.append(candidate)
+                if limit is not None and len(matched) >= limit:
+                    break
+
+        filtered_files = sorted(set(_filter_supported_dataset_image_paths(matched)))
+        if filtered_files:
+            return _cap(filtered_files)
+
+        return []
 
     if not _contains_glob(normalized_pattern):
         # If caller passed a directory without trailing slash (common in UI/manual input),
@@ -2078,21 +2860,29 @@ async def list_matching_artifact_paths(
                     if normalized_pattern.endswith("/")
                     else normalized_pattern + "/"
                 )
-                return [
+                candidates = [
                     _normalize_artifact_relpath(f"{folder}{name}") for name in names
                 ]
+                return _cap(_filter_supported_dataset_image_paths(candidates))
         except Exception:
             pass
-        return [normalized_pattern]
+        if _is_supported_dataset_image_path(normalized_pattern):
+            return [normalized_pattern]
+        return []
 
     base_folder = _glob_base_folder(normalized_pattern)
-    candidates = await list_artifact_files_recursive(artifact, base_folder)
+    scan_limit = limit * 5 if limit is not None else None
+    candidates = await list_artifact_files_recursive(
+        artifact,
+        base_folder,
+        max_results=scan_limit,
+    )
     matched = [
         candidate
         for candidate in candidates
         if fnmatch.fnmatch(candidate, normalized_pattern)
     ]
-    return sorted(set(matched))
+    return _cap(sorted(set(_filter_supported_dataset_image_paths(matched))))
 
 
 async def list_artifact_files(
@@ -2209,11 +2999,78 @@ def match_image_annotation_pairs(
     def _annotation_key(path: str) -> str:
         basename = Path(path).name
         key = _strip_known_suffixes(basename).lower()
-        for marker in ("_mask", "-mask", "_label", "-label", "_annotation", "-annotation"):
+        for marker in (
+            "_mask",
+            "-mask",
+            "_label",
+            "-label",
+            "_annotation",
+            "-annotation",
+        ):
             if key.endswith(marker):
                 key = key[: -len(marker)]
                 break
         return key
+
+    image_root = _normalize_artifact_relpath(
+        _glob_base_folder(normalized_image_pattern)
+    )
+    annotation_root = _normalize_artifact_relpath(
+        _glob_base_folder(normalized_annotation_pattern)
+    )
+
+    def _relative_key(path: str, root: str, remove_label_suffix: bool) -> str:
+        normalized = _normalize_artifact_relpath(path).lower()
+        relative = normalized
+        if root and normalized.startswith(root):
+            relative = normalized[len(root) :]
+
+        for suffix in (
+            ".ome.tiff",
+            ".ome.tif",
+            ".tiff",
+            ".tif",
+            ".png",
+            ".jpg",
+            ".jpeg",
+        ):
+            if relative.endswith(suffix):
+                relative = relative[: -len(suffix)]
+                break
+
+        if remove_label_suffix:
+            for marker in (
+                "_mask",
+                "-mask",
+                "_label",
+                "-label",
+                "_annotation",
+                "-annotation",
+            ):
+                if relative.endswith(marker):
+                    relative = relative[: -len(marker)]
+                    break
+
+        return relative.strip("/")
+
+    relative_ann_map: dict[str, str] = {}
+    for annot_file in annotation_files:
+        key = _relative_key(annot_file, annotation_root, True)
+        if key and key not in relative_ann_map:
+            relative_ann_map[key] = annot_file
+
+    for image_file in image_files:
+        key = _relative_key(image_file, image_root, False)
+        annot_file = relative_ann_map.get(key)
+        if annot_file:
+            pairs.append((image_file, annot_file))
+
+    if pairs:
+        logger.info(
+            f"Matched {len(pairs)} pairs from {len(image_files)} images "
+            f"and {len(annotation_files)} annotations"
+        )
+        return pairs
 
     # Fallback matcher for mixed conventions like image '*.tif' vs annotation '*_mask.ome.tif'.
     fallback_ann_map: dict[str, str] = {}
@@ -2398,7 +3255,7 @@ async def make_training_pairs_from_metadata(
     artifact: AsyncHyphaArtifact,
     metadata_dir: str,
     save_path: Path,
-    n_samples: int | None,
+    n_samples: int | float | None,
 ) -> tuple[list[TrainingPair], list[TrainingPair]]:
     metadata_root = _normalize_artifact_relpath(metadata_dir)
     if metadata_root and not metadata_root.endswith("/"):
@@ -2445,11 +3302,17 @@ async def make_training_pairs_from_metadata(
             "Expected keys like image_path/mask_path (also supports camelCase variants)."
         )
 
-    if n_samples is not None and n_samples < len(train_pairs_raw):
-        subset_idx = np.random.default_rng().permutation(len(train_pairs_raw))[
-            :n_samples
-        ]
-        train_pairs_raw = [train_pairs_raw[i] for i in subset_idx]
+    requested_total = resolve_requested_sample_count(
+        n_samples,
+        len(train_pairs_raw) + len(test_pairs_raw),
+    )
+    train_pairs_raw, test_pairs_raw = sample_pair_lists(
+        train_pairs_raw,
+        test_pairs_raw,
+        requested_total,
+        split_mode="manual",
+        train_split_ratio=0.8,
+    )
 
     train_pairs = await download_pairs_from_artifact(
         artifact,
@@ -2489,10 +3352,31 @@ async def download_pairs_from_artifact(
         logger.info("Downloading %d files from artifact", len(missing_rpaths))
         try:
             # Add a timeout to prevent indefinite hanging (10 minutes)
-            await asyncio.wait_for(
-                artifact.get(missing_rpaths, missing_lpaths, on_error="ignore"),
-                timeout=600,
-            )
+            try:
+                await asyncio.wait_for(
+                    artifact.get(missing_rpaths, missing_lpaths, on_error="ignore"),
+                    timeout=600,
+                )
+            except Exception as first_error:
+                err_msg = str(first_error).lower()
+                needs_recursive = (
+                    "path is a directory" in err_msg or "recursive" in err_msg
+                )
+                if needs_recursive:
+                    logger.info(
+                        "Retrying artifact download with recursive=True for directory paths"
+                    )
+                    await asyncio.wait_for(
+                        artifact.get(
+                            missing_rpaths,
+                            missing_lpaths,
+                            on_error="ignore",
+                            recursive=True,
+                        ),
+                        timeout=600,
+                    )
+                else:
+                    raise
             logger.info("Download completed successfully")
         except asyncio.TimeoutError:
             logger.error("Download timed out after 600 seconds")
@@ -2577,6 +3461,149 @@ def get_training_subset(
     return image_paths, annotation_paths
 
 
+def resolve_requested_sample_count(
+    n_samples: int | float | None,
+    total_count: int,
+) -> int | None:
+    """Resolve requested sample usage into an absolute count.
+
+    If ``0 < n_samples <= 1``, it is treated as a decimal fraction of
+    ``total_count``. Values greater than 1 are treated as absolute counts.
+    """
+    if n_samples is None:
+        return None
+    if total_count <= 0:
+        return 0
+
+    requested = float(n_samples)
+    if requested <= 0:
+        raise ValueError("n_samples must be > 0")
+
+    if requested <= 1.0:
+        resolved = int(round(total_count * requested))
+    else:
+        resolved = int(round(requested))
+
+    return max(1, min(total_count, resolved))
+
+
+def random_subset_pairs(pairs: list[TrainingPair], count: int) -> list[TrainingPair]:
+    """Return a random subset of ``pairs`` of size ``count``."""
+    if count >= len(pairs):
+        return pairs
+    idx = np.random.default_rng().permutation(len(pairs))[:count]
+    return [pairs[i] for i in idx]
+
+
+def proportional_manual_sample_counts(
+    train_available: int,
+    test_available: int,
+    requested_total: int,
+) -> tuple[int, int]:
+    """Allocate requested manual-split samples across train/test pools."""
+    total_available = train_available + test_available
+    if total_available <= 0:
+        return 0, 0
+
+    requested_total = max(0, min(requested_total, total_available))
+    if requested_total == 0:
+        return 0, 0
+
+    if test_available <= 0:
+        return min(train_available, requested_total), 0
+    if train_available <= 0:
+        return 0, min(test_available, requested_total)
+
+    train_target = int(round(requested_total * (train_available / total_available)))
+    train_target = max(0, min(train_available, train_target))
+    test_target = requested_total - train_target
+
+    if test_target > test_available:
+        overflow = test_target - test_available
+        test_target = test_available
+        train_target = min(train_available, train_target + overflow)
+    if train_target > train_available:
+        overflow = train_target - train_available
+        train_target = train_available
+        test_target = min(test_available, test_target + overflow)
+
+    assigned = train_target + test_target
+    if assigned < requested_total:
+        remaining = requested_total - assigned
+        train_room = train_available - train_target
+        add_train = min(train_room, remaining)
+        train_target += add_train
+        remaining -= add_train
+        if remaining > 0:
+            test_room = test_available - test_target
+            add_test = min(test_room, remaining)
+            test_target += add_test
+
+    return train_target, test_target
+
+
+def sample_pair_lists(
+    train_pairs: list[TrainingPair],
+    test_pairs: list[TrainingPair],
+    requested_total: int | None,
+    *,
+    split_mode: str,
+    train_split_ratio: float,
+) -> tuple[list[TrainingPair], list[TrainingPair]]:
+    """Apply random sample limits to pair lists."""
+    if requested_total is None:
+        return train_pairs, test_pairs
+
+    total_pairs = len(train_pairs) + len(test_pairs)
+    if requested_total >= total_pairs:
+        return train_pairs, test_pairs
+
+    if split_mode == "auto":
+        combined_pairs = [*train_pairs, *test_pairs]
+        combined_pairs = random_subset_pairs(combined_pairs, requested_total)
+        return split_training_pairs(combined_pairs, train_split_ratio)
+
+    train_target, test_target = proportional_manual_sample_counts(
+        len(train_pairs),
+        len(test_pairs),
+        requested_total,
+    )
+    return (
+        random_subset_pairs(train_pairs, train_target),
+        random_subset_pairs(test_pairs, test_target),
+    )
+
+
+def split_training_pairs(
+    train_pairs: list[TrainingPair],
+    train_ratio: float,
+) -> tuple[list[TrainingPair], list[TrainingPair]]:
+    """Split training pairs into train/test subsets using the provided ratio.
+
+    Keeps at least one sample in train; for datasets with >=2 samples, keeps at
+    least one sample in test.
+    """
+    if not train_pairs:
+        return [], []
+
+    n_total = len(train_pairs)
+    if n_total == 1:
+        return train_pairs, []
+
+    ratio = float(train_ratio)
+    ratio = max(0.05, min(0.95, ratio))
+
+    n_train = int(round(n_total * ratio))
+    n_train = max(1, min(n_total - 1, n_train))
+
+    indices = np.random.default_rng().permutation(n_total)
+    train_idx = set(indices[:n_train])
+
+    split_train = [pair for i, pair in enumerate(train_pairs) if i in train_idx]
+    split_test = [pair for i, pair in enumerate(train_pairs) if i not in train_idx]
+    return split_train, split_test
+
+
 async def make_training_pairs(
     config: TrainingParams,
     save_path: Path,
@@ -2586,8 +3613,13 @@ async def make_training_pairs(
     Returns:
         Tuple of (train_pairs, test_pairs). test_pairs is empty if test folders not specified.
     """
+    artifact_id = config["artifact_id"]
+
+    if _is_bioimage_archive_url(artifact_id):
+        return await make_training_pairs_from_bioimage_archive_url(config, save_path)
+
     artifact = await make_artifact_client(
-        config["artifact_id"],
+        artifact_id,
         config["server_url"],
     )
 
@@ -2618,11 +3650,29 @@ async def make_training_pairs(
             "train_annotations must be provided."
         )
 
-    train_image_files = await list_matching_artifact_paths(artifact, train_images)
+    requested_by_user = config.get("n_samples")
+    scan_limit: int | None = None
+    if isinstance(requested_by_user, (int, float)):
+        requested_float = float(requested_by_user)
+        if requested_float >= 1.0:
+            requested_count = max(1, int(round(requested_float)))
+            # For low-sample interactive runs, avoid scanning entire artifacts.
+            # Keep a generous buffer so wildcard matching still finds enough pairs.
+            scan_limit = max(100, requested_count * 40)
+
+    train_image_files = await list_matching_artifact_paths(
+        artifact,
+        train_images,
+        max_results=scan_limit,
+    )
     train_annotation_files = await list_matching_artifact_paths(
         artifact,
         train_annotations,
+        max_results=scan_limit,
     )
+
+    split_mode = str(config.get("split_mode", "manual") or "manual").lower()
+    train_split_ratio = float(config.get("train_split_ratio", 0.8))
 
     # Match training pairs
     train_matched = match_image_annotation_pairs(
@@ -2631,37 +3681,23 @@ async def make_training_pairs(
         train_images,
         train_annotations,
     )
-
-    # Build full paths for training files
-    train_image_paths = [Path(img) for img, _ in train_matched]
-    train_annotation_paths = [Path(ann) for _, ann in train_matched]
-
-    # Apply n_samples if specified
-    if config["n_samples"] is not None and config["n_samples"] < len(train_image_paths):
-        train_image_paths, train_annotation_paths = get_training_subset(
-            train_image_paths,
-            train_annotation_paths,
-            config["n_samples"],
-        )
-
-    # Download training pairs
-    train_pairs = await download_pairs_from_artifact(
-        artifact,
-        save_path,
-        train_image_paths,
-        train_annotation_paths,
-    )
+    train_pairs_raw = [
+        TrainingPair(image=Path(img), annotation=Path(ann))
+        for img, ann in train_matched
+    ]
 
     # Handle test pairs if specified
-    test_pairs: list[TrainingPair] = []
+    test_pairs_raw: list[TrainingPair] = []
     if config["test_images"] and config["test_annotations"]:
         test_image_files = await list_matching_artifact_paths(
             artifact,
             config["test_images"],
+            max_results=scan_limit,
         )
         test_annotation_files = await list_matching_artifact_paths(
             artifact,
             config["test_annotations"],
+            max_results=scan_limit,
         )
 
         # Match test pairs
@@ -2672,17 +3708,43 @@ async def make_training_pairs(
             config["test_annotations"],
         )
 
-        # Build full paths for test files
-        test_image_paths = [Path(img) for img, _ in test_matched]
-        test_annotation_paths = [Path(ann) for _, ann in test_matched]
+        test_pairs_raw = [
+            TrainingPair(image=Path(img), annotation=Path(ann))
+            for img, ann in test_matched
+        ]
 
-        # Download test pairs
+    requested_total = resolve_requested_sample_count(
+        config.get("n_samples"),
+        len(train_pairs_raw) + len(test_pairs_raw),
+    )
+    train_pairs_raw, test_pairs_raw = sample_pair_lists(
+        train_pairs_raw,
+        test_pairs_raw,
+        requested_total,
+        split_mode=split_mode,
+        train_split_ratio=train_split_ratio,
+    )
+
+    # Download selected training pairs only
+    train_pairs = await download_pairs_from_artifact(
+        artifact,
+        save_path,
+        [pair["image"] for pair in train_pairs_raw],
+        [pair["annotation"] for pair in train_pairs_raw],
+    )
+
+    # Download selected test pairs only
+    test_pairs: list[TrainingPair] = []
+    if test_pairs_raw:
         test_pairs = await download_pairs_from_artifact(
             artifact,
             save_path,
-            test_image_paths,
-            test_annotation_paths,
+            [pair["image"] for pair in test_pairs_raw],
+            [pair["annotation"] for pair in test_pairs_raw],
         )
+
+    if split_mode == "auto" and not test_pairs:
+        train_pairs, test_pairs = split_training_pairs(train_pairs, train_split_ratio)
 
     return train_pairs, test_pairs
 
@@ -3163,6 +4225,51 @@ class CellposeFinetune:
         self.tasks = {}
         self._session_lock = asyncio.Lock()
 
+    def _has_active_training_task(self) -> bool:
+        """Return True when any known training task is still running."""
+        for task in self.tasks.values():
+            if task is not None and not task.done():
+                return True
+        return False
+
+    def _get_free_gpu_memory_bytes(self) -> int | None:
+        """Return free GPU memory in bytes, or None if unavailable."""
+        try:
+            import torch
+        except Exception:
+            return None
+
+        try:
+            if not torch.cuda.is_available():
+                return None
+            free_bytes, _total_bytes = torch.cuda.mem_get_info()
+            return int(free_bytes)
+        except Exception:
+            return None
+
+    def _admission_denial_message(self) -> str | None:
+        """Return a human-readable reason why a new training run should not start."""
+        if self._has_active_training_task():
+            return (
+                "Deferred start to avoid GPU contention: another training session is already active. "
+                "Use restart_training(session_id=...) when resources are available."
+            )
+
+        free_gpu_bytes = self._get_free_gpu_memory_bytes()
+        if free_gpu_bytes is None:
+            return None
+
+        if free_gpu_bytes < MIN_FREE_GPU_MEMORY_TO_START_BYTES:
+            free_gb = free_gpu_bytes / GB
+            required_gb = MIN_FREE_GPU_MEMORY_TO_START_BYTES / GB
+            return (
+                "Deferred start due to low free GPU memory "
+                f"({free_gb:.2f} GB available, need at least {required_gb:.2f} GB). "
+                "Use restart_training(session_id=...) after active workloads finish."
+            )
+
+        return None
+
     def get_model_id(self, model: str) -> str | Path:
         """Return a model identifier suitable for loading by Cellpose."""
         # print all contents of get_session_path(model):
@@ -3175,6 +4282,277 @@ class CellposeFinetune:
             "or a valid session ID of a previously finetuned model."
         )
         raise ValueError(msg)
+
+    @schema_method(arbitrary_types_allowed=True)  # type: ignore
+    async def preflight_training_dataset(
+        self,
+        artifact: str = Field(
+            description="Artifact identifier or BioImage Archive URL",
+            examples=["ri-scale/zarr-demo"],
+        ),
+        train_images: str | None = Field(
+            None,
+            description="Training images path or glob pattern",
+        ),
+        train_annotations: str | None = Field(
+            None,
+            description="Training annotations path or glob pattern",
+        ),
+        metadata_dir: str | None = Field(
+            None,
+            description="Optional metadata directory path",
+        ),
+        test_images: str | None = Field(
+            None,
+            description="Optional test images path or glob pattern",
+        ),
+        test_annotations: str | None = Field(
+            None,
+            description="Optional test annotations path or glob pattern",
+        ),
+        split_mode: str = Field(
+            "manual",
+            description="Dataset split mode: manual or auto",
+        ),
+        n_samples: int | float | None = Field(
+            None,
+            description="Optional sample count or fraction",
+        ),
+        max_candidates: int = Field(
+            500,
+            description=(
+                "Maximum matching candidates to inspect per path spec. "
+                "Keeps preflight fast for large artifacts."
+            ),
+        ),
+    ) -> dict[str, Any]:
+        """Preflight-check dataset specs with lightweight backend matching.
+
+        Returns counts and readiness information without starting training.
+        """
+        if isinstance(artifact, dict):
+            wrapped = artifact
+            artifact = wrapped.get(
+                "artifact", wrapped.get("artifact_id", wrapped.get("id", artifact))
+            )
+            train_images = wrapped.get("train_images", train_images)
+            train_annotations = wrapped.get("train_annotations", train_annotations)
+            metadata_dir = wrapped.get("metadata_dir", metadata_dir)
+            test_images = wrapped.get("test_images", test_images)
+            test_annotations = wrapped.get("test_annotations", test_annotations)
+            split_mode = wrapped.get("split_mode", split_mode)
+            n_samples = wrapped.get("n_samples", n_samples)
+            max_candidates = wrapped.get("max_candidates", max_candidates)
+
+        artifact = normalize_optional_param(artifact)
+        train_images = normalize_optional_param(train_images)
+        train_annotations = normalize_optional_param(train_annotations)
+        metadata_dir = normalize_optional_param(metadata_dir)
+        test_images = normalize_optional_param(test_images)
+        test_annotations = normalize_optional_param(test_annotations)
+        split_mode = normalize_optional_param(split_mode)
+        n_samples = normalize_optional_param(n_samples)
+        max_candidates = int(max_candidates) if max_candidates is not None else 500
+        max_candidates = max(10, min(max_candidates, 5000))
+
+        split_mode_value = str(split_mode or "manual").lower()
+        if split_mode_value not in {"manual", "auto"}:
+            split_mode_value = "manual"
+
+        result: dict[str, Any] = {
+            "ok": False,
+            "artifact_id": None,
+            "mode": "artifact",
+            "split_mode": split_mode_value,
+            "train_image_count": 0,
+            "train_annotation_count": 0,
+            "train_pair_count": 0,
+            "test_image_count": 0,
+            "test_annotation_count": 0,
+            "test_pair_count": 0,
+            "sampled_total_count": None,
+            "requested_total_count": None,
+            "message": "",
+        }
+
+        if not isinstance(artifact, str) or not artifact:
+            result["message"] = "artifact must be a non-empty string"
+            return result
+
+        is_bia = _is_bioimage_archive_url(artifact)
+        if is_bia:
+            result["ok"] = True
+            result["mode"] = "bioimage-archive"
+            result["artifact_id"] = artifact
+            result["split_mode"] = "auto"
+            result["message"] = (
+                "BioImage Archive mode detected. Pair matching happens during preparation."
+            )
+            return result
+
+        server_url, artifact_id = get_url_and_artifact_id(artifact)
+        result["artifact_id"] = artifact_id
+
+        try:
+            artifact_client = await make_artifact_client(artifact_id, server_url)
+        except Exception as e:
+            result["message"] = f"Failed to access artifact '{artifact_id}': {e}"
+            return result
+
+        if metadata_dir:
+            metadata_dir_value = str(metadata_dir)
+            if not metadata_dir_value.endswith("/"):
+                metadata_dir_value += "/"
+            try:
+                entries = await artifact_client.ls(metadata_dir_value)
+            except Exception as e:
+                result["message"] = (
+                    f"Metadata directory '{metadata_dir_value}' is not readable: {e}"
+                )
+                return result
+
+            metadata_file_count = 0
+            for entry in entries or []:
+                raw_path = ""
+                if isinstance(entry, dict):
+                    raw_path = str(entry.get("path") or entry.get("name") or "")
+                else:
+                    raw_path = str(entry)
+                if raw_path.lower().endswith(".json"):
+                    metadata_file_count += 1
+
+            if metadata_file_count <= 0:
+                result["message"] = (
+                    f"No metadata JSON files found under '{metadata_dir_value}'."
+                )
+                return result
+
+            result["ok"] = True
+            result["mode"] = "metadata"
+            result["metadata_file_count"] = metadata_file_count
+            result["message"] = (
+                f"Metadata mode ready. Found {metadata_file_count} metadata JSON files."
+            )
+            return result
+
+        if not isinstance(train_images, str) or not train_images:
+            result["message"] = (
+                "train_images must be provided when metadata_dir is not used"
+            )
+            return result
+        if not isinstance(train_annotations, str) or not train_annotations:
+            result["message"] = (
+                "train_annotations must be provided when metadata_dir is not used"
+            )
+            return result
+
+        try:
+            train_image_paths = await list_matching_artifact_paths(
+                artifact_client,
+                train_images,
+                max_results=max_candidates,
+            )
+            train_annotation_paths = await list_matching_artifact_paths(
+                artifact_client,
+                train_annotations,
+                max_results=max_candidates,
+            )
+        except Exception as e:
+            result["message"] = f"Failed to list training paths: {e}"
+            return result
+
+        train_image_count = len(
+            [
+                path
+                for path in train_image_paths
+                if _is_supported_dataset_image_path(path)
+            ]
+        )
+        train_annotation_count = len(
+            [
+                path
+                for path in train_annotation_paths
+                if _is_supported_dataset_image_path(path)
+            ]
+        )
+        train_pair_count = min(train_image_count, train_annotation_count)
+
+        result["train_image_count"] = train_image_count
+        result["train_annotation_count"] = train_annotation_count
+        result["train_pair_count"] = train_pair_count
+
+        if train_pair_count <= 0:
+            result["message"] = (
+                "No training pairs found from current training path specs. "
+                f"images={train_image_count}, annotations={train_annotation_count}."
+            )
+            return result
+
+        test_pair_count = 0
+        if split_mode_value == "manual" and test_images and test_annotations:
+            try:
+                test_image_paths = await list_matching_artifact_paths(
+                    artifact_client,
+                    test_images,
+                    max_results=max_candidates,
+                )
+                test_annotation_paths = await list_matching_artifact_paths(
+                    artifact_client,
+                    test_annotations,
+                    max_results=max_candidates,
+                )
+            except Exception as e:
+                result["message"] = f"Failed to list test paths: {e}"
+                return result
+
+            test_image_count = len(
+                [
+                    path
+                    for path in test_image_paths
+                    if _is_supported_dataset_image_path(path)
+                ]
+            )
+            test_annotation_count = len(
+                [
+                    path
+                    for path in test_annotation_paths
+                    if _is_supported_dataset_image_path(path)
+                ]
+            )
+            test_pair_count = min(test_image_count, test_annotation_count)
+
+            result["test_image_count"] = test_image_count
+            result["test_annotation_count"] = test_annotation_count
+            result["test_pair_count"] = test_pair_count
+
+            if test_pair_count <= 0:
+                result["message"] = (
+                    "Manual split selected but no test pairs were found from test path specs. "
+                    f"images={test_image_count}, annotations={test_annotation_count}."
+                )
+                return result
+
+        total_pairs = train_pair_count + test_pair_count
+        requested_total = None
+        if n_samples is not None:
+            try:
+                requested_total = resolve_requested_sample_count(
+                    float(n_samples), total_pairs
+                )
+            except Exception as e:
+                result["message"] = f"Invalid n_samples value: {e}"
+                return result
+
+        result["requested_total_count"] = requested_total
+        result["sampled_total_count"] = (
+            requested_total if requested_total is not None else total_pairs
+        )
+        result["ok"] = True
+        result["message"] = (
+            "Dataset preflight passed. "
+            f"train_pairs={train_pair_count}, test_pairs={test_pair_count}, total={total_pairs}."
+        )
+        return result
 
     @schema_method(arbitrary_types_allowed=True)  # type: ignore
     async def start_training(
@@ -3239,6 +4617,21 @@ class CellposeFinetune:
             ),
             examples=["annotations/test/", "annotations/test/*_mask.ome.tif"],
         ),
+        split_mode: str = Field(
+            "manual",
+            description=(
+                "Dataset split mode. 'manual' uses test_images/test_annotations; "
+                "'auto' creates test split from training pairs using train_split_ratio."
+            ),
+            examples=["manual", "auto"],
+        ),
+        train_split_ratio: float = Field(
+            0.8,
+            description=(
+                "Train ratio used only when split_mode='auto'. "
+                "Example: 0.8 means 80% train / 20% test."
+            ),
+        ),
         model: str = Field(
             PretrainedModel.CPSAM.value,
             description=(
@@ -3251,11 +4644,13 @@ class CellposeFinetune:
                 *PretrainedModel.values(),
             ],
         ),
-        n_samples: int | None = Field(
+        n_samples: int | float | None = Field(
             None,
             description=(
-                "Optional number of samples to use from the dataset. If None, "
-                "all available samples are used."
+                "Optional number of samples to use from the dataset. "
+                "If 0 < value <= 1, treated as decimal fraction of total samples "
+                "(e.g., 0.6 means 60%). If value > 1, treated as absolute count. "
+                "If None, all available samples are used."
             ),
         ),
         n_epochs: int = Field(10, description="Number of training epochs"),
@@ -3297,6 +4692,8 @@ class CellposeFinetune:
             metadata_dir = wrapped.get("metadata_dir", metadata_dir)
             test_images = wrapped.get("test_images", test_images)
             test_annotations = wrapped.get("test_annotations", test_annotations)
+            split_mode = wrapped.get("split_mode", split_mode)
+            train_split_ratio = wrapped.get("train_split_ratio", train_split_ratio)
             model = wrapped.get("model", model)
             n_samples = wrapped.get("n_samples", n_samples)
             n_epochs = wrapped.get("n_epochs", n_epochs)
@@ -3313,6 +4710,8 @@ class CellposeFinetune:
         metadata_dir = normalize_optional_param(metadata_dir)
         test_images = normalize_optional_param(test_images)
         test_annotations = normalize_optional_param(test_annotations)
+        split_mode = normalize_optional_param(split_mode)
+        train_split_ratio = normalize_optional_param(train_split_ratio)
         model = normalize_optional_param(model)
         n_samples = normalize_optional_param(n_samples)
         n_epochs = normalize_optional_param(n_epochs)
@@ -3322,22 +4721,42 @@ class CellposeFinetune:
         validation_interval = normalize_optional_param(validation_interval)
 
         if metadata_dir is None:
-            if not isinstance(train_images, str) or not train_images:
-                raise ValueError(
-                    "train_images must be a non-empty string when metadata_dir is not provided"
-                )
-            if not isinstance(train_annotations, str) or not train_annotations:
-                raise ValueError(
-                    "train_annotations must be a non-empty string when metadata_dir is not provided"
-                )
+            is_bia = isinstance(artifact, str) and _is_bioimage_archive_url(artifact)
+            if not is_bia:
+                if not isinstance(train_images, str) or not train_images:
+                    raise ValueError(
+                        "train_images must be a non-empty string when metadata_dir is not provided"
+                    )
+                if not isinstance(train_annotations, str) or not train_annotations:
+                    raise ValueError(
+                        "train_annotations must be a non-empty string when metadata_dir is not provided"
+                    )
         else:
             if not isinstance(metadata_dir, str) or not metadata_dir:
                 raise ValueError("metadata_dir must be a non-empty string")
 
-        if (test_images is None) ^ (test_annotations is None):
-            raise ValueError(
-                "test_images and test_annotations must be provided together"
-            )
+        is_bia = isinstance(artifact, str) and _is_bioimage_archive_url(artifact)
+
+        if not isinstance(split_mode, str) or split_mode not in {"manual", "auto"}:
+            split_mode = "manual"
+        if is_bia:
+            split_mode = "auto"
+
+        if train_split_ratio is None:
+            train_split_ratio = 0.8
+        train_split_ratio = float(train_split_ratio)
+        if not (0.0 < train_split_ratio < 1.0):
+            raise ValueError("train_split_ratio must be between 0 and 1")
+
+        if split_mode == "manual":
+            if (test_images is None) ^ (test_annotations is None):
+                raise ValueError(
+                    "test_images and test_annotations must be provided together in manual split mode"
+                )
+        else:
+            # In auto split mode, ignore explicitly provided test inputs.
+            test_images = None
+            test_annotations = None
 
         if not isinstance(model, str) or not model:
             model = PretrainedModel.CPSAM.value
@@ -3350,7 +4769,9 @@ class CellposeFinetune:
         if min_train_masks is None:
             min_train_masks = 5
         if n_samples is not None:
-            n_samples = int(n_samples)
+            n_samples = float(n_samples)
+            if n_samples <= 0:
+                raise ValueError("n_samples must be > 0")
         if validation_interval is not None:
             validation_interval = int(validation_interval)
 
@@ -3385,6 +4806,8 @@ class CellposeFinetune:
             metadata_dir=metadata_dir,
             test_images=test_images,
             test_annotations=test_annotations,
+            split_mode=split_mode,
+            train_split_ratio=train_split_ratio,
             model=model_id,
             n_epochs=n_epochs,
             learning_rate=learning_rate,
@@ -3403,6 +4826,29 @@ class CellposeFinetune:
         training_params_path.write_text(json.dumps(params_dict, indent=2))
 
         async with self._session_lock:
+            denial_message = self._admission_denial_message()
+            if denial_message is not None:
+                update_status(
+                    session_id=session_id,
+                    status_type=StatusType.STOPPED,
+                    message=denial_message,
+                    dataset_artifact_id=artifact_id,
+                    model=model_id,
+                    n_samples=n_samples,
+                    n_epochs=n_epochs,
+                    learning_rate=learning_rate,
+                    weight_decay=weight_decay,
+                    min_train_masks=min_train_masks,
+                    validation_interval=validation_interval,
+                )
+                append_info(
+                    session_id,
+                    denial_message,
+                    with_time=True,
+                )
+                status = get_status(session_id)
+                return SessionStatusWithId(**status, session_id=session_id)
+
             executor = ThreadPoolExecutor(max_workers=1)
             self.executors[session_id] = executor
             task = asyncio.create_task(launch_training_task(training_params, executor))
@@ -3618,6 +5064,8 @@ class CellposeFinetune:
             metadata_dir=params.get("metadata_dir"),
             test_images=params.get("test_images"),
             test_annotations=params.get("test_annotations"),
+            split_mode=params.get("split_mode", "manual"),
+            train_split_ratio=params.get("train_split_ratio", 0.8),
             model=restart_model,
             n_samples=params.get("n_samples"),
             n_epochs=restart_epochs,
@@ -3628,6 +5076,72 @@ class CellposeFinetune:
         )
         restarted["restarted_from"] = session_id
         return restarted
+
+    @schema_method(arbitrary_types_allowed=True)  # type: ignore
+    async def delete_training_session(
+        self,
+        session_id: str = Field(description="Session ID to delete"),
+        force_stop_if_blocked: bool = Field(
+            False,
+            description="If true, stop blocked running/preparing session first, then delete.",
+        ),
+    ) -> dict[str, Any]:
+        """Delete a non-running training session and its local artifacts."""
+        import shutil
+
+        if isinstance(session_id, dict):
+            wrapped = session_id
+            session_id = wrapped.get("session_id", wrapped.get("id", session_id))
+
+        session_id = str(session_id).strip().replace("\\", "/")
+        if session_id.endswith("/status.json"):
+            session_id = session_id[: -len("/status.json")]
+        session_id = Path(session_id).name
+
+        status_path = get_status_path(session_id)
+        if not status_path.exists():
+            raise ValueError(f"Session {session_id} does not exist")
+
+        try:
+            status_mtime = status_path.stat().st_mtime
+        except OSError:
+            status_mtime = time.time()
+
+        status = self._normalize_session_status(
+            session_id=session_id,
+            session_data=dict(get_status(session_id)),
+            status_mtime=status_mtime,
+        )
+        status_type = str(status.get("status_type") or "").lower()
+        blocked = {StatusType.RUNNING.value, StatusType.PREPARING.value}
+        if status_type in blocked:
+            if force_stop_if_blocked:
+                await self.stop_training(session_id=session_id)
+            else:
+                raise ValueError(
+                    f"Session {session_id} has status '{status_type}'. "
+                    "Running or preparing sessions cannot be deleted. Stop the session first."
+                )
+
+        task = self.tasks.get(session_id)
+        if task and not task.done():
+            task.cancel()
+        if session_id in self.tasks:
+            del self.tasks[session_id]
+
+        executor = self.executors.get(session_id)
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+            del self.executors[session_id]
+
+        session_path = get_session_path(session_id)
+        if session_path.exists():
+            shutil.rmtree(session_path, ignore_errors=False)
+
+        return {
+            "deleted": True,
+            "session_id": session_id,
+        }
 
     def _list_sessions_sync(
         self,
@@ -4459,7 +5973,7 @@ async def test_cellpose_finetune() -> None:
     # Reverting to original call style but casting:
     cellpose_tuner = CellposeFinetune.func_or_class()
 
-    await infer(cellpose_tuner, model="cyto3")
+    await infer(cellpose_tuner, model="cpsam")
 
     session_status = await cellpose_tuner.start_training(
         artifact="ri-scale/zarr-demo",

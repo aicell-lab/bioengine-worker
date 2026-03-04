@@ -1,0 +1,16 @@
+name: BIA Resolve URL Proxy
+id: bia-resolve-url-proxy
+id_emoji: '🌐'
+covers: []
+description: Resolve URL proxy for BioImage Archive downloads (resolve_url only).
+documentation: README.md
+format_version: 0.5.0
+git_repo: https://github.com/aicell-lab/bioengine-worker
+links: []
+tags: [bioimage-archive, proxy, resolve-url]
+type: ray-serve
+version: 0.0.1
+deployments:
+  - main:ResolveUrlProxy
+authorized_users:
+  - "*"

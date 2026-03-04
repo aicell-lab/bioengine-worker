@@ -22,29 +22,51 @@ BioEngine Worker is an enterprise distributed AI platform with 3-tier architectu
 ## Development Workflows
 
 ### Environment Setup
+Use the existing `bioengine-worker` conda environment — do not create a new one.
 ```bash
-conda create -n bioengine-worker python=3.11.9
 conda activate bioengine-worker
 pip install -r requirements.txt
 pip install -r requirements-test.txt
 ```
 
-### Testing Patterns
+The `HYPHA_TOKEN` required for tests and Hypha service access is stored in the `.env` file at the workspace root. Load it before running commands:
 ```bash
-# Run end-to-end tests (requires HYPHA_TOKEN in .env)
-pytest tests/test_end_to_end/ -v
-
-# Test single component
-pytest tests/test_end_to_end/test_app_manager.py -v
-
-# Use bioengine-worker conda environment for tests
-conda run -n bioengine-worker pytest tests/ -v
+source .env
 ```
 
 ### Local Development
 ```bash
-# Start worker locally
-python -m bioengine.worker --mode single-machine --debug
+# Start worker locally (single-machine mode)
+python -m bioengine.worker \
+    --mode single-machine \
+    --head-num-gpus 1 \
+    --head-num-cpus 4 \
+    --head-memory-in-gb 24 \
+    --workspace-dir /home/nmechtel/.bioengine \
+    --startup-applications '{"artifact_id": "ws-user-github|49943582/demo-app", "disable_gpu": true}' \
+    --client-id "<debug-client-id>" \
+    --debug
+```
+
+> **Note:** Do not reuse the same `--client-id` in a short period of time to avoid service registration conflicts.
+
+Once running, the worker service is accessible at:
+```
+https://hypha.aicell.io/ws-user-github%7C49943582/services/<debug-client-id>:bioengine-worker
+```
+
+To deploy an application on a running worker, call `run_application` via the service URL, e.g.:
+```
+https://hypha.aicell.io/ws-user-github%7C49943582/services/<debug-client-id>:bioengine-worker/run_application?artifact_id=ws-user-github|49943582/model-runner
+```
+
+If `BIOENGINE_LOCAL_ARTIFACT_PATH` is set, the worker loads the app from the local path instead of the artifact registry. The path must contain the app directory — e.g.:
+- `bioengine_apps/` for apps like `model-runner` and `cellpose-finetuning`
+- `tests/` for the `demo-app` and `composition-app`
+
+```bash
+# When working on BioEngine apps, set the local artifact path:
+export BIOENGINE_LOCAL_ARTIFACT_PATH=/data/nmechtel/bioengine-worker/bioengine_apps
 
 # With Docker Compose
 UID=$(id -u) GID=$(id -g) docker compose up
@@ -52,6 +74,27 @@ UID=$(id -u) GID=$(id -g) docker compose up
 # HPC mode with Apptainer
 bash scripts/start_hpc_worker.sh --mode slurm
 ```
+
+### Worker Service API
+
+The BioEngine worker exposes the following Hypha service endpoints:
+
+| Method | Description | Admin required |
+|--------|-------------|:--------------:|
+| `get_status` | Get overall worker status | |
+| `stop_worker` | Stop the worker | ✓ |
+| `check_access` | Check caller's access level | |
+| `get_logs` | Retrieve worker logs | ✓ |
+| `list_datasets` | List available datasets | |
+| `execute_python_code` | Execute Python code in a Ray task | ✓ |
+| `save_application` | Save/update an application artifact | ✓ |
+| `list_applications` | List deployed applications | ✓ |
+| `get_application_manifest` | Get manifest for an application | ✓ |
+| `delete_application` | Delete an application | ✓ |
+| `run_application` | Deploy and start an application | ✓ |
+| `stop_application` | Stop a running application | ✓ |
+| `stop_all_applications` | Stop all running applications | ✓ |
+| `get_application_status` | Get status of a specific application | |
 
 ## Code Patterns & Conventions
 
@@ -131,9 +174,91 @@ Ray auto-allocates ports starting from defaults (6379, 8000, etc.). Check `ray_c
 Worker containers mount `${HOME}/bioengine`. Check `slurm_workers.py` for job submission patterns.
 
 ### Hypha Connection
-Authentication via `HYPHA_TOKEN` env var or interactive login. Service discovery uses workspace-scoped IDs.
+Authentication via `HYPHA_TOKEN` env var (loaded from `.env` file) or interactive login. Service discovery uses workspace-scoped IDs.
 
 ### Resource Allocation
 Apps check available resources before deployment. SLURM mode can scale up workers if resources insufficient.
 
 Always check component logs - each manager has detailed logging for troubleshooting distributed operations.
+
+## Agent Workflow Guidelines
+
+### Core Principles
+- **Simplicity First:** Make every change as simple as possible. Touch minimal code.
+- **No Laziness:** Find root causes. Avoid temporary fixes. Maintain senior-level standards.
+- **Minimal Impact:** Only change what's necessary. Avoid introducing regressions.
+- **Clarity Over Cleverness:** Prefer readable, obvious solutions over clever ones.
+- **Consistency Over Preference:** Follow existing patterns unless there is a strong reason to improve them.
+- **Prove It Works:** Evidence beats assumption — test and verify.
+- **Long-Term Thinking:** Optimize for maintainability and team comprehension, not speed of completion.
+
+### Workflow Orchestration
+
+**Plan Mode Default**
+- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions).
+- If something goes sideways, STOP and re-plan — don't push through a flawed approach.
+- Use plan mode for verification, not just implementation.
+- Write clear specs upfront to reduce ambiguity.
+- Planning lives in model context — do NOT create planning files in the repo.
+
+**Subagent Strategy**
+- Use subagents to keep the main context window clean.
+- Offload research, exploration, and parallel analysis.
+- For complex problems, prefer structured reasoning over muddling through.
+- One focused task per subagent for clarity and execution quality.
+
+**Self-Improvement Loop (Durable Only)**
+- After corrections, pause and ask: "Is there a reusable, repo-level lesson here?"
+- Only create a lesson if it will matter for future work in this repo and is useful for other contributors (not just this session).
+- Convert those into clear, durable rules in `tasks/lessons.md`.
+- Do not log small mistakes, one-off decisions, or temporary context.
+
+**Verification Before Done**
+- Never mark a task complete without proving it works.
+- Diff behavior between main and your changes when relevant.
+- Ask: "Would a staff engineer approve this?"
+- Run tests, check logs, and demonstrate correctness.
+- If you cannot prove it works, it is not done.
+
+**Demand Elegance (Balanced)**
+- For non-trivial changes: pause and ask "Is there a more elegant way?"
+- If a fix feels hacky, implement the clean solution.
+- Skip over-engineering for simple, obvious fixes.
+- Challenge your own work before presenting it.
+
+**Autonomous Bug Fixing**
+- When given a bug report: aim to fix it without hand-holding.
+- Identify logs, errors, failing tests — then resolve them.
+- Minimize context switching required from the user.
+- Proactively fix failing CI tests.
+
+### Task Management
+
+1. **Plan First:** Create a clear plan with checkable steps (kept in model context).
+2. **Verify Plan:** Confirm direction before heavy implementation when appropriate.
+3. **Track Progress:** Mark steps complete as you go (in-context).
+4. **Explain Changes:** Provide high-level summaries at meaningful milestones.
+5. **Document Results:** Capture rationale and outcomes in PR descriptions or commits.
+6. **Capture Lessons:** Update `tasks/lessons.md` only when a durable, repo-level rule emerges.
+
+No persistent task tracking files.
+
+### Lessons Management (`tasks/lessons.md`)
+
+`tasks/lessons.md` is the single source of truth for durable lessons. Each lesson must capture a recurring pattern, be useful to future contributors, and stand alone without relying on session context.
+
+**Promote a lesson when:**
+- It would have prevented a real bug or painful rework.
+- The same class of mistake is likely to recur.
+- It changes how future work should be done.
+- It qualifies as institutional knowledge.
+
+**Do not log:**
+- One-off debugging stories.
+- Temporary design decisions.
+- Minor implementation details.
+- Planning artifacts.
+
+**Writing rules:** Short and specific. Written as rules, constraints, or patterns. Focused on prevention and better defaults. No anecdotes.
+
+**Review discipline:** Skim `tasks/lessons.md` before substantial work. Merge or prune redundant lessons. Delete lessons that stop being true or useful.

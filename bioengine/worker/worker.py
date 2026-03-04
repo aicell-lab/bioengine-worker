@@ -17,10 +17,11 @@ from bioengine.applications import AppsManager
 from bioengine.datasets import BioEngineDatasets
 from bioengine.ray import RayCluster
 from bioengine.utils import (
+    fetch_centroid_coordinates,
+    fetch_geolocation,
     check_permissions,
     create_context,
     create_logger,
-    run_geolocation,
 )
 from bioengine.worker.code_executor import CodeExecutor
 
@@ -297,8 +298,16 @@ class BioEngineWorker:
                 print("=" * 60, end="\n\n")
                 self.logger.info("Interactive login completed successfully")
 
-            # Fetch geo location information
-            self.geo_location = run_geolocation(logger=self.logger)
+            # Initialize geo location with unknown placeholder; actual fetch happens in monitoring loop
+            self.geo_location = {
+                "region": None,
+                "country_name": None,
+                "country_code": None,
+                "continent_code": None,
+                "latitude": None,
+                "longitude": None,
+                "timezone": None,
+            }
 
             # Configure Ray cluster with environment-specific parameters
             ray_cluster_config = ray_cluster_config or {}
@@ -377,6 +386,39 @@ class BioEngineWorker:
         else:
             if key not in kwargs or kwargs[key] is None:
                 kwargs[key] = value
+
+    async def _fetch_geo_location(self) -> None:
+        """Fetch geographical location and coordinates, each only until successfully obtained.
+
+        Called from the monitoring loop.
+        - Geo location (region, country, etc.) is fetched as long as all fields are still None.
+        - Coordinates (latitude/longitude) are fetched separately as long as both are None
+          and a country name is available.
+        Failures are logged but never propagated.
+        """
+        # Fetch geo location if all fields are still unknown
+        if all(v is None for v in self.geo_location.values()):
+            try:
+                geo_info = await fetch_geolocation(logger=self.logger)
+                self.geo_location.update(geo_info)
+            except Exception as e:
+                self.logger.warning(f"Failed to fetch geo location: {e}")
+
+        # Fetch coordinates if country is known but coordinates are still missing
+        if (
+            self.geo_location.get("country_name")
+            and self.geo_location.get("latitude") is None
+            and self.geo_location.get("longitude") is None
+        ):
+            try:
+                coordinates = await fetch_centroid_coordinates(
+                    country=self.geo_location["country_name"],
+                    region=self.geo_location.get("region"),
+                    logger=self.logger,
+                )
+                self.geo_location.update(coordinates)
+            except Exception as e:
+                self.logger.warning(f"Failed to fetch geo coordinates: {e}")
 
     async def _ping_data_server(self) -> None:
         """Ping the dataset server with retries to verify connectivity."""
@@ -752,6 +794,9 @@ class BioEngineWorker:
                         continue  # Skip if within check interval
 
                     self._last_monitoring = current_time
+
+                    # ===== 0. Geo location =====
+                    await self._fetch_geo_location()
 
                     # ===== 1. Hypha server connection check =====
                     # Check connection to Hypha server

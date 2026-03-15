@@ -1,5 +1,14 @@
 # BioImage.IO RDF Format Reference
 
+## Contents
+
+- Format Versions
+- Format 0.4.x
+- Format 0.5.x
+- Common Top-Level Fields
+- Fetching the RDF
+- Determining Input Shape from RDF
+
 The Resource Description Framework (RDF) is a YAML/JSON metadata document that describes a bioimage.io model. The model-runner uses the RDF to understand input/output specifications.
 
 ## Format Versions

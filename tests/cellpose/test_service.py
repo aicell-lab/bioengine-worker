@@ -1,7 +1,7 @@
 """Client script to use a deployed Cellpose Fine-Tuning service.
 
 This is intended to be run *after* deployment (for example via
-bioengine_apps/cellpose_finetuning/scripts/deploy_local_cellpose.py).
+bioengine_apps/cellpose-finetuning/scripts/deploy_local_cellpose.py).
 
 Examples:
   export HYPHA_TOKEN=...

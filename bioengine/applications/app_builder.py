@@ -259,7 +259,7 @@ class AppBuilder:
 
         if os.environ.get("BIOENGINE_LOCAL_ARTIFACT_PATH"):
             # Try to load the file content from local path
-            artifact_folder = artifact_id.split("/")[1].replace("-", "_")
+            artifact_folder = artifact_id.split("/")[1]
             local_deployments_dir = Path(os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"])
             local_path = local_deployments_dir / artifact_folder / "manifest.yaml"
             if local_path.exists():
@@ -1018,7 +1018,7 @@ class AppBuilder:
 
         if os.environ.get("BIOENGINE_LOCAL_ARTIFACT_PATH"):
             # Try to load the file content from local path
-            artifact_folder = artifact_id.split("/")[1].replace("-", "_")
+            artifact_folder = artifact_id.split("/")[1]
             local_deployments_dir = Path(os.environ["BIOENGINE_LOCAL_ARTIFACT_PATH"])
             local_path = local_deployments_dir / artifact_folder / python_file
             if local_path.exists():

@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       directory:
-        description: 'Application directory to deploy (e.g., cellpose_finetuning, model_runner, or "all")'
+        description: 'Application directory to deploy (e.g., cellpose-finetuning, model-runner, or "all")'
         required: true
         type: string
         default: 'all'

@@ -1,5 +1,16 @@
 # BioImage.IO Model Runner — API Reference
 
+## Contents
+
+- Service Endpoints
+- `search_models`
+- `get_model_rdf`
+- `get_upload_url`
+- `infer`
+- `test`
+- `validate`
+- `get_upload_url` — Supported File Formats
+
 ## Service Endpoints
 
 - **HTTP Base**: `https://hypha.aicell.io/bioimage-io/services/model-runner/`

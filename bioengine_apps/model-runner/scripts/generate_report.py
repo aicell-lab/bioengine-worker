@@ -98,7 +98,7 @@ def generate_html_report(
             <div class="mb-6 last:mb-0">
                 <div class="flex items-center justify-between gap-3 mb-3">
                     <h3 class="text-base font-semibold text-gray-900">{title}</h3>
-                    <button class="save-figure-btn px-3 py-1.5 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700" data-filename="{filename}" data-src="{image_src}">Save figure</button>
+                    <button class="save-figure-btn px-3 py-1.5 text-sm font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700" data-filename="{filename}" data-src="{image_src}">Export Figure</button>
                 </div>
                 <img src="{image_src}" alt="{title}" class="w-full rounded-lg border border-gray-200" />
             </div>

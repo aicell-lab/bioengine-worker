@@ -371,6 +371,92 @@ def get_model_path(session_id: str) -> Path:
     return get_session_path(session_id) / "models" / "model"
 
 
+def is_published_model_reference(model: str) -> bool:
+    """Return True when model looks like a published artifact reference.
+
+    Supported forms:
+    - Full artifact URL: https://<server>/<workspace>/artifacts/<alias>
+    - Artifact ID: <workspace>/<alias>
+    """
+    if not isinstance(model, str):
+        return False
+
+    parsed = urlparse(model)
+    if parsed.scheme in ("http", "https"):
+        return True
+
+    parts = model.split("/")
+    return len(parts) == 2 and all(part.strip() for part in parts)
+
+
+def published_model_to_session_id(model_reference: str) -> str:
+    """Convert a published model reference to a deterministic local session id."""
+    _server_url, artifact_id = get_url_and_artifact_id(model_reference)
+    workspace, alias = artifact_id.split("/", 1)
+    raw = f"published-{workspace}-{alias}"
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", raw).strip("-")
+    return safe[:200] if len(safe) > 200 else safe
+
+
+async def ensure_published_model_local_session(model_reference: str) -> str:
+    """Ensure a published model exists locally as a session-like checkpoint.
+
+    Returns the local session id that can be used anywhere a session id is
+    accepted by this service.
+    """
+    server_url, artifact_id = get_url_and_artifact_id(model_reference)
+    local_session_id = published_model_to_session_id(model_reference)
+    local_model_path = get_model_path(local_session_id)
+
+    if local_model_path.exists() and local_model_path.stat().st_size > 0:
+        return local_session_id
+
+    local_model_path.parent.mkdir(parents=True, exist_ok=True)
+
+    artifact = await make_artifact_client(artifact_id, server_url)
+    candidate_files = await list_artifact_files_recursive(artifact, "")
+
+    preferred_filenames = (
+        "model_weights.pth",
+        "model.pth",
+        "weights.pth",
+        "model",
+    )
+
+    selected_remote: str | None = None
+    for preferred in preferred_filenames:
+        matches = [
+            p for p in candidate_files if Path(p).name == preferred and not p.endswith("/")
+        ]
+        if matches:
+            matches.sort(key=lambda p: (p.count("/"), len(p)))
+            selected_remote = matches[0]
+            break
+
+    if selected_remote is None:
+        pth_like = [
+            p for p in candidate_files if p.lower().endswith(".pth") and not p.endswith("/")
+        ]
+        if pth_like:
+            pth_like.sort(key=lambda p: (p.count("/"), len(p)))
+            selected_remote = pth_like[0]
+
+    if selected_remote is None:
+        raise ValueError(
+            f"Published model '{artifact_id}' does not contain a recognizable weights file. "
+            "Expected one of: model_weights.pth, model.pth, weights.pth, model"
+        )
+
+    await artifact.get([selected_remote], [str(local_model_path)], on_error="ignore")
+
+    if not local_model_path.exists() or local_model_path.stat().st_size <= 0:
+        raise RuntimeError(
+            f"Failed to download model weights from '{artifact_id}' (source: {selected_remote})."
+        )
+
+    return local_session_id
+
+
 def artifact_cache_dir(artifact_id: str) -> Path:
     """Return local cache dir for an artifact id, ensuring it exists."""
     safe = artifact_id.replace("/", "__")
@@ -406,6 +492,82 @@ def sanitize_for_json(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     return value
+
+
+def normalize_model_authors(
+    authors: list[dict[str, Any]] | None,
+) -> list[dict[str, str]]:
+    """Validate and normalize model authors for RDF export.
+
+    BioEngine is always included as the last author.
+    """
+    bioengine_author = {
+        "name": "BioEngine",
+        "affiliation": "KTH Royal Institute of Technology",
+    }
+    if authors is None:
+        return [bioengine_author]
+
+    if not isinstance(authors, list):
+        raise ValueError("authors must be a list of objects with a required 'name'.")
+    if len(authors) == 0:
+        raise ValueError("authors must contain at least one author when provided.")
+
+    normalized: list[dict[str, str]] = []
+    for idx, author in enumerate(authors):
+        if not isinstance(author, dict):
+            raise ValueError(f"authors[{idx}] must be an object.")
+
+        name = author.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(
+                f"authors[{idx}].name must be a non-empty string (required)."
+            )
+
+        clean_name = name.strip()
+        # Keep BioEngine canonical and last by skipping user-provided duplicates.
+        if clean_name.lower() == "bioengine":
+            continue
+
+        normalized_author: dict[str, str] = {"name": clean_name}
+
+        affiliation = author.get("affiliation")
+        if affiliation is not None:
+            if not isinstance(affiliation, str):
+                raise ValueError(
+                    f"authors[{idx}].affiliation must be a string when provided."
+                )
+            if affiliation.strip():
+                normalized_author["affiliation"] = affiliation.strip()
+
+        normalized.append(normalized_author)
+
+    normalized.append(bioengine_author)
+    return normalized
+
+
+def normalize_model_uploader(
+    uploader: dict[str, Any] | None,
+) -> dict[str, str] | None:
+    """Validate and normalize uploader metadata for RDF export."""
+    if uploader is None:
+        return None
+
+    if not isinstance(uploader, dict):
+        raise ValueError("uploader must be an object with required 'name' and 'email'.")
+
+    name = uploader.get("name")
+    email = uploader.get("email")
+
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("uploader.name must be a non-empty string (required).")
+    if not isinstance(email, str) or not email.strip():
+        raise ValueError("uploader.email must be a non-empty string (required).")
+
+    return {
+        "name": name.strip(),
+        "email": email.strip(),
+    }
 
 
 # Type guard to check that object is list[np.ndarray]:
@@ -1857,9 +2019,15 @@ def load_model(
 
     use_gpu = core.use_gpu()
 
+    local_model_path: Path | None = None
+    if isinstance(identifier, Path):
+        local_model_path = identifier
+    elif isinstance(identifier, str) and get_model_path(identifier).exists():
+        local_model_path = get_model_path(identifier)
+
     def _build_model(gpu: bool) -> CellposeModel:
-        if isinstance(identifier, Path):
-            return models.CellposeModel(gpu=gpu, pretrained_model=str(identifier))
+        if local_model_path is not None:
+            return models.CellposeModel(gpu=gpu, pretrained_model=str(local_model_path))
         return models.CellposeModel(gpu=gpu, model_type=identifier)
 
     try:
@@ -2543,16 +2711,83 @@ def create_dataset_split(
     Raises:
         ValueError: If no training pairs are provided
     """
-    if not train_pairs or len(train_pairs) < 1:
+    def _mask_has_foreground_label(mask_path: Path) -> bool:
+        """Return True when the mask contains any label value greater than zero."""
+        from PIL import Image
+
+        try:
+            mask = np.asarray(Image.open(mask_path))
+        except Exception as exc:
+            logger.warning(
+                "Skipping sample with unreadable annotation '%s': %s",
+                str(mask_path),
+                str(exc),
+            )
+            return False
+
+        if mask.ndim == 3 and mask.shape[-1] in (3, 4):
+            rgb = mask[..., :3]
+            if np.all(rgb[..., 0] == rgb[..., 1]) and np.all(rgb[..., 1] == rgb[..., 2]):
+                mask = rgb[..., 0]
+
+        if mask.ndim != 2:
+            logger.warning(
+                "Skipping sample with non-2D annotation '%s' (shape=%s)",
+                str(mask_path),
+                str(mask.shape),
+            )
+            return False
+
+        return bool(np.any(mask > 0))
+
+    def _filter_pairs_with_foreground(
+        pairs: list[TrainingPair],
+        split_name: str,
+    ) -> tuple[list[TrainingPair], list[Path]]:
+        kept: list[TrainingPair] = []
+        skipped: list[Path] = []
+        for pair in pairs:
+            ann_path = pair["annotation"]
+            if _mask_has_foreground_label(ann_path):
+                kept.append(pair)
+            else:
+                skipped.append(ann_path)
+
+        if skipped:
+            preview = ", ".join(str(path) for path in skipped[:5])
+            logger.warning(
+                "Skipped %d %s samples with empty/invalid masks. Examples: %s",
+                len(skipped),
+                split_name,
+                preview,
+            )
+        return kept, skipped
+
+    train_pairs_filtered, _train_skipped = _filter_pairs_with_foreground(
+        train_pairs,
+        "training",
+    )
+    test_pairs_filtered, _test_skipped = _filter_pairs_with_foreground(
+        test_pairs,
+        "test",
+    )
+
+    if not train_pairs_filtered or len(train_pairs_filtered) < 1:
         error_msg = "No training pairs found. At least one training sample is required."
         raise ValueError(error_msg)
 
     dataset_split = DatasetSplit(
-        train_files=[pair["image"] for pair in train_pairs],
-        train_labels_files=[pair["annotation"] for pair in train_pairs],
-        test_files=[pair["image"] for pair in test_pairs] if test_pairs else None,
+        train_files=[pair["image"] for pair in train_pairs_filtered],
+        train_labels_files=[pair["annotation"] for pair in train_pairs_filtered],
+        test_files=(
+            [pair["image"] for pair in test_pairs_filtered]
+            if test_pairs_filtered
+            else None
+        ),
         test_labels_files=(
-            [pair["annotation"] for pair in test_pairs] if test_pairs else None
+            [pair["annotation"] for pair in test_pairs_filtered]
+            if test_pairs_filtered
+            else None
         ),
     )
 
@@ -2864,6 +3099,9 @@ def generate_rdf_yaml(
     training_params: TrainingParams,
     test_input_shape: tuple[int, ...],
     test_output_shape: tuple[int, ...],
+    description: str | None = None,
+    authors: list[dict[str, Any]] | None = None,
+    uploader: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Generate BioImage.io RDF YAML structure.
 
@@ -2877,21 +3115,30 @@ def generate_rdf_yaml(
         training_params: Training parameters
         test_input_shape: Shape of test input (C, H, W)
         test_output_shape: Shape of test output (H, W)
+        description: Optional custom model description text to append
+        authors: Optional list of authors with required `name` and optional
+            `affiliation`
+        uploader: Optional uploader with required `name` and `email`
 
     Returns:
         Dictionary representing RDF YAML structure
     """
     import torch
 
-    return {
+    normalized_authors = normalize_model_authors(authors)
+    normalized_uploader = normalize_model_uploader(uploader)
+    base_description = f"Fine-tuned Cellpose-SAM model (session: {session_id[:8]})."
+    extra_description = (description or "").strip()
+    rdf_description = (
+        f"{base_description} {extra_description}"
+        if extra_description
+        else base_description
+    )
+
+    rdf: dict[str, Any] = {
         "name": model_name,
-        "description": f"Cellpose-SAM model fine-tuned on custom dataset (session: {session_id[:8]})",
-        "authors": [
-            {
-                "name": "BioEngine",
-                "affiliation": "AI Cell Lab",
-            }
-        ],
+        "description": rdf_description,
+        "authors": normalized_authors,
         "cite": [
             {
                 "text": "Stringer, C., Wang, T., Michaelos, M. et al. Cellpose: a generalist algorithm for cellular segmentation. Nat Methods 18, 100–106 (2021).",
@@ -2989,6 +3236,11 @@ def generate_rdf_yaml(
             }
         },
     }
+
+    if normalized_uploader is not None:
+        rdf["uploader"] = normalized_uploader
+
+    return rdf
 
 
 # ---------------------------------------------------------------------------
@@ -3163,16 +3415,29 @@ class CellposeFinetune:
         self.tasks = {}
         self._session_lock = asyncio.Lock()
 
-    def get_model_id(self, model: str) -> str | Path:
-        """Return a model identifier suitable for loading by Cellpose."""
-        # print all contents of get_session_path(model):
+    async def resolve_model_id(self, model: str) -> str:
+        """Resolve model identifier to builtin or local session id.
+
+        Supports builtin model names, local session ids, and published model
+        references (artifact ids or artifact URLs).
+        """
         if model in self.pretrained_models:
             return model
-        if get_model_path(model).exists():
-            return Path(model)
+
+        normalized_session_id = str(model).strip().replace("\\", "/")
+        if normalized_session_id.endswith("/status.json"):
+            normalized_session_id = normalized_session_id[: -len("/status.json")]
+        normalized_session_id = Path(normalized_session_id).name
+
+        if get_model_path(normalized_session_id).exists():
+            return normalized_session_id
+
+        if is_published_model_reference(model):
+            return await ensure_published_model_local_session(model)
+
         msg = (
             f"Model identifier '{model}' is not a known pretrained model "
-            "or a valid session ID of a previously finetuned model."
+            "or a valid session ID / published artifact reference."
         )
         raise ValueError(msg)
 
@@ -3244,10 +3509,12 @@ class CellposeFinetune:
             description=(
                 "Name of Cellpose model to finetune."
                 " Must be a builtin pretrained Cellpose model or"
-                " The session ID of a previously finetuned model file."
+                " The session ID of a previously finetuned model file, or"
+                " a published model artifact id/url exported by this deployment."
             ),
             examples=[
                 "abc123ef-4567-890a-bcde-f1234567890a",
+                "bioimage-io/cellpose-sam-58a077a9-20260318021633",
                 *PretrainedModel.values(),
             ],
         ),
@@ -3360,7 +3627,7 @@ class CellposeFinetune:
         min_train_masks = int(min_train_masks)
 
         server_url, artifact_id = get_url_and_artifact_id(artifact)
-        model_id = self.get_model_id(model)
+        model_id = await self.resolve_model_id(model)
         session_id = str(uuid4())
         get_session_path(session_id).mkdir(parents=True, exist_ok=True)
 
@@ -3741,6 +4008,25 @@ class CellposeFinetune:
             None,
             description="Optional custom name for the model (defaults to cellpose-{session_id})",
         ),
+        description: str | None = Field(
+            None,
+            description="Optional model description text appended to the default RDF description.",
+        ),
+        authors: list[dict[str, Any]] | None = Field(
+            None,
+            description=(
+                "Optional list of model authors. Each entry requires `name` and "
+                "may include `affiliation`."
+            ),
+            examples=[[{"name": "Nils Mechtel", "affiliation": "KTH Royal Institute of Technology"}]],
+        ),
+        uploader: dict[str, Any] | None = Field(
+            None,
+            description=(
+                "Optional uploader metadata with required `name` and `email`."
+            ),
+            examples=[{"name": "Nils Mechtel", "email": "nils.mech@gmail.com"}],
+        ),
         collection: str = Field(
             "bioimage-io/colab-annotations",
             description="Collection to upload to (format: workspace/collection)",
@@ -3755,7 +4041,12 @@ class CellposeFinetune:
         Args:
             session_id: ID of completed training session
             model_name: Custom name for the model (optional)
+            description: Optional model description text appended to the
+                default RDF description
             collection: Target collection in format "workspace/collection"
+            authors: Optional list of model authors, each with required `name`
+                and optional `affiliation`
+            uploader: Optional uploader with required `name` and `email`
 
         Returns:
             Dictionary containing:
@@ -3775,6 +4066,27 @@ class CellposeFinetune:
         from hypha_rpc import connect_to_server
 
         from bioengine.utils import create_file_list_from_directory
+
+        if isinstance(session_id, dict):
+            wrapped = session_id
+            session_id = wrapped.get("session_id", wrapped.get("id", session_id))
+            model_name = wrapped.get("model_name", model_name)
+            description = wrapped.get("description", description)
+            collection = wrapped.get("collection", collection)
+            authors = wrapped.get("authors", authors)
+            uploader = wrapped.get("uploader", uploader)
+
+        session_id = str(normalize_optional_param(session_id)).strip()
+        model_name = normalize_optional_param(model_name)
+        description = normalize_optional_param(description)
+        if description is not None:
+            description = str(description).strip()
+        collection = str(normalize_optional_param(collection) or collection)
+        authors = normalize_optional_param(authors)
+        uploader = normalize_optional_param(uploader)
+
+        normalized_authors = normalize_model_authors(authors)
+        normalized_uploader = normalize_model_uploader(uploader)
 
         logger.info(f"Starting model export for session {session_id}")
 
@@ -3967,6 +4279,9 @@ BSD-3-Clause (Cellpose license)
                 training_params=training_params,
                 test_input_shape=test_input.shape,
                 test_output_shape=test_output.shape,
+                description=description,
+                authors=normalized_authors,
+                uploader=normalized_uploader,
             )
 
             def _write_rdf() -> None:
@@ -4272,9 +4587,14 @@ BSD-3-Clause (Cellpose license)
             PretrainedModel.CPSAM.value,
             description=(
                 "Identifier of the Cellpose model to use for inference. Either a "
-                "built-in pretrained model name or the session ID of a finetuned model."
+                "built-in pretrained model name, a local session ID of a finetuned model, "
+                "or a published model artifact id/url exported by this deployment."
             ),
-            examples=["abc123ef-4567-890a-bcde-f1234567890a", PretrainedModel.values()],
+            examples=[
+                "abc123ef-4567-890a-bcde-f1234567890a",
+                "bioimage-io/cellpose-sam-58a077a9-20260318021633",
+                PretrainedModel.values(),
+            ],
         ),
         diameter: float | None = Field(
             None,
@@ -4377,7 +4697,7 @@ BSD-3-Clause (Cellpose license)
             raise TypeError(error_msg)
 
         try:
-            model_id = self.get_model_id(model)
+            model_id = await self.resolve_model_id(model)
             model_obj = load_model(model_id, allow_cpu_fallback=True)
 
             images: list[npt.NDArray[Any]]

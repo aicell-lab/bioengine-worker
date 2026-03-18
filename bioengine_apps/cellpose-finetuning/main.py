@@ -262,7 +262,6 @@ class TrainingParams(TypedDict):
     weight_decay: float
     server_url: str
     n_samples: int | None
-    stage: bool
     session_id: str
     min_train_masks: int
     validation_interval: int | None
@@ -399,11 +398,7 @@ def published_model_to_session_id(model_reference: str) -> str:
     return safe[:200] if len(safe) > 200 else safe
 
 
-async def ensure_published_model_local_session(
-    model_reference: str,
-    *,
-    stage: bool = False,
-) -> str:
+async def ensure_published_model_local_session(model_reference: str) -> str:
     """Ensure a published model exists locally as a session-like checkpoint.
 
     Returns the local session id that can be used anywhere a session id is
@@ -418,12 +413,8 @@ async def ensure_published_model_local_session(
 
     local_model_path.parent.mkdir(parents=True, exist_ok=True)
 
-    artifact = await make_artifact_client(artifact_id, server_url, stage=stage)
-    candidate_files = await list_artifact_files_recursive(
-        artifact,
-        "",
-        stage=stage,
-    )
+    artifact = await make_artifact_client(artifact_id, server_url)
+    candidate_files = await list_artifact_files_recursive(artifact, "")
 
     preferred_filenames = (
         "model_weights.pth",
@@ -456,13 +447,7 @@ async def ensure_published_model_local_session(
             "Expected one of: model_weights.pth, model.pth, weights.pth, model"
         )
 
-    await artifact_get(
-        artifact,
-        [selected_remote],
-        [str(local_model_path)],
-        on_error="ignore",
-        stage=stage,
-    )
+    await artifact.get([selected_remote], [str(local_model_path)], on_error="ignore")
 
     if not local_model_path.exists() or local_model_path.stat().st_size <= 0:
         raise RuntimeError(
@@ -764,7 +749,6 @@ class SessionStatusWithId(TypedDict, total=False):
 async def make_artifact_client(
     artifact_id: str,
     server_url: str,
-    stage: bool = False,
 ) -> AsyncHyphaArtifact:
     """Construct an async Hypha Artifact client."""
     from hypha_artifact import AsyncHyphaArtifact
@@ -780,58 +764,11 @@ async def make_artifact_client(
         raise ValueError(msg)
     _, _alias = artifact_id.split("/", 1)
 
-    try:
-        return AsyncHyphaArtifact(
-            artifact_id=artifact_id,
-            token=token,
-            server_url=server_url,
-            stage=stage,
-        )
-    except TypeError:
-        # Backward compatibility with hypha-artifact versions that do not
-        # expose `stage` in the constructor.
-        return AsyncHyphaArtifact(
-            artifact_id=artifact_id,
-            token=token,
-            server_url=server_url,
-        )
-
-
-async def artifact_ls(
-    artifact: AsyncHyphaArtifact,
-    path: str,
-    *,
-    stage: bool = False,
-) -> Any:
-    """List artifact entries, optionally targeting the staged version."""
-    try:
-        return await artifact.ls(path, stage=stage)
-    except TypeError:
-        return await artifact.ls(path)
-
-
-async def artifact_get(
-    artifact: AsyncHyphaArtifact,
-    remote_paths: list[str],
-    local_paths: list[str],
-    *,
-    on_error: str = "ignore",
-    stage: bool = False,
-) -> Any:
-    """Download artifact files, optionally targeting the staged version."""
-    try:
-        return await artifact.get(
-            remote_paths,
-            local_paths,
-            on_error=on_error,
-            stage=stage,
-        )
-    except TypeError:
-        return await artifact.get(
-            remote_paths,
-            local_paths,
-            on_error=on_error,
-        )
+    return AsyncHyphaArtifact(
+        artifact_id=artifact_id,
+        token=token,
+        server_url=server_url,
+    )
 
 
 def get_url_and_artifact_id(artifact_id: str | Any) -> tuple[str, str]:
@@ -2237,8 +2174,6 @@ def _glob_base_folder(path_pattern: str) -> str:
 async def list_artifact_files_recursive(
     artifact: AsyncHyphaArtifact,
     folder_path: str,
-    *,
-    stage: bool = False,
 ) -> list[str]:
     """Recursively list artifact file paths (relative paths, not folders)."""
     root = _normalize_artifact_relpath(folder_path)
@@ -2255,7 +2190,7 @@ async def list_artifact_files_recursive(
             continue
         visited.add(current)
 
-        entries = await artifact_ls(artifact, current, stage=stage)
+        entries = await artifact.ls(current)
         for entry in entries:
             raw_path = ""
             entry_type = ""
@@ -2290,28 +2225,22 @@ async def list_artifact_files_recursive(
 async def list_matching_artifact_paths(
     artifact: AsyncHyphaArtifact,
     path_pattern: str,
-    *,
-    stage: bool = False,
 ) -> list[str]:
     """List artifact files that match a folder path or glob path pattern."""
     normalized_pattern = _normalize_artifact_relpath(path_pattern)
 
     if normalized_pattern.endswith("/"):
         folder = normalized_pattern
-        names = await list_artifact_files(artifact, folder, stage=stage)
+        names = await list_artifact_files(artifact, folder)
         return [_normalize_artifact_relpath(f"{folder}{name}") for name in names]
 
     if not _contains_glob(normalized_pattern):
         # If caller passed a directory without trailing slash (common in UI/manual input),
         # treat it as folder-like path instead of a single file.
         try:
-            dir_entries = await artifact_ls(artifact, normalized_pattern, stage=stage)
+            dir_entries = await artifact.ls(normalized_pattern)
             if isinstance(dir_entries, list):
-                names = await list_artifact_files(
-                    artifact,
-                    normalized_pattern,
-                    stage=stage,
-                )
+                names = await list_artifact_files(artifact, normalized_pattern)
                 folder = (
                     normalized_pattern
                     if normalized_pattern.endswith("/")
@@ -2325,11 +2254,7 @@ async def list_matching_artifact_paths(
         return [normalized_pattern]
 
     base_folder = _glob_base_folder(normalized_pattern)
-    candidates = await list_artifact_files_recursive(
-        artifact,
-        base_folder,
-        stage=stage,
-    )
+    candidates = await list_artifact_files_recursive(artifact, base_folder)
     matched = [
         candidate
         for candidate in candidates
@@ -2341,8 +2266,6 @@ async def list_matching_artifact_paths(
 async def list_artifact_files(
     artifact: AsyncHyphaArtifact,
     folder_path: str,
-    *,
-    stage: bool = False,
 ) -> list[str]:
     """List all files in an artifact folder using AsyncHyphaArtifact.ls().
 
@@ -2361,7 +2284,7 @@ async def list_artifact_files(
 
     try:
         # ls() returns a list of file info dicts
-        files = await artifact_ls(artifact, folder_path, stage=stage)
+        files = await artifact.ls(folder_path)
         # Extract filenames (basenames only)
         filenames: list[str] = []
         for file_info in files:
@@ -2644,8 +2567,6 @@ async def make_training_pairs_from_metadata(
     metadata_dir: str,
     save_path: Path,
     n_samples: int | None,
-    *,
-    stage: bool = False,
 ) -> tuple[list[TrainingPair], list[TrainingPair]]:
     metadata_root = _normalize_artifact_relpath(metadata_dir)
     if metadata_root and not metadata_root.endswith("/"):
@@ -2653,11 +2574,7 @@ async def make_training_pairs_from_metadata(
 
     metadata_files = [
         p
-        for p in await list_artifact_files_recursive(
-            artifact,
-            metadata_root,
-            stage=stage,
-        )
+        for p in await list_artifact_files_recursive(artifact, metadata_root)
         if p.lower().endswith(".json")
     ]
     if not metadata_files:
@@ -2668,13 +2585,7 @@ async def make_training_pairs_from_metadata(
         save_path,
     )
     if missing_rpaths:
-        await artifact_get(
-            artifact,
-            missing_rpaths,
-            missing_lpaths,
-            on_error="ignore",
-            stage=stage,
-        )
+        await artifact.get(missing_rpaths, missing_lpaths, on_error="ignore")
 
     train_pairs_raw: list[TrainingPair] = []
     test_pairs_raw: list[TrainingPair] = []
@@ -2713,7 +2624,6 @@ async def make_training_pairs_from_metadata(
         save_path,
         [pair["image"] for pair in train_pairs_raw],
         [pair["annotation"] for pair in train_pairs_raw],
-        stage=stage,
     )
 
     test_pairs: list[TrainingPair] = []
@@ -2723,7 +2633,6 @@ async def make_training_pairs_from_metadata(
             save_path,
             [pair["image"] for pair in test_pairs_raw],
             [pair["annotation"] for pair in test_pairs_raw],
-            stage=stage,
         )
 
     return train_pairs, test_pairs
@@ -2734,8 +2643,6 @@ async def download_pairs_from_artifact(
     out_dir: Path,
     image_paths: list[Path],
     annotation_paths: list[Path],
-    *,
-    stage: bool = False,
 ) -> list[TrainingPair]:
     """Download dataset files in batches and return local (img, ann) pairs.
 
@@ -2751,13 +2658,7 @@ async def download_pairs_from_artifact(
         try:
             # Add a timeout to prevent indefinite hanging (10 minutes)
             await asyncio.wait_for(
-                artifact_get(
-                    artifact,
-                    missing_rpaths,
-                    missing_lpaths,
-                    on_error="ignore",
-                    stage=stage,
-                ),
+                artifact.get(missing_rpaths, missing_lpaths, on_error="ignore"),
                 timeout=600,
             )
             logger.info("Download completed successfully")
@@ -2923,7 +2824,6 @@ async def make_training_pairs(
     artifact = await make_artifact_client(
         config["artifact_id"],
         config["server_url"],
-        stage=bool(config.get("stage", False)),
     )
 
     train_images = config["train_images"]
@@ -2937,7 +2837,6 @@ async def make_training_pairs(
                 metadata_dir,
                 save_path,
                 config["n_samples"],
-                stage=bool(config.get("stage", False)),
             )
         except MetadataPairExtractionError as e:
             if train_images and train_annotations:
@@ -2954,15 +2853,10 @@ async def make_training_pairs(
             "train_annotations must be provided."
         )
 
-    train_image_files = await list_matching_artifact_paths(
-        artifact,
-        train_images,
-        stage=bool(config.get("stage", False)),
-    )
+    train_image_files = await list_matching_artifact_paths(artifact, train_images)
     train_annotation_files = await list_matching_artifact_paths(
         artifact,
         train_annotations,
-        stage=bool(config.get("stage", False)),
     )
 
     # Match training pairs
@@ -2991,7 +2885,6 @@ async def make_training_pairs(
         save_path,
         train_image_paths,
         train_annotation_paths,
-        stage=bool(config.get("stage", False)),
     )
 
     # Handle test pairs if specified
@@ -3000,12 +2893,10 @@ async def make_training_pairs(
         test_image_files = await list_matching_artifact_paths(
             artifact,
             config["test_images"],
-            stage=bool(config.get("stage", False)),
         )
         test_annotation_files = await list_matching_artifact_paths(
             artifact,
             config["test_annotations"],
-            stage=bool(config.get("stage", False)),
         )
 
         # Match test pairs
@@ -3026,7 +2917,6 @@ async def make_training_pairs(
             save_path,
             test_image_paths,
             test_annotation_paths,
-            stage=bool(config.get("stage", False)),
         )
 
     return train_pairs, test_pairs
@@ -3362,13 +3252,11 @@ async def _images_from_artifact(
     artifact_id: str,
     image_paths: list[str],
     server_url: str,
-    *,
-    stage: bool = False,
 ) -> list[npt.NDArray[Any]]:
     """Download missing images into cache and load as numpy arrays."""
     from tifffile import imread
 
-    artifact = await make_artifact_client(artifact_id, server_url, stage=stage)
+    artifact = await make_artifact_client(artifact_id, server_url)
     cache_dir = artifact_cache_dir(artifact_id)
     dests = [Path(p) for p in image_paths]
     missing_remote, missing_local = get_missing_paths(
@@ -3381,13 +3269,7 @@ async def _images_from_artifact(
         files_to_download = [str(p) for p in missing_remote]
         dests_to_download = [str(p) for p in missing_local]
         try:
-            await artifact_get(
-                artifact,
-                files_to_download,
-                dests_to_download,
-                on_error="ignore",
-                stage=stage,
-            )
+            await artifact.get(files_to_download, dests_to_download, on_error="ignore")
         except Exception as e:
             logger.warning(
                 f"artifact.get(files=..., dest=...) failed: {e}. Trying item-by-item fallback."
@@ -3395,13 +3277,7 @@ async def _images_from_artifact(
             # Fallback to single file download
             for f, d in zip(files_to_download, dests_to_download):
                 try:
-                    await artifact_get(
-                        artifact,
-                        [f],
-                        [d],
-                        on_error="ignore",
-                        stage=stage,
-                    )
+                    await artifact.get([f], [d], on_error="ignore")
                 except Exception as ex:
                     logger.error(f"Failed to download {f}: {ex}")
                     raise
@@ -3539,7 +3415,7 @@ class CellposeFinetune:
         self.tasks = {}
         self._session_lock = asyncio.Lock()
 
-    async def resolve_model_id(self, model: str, *, stage: bool = False) -> str:
+    async def resolve_model_id(self, model: str) -> str:
         """Resolve model identifier to builtin or local session id.
 
         Supports builtin model names, local session ids, and published model
@@ -3557,7 +3433,7 @@ class CellposeFinetune:
             return normalized_session_id
 
         if is_published_model_reference(model):
-            return await ensure_published_model_local_session(model, stage=stage)
+            return await ensure_published_model_local_session(model)
 
         msg = (
             f"Model identifier '{model}' is not a known pretrained model "
@@ -3668,13 +3544,6 @@ class CellposeFinetune:
                 "for every epoch. Requires test_images and test_annotations."
             ),
         ),
-        stage: bool = Field(
-            False,
-            description=(
-                "If True, download from the staged (uncommitted) artifact version "
-                "for dataset/model reads."
-            ),
-        ),
     ) -> dict[str, Any]:
         """Start asynchronous finetuning of a Cellpose model on an artifact dataset.
 
@@ -3704,7 +3573,6 @@ class CellposeFinetune:
             validation_interval = wrapped.get(
                 "validation_interval", validation_interval
             )
-            stage = wrapped.get("stage", stage)
 
         artifact = normalize_optional_param(artifact)
         train_images = normalize_optional_param(train_images)
@@ -3719,7 +3587,6 @@ class CellposeFinetune:
         weight_decay = normalize_optional_param(weight_decay)
         min_train_masks = normalize_optional_param(min_train_masks)
         validation_interval = normalize_optional_param(validation_interval)
-        stage = bool(normalize_optional_param(stage) or False)
 
         if metadata_dir is None:
             if not isinstance(train_images, str) or not train_images:
@@ -3760,7 +3627,7 @@ class CellposeFinetune:
         min_train_masks = int(min_train_masks)
 
         server_url, artifact_id = get_url_and_artifact_id(artifact)
-        model_id = await self.resolve_model_id(model, stage=stage)
+        model_id = await self.resolve_model_id(model)
         session_id = str(uuid4())
         get_session_path(session_id).mkdir(parents=True, exist_ok=True)
 
@@ -3791,7 +3658,6 @@ class CellposeFinetune:
             weight_decay=weight_decay,
             server_url=server_url,
             n_samples=n_samples,
-            stage=stage,
             session_id=session_id,
             min_train_masks=min_train_masks,
             validation_interval=validation_interval,
@@ -4026,7 +3892,6 @@ class CellposeFinetune:
             weight_decay=float(params.get("weight_decay", 1e-4)),
             min_train_masks=int(params.get("min_train_masks", 5)),
             validation_interval=params.get("validation_interval"),
-            stage=bool(params.get("stage", False)),
         )
         restarted["restarted_from"] = session_id
         return restarted
@@ -4776,13 +4641,6 @@ BSD-3-Clause (Cellpose license)
                 "numpy arrays. Useful for browser clients."
             ),
         ),
-        stage: bool = Field(
-            False,
-            description=(
-                "If True, download from the staged (uncommitted) artifact version "
-                "for image/model reads."
-            ),
-        ),
     ) -> list[PredictionItemModel]:
         """Run Cellpose inference on artifact images and return encoded masks.
 
@@ -4812,7 +4670,6 @@ BSD-3-Clause (Cellpose license)
             niter = wrapped.get("niter", niter)
             return_flows = wrapped.get("return_flows", return_flows)
             json_safe = wrapped.get("json_safe", json_safe)
-            stage = wrapped.get("stage", stage)
 
         artifact = normalize_optional_param(artifact)
         image_paths = normalize_optional_param(image_paths)
@@ -4821,7 +4678,6 @@ BSD-3-Clause (Cellpose license)
         diameter = normalize_optional_param(diameter)
         niter = normalize_optional_param(niter)
         json_safe = bool(normalize_optional_param(json_safe) or False)
-        stage = bool(normalize_optional_param(stage) or False)
 
         if not isinstance(model, str) or not model:
             model = PretrainedModel.CPSAM.value
@@ -4841,7 +4697,7 @@ BSD-3-Clause (Cellpose license)
             raise TypeError(error_msg)
 
         try:
-            model_id = await self.resolve_model_id(model, stage=stage)
+            model_id = await self.resolve_model_id(model)
             model_obj = load_model(model_id, allow_cpu_fallback=True)
 
             images: list[npt.NDArray[Any]]
@@ -4853,7 +4709,6 @@ BSD-3-Clause (Cellpose license)
                     artifact_id=artifact_id,
                     image_paths=image_paths,
                     server_url=server_url,
-                    stage=stage,
                 )
             else:
                 images = []

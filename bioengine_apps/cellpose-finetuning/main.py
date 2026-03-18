@@ -753,11 +753,7 @@ async def make_artifact_client(
     """Construct an async Hypha Artifact client."""
     from hypha_artifact import AsyncHyphaArtifact
 
-    token = os.environ.get("HYPHA_TOKEN")
-
-    if not token:
-        error_msg = "HYPHA_TOKEN environment variable is not set."
-        raise RuntimeError(error_msg)
+    token = os.environ["HYPHA_TOKEN"]
 
     if "/" not in artifact_id:
         msg = "artifact_id must be of form 'workspace/alias'"
@@ -3409,6 +3405,9 @@ class CellposeFinetune:
 
     def __init__(self) -> None:
         """Initialize directories and defaults for the service."""
+        if "HYPHA_TOKEN" not in os.environ:
+            raise RuntimeError("HYPHA_TOKEN environment variable is not set.")
+            
         get_sessions_path().mkdir(parents=True, exist_ok=True)
         self.pretrained_models = PretrainedModel.values()
         self.executors = {}
@@ -4296,12 +4295,7 @@ BSD-3-Clause (Cellpose license)
             workspace = collection.split("/")[0]
 
             # Connect to hypha
-            token = os.environ.get("HYPHA_TOKEN")
-            if not token:
-                raise RuntimeError(
-                    "HYPHA_TOKEN environment variable not set. "
-                    "Cannot upload to artifact manager."
-                )
+            token = os.environ["HYPHA_TOKEN"]
 
             server: Any = await connect_to_server(
                 {
@@ -4499,12 +4493,7 @@ BSD-3-Clause (Cellpose license)
             workspace = collection.split("/")[0]
 
             # Connect to hypha
-            token = os.environ.get("HYPHA_TOKEN")
-            if not token:
-                raise RuntimeError(
-                    "HYPHA_TOKEN environment variable not set. "
-                    "Cannot query artifact manager."
-                )
+            token = os.environ["HYPHA_TOKEN"]
 
             server: Any = await connect_to_server(
                 {

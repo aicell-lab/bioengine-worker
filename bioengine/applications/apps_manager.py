@@ -805,18 +805,12 @@ class AppsManager:
             # Initialize deployment of each startup application
             application_ids = []
 
-            # Valid keys for app_config
-            valid_keys = {
-                "artifact_id",
-                "version",
-                "application_id",
-                "application_kwargs",
-                "application_env_vars",
-                "hypha_token",
-                "disable_gpu",
-                "max_ongoing_requests",
-                "auto_redeploy",
-            }
+            # Get valid startup config keys
+            run_application_schema = self.run_application.__schema__
+
+            parameters = run_application_schema["parameters"]["properties"]
+
+            valid_keys = set(parameters.keys()) - {"context"}
 
             for app_config in self.startup_applications:
                 if not isinstance(app_config, dict):
@@ -842,18 +836,14 @@ class AppsManager:
 
                 admin_context = create_context(self.admin_users[0])
 
-                application_id = await self.run_application(
-                    artifact_id=app_config["artifact_id"],
-                    version=app_config.get("version"),
-                    application_id=app_config.get("application_id"),
-                    application_kwargs=app_config.get("application_kwargs"),
-                    application_env_vars=app_config.get("application_env_vars"),
-                    hypha_token=app_config.get("hypha_token"),
-                    disable_gpu=app_config.get("disable_gpu"),
-                    max_ongoing_requests=app_config.get("max_ongoing_requests"),
-                    auto_redeploy=app_config.get("auto_redeploy"),
-                    context=admin_context,
-                )
+                run_application_kwargs = {
+                    key: value
+                    for key, value in app_config.items()
+                    if key in valid_keys
+                }
+                run_application_kwargs["context"] = admin_context
+
+                application_id = await self.run_application(**run_application_kwargs)
                 application_ids.append(application_id)
 
     async def monitor_applications(self) -> None:

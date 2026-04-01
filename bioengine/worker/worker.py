@@ -432,6 +432,16 @@ class BioEngineWorker:
             self.logger.error(f"Error while pinging dataset server: {e}")
             self.logger.info("Clearing dataset server configuration.")
             self.data_server = None
+            
+            current_data_server_file = (
+                self.workspace_dir / "datasets" / "bioengine_current_server"
+            )
+            if current_data_server_file.exists():
+                try:
+                    current_data_server_file.unlink()
+                    self.logger.info("Removed outdated data server configuration file.")
+                except Exception as unlink_e:
+                    self.logger.error(f"Failed to remove data server configuration file: {unlink_e}")
 
     async def _discover_data_server(self) -> None:
         """

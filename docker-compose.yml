@@ -1,7 +1,5 @@
 # Skip from worktree to keep local modifications: git update-index --skip-worktree docker-compose.yaml
 # Undo with: git update-index --no-skip-worktree docker-compose.yaml
-version: "3.8"
-
 services:
   data-server:
     image: ghcr.io/aicell-lab/bioengine-datasets:${BIOENGINE_VERSION:-latest}

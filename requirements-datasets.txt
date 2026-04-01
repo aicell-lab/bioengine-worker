@@ -2,5 +2,6 @@ httpx[http2]==0.28.1
 hypha-rpc==0.21.11
 hypha[s3]==0.21.39
 numpy==1.26.4
+psutil==6.1.1  # missing requirement in hypha, added here to ensure it's installed
 pyyaml==6.0.2
 zarr==3.0.8

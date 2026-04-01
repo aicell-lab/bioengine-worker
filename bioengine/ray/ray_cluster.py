@@ -166,6 +166,7 @@ class RayCluster:
 
         self.start_time = None
         self.lock_file = None
+        self._owns_lock = False
         self.slurm_workers = None
 
         # Base configuration for connecting to Ray cluster
@@ -264,7 +265,11 @@ class RayCluster:
 
     def __del__(self):
         """Cleanup lock file when the RayCluster instance is destroyed."""
-        if self.lock_file and self.lock_file.exists():
+        if (
+            getattr(self, "_owns_lock", False)
+            and self.lock_file
+            and self.lock_file.exists()
+        ):
             try:
                 self.lock_file.unlink()
             except (OSError, IOError):
@@ -413,6 +418,14 @@ class RayCluster:
 
                         # Check if the process is still running
                         try:
+                            # In container restarts, PID values (especially PID 1) can be reused.
+                            # If the lock PID equals our current PID, treat the lock as stale.
+                            if existing_pid == os.getpid():
+                                self.logger.info(
+                                    "Lock file PID matches current process PID; treating lock as stale."
+                                )
+                                raise ProcessLookupError()
+
                             os.kill(
                                 existing_pid, 0
                             )  # Signal 0 checks if process exists
@@ -452,6 +465,7 @@ class RayCluster:
             f.flush()
             os.fsync(f.fileno())
 
+        self._owns_lock = True
         self.logger.info(f"Successfully acquired lock: {self.lock_file}")
 
     def _set_cluster_ports(self) -> None:

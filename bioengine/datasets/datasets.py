@@ -120,7 +120,7 @@ class BioEngineDatasets:
             await get_url_with_retry(
                 url=f"{self.service_url}/ping",
                 raise_for_status=True,
-                http_client=self.http_client,
+                http_client=httpx.AsyncClient(timeout=3.0),  # short timeout for ping
                 logger=self.logger,
             )
         except Exception as e:

@@ -1171,7 +1171,7 @@ class AppsManager:
         ),
         version: Optional[str] = Field(
             None,
-            description="Specific version of the artifact to deploy. If not provided, deploys the latest available version of the artifact. If not specified, uses the latest version for a new deployment, or preserves the previously deployed version if updating an existing application (only when application_id is specified).",
+            description="Specific version of the artifact to deploy. If not provided, deploys the latest available version of the artifact. If not specified, uses the latest version for a new application, or preserves the previously deployed version if updating an existing application (only when application_id is specified).",
         ),
         application_id: Optional[str] = Field(
             None,
@@ -1179,7 +1179,7 @@ class AppsManager:
         ),
         application_kwargs: Optional[Dict[str, Dict[str, Any]]] = Field(
             None,
-            description="Keyword arguments to set for each deployment. Dictionary where keys are deployment class names and values are dictionaries of keyword arguments. If not specified, uses default parameters for a new deployment, or preserves previous values if updating an existing application (only when application_id is specified).",
+            description="Keyword arguments to set for each deployment. Dictionary where keys are deployment class names and values are dictionaries of keyword arguments. If not specified, uses default parameters for a new application, or preserves previous values if updating an existing application (only when application_id is specified).",
             examples=[
                 {"DeploymentClass": {"init_parameter": 50.0}},
                 {
@@ -1190,7 +1190,7 @@ class AppsManager:
         ),
         application_env_vars: Optional[Dict[str, Dict[str, str]]] = Field(
             None,
-            description="Environment variables to set for each deployment. Dictionary where keys are deployment class names and values are dictionaries of environment variables. If not specified, uses defaults for a new deployment, or preserves previous values if updating an existing application (only when application_id is specified).",
+            description="Environment variables to set for each deployment. Dictionary where keys are deployment class names and values are dictionaries of environment variables. If not specified, uses defaults for a new application, or preserves previous values if updating an existing application (only when application_id is specified).",
             examples=[
                 {"DeploymentClass": {"KEY": "VALUE"}},
                 {
@@ -1201,19 +1201,23 @@ class AppsManager:
         ),
         hypha_token: str = Field(
             None,
-            description="Hypha connection token for authentication. The token will be set as environment variable 'HYPHA_TOKEN' in the application deployments. An already existing environment variable named 'HYPHA_TOKEN' will not be overwritten. The token is used to authenticate to BioEngine datasets and enables Hypha API calls as logged in user. If not specified, uses None (no token) for a new deployment, or preserves the previous token if updating an existing application (only when application_id is specified).",
+            description="Hypha connection token for authentication. The token will be set as environment variable 'HYPHA_TOKEN' in the application deployments. An already existing environment variable named 'HYPHA_TOKEN' will not be overwritten. The token is used to authenticate to BioEngine datasets and enables Hypha API calls as logged in user. If not specified, uses None (no token) for a new application, or preserves the previous token if updating an existing application (only when application_id is specified).",
         ),
         disable_gpu: bool = Field(
             None,
-            description="Set to true to disable GPU usage for this deployment, forcing it to run on CPU only. Useful for testing or when GPU resources are limited. If not specified, uses False (GPU enabled if available) for a new deployment, or preserves the previous setting if updating an existing application (only when application_id is specified).",
+            description="Set to true to disable GPU usage for this deployment, forcing it to run on CPU only. Useful for testing or when GPU resources are limited. If not specified, uses False (GPU enabled if available) for a new application, or preserves the previous setting if updating an existing application (only when application_id is specified).",
         ),
         max_ongoing_requests: int = Field(
             None,
-            description="Maximum number of concurrent requests this application instance can handle simultaneously. Higher values allow more parallelism but use more memory. If not specified, uses 10 for a new deployment, or preserves the previous value if updating an existing application (only when application_id is specified).",
+            description="Maximum number of concurrent requests this application instance can handle simultaneously. Higher values allow more parallelism but use more memory. If not specified, uses 10 for a new application, or preserves the previous value if updating an existing application (only when application_id is specified).",
         ),
         auto_redeploy: bool = Field(
             None,
-            description="If set to true, the application will be automatically redeployed if it becomes unhealthy. If not specified, uses False for a new deployment, or preserves the previous setting if updating an existing application (only when application_id is specified).",
+            description="If set to true, the application will be automatically redeployed if it becomes unhealthy. If not specified, uses False for a new application, or preserves the previous setting if updating an existing application (only when application_id is specified).",
+        ),
+        debug: bool = Field(
+            None,
+            description="Set to true to enable debug logging for the whole application with all its deployments. If not specified, uses False for a new application, or preserves the previous setting if updating an existing application (only when application_id is specified).",
         ),
         context: Dict[str, Any] = Field(
             ...,
@@ -1307,10 +1311,12 @@ class AppsManager:
                     max_ongoing_requests = existing_app["max_ongoing_requests"]
                 if auto_redeploy is None:
                     auto_redeploy = existing_app["auto_redeploy"]
+                if debug is None:
+                    debug = existing_app.get("debug", False)
             else:
-                # For new deployments, set creation time and default values
+                # For new applications, set creation time and default values
                 started_at = time.time()
-                last_updated_at = started_at  # Same as started_at for new deployments
+                last_updated_at = started_at  # Same as started_at for new applications
 
                 # Set default values for None parameters
                 if application_kwargs is None:
@@ -1323,6 +1329,8 @@ class AppsManager:
                     max_ongoing_requests = 10
                 if auto_redeploy is None:
                     auto_redeploy = False
+                if debug is None:
+                    debug = False
 
             # Validate application_kwargs
             if not isinstance(application_kwargs, dict):
@@ -1408,6 +1416,7 @@ class AppsManager:
                 hypha_token=hypha_token,
                 disable_gpu=disable_gpu,
                 max_ongoing_requests=max_ongoing_requests,
+                debug=debug,
             )
 
             # Check resources before creating deployment task
@@ -1430,7 +1439,7 @@ class AppsManager:
                 "application_resources": app.metadata["resources"],
                 "authorized_users": app.metadata["authorized_users"],
                 "available_methods": app.metadata["available_methods"],
-                "started_at": started_at,  # Preserved from original deployment or set for new deployment
+                "started_at": started_at,  # Preserved from original deployment or set for new application
                 "last_updated_at": last_updated_at,  # Same as started_at for new, current time for updates
                 "last_updated_by": user_id,
                 "built_app": app,

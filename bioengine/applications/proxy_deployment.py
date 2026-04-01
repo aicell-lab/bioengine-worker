@@ -20,7 +20,6 @@ from starlette.requests import Request
 from bioengine.utils import get_pip_requirements
 
 logger = logging.getLogger("ray.serve")
-logger.setLevel("INFO")
 
 
 @deployment(
@@ -97,6 +96,7 @@ class BioEngineProxyDeployment:
         authorized_users: List[str],
         serve_http_url: str,
         proxy_actor_name: str,
+        debug: bool,
     ):
         """
         Initialize the BioEngine proxy deployment.
@@ -138,7 +138,9 @@ class BioEngineProxyDeployment:
 
             serve_http_url: URL for Ray Serve HTTP endpoint used for autoscaling coordination.
             proxy_actor_name: Actor name of the BioEngineProxyActor for replica registration.
+            debug: Set to true to enable debug logging.
         """
+        logger.setLevel("DEBUG" if debug else "INFO")
         logger.info(
             f"🚀 Initializing {self.__class__.__name__} for application: '{application_id}'"
         )
@@ -155,7 +157,7 @@ class BioEngineProxyDeployment:
             proxy_actor_handle = ray.get_actor(
                 name=proxy_actor_name, namespace="bioengine"
             )
-            logger.debug(
+            logger.info(
                 f"✅ Successfully retrieved BioEngineProxyActor '{proxy_actor_name}'"
             )
         except ValueError as e:
@@ -940,10 +942,13 @@ class BioEngineProxyDeployment:
         # Wait for the entry deployment to be ready and healthy
         if not self.entry_deployment_ready:
             logger.info(
-                f"⏳ Waiting for entry deployment to complete initial health check for '{self.application_id}'"
+                f"⏳ Waiting for entry deployment (app '{self.application_id}') to complete initial health check."
             )
             await self.entry_deployment_handle.check_health.remote()
             self.entry_deployment_ready = True
+            logger.info(
+                f"✅ Entry deployment (app '{self.application_id}') passed health check."
+            )
 
         # Register services if not already done (with lock to prevent concurrent registration)
         if not self.server or not self.websocket_service_id:
@@ -960,7 +965,9 @@ class BioEngineProxyDeployment:
 
         # Check if Hypha server can be reached
         try:
+            logger.debug("Pinging Hypha server to check connection...")
             await self.server.echo("ping")
+            logger.debug("Received ping response from Hypha server.")
         except Exception as e:
             logger.error(
                 f"❌ Hypha server connection failed for '{self.application_id}': {e}"
@@ -973,9 +980,12 @@ class BioEngineProxyDeployment:
 
         # Check if the WebSocket service can be reached
         try:
+            logger.debug(f"Getting WebSocket service with ID '{self.websocket_service_id}'...")
             websocket_service = await self.server.get_service(self.websocket_service_id)
+            logger.debug(f"Successfully connected to WebSocket service '{self.websocket_service_id}'. Checking load and uncompleted requests...")
             await websocket_service.get_load()
             await websocket_service.get_num_pcs()
+            logger.debug(f"WebSocket service '{self.websocket_service_id}' check passed.")
         except Exception as e:
             logger.error(
                 f"❌ WebSocket service connection failed for '{self.application_id}': {e}"
@@ -987,6 +997,7 @@ class BioEngineProxyDeployment:
             raise RuntimeError("WebSocket service connection failed")
 
         # All checks passed - deployment is healthy
+        logger.debug(f"🩺 Health check passed for '{self.application_id}'.")
 
 
 if __name__ == "__main__":
@@ -1042,6 +1053,8 @@ if __name__ == "__main__":
             worker_client_id=worker_client_id,
             authorized_users=["*"],
             serve_http_url="not_used_in_mock",
+            proxy_actor_name="mock_actor",
+            debug=True,
         )
 
         await deployment.check_health()

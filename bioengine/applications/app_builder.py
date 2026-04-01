@@ -405,6 +405,7 @@ class AppBuilder:
         application_id: str,
         deployment: serve.Deployment,
         secret_env_vars: Dict[str, str],
+        debug: bool = False,
     ) -> serve.Deployment:
         """
         Wrap the deployment's __init__ method to set up the BioEngine execution environment.
@@ -448,6 +449,7 @@ class AppBuilder:
         @wraps(orig_init)
         def wrapped_init(self, *args, **kwargs):
             logger = logging.getLogger("ray.serve")
+            logger.setLevel(logging.DEBUG if debug else logging.INFO)
 
             # Register this serve replica with the BioEngineProxyActor for tracking
             proxy_actor_handle = None
@@ -964,6 +966,7 @@ class AppBuilder:
         class_name: str,
         disable_gpu: bool,
         env_vars: Dict[str, str],
+        debug: bool = False,
     ) -> serve.Deployment:
         """
         Download and transform Python code into a Ray Serve deployment.
@@ -1093,7 +1096,7 @@ class AppBuilder:
             )
 
             # Update the deployment class methods
-            deployment = self._update_init(application_id, deployment, secret_env_vars)
+            deployment = self._update_init(application_id, deployment, secret_env_vars, debug)
             deployment = self._update_async_init(deployment)
             deployment = self._update_test_deployment(deployment)
             deployment = self._update_health_check(deployment)
@@ -1171,6 +1174,7 @@ class AppBuilder:
         hypha_token: Optional[str],
         disable_gpu: bool,
         max_ongoing_requests: int,
+        debug: bool,
     ) -> serve.Application:
         """
         Transform a deployment artifact into a fully functional BioEngine application.
@@ -1213,6 +1217,7 @@ class AppBuilder:
             application_env_vars: Environment variables for each deployment class
             disable_gpu: Force CPU-only execution regardless of deployment defaults
             max_ongoing_requests: Request concurrency limit for the entire application
+            debug: Sets logging level to DEBUG in all deployments
 
         Returns:
             Complete Ray Serve application ready for deployment with metadata including:
@@ -1290,6 +1295,7 @@ class AppBuilder:
                     class_name=class_name,
                     disable_gpu=disable_gpu,
                     env_vars=deployment_env_vars,
+                    debug=debug,
                 )
                 deployments.append(deployment)
 
@@ -1388,6 +1394,7 @@ class AppBuilder:
                 authorized_users=manifest["authorized_users"],
                 serve_http_url=self.serve_http_url,
                 proxy_actor_name=self.proxy_actor_name,
+                debug=debug,
             )
 
             # Create application metadata

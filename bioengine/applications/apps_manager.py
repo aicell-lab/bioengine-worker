@@ -249,8 +249,8 @@ class AppsManager:
 
         Resource Validation Process:
         1. Waits for Ray cluster to be ready and connected
-        2. Checks each node for sufficient available resources
-        3. For updates: Adds currently allocated resources to available pool
+        2. Checks each node for sufficient free resources
+        3. For updates: Subtracts current app resources from node used resources
         4. For SLURM mode: Evaluates if new workers can be spawned if needed
         5. For external clusters: Issues warning but allows deployment
 
@@ -287,21 +287,27 @@ class AppsManager:
         await self.ray_cluster.is_ready.wait()
 
         for node_resource in self.ray_cluster.status["nodes"].values():
+            # TODO: This currently assumes one application fits on one node.
+            # For multi-node applications, replace this with aggregate placement-aware checks.
             # For updates, add back the resources that will be freed
-            available_cpu = (
-                node_resource["available_cpu"] + current_resources["num_cpus"]
+            used_cpu = max(
+                0, node_resource["used_cpu"] - current_resources["num_cpus"]
             )
-            available_gpu = (
-                node_resource["available_gpu"] + current_resources["num_gpus"]
+            used_gpu = max(
+                0, node_resource["used_gpu"] - current_resources["num_gpus"]
             )
-            available_memory = (
-                node_resource["available_memory"] + current_resources["memory"]
+            used_memory = max(
+                0, node_resource["used_memory"] - current_resources["memory"]
             )
 
+            free_cpu = max(0, node_resource["total_cpu"] - used_cpu)
+            free_gpu = max(0, node_resource["total_gpu"] - used_gpu)
+            free_memory = max(0, node_resource["total_memory"] - used_memory)
+
             if (
-                available_cpu >= required_resources["num_cpus"]
-                and available_gpu >= required_resources["num_gpus"]
-                and available_memory >= required_resources["memory"]
+                free_cpu >= required_resources["num_cpus"]
+                and free_gpu >= required_resources["num_gpus"]
+                and free_memory >= required_resources["memory"]
             ):
                 insufficient_resources = False
 
@@ -311,15 +317,18 @@ class AppsManager:
             num_worker_jobs = await self.ray_cluster.slurm_workers.get_num_worker_jobs()
             default_num_cpus = self.ray_cluster.slurm_workers.default_num_cpus
             default_num_gpus = self.ray_cluster.slurm_workers.default_num_gpus
-            default_memory = (
+            default_memory_bytes = (
                 self.ray_cluster.slurm_workers.default_mem_in_gb_per_cpu
                 * default_num_cpus
+                * 1024
+                * 1024
+                * 1024
             )
             if (
                 num_worker_jobs < self.ray_cluster.slurm_workers.max_workers
                 and default_num_cpus >= required_resources["num_cpus"]
                 and default_num_gpus >= required_resources["num_gpus"]
-                and default_memory >= required_resources["memory"]
+                and default_memory_bytes >= required_resources["memory"]
             ):
                 insufficient_resources = False
 

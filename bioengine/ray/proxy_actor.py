@@ -1,7 +1,10 @@
 import re
 import time
+import json
+import urllib.error
+import urllib.request
 from dataclasses import asdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 import logging
 
 import ray
@@ -180,7 +183,7 @@ class BioEngineProxyActor:
         """
         for resource_name in resources:
             if resource_name.startswith("accelerator_type:"):
-                return resource_name.split(":")[-1]
+                return resource_name.lstrip("accelerator_type:")
 
     def _get_slurm_job_id(self, resources: Dict[str, float]) -> Optional[str]:
         """Extract the SLURM job ID from a node's resource dictionary.
@@ -195,12 +198,80 @@ class BioEngineProxyActor:
             if resource_name.startswith("slurm_job_id:"):
                 return resource_name.split(":")[-1]
 
+    def _is_head_node(self, resources: Dict[str, float]) -> bool:
+        """Check if a node resource map belongs to the head node."""
+        return "node:__internal_head__" in resources
+
+    def _get_dashboard_webui_url(self) -> Optional[str]:
+        """Resolve the local Ray dashboard URL for node summary queries."""
+        try:
+            webui_url = ray._private.worker.global_worker.node.address_info.get(
+                "webui_url"
+            )
+            if not webui_url:
+                return None
+            if "://" not in webui_url:
+                webui_url = f"http://{webui_url}"
+            return webui_url
+        except Exception:
+            logger.exception("Failed to resolve Ray dashboard web UI URL")
+            return None
+
+    def _get_per_node_gpu_memory_usage(
+        self,
+    ) -> Tuple[Dict[str, Dict[str, int]], bool]:
+        """Fetch per-node GPU memory usage from Ray dashboard node summary.
+
+        Returns:
+            Mapping {node_id: {"total_gpu_memory": int, "used_gpu_memory": int}}
+            with values in bytes, and a bool indicating if dashboard data is
+            currently available.
+        """
+        webui_url = self._get_dashboard_webui_url()
+        if not webui_url:
+            return {}, False
+
+        url = f"{webui_url}/nodes?view=summary"
+        try:
+            with urllib.request.urlopen(url, timeout=2.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError):
+            logger.debug(
+                "Failed to fetch Ray node summary from dashboard endpoint %s",
+                url,
+                exc_info=True,
+            )
+            return {}, False
+
+        if not payload.get("result"):
+            return {}, False
+
+        summary = payload.get("data", {}).get("summary", [])
+        per_node_gpu_memory: Dict[str, Dict[str, int]] = {}
+        for node in summary:
+            node_id = node.get("raylet", {}).get("nodeId")
+            if not node_id:
+                continue
+
+            total_gpu_memory_mb = 0
+            used_gpu_memory_mb = 0
+            for gpu in node.get("gpus") or []:
+                total_gpu_memory_mb += int(gpu.get("memoryTotal", 0) or 0)
+                used_gpu_memory_mb += int(gpu.get("memoryUsed", 0) or 0)
+
+            per_node_gpu_memory[node_id] = {
+                "total_gpu_memory": total_gpu_memory_mb * 1024 * 1024,
+                "used_gpu_memory": used_gpu_memory_mb * 1024 * 1024,
+            }
+
+        return per_node_gpu_memory, True
+
     def get_cluster_state(self) -> Dict[str, Any]:
         """
         Get comprehensive cluster resource information including per-node breakdown.
 
         Returns a detailed snapshot of cluster resources showing both total capacity
-        and currently available resources across all alive nodes. Useful for
+        and currently used resources across all alive nodes. Useful for
         capacity planning and resource allocation decisions.
 
         Returns:
@@ -208,13 +279,9 @@ class BioEngineProxyActor:
             {
                 "cluster": {
                     "total_cpu": float,
-                    "available_cpu": float,
+                    "used_cpu": float,
                     "total_gpu": float,
-                    "available_gpu": float,
-                    "total_memory": float,  # in bytes
-                    "available_memory": float,  # in bytes
-                    "total_object_store_memory": float,  # in bytes
-                    "available_object_store_memory": float,  # in bytes
+                    "used_gpu": float,
                     "pending_resources": {  # if check_pending_resources=True
                         "actors": List[Dict],
                         "jobs": List[Dict],
@@ -225,14 +292,17 @@ class BioEngineProxyActor:
                 "nodes": {
                     node_id: {
                         "node_ip": Optional[str],
+                        "head": bool,
                         "total_cpu": float,
-                        "available_cpu": float,
+                        "used_cpu": float,
                         "total_gpu": float,
-                        "available_gpu": float,
+                        "used_gpu": float,
+                        "total_gpu_memory": Union[int, str],  # in bytes or "NA"
+                        "used_gpu_memory": Union[int, str],  # in bytes or "NA"
                         "total_memory": float,
-                        "available_memory": float,
+                        "used_memory": float,
                         "total_object_store_memory": float,
-                        "available_object_store_memory": float,
+                        "used_object_store_memory": float,
                         "accelerator_type": Optional[str],
                         "slurm_job_id": Optional[str]
                     }
@@ -241,17 +311,14 @@ class BioEngineProxyActor:
         """
         total_resources_per_node = self.global_state.total_resources_per_node()
         available_resources_per_node = self.global_state.available_resources_per_node()
+        gpu_memory_per_node, dashboard_available = self._get_per_node_gpu_memory_usage()
 
         cluster_state = {
             "cluster": {
                 "total_cpu": 0,
-                "available_cpu": 0,
+                "used_cpu": 0,
                 "total_gpu": 0,
-                "available_gpu": 0,
-                "total_memory": 0,
-                "available_memory": 0,
-                "total_object_store_memory": 0,
-                "available_object_store_memory": 0,
+                "used_gpu": 0,
             },
             "nodes": {},
         }
@@ -267,21 +334,45 @@ class BioEngineProxyActor:
             available_resources = available_resources_per_node.get(node_id, {})
 
             # Add per-node resources to the cluster state
+            total_cpu = total_resources.get("CPU", 0)
+            available_cpu = available_resources.get("CPU", 0)
+            total_gpu = total_resources.get("GPU", 0)
+            available_gpu = available_resources.get("GPU", 0)
+            accelerator_type = (
+                "NA" if total_gpu == 0 else self._get_accelerator_type(total_resources)
+            )
+            total_memory = total_resources.get("memory", 0)
+            available_memory = available_resources.get("memory", 0)
+            total_object_store_memory = total_resources.get("object_store_memory", 0)
+            available_object_store_memory = available_resources.get(
+                "object_store_memory", 0
+            )
+            if total_gpu > 0 and not dashboard_available:
+                total_gpu_memory: Union[int, str] = "NA"
+                used_gpu_memory: Union[int, str] = "NA"
+            else:
+                gpu_memory = gpu_memory_per_node.get(
+                    node_id, {"total_gpu_memory": 0, "used_gpu_memory": 0}
+                )
+                total_gpu_memory = gpu_memory["total_gpu_memory"]
+                used_gpu_memory = gpu_memory["used_gpu_memory"]
+
             cluster_state["nodes"][node_id] = {
                 "node_ip": self._get_node_ip(total_resources),
-                "total_cpu": total_resources.get("CPU", 0),
-                "available_cpu": available_resources.get("CPU", 0),
-                "total_gpu": total_resources.get("GPU", 0),
-                "available_gpu": available_resources.get("GPU", 0),
-                "total_memory": total_resources.get("memory", 0),  # in bytes
-                "available_memory": available_resources.get("memory", 0),  # in bytes
-                "total_object_store_memory": total_resources.get(
-                    "object_store_memory", 0  # in bytes
-                ),
-                "available_object_store_memory": available_resources.get(
-                    "object_store_memory", 0  # in bytes
-                ),
-                "accelerator_type": self._get_accelerator_type(total_resources),
+                "head": self._is_head_node(total_resources),
+                "total_cpu": total_cpu,
+                "used_cpu": max(0, total_cpu - available_cpu),
+                "total_gpu": total_gpu,
+                "used_gpu": max(0, total_gpu - available_gpu),
+                "total_gpu_memory": total_gpu_memory,
+                "used_gpu_memory": used_gpu_memory,
+                "total_memory": total_memory,  # in bytes
+                "used_memory": max(0, total_memory - available_memory),  # in bytes
+                "total_object_store_memory": total_object_store_memory,  # in bytes
+                "used_object_store_memory": max(
+                    0, total_object_store_memory - available_object_store_memory
+                ),  # in bytes
+                "accelerator_type": accelerator_type,
                 "slurm_job_id": self._get_slurm_job_id(total_resources),
             }
 

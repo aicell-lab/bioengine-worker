@@ -400,6 +400,19 @@ class AppBuilder:
         )
         return updated_deployment
 
+    def _sanitize_recovery_env_vars(
+        self, application_env_vars: Dict[str, Dict[str, str]]
+    ) -> Dict[str, Dict[str, str]]:
+        """Return env vars safe to persist in proxy app_data for recovery."""
+        sanitized_env_vars: Dict[str, Dict[str, str]] = {}
+        for deployment_class, env_vars in application_env_vars.items():
+            sanitized_env_vars[deployment_class] = {
+                key: value
+                for key, value in env_vars.items()
+                if not key.startswith("_") and key != "HYPHA_TOKEN"
+            }
+        return sanitized_env_vars
+
     def _update_init(
         self,
         application_id: str,
@@ -1175,6 +1188,10 @@ class AppBuilder:
         disable_gpu: bool,
         max_ongoing_requests: int,
         debug: bool,
+        started_at: Optional[float] = None,
+        last_updated_at: Optional[float] = None,
+        last_updated_by: Optional[str] = None,
+        auto_redeploy: bool = False,
     ) -> serve.Application:
         """
         Transform a deployment artifact into a fully functional BioEngine application.
@@ -1380,10 +1397,39 @@ class AppBuilder:
             )
 
             # Create the application
+            sanitized_env_vars = self._sanitize_recovery_env_vars(application_env_vars)
+            app_data = {
+                "display_name": manifest["name"],
+                "description": manifest["description"],
+                "artifact_id": artifact_id,
+                "version": version,
+                "application_kwargs": application_kwargs,
+                "application_env_vars": sanitized_env_vars,
+                "disable_gpu": disable_gpu,
+                "max_ongoing_requests": max_ongoing_requests,
+                "application_resources": required_resources,
+                "authorized_users": manifest["authorized_users"],
+                "available_methods": [
+                    method_schema["name"] for method_schema in method_schemas
+                ],
+                "started_at": started_at if started_at is not None else time.time(),
+                "last_updated_at": (
+                    last_updated_at if last_updated_at is not None else time.time()
+                ),
+                "last_updated_by": (
+                    last_updated_by
+                    if last_updated_by is not None
+                    else self.server.config.user["id"]
+                ),
+                "auto_redeploy": auto_redeploy,
+                "debug": debug,
+            }
+
             app = proxy_deployment.bind(
                 application_id=application_id,
                 application_name=manifest["name"],
                 application_description=manifest["description"],
+                app_data=app_data,
                 entry_deployment_handle=entry_deployment_handle,
                 method_schemas=method_schemas,
                 max_ongoing_requests=max_ongoing_requests,

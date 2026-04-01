@@ -706,6 +706,7 @@ class AppsManager:
             "description": application_info["description"],
             "artifact_id": application_info["artifact_id"],
             "version": application_info["version"] or "latest",
+            "recovered_app": application_info["recovered_app"],
             "status": status,
             "message": message,
             "deployments": deployments,
@@ -791,6 +792,90 @@ class AppsManager:
             workspace=workspace,
             logger=self.logger,
         )
+
+    async def recover_deployed_applications(self) -> None:
+        """Recover app tracking state for already running Ray Serve BioEngine apps."""
+        serve_status = await asyncio.to_thread(serve.status)
+        recovered_count = 0
+
+        for application_id, application in serve_status.applications.items():
+            if application_id in self._deployed_applications:
+                continue
+
+            if "BioEngineProxyDeployment" not in application.deployments:
+                continue
+
+            try:
+                app_handle = await asyncio.to_thread(serve.get_app_handle, application_id)
+                app_data = await app_handle.get_app_data.remote()
+
+                if not isinstance(app_data, dict):
+                    raise ValueError("get_app_data() did not return a dictionary")
+
+                required_keys = {
+                    "display_name",
+                    "description",
+                    "artifact_id",
+                    "version",
+                    "application_kwargs",
+                    "application_env_vars",
+                    "disable_gpu",
+                    "max_ongoing_requests",
+                    "application_resources",
+                    "authorized_users",
+                    "available_methods",
+                    "started_at",
+                    "last_updated_at",
+                    "last_updated_by",
+                    "auto_redeploy",
+                    "debug",
+                }
+                missing_keys = sorted(required_keys - set(app_data.keys()))
+                if missing_keys:
+                    raise ValueError(
+                        "Missing required app_data keys: "
+                        f"{missing_keys}"
+                    )
+
+                is_deployed = asyncio.Event()
+                is_deployed.set()
+
+                self._deployed_applications[application_id] = {
+                    "display_name": app_data["display_name"],
+                    "description": app_data["description"],
+                    "artifact_id": app_data["artifact_id"],
+                    "version": app_data["version"],
+                    "application_kwargs": app_data["application_kwargs"],
+                    "application_env_vars": app_data["application_env_vars"],
+                    "hypha_token": None,
+                    "disable_gpu": app_data["disable_gpu"],
+                    "max_ongoing_requests": app_data["max_ongoing_requests"],
+                    "application_resources": app_data["application_resources"],
+                    "authorized_users": app_data["authorized_users"],
+                    "available_methods": app_data["available_methods"],
+                    "started_at": app_data["started_at"],
+                    "last_updated_at": app_data["last_updated_at"],
+                    "last_updated_by": app_data["last_updated_by"],
+                    "built_app": None,
+                    "auto_redeploy": app_data["auto_redeploy"],
+                    "debug": app_data["debug"],
+                    "deployment_task": None,
+                    "is_deployed": is_deployed,
+                    "undeployment_task": None,
+                    "recovered_app": True,
+                }
+                recovered_count += 1
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to recover application '{application_id}' from Ray Serve: {e}"
+                )
+
+        if recovered_count:
+            self.logger.info(
+                f"Recovered {recovered_count} application(s) from existing Ray Serve state."
+            )
+        else:
+            self.logger.info("No existing Ray Serve applications needed recovery.")
 
     async def deploy_startup_applications(self) -> None:
         """
@@ -1416,6 +1501,10 @@ class AppsManager:
                 disable_gpu=disable_gpu,
                 max_ongoing_requests=max_ongoing_requests,
                 debug=debug,
+                started_at=started_at,
+                last_updated_at=last_updated_at,
+                last_updated_by=user_id,
+                auto_redeploy=auto_redeploy,
             )
 
             # Check resources before creating deployment task
@@ -1446,6 +1535,7 @@ class AppsManager:
                 "deployment_task": None,  # Control task for app deployment
                 "is_deployed": asyncio.Event(),  # Track the deployment process
                 "undeployment_task": None,  # Control task for app undeployment
+                "recovered_app": False,
             }
 
             # Create and start the deployment task
@@ -1592,15 +1682,15 @@ class AppsManager:
 
         self.logger.info(f"User '{user_id}' is starting cleanup of all deployments...")
 
-        deployed_artifact_ids = list(self._deployed_applications.keys())
+        deployed_application_ids = list(self._deployed_applications.keys())
 
         # Cancel all deployment tasks
-        for artifact_id in deployed_artifact_ids:
-            await self.stop_application(artifact_id, context)
+        for application_id in deployed_application_ids:
+            await self.stop_application(application_id, context)
 
-        async def undeploy_and_track(artifact_id: str) -> bool:
+        async def undeploy_and_track(application_id: str) -> bool:
             try:
-                deployment_info = self._deployed_applications.get(artifact_id)
+                deployment_info = self._deployed_applications.get(application_id)
                 if deployment_info:
                     await asyncio.wait_for(
                         deployment_info["undeployment_task"], timeout=timeout_seconds
@@ -1608,22 +1698,22 @@ class AppsManager:
                 return True
             except asyncio.TimeoutError:
                 self.logger.error(
-                    f"Timeout after {timeout_seconds} seconds during undeployment of artifact '{artifact_id}'."
+                    f"Timeout after {timeout_seconds} seconds during undeployment of application '{application_id}'."
                 )
                 return False
             except Exception as e:
                 self.logger.error(
-                    f"Error during undeployment of artifact '{artifact_id}': {e}"
+                    f"Error during undeployment of application '{application_id}': {e}"
                 )
                 return False
 
         # Wait for all undeployment tasks to complete
         undeployment_tasks = [
-            undeploy_and_track(artifact_id) for artifact_id in deployed_artifact_ids
+            undeploy_and_track(application_id) for application_id in deployed_application_ids
         ]
         results = await asyncio.gather(*undeployment_tasks)
 
-        failed_attempts = len(deployed_artifact_ids) - sum(results)
+        failed_attempts = len(deployed_application_ids) - sum(results)
         if failed_attempts != 0:
             self.logger.warning(
                 f"Failed to clean up all deployments, {failed_attempts} remaining."

@@ -86,6 +86,7 @@ class BioEngineProxyDeployment:
         application_id: str,
         application_name: str,
         application_description: str,
+        app_data: Dict[str, Any],
         entry_deployment_handle: DeploymentHandle,
         method_schemas: List[Dict[str, Any]],
         max_ongoing_requests: int,
@@ -205,6 +206,7 @@ class BioEngineProxyDeployment:
         self.application_id = application_id
         self.application_name = application_name
         self.application_description = application_description
+        self.app_data = app_data
         self.entry_deployment_handle = entry_deployment_handle
         self.method_schemas = method_schemas
         self.max_ongoing_requests = max_ongoing_requests
@@ -247,6 +249,10 @@ class BioEngineProxyDeployment:
 
         # Start background cleanup task
         self._cleanup_task = None
+
+    async def get_app_data(self) -> Dict[str, Any]:
+        """Return non-secret application metadata used for worker recovery."""
+        return self.app_data
 
     async def __call__(self, request: Request) -> Dict[str, Any]:
         """
@@ -1045,6 +1051,7 @@ if __name__ == "__main__":
             application_id="test-app",
             application_name="Test Application",
             application_description="A test application for demonstration",
+            app_data={},
             entry_deployment_handle=entry_deployment_handle,
             method_schemas=[method_schema],
             server_url=server_url,

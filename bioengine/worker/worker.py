@@ -942,6 +942,9 @@ class BioEngineWorker:
             # Load available datasets from the data server
             await self._refresh_datasets()
 
+            # Recover applications already running in Ray Serve before deploying startup apps
+            await self.apps_manager.recover_deployed_applications()
+
             # Deploy startup applications
             await self.apps_manager.deploy_startup_applications()
 
@@ -1124,6 +1127,7 @@ class BioEngineWorker:
         status = {
             "service_start_time": self.start_time,
             "service_uptime": current_time - self.start_time if self.start_time else 0,
+            "bioengine_version": __version__,
             "worker_mode": self.ray_cluster.mode,
             "workspace": self.workspace,
             "client_id": self.client_id,

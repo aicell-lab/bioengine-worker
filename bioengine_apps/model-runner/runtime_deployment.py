@@ -102,6 +102,7 @@ class RuntimeDeployment:
         self, rdf_path: str, additional_requirements: Optional[List[str]] = None
     ) -> dict:
         """Test model inference using bioimageio.core with optional additional requirements."""
+        # TODO: add a timeout of 300 seconds
         cpu_before, gpu_before = self._get_memory_usage()
         logger.info(
             f"📊 [test] Memory before: CPU: {cpu_before / (1024 * 1024):.2f} MB, GPU: {gpu_before / (1024 * 1024):.2f} MB"
@@ -220,7 +221,7 @@ class RuntimeDeployment:
             logger.info(
                 f"📊 [pipeline load] Memory change:  CPU: {cpu_delta_mb:+.2f} MB, GPU: {gpu_delta_mb:+.2f} MB"
             )
-            
+
             return pipeline
         except Exception as e:
             logger.error(f"❌ Failed to create prediction pipeline: {str(e)}")
@@ -251,7 +252,9 @@ class RuntimeDeployment:
             if not Path(rdf_path).exists():
                 raise FileNotFoundError(f"RDF not found: {rdf_path}")
 
-            logger.info(f"🚀 Starting prediction for model at {rdf_path} with device={device} and weights_format={weights_format}")
+            logger.info(
+                f"🚀 Starting prediction for model at {rdf_path} with device={device} and weights_format={weights_format}"
+            )
             cache_key = self._set_prediction_kwargs(
                 rdf_path=rdf_path,
                 weights_format=weights_format,
@@ -296,6 +299,7 @@ class RuntimeDeployment:
 
 if __name__ == "__main__":
     import asyncio
+    import time
 
     import yaml
 
@@ -322,15 +326,35 @@ if __name__ == "__main__":
     test_result = asyncio.run(
         model_runner.test(str(rdf_path))  # , additional_requirements=["torch==2.5.1"]
     )
+
+    # Cache test results in the model package using the same schema as EntryDeployment.
+    package_path = rdf_path.parent
+    test_results_path = package_path / ".test_results.json"
+    metadata_path = package_path / ".file_metadata.json"
+    latest_download = 0.0
+    if metadata_path.exists():
+        try:
+            metadata = json.loads(metadata_path.read_text())
+            if isinstance(metadata, dict) and metadata:
+                latest_download = float(max(metadata.values()))
+        except (json.JSONDecodeError, OSError, ValueError, TypeError):
+            latest_download = 0.0
+
+    cache_data = {
+        "test_result": test_result,
+        "latest_download": latest_download,
+        "tested_at": time.time(),
+        "additional_requirements": None,
+    }
+    test_results_path.write_text(json.dumps(cache_data, indent=2))
+
     logger.info("Model testing completed successfully")
 
     # Load the test image from the package
     model_rdf = yaml.safe_load(rdf_path.read_text())
     test_input_source = model_rdf["test_inputs"][0]
 
-    test_image_path = str(
-        deployment_workdir / "models" / model_id / test_input_source
-    )
+    test_image_path = str(deployment_workdir / "models" / model_id / test_input_source)
     test_image = np.load(test_image_path).astype("float32")
 
     # Run the prediction

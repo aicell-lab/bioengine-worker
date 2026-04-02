@@ -14,7 +14,7 @@ logger.setLevel("INFO")
 
 # Deployment default runtime environment
 requirements = [
-    "bioimageio.core==0.9.5",
+    "bioimageio.core==0.10.0",
     "careamics==0.0.16",
     "cellpose==3.1.1.2",
     "nvidia-ml-py==12.555.43",

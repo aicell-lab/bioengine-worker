@@ -1041,7 +1041,7 @@ class ModelCache:
         "runtime_env": {
             "pip": [
                 "aiofiles>=23.0.0",
-                "bioimageio.core==0.9.5",
+                "bioimageio.core==0.10.0",
                 "imageio>=2.37.0",
                 "numpy==1.26.4",
                 "tqdm>=4.64.0",
@@ -1470,6 +1470,30 @@ class EntryDeployment:
 
         logger.info(f"✅ RDF validation {'passed' if result['success'] else 'failed'}.")
         return result
+
+    @schema_method
+    async def get_bioimageio_versions(self) -> Dict[str, str]:
+        """
+        Return installed versions of bioimageio packages used by this deployment.
+
+        Returns:
+            Dictionary containing package versions for:
+            - bioimageio.core
+            - bioimageio.spec
+        """
+        from importlib.metadata import PackageNotFoundError, version
+
+        package_names = ["bioimageio.core", "bioimageio.spec"]
+        versions: Dict[str, str] = {}
+
+        for package_name in package_names:
+            try:
+                versions[package_name] = version(package_name)
+            except PackageNotFoundError:
+                versions[package_name] = "not-installed"
+
+        logger.info(f"📦 Bioimage.io package versions: {versions}")
+        return versions
 
     @schema_method
     async def test(

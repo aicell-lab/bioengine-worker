@@ -3899,12 +3899,17 @@ class CellposeFinetune:
         self,
         status_types: list[str] | None,
         limit: int,
+        dataset_artifact_ids: list[str] | None = None,
     ) -> dict[str, SessionStatus]:
         """Synchronous implementation of list_sessions."""
         filt: set[str] | None = None
         if status_types is not None:
             allowed = {s.value for s in StatusType}
             filt = {s for s in status_types if s in allowed}
+        
+        artifact_filt: set[str] | None = None
+        if dataset_artifact_ids is not None:
+            artifact_filt = set(dataset_artifact_ids)
 
         sessions: dict[str, SessionStatus] = {}
         # Ensure session path exists (might not if no sessions yet)
@@ -3944,6 +3949,9 @@ class CellposeFinetune:
             )
 
             if filt is not None and session_data.get("status_type") not in filt:
+                continue
+            
+            if artifact_filt is not None and session_data.get("dataset_artifact_id") not in artifact_filt:
                 continue
 
             # Cast to SessionStatus to satisfy type checker
@@ -3987,6 +3995,11 @@ class CellposeFinetune:
             ),
             examples=[["running", "completed"]],
         ),
+        dataset_artifact_ids: list[str] | None = Field(
+            None,
+            description="Optional list of dataset artifact IDs to filter sessions.",
+            examples=[["ri-scale/zarr-demo", "ri-scale/another-dataset"]],
+        ),
         limit: int = Field(
             50, description="Maximum number of sessions to return (most recent first)"
         ),
@@ -3997,7 +4010,7 @@ class CellposeFinetune:
         the session history. For completed sessions, the saved model path is included
         if available.
         """
-        return await asyncio.to_thread(self._list_sessions_sync, status_types, limit)
+        return await asyncio.to_thread(self._list_sessions_sync, status_types, limit, dataset_artifact_ids)
 
     @schema_method(arbitrary_types_allowed=True)  # type: ignore
     async def export_model(

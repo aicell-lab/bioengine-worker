@@ -1609,16 +1609,13 @@ class EntryDeployment:
                         cached_data = await asyncio.to_thread(json.loads, content)
 
                     # Check if model files have changed since last test
-                    cached_remote_modified = cached_data.get(
-                        "latest_remote_modified",
-                        cached_data.get("latest_download", 0.0),
-                    )
+                    cached_remote_modified = cached_data["latest_remote_modified"]
                     model_unchanged = (
                         package.latest_remote_modified == cached_remote_modified
                     )
 
                     # Validate cached environment versions against currently installed packages.
-                    cached_test_report = cached_data.get("test_report", {})
+                    cached_test_report = cached_data["test_report"]
                     cached_env = cached_test_report.get("env", [])
                     cached_env_versions: Dict[str, str] = {}
 
@@ -1646,7 +1643,7 @@ class EntryDeployment:
                             f"💾 Model '{model_id}' unchanged since last test, using cached results."
                         )
                         test_report = cached_data["test_report"]
-                        tested_at = float(cached_data["tested_at"])
+                        tested_at = test_report["tested_at"]
                         should_run_test = False
                         should_cache_report = False
                     else:
@@ -1693,6 +1690,7 @@ class EntryDeployment:
                         artifact_type = None
 
                     # Generate fallback test report
+                    #! WARNING: Ensure that bioimageio.core and bioimageio.spec versions are the same in the EntryDeployment and RuntimeDeployment environments
                     test_report = {
                         "name": "bioimageio format validation",
                         "source_name": package.source,
@@ -1727,13 +1725,15 @@ class EntryDeployment:
                 # Add BioEngine version to the test report environment
                 test_report = self._ensure_bioengine_in_test_env(test_report)
 
+                # Add tested_at timestamp to the test report so the report is self-contained.
+                test_report["tested_at"] = tested_at
+
             # Save test results only for fresh, successful calculations.
             if should_cache_report:
                 try:
                     cache_data = {
                         "test_report": test_report,
                         "latest_remote_modified": package.latest_remote_modified,
-                        "tested_at": tested_at,
                         "additional_requirements": additional_requirements,
                     }
                     async with aiofiles.open(test_report_path, "w") as f:
@@ -1751,33 +1751,41 @@ class EntryDeployment:
                 should_publish_report = True
 
                 try:
-                    artifact = await self.artifact_manager.read(artifact_id)
-                    remote_summary = artifact["manifest"].get("test_summary", {})
-                    remote_tested_at = float(remote_summary.get("tested_at", 0.0))
-                    should_publish_report = remote_tested_at < tested_at
-                except Exception:
+                    download_url = await self.artifact_manager.get_file(
+                        artifact_id=artifact_id,
+                        file_path=report_file_name,
+                    )
+                    async with httpx.AsyncClient(timeout=30) as client:
+                        response = await client.get(download_url)
+                        response.raise_for_status()
+
+                    remote_test_report = await asyncio.to_thread(
+                        json.loads, response.text
+                    )
+                    remote_tested_at = float(remote_test_report.get("tested_at", 0.0))
+                    local_tested_at = test_report["tested_at"]
+                    should_publish_report = remote_tested_at != local_tested_at
+                except Exception as e:
+                    logger.warning(
+                        f"⚠️ Failed to load remote test report for '{artifact_id}' before publishing: {e}"
+                    )
                     should_publish_report = True
 
                 if not should_publish_report:
                     logger.info(
-                        f"ℹ️ Existing manifest test_summary for '{artifact_id}' is up to date; skipping publish."
+                        f"ℹ️ Existing test report for '{artifact_id}' is up to date; skipping publish."
                     )
                     return test_report
 
                 # Check current staging state.
+                artifact = await self.artifact_manager.read(artifact_id)
                 is_staged = artifact.get("staging") is not None
 
                 # Create a compact test report for the artifact manifest (excluding details and env to save space) and merge it with existing manifest data.
                 test_report_summary = {
-                    "bioengine_version": __version__,
-                    "bioimageio.core": current_versions.get(
-                        "bioimageio.core", "unknown"
-                    ),
-                    "bioimageio.spec": current_versions.get(
-                        "bioimageio.spec", "unknown"
-                    ),
-                    "status": test_report.get("status", "failed"),
-                    "tested_at": tested_at,
+                    "status": test_report["status"],
+                    "tested_at": test_report["tested_at"],
+                    "env": test_report["env"],
                 }
 
                 # 'test_reports' and 'test_report' are legacy manifest keys.

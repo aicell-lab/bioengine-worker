@@ -91,9 +91,9 @@ class RuntimeDeployment:
             if not Path(rdf_path).exists():
                 raise FileNotFoundError(f"RDF not found: {rdf_path}")
             validation_summary = test_model(rdf_path)
-            test_result = validation_summary.model_dump(mode="json")
+            test_report = validation_summary.model_dump(mode="json")
 
-            return test_result
+            return test_report
         except Exception as e:
             logger.error(f"❌ Model test failed: {str(e)}")
             raise
@@ -141,7 +141,7 @@ class RuntimeDeployment:
             return result_ref
         else:
             # Run execution in this deployment without additional packages
-            test_result = self._test(rdf_path)
+            test_report = self._test(rdf_path)
 
         cpu_after, gpu_after = self._get_memory_usage()
         cpu_delta_mb = (cpu_after - cpu_before) / (1024 * 1024)
@@ -153,7 +153,7 @@ class RuntimeDeployment:
             f"📊 [test] Memory change:  CPU: {cpu_delta_mb:+.2f} MB, GPU: {gpu_delta_mb:+.2f} MB"
         )
 
-        return test_result
+        return test_report
 
     # === Model Prediction ===
 
@@ -163,12 +163,13 @@ class RuntimeDeployment:
         weights_format: str,
         device: str,
         default_blocksize_parameter: int,
-        latest_download: Optional[float] = None,
+        latest_remote_modified: Optional[float] = None,
     ) -> str:
         """Generate cache key for prediction pipeline configuration."""
         pipeline_kwargs = {
             "rdf_path": rdf_path,
-            "latest_download": latest_download,  # Include latest file download time to invalidate cache on re-download
+            # Include latest tracked remote last-modified time to invalidate cache when remote files change.
+            "latest_remote_modified": latest_remote_modified,
             "create_kwargs": {
                 "weights_format": weights_format,
                 "device": device,
@@ -238,7 +239,7 @@ class RuntimeDeployment:
         device: Literal["cuda", "cpu"] = None,
         default_blocksize_parameter: Optional[int] = None,
         sample_id: str = "sample",
-        latest_download: Optional[float] = None,
+        latest_remote_modified: Optional[float] = None,
     ) -> Dict[str, np.ndarray]:
         """Run inference on model using bioimageio.core prediction pipeline."""
         cpu_before, gpu_before = self._get_memory_usage()
@@ -260,7 +261,7 @@ class RuntimeDeployment:
                 weights_format=weights_format,
                 device=device,
                 default_blocksize_parameter=default_blocksize_parameter,
-                latest_download=latest_download,
+                latest_remote_modified=latest_remote_modified,
             )
             pipeline = await self._create_prediction_pipeline(cache_key)
 
@@ -323,30 +324,30 @@ if __name__ == "__main__":
     rdf_path = deployment_workdir / "models" / model_id / "rdf.yaml"
 
     # Run the model test (torch is already in requirements, should automatically be skipped)
-    test_result = asyncio.run(
+    test_report = asyncio.run(
         model_runner.test(str(rdf_path))  # , additional_requirements=["torch==2.5.1"]
     )
 
     # Cache test results in the model package using the same schema as EntryDeployment.
     package_path = rdf_path.parent
-    test_results_path = package_path / ".test_results.json"
+    test_report_path = package_path / ".test_cache.json"
     metadata_path = package_path / ".file_metadata.json"
-    latest_download = 0.0
+    latest_remote_modified = 0.0
     if metadata_path.exists():
         try:
             metadata = json.loads(metadata_path.read_text())
             if isinstance(metadata, dict) and metadata:
-                latest_download = float(max(metadata.values()))
+                latest_remote_modified = float(max(metadata.values()))
         except (json.JSONDecodeError, OSError, ValueError, TypeError):
-            latest_download = 0.0
+            latest_remote_modified = 0.0
 
     cache_data = {
-        "test_result": test_result,
-        "latest_download": latest_download,
+        "test_report": test_report,
+        "latest_remote_modified": latest_remote_modified,
         "tested_at": time.time(),
         "additional_requirements": None,
     }
-    test_results_path.write_text(json.dumps(cache_data, indent=2))
+    test_report_path.write_text(json.dumps(cache_data, indent=2))
 
     logger.info("Model testing completed successfully")
 

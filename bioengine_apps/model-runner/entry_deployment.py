@@ -5,10 +5,11 @@ import os
 import random
 import shutil
 import time
+import traceback
 import uuid
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Dict, List, Literal, Optional, Union
 
 import httpx
 import numpy as np
@@ -19,6 +20,8 @@ from pydantic import Field
 from ray import serve
 from ray.exceptions import RayTaskError
 from ray.serve.handle import DeploymentHandle
+
+from bioengine import __version__
 
 logger = logging.getLogger("ray.serve")
 logger.setLevel("INFO")
@@ -32,12 +35,12 @@ class BioimageioPackage:
     def __init__(
         self,
         package_path: Path,
-        latest_download: float,
+        latest_remote_modified: float,
         replica_id: str,
     ) -> None:
         self.package_path = package_path
         self.source = str(self.package_path / "rdf.yaml")
-        self.latest_download = latest_download
+        self.latest_remote_modified = latest_remote_modified
         self.replica_id = replica_id
         self._lock_file: Optional[Path] = None
 
@@ -658,7 +661,11 @@ class ModelCache:
         # Use provided file list or fetch it if not provided
         if file_list is None:
             file_list = await self._fetch_file_list(model_id, stage=stage)
-        remote_files = {f["name"]: f for f in file_list if f["type"] == "file"}
+        remote_files = {
+            f["name"]: f
+            for f in file_list
+            if f["type"] == "file" and f["name"] != "test_report.json"
+        }
 
         # Get local files (excluding metadata files)
         all_files = await asyncio.to_thread(lambda: list(model_dir.glob("*")))
@@ -688,7 +695,8 @@ class ModelCache:
         results = await asyncio.gather(*tasks)
 
         # Update metadata
-        new_meta = old_meta.copy()
+        # Keep metadata only for currently tracked remote files.
+        new_meta = {name: old_meta[name] for name in remote_files if name in old_meta}
         for name, ts in results:
             new_meta[name] = ts
 
@@ -765,7 +773,11 @@ class ModelCache:
 
             # Check if files need updating by comparing with remote file list
             try:
-                remote_files = {f["name"]: f for f in file_list if f["type"] == "file"}
+                remote_files = {
+                    f["name"]: f
+                    for f in file_list
+                    if f["type"] == "file" and f["name"] != "test_report.json"
+                }
 
                 # Get local file metadata
                 meta_path = package_dir / ".file_metadata.json"
@@ -990,8 +1002,8 @@ class ModelCache:
 
         logger.info(f"🎉 Successfully completed download of model '{model_id}'.")
 
-    async def _get_latest_download_time(self, package_path: Path) -> float:
-        """Get the latest download time from the .file_metadata.json file."""
+    async def _get_latest_remote_modified_time(self, package_path: Path) -> float:
+        """Get the latest tracked remote last-modified time from .file_metadata.json."""
         import aiofiles
 
         meta_path = package_path / ".file_metadata.json"
@@ -1023,12 +1035,14 @@ class ModelCache:
         # Create or update the local package
         await self._create_package(model_id, stage=stage)
 
-        # Get the latest download time from .file_metadata.json
-        latest_download = await self._get_latest_download_time(package_path)
+        # Get latest tracked remote last-modified time from .file_metadata.json
+        latest_remote_modified = await self._get_latest_remote_modified_time(
+            package_path
+        )
 
         return BioimageioPackage(
             package_path=package_path,
-            latest_download=latest_download,
+            latest_remote_modified=latest_remote_modified,
             replica_id=self.replica_id,
         )
 
@@ -1207,6 +1221,39 @@ class EntryDeployment:
 
         logger.debug(f"📦 Bioimage.io package versions: {versions}")
         return versions
+
+    def _ensure_bioengine_in_test_env(self, test_report: dict) -> dict:
+        """Ensure test_report['env'] contains the current BioEngine version row."""
+        env = test_report.get("env")
+        if not isinstance(env, list):
+            env = []
+        else:
+            env = list(env)
+
+        bioengine_row_index: Optional[int] = None
+        for i, row in enumerate(env):
+            if (
+                isinstance(row, (list, tuple))
+                and len(row) >= 1
+                and str(row[0]) == "bioengine"
+            ):
+                bioengine_row_index = i
+                break
+
+        bioengine_row = ["bioengine", __version__, "", ""]
+        if bioengine_row_index is None:
+            env.append(bioengine_row)
+        else:
+            existing_row = env[bioengine_row_index]
+            if isinstance(existing_row, tuple):
+                existing_row = list(existing_row)
+            while len(existing_row) < 4:
+                existing_row.append("")
+            existing_row[1] = __version__
+            env[bioengine_row_index] = existing_row
+
+        test_report["env"] = env
+        return test_report
 
     async def _get_download_url(self, file_path: str) -> str:
         # Temporary S3 file path — resolve to a presigned download URL
@@ -1499,7 +1546,7 @@ class EntryDeployment:
             False,
             description="Force a complete model package re-download and bypass cached test results before testing",
         ),
-        publish_test_result: Optional[bool] = Field(
+        publish_test_report: Optional[bool] = Field(
             False,
             description="Automatically publish the test report to the model artifact after testing",
         ),
@@ -1508,10 +1555,10 @@ class EntryDeployment:
         Execute comprehensive model testing using the `bioimageio.core.test_model` test suite.
 
         Caching behavior:
-        - Cached test results are locally stored at ``<model_package>/.test_results.json``.
+        - Cached test reports are locally stored at ``<model_package>/.test_cache.json``.
         - Cached results are reused only when ``skip_cache=False`` AND the model
-            package has not changed (same ``latest_download``) AND the cached
-            ``test_result['env']`` versions for ``bioimageio.core`` and
+            package has not changed (same ``latest_remote_modified``) AND the cached
+            ``test_report['env']`` versions for ``bioimageio.core`` and
             ``bioimageio.spec`` match the currently installed versions.
         - ``skip_cache=True`` forces a complete model package re-download,
             bypasses cached test results, and runs a fresh test.
@@ -1522,15 +1569,16 @@ class EntryDeployment:
             If you change them, use ``skip_cache=True`` to force re-testing.
 
         Publishing behavior:
-        - If ``publish_test_result=True``, the test report is uploaded to
-            ``test_reports.json`` in the corresponding model artifact and committed.
+        - If ``publish_test_report=True``, a compact ``test_summary`` entry is
+            written to the artifact manifest, ``test_report.json`` is uploaded,
+            and the artifact is committed.
         - If the artifact had an open staging version before publishing, staging is
             re-opened after commit.
         """
         import aiofiles
 
         logger.info(
-            f"🧪 Testing model '{model_id}' (stage={stage}, skip_cache={skip_cache}, publish_test_result={publish_test_result})."
+            f"🧪 Testing model '{model_id}' (stage={stage}, skip_cache={skip_cache}, publish_test_report={publish_test_report})."
         )
 
         # Get model package with access tracking
@@ -1544,26 +1592,34 @@ class EntryDeployment:
         # Use context manager to track access and prevent eviction during test
         async with package:
             logger.info(f"📍 Model source for '{model_id}': {package.source}")
-            test_result = None
+            test_report: Optional[dict] = None
+            tested_at: Optional[float] = None
+            should_run_test = True
+            should_cache_report = True
 
             # Check for cached test results
-            test_results_path = package.package_path / ".test_results.json"
+            test_report_path = package.package_path / ".test_cache.json"
             current_versions = self._get_bioimageio_versions()
 
-            if not skip_cache and await asyncio.to_thread(test_results_path.exists):
+            if not skip_cache and await asyncio.to_thread(test_report_path.exists):
                 try:
                     # Load cached test results
-                    async with aiofiles.open(test_results_path, "r") as f:
+                    async with aiofiles.open(test_report_path, "r") as f:
                         content = await f.read()
                         cached_data = await asyncio.to_thread(json.loads, content)
 
                     # Check if model files have changed since last test
-                    cached_download_time = cached_data["latest_download"]
-                    model_unchanged = package.latest_download == cached_download_time
+                    cached_remote_modified = cached_data.get(
+                        "latest_remote_modified",
+                        cached_data.get("latest_download", 0.0),
+                    )
+                    model_unchanged = (
+                        package.latest_remote_modified == cached_remote_modified
+                    )
 
                     # Validate cached environment versions against currently installed packages.
-                    cached_test_result = cached_data.get("test_result", {})
-                    cached_env = cached_test_result.get("env", [])
+                    cached_test_report = cached_data.get("test_report", {})
+                    cached_env = cached_test_report.get("env", [])
                     cached_env_versions: Dict[str, str] = {}
 
                     for row in cached_env:
@@ -1589,7 +1645,10 @@ class EntryDeployment:
                         logger.info(
                             f"💾 Model '{model_id}' unchanged since last test, using cached results."
                         )
-                        test_result = cached_data["test_result"]
+                        test_report = cached_data["test_report"]
+                        tested_at = float(cached_data["tested_at"])
+                        should_run_test = False
+                        should_cache_report = False
                     else:
                         if model_unchanged and not env_versions_match:
                             logger.info(
@@ -1598,7 +1657,7 @@ class EntryDeployment:
                         elif not model_unchanged:
                             logger.info(
                                 f"🔄 Model '{model_id}' has been updated, re-running tests "
-                                f"(cached: {cached_download_time}, current: {package.latest_download})"
+                                f"(cached: {cached_remote_modified}, current: {package.latest_remote_modified})"
                             )
                 except (json.JSONDecodeError, KeyError, OSError, IOError) as e:
                     logger.warning(
@@ -1606,18 +1665,20 @@ class EntryDeployment:
                     )
 
             # Run the test unless we already accepted a cached result
-            if test_result is None:
+            if should_run_test:
+                tested_at = time.time()
                 try:
-                    test_result = await self.runtime_deployment.test.remote(
+                    test_report = await self.runtime_deployment.test.remote(
                         rdf_path=package.source,
                         additional_requirements=additional_requirements,
                     )
                     logger.info(f"✅ Model test completed for '{model_id}'.")
                 except Exception as e:
-                    error_msg = str(e)
+                    error_traceback = traceback.format_exc()
                     logger.warning(
-                        f"⚠️ Model test failed for '{model_id}': {error_msg}. Generating fallback report."
+                        f"⚠️ Model test failed for '{model_id}': {str(e)}. Generating fallback report."
                     )
+                    should_cache_report = False
 
                     # Load RDF from package for fallback report
                     try:
@@ -1632,7 +1693,7 @@ class EntryDeployment:
                         artifact_type = None
 
                     # Generate fallback test report
-                    test_result = {
+                    test_report = {
                         "name": "bioimageio format validation",
                         "source_name": package.source,
                         "id": model_id,
@@ -1641,7 +1702,7 @@ class EntryDeployment:
                             "bioimageio.spec", "unknown"
                         ),
                         "status": "failed",
-                        "details": [{"errors": [{"msg": error_msg}]}],
+                        "details": [{"errors": [{"msg": error_traceback}]}],
                         "env": [
                             [
                                 "bioimageio.core",
@@ -1663,42 +1724,97 @@ class EntryDeployment:
                         f"⚠️ Generated fallback test report for '{model_id}' due to test error."
                     )
 
-            # Save test results to cache if successful
-            try:
-                cache_data = {
-                    "test_result": test_result,
-                    "latest_download": package.latest_download,
-                    "tested_at": time.time(),
-                    "additional_requirements": additional_requirements,
-                }
-                async with aiofiles.open(test_results_path, "w") as f:
-                    await f.write(json.dumps(cache_data, indent=2))
-                logger.info(f"💾 Test results cached for model '{model_id}'")
-            except (OSError, IOError) as e:
-                logger.warning(f"⚠️ Failed to cache test results for '{model_id}': {e}")
+                # Add BioEngine version to the test report environment
+                test_report = self._ensure_bioengine_in_test_env(test_report)
 
-            if publish_test_result:
+            # Save test results only for fresh, successful calculations.
+            if should_cache_report:
+                try:
+                    cache_data = {
+                        "test_report": test_report,
+                        "latest_remote_modified": package.latest_remote_modified,
+                        "tested_at": tested_at,
+                        "additional_requirements": additional_requirements,
+                    }
+                    async with aiofiles.open(test_report_path, "w") as f:
+                        await f.write(json.dumps(cache_data, indent=2))
+                    logger.info(f"💾 Test report cached for model '{model_id}'")
+                except (OSError, IOError) as e:
+                    logger.warning(
+                        f"⚠️ Failed to cache test report for '{model_id}': {e}"
+                    )
+
+            # Publish test report to artifact
+            if publish_test_report:
                 artifact_id = f"bioimage-io/{model_id}"
+                report_file_name = "test_report.json"
+                should_publish_report = True
+
+                try:
+                    artifact = await self.artifact_manager.read(artifact_id)
+                    remote_summary = artifact["manifest"].get("test_summary", {})
+                    remote_tested_at = float(remote_summary.get("tested_at", 0.0))
+                    should_publish_report = remote_tested_at < tested_at
+                except Exception:
+                    should_publish_report = True
+
+                if not should_publish_report:
+                    logger.info(
+                        f"ℹ️ Existing manifest test_summary for '{artifact_id}' is up to date; skipping publish."
+                    )
+                    return test_report
 
                 # Check current staging state.
-                artifact = await self.artifact_manager.read(artifact_id)
                 is_staged = artifact.get("staging") is not None
+
+                # Create a compact test report for the artifact manifest (excluding details and env to save space) and merge it with existing manifest data.
+                test_report_summary = {
+                    "bioengine_version": __version__,
+                    "bioimageio.core": current_versions.get(
+                        "bioimageio.core", "unknown"
+                    ),
+                    "bioimageio.spec": current_versions.get(
+                        "bioimageio.spec", "unknown"
+                    ),
+                    "status": test_report.get("status", "failed"),
+                    "tested_at": tested_at,
+                }
+
+                # 'test_reports' and 'test_report' are legacy manifest keys.
+                updated_manifest = dict(artifact["manifest"])
+                updated_manifest.pop("test_reports", None)
+                updated_manifest.pop("test_report", None)
+                updated_manifest.pop("score", None)
+                updated_manifest["test_summary"] = test_report_summary
 
                 # Edit the artifact and stage it for review.
                 artifact = await self.artifact_manager.edit(
                     artifact_id=artifact.id,
+                    manifest=updated_manifest,
                     stage=True,
                 )
 
                 upload_url = await self.artifact_manager.put_file(
-                    artifact.id, file_path="test_reports.json"
+                    artifact.id, file_path=report_file_name
                 )
 
                 async with httpx.AsyncClient(timeout=30) as client:
                     response = await client.put(
-                        upload_url, data=json.dumps(test_result)
+                        upload_url, data=json.dumps(test_report)
                     )
                     response.raise_for_status()
+
+                # 'test_reports.json' is a legacy file name
+                try:
+                    existing_files = await self.artifact_manager.list_files(artifact.id)
+                    if any(file.name == "test_reports.json" for file in existing_files):
+                        await self.artifact_manager.remove_file(
+                            artifact.id, file_path="test_reports.json"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"⚠️ Failed to remove legacy test report file for '{artifact_id}': {e}"
+                    )
 
                 # Commit the artifact.
                 await self.artifact_manager.commit(artifact_id=artifact.id)
@@ -1714,7 +1830,7 @@ class EntryDeployment:
                     f"📤 Published test report for model '{model_id}' to artifact '{artifact_id}'."
                 )
 
-        return test_result
+        return test_report
 
     @schema_method
     async def get_upload_url(
@@ -1859,7 +1975,8 @@ class EntryDeployment:
             # Use context manager to track access and prevent eviction during inference
             async with package:
                 logger.info(
-                    f"📍 Model source for '{model_id}': {package.source} (downloaded: {package.latest_download})"
+                    f"📍 Model source for '{model_id}': {package.source} "
+                    f"(latest_remote_modified: {package.latest_remote_modified})"
                 )
 
                 result = await self.runtime_deployment.predict.remote(
@@ -1869,7 +1986,7 @@ class EntryDeployment:
                     device=device,
                     default_blocksize_parameter=default_blocksize_parameter,
                     sample_id=sample_id,
-                    latest_download=package.latest_download,
+                    latest_remote_modified=package.latest_remote_modified,
                 )
         except RayTaskError as e:
             error_msg = f"Failed to run inference for model '{model_id}': {e}"
@@ -1938,6 +2055,8 @@ if __name__ == "__main__":
 
             await model_runner.async_init()
             await model_runner.check_health()
+
+            # await model_runner.test(model_id="ambitious-ant", publish_test_report=True)
 
             # Search for segmentation models in the bioimage.io collection
             search_results = await model_runner.search_models(

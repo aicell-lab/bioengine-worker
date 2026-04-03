@@ -169,7 +169,6 @@ resources
 # BioEngine
 .bioengine*
 data/
-bioimageio_test_reports/
 model-screening*/
 
 # MacOS

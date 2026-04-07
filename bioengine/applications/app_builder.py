@@ -103,6 +103,7 @@ class AppBuilder:
         self,
         apps_workdir: Union[str, Path],
         log_file: Optional[str] = None,
+        proxy_actor_name: Optional[str] = None,
         debug: bool = False,
     ) -> None:
         """
@@ -121,6 +122,7 @@ class AppBuilder:
         Args:
             apps_workdir: Directory for storing downloaded code and temporary files
             log_file: Optional file path for logging output (None = console only)
+            proxy_actor_name: Optional name for the Ray actor that tracks deployment replicas
             debug: Whether to enable detailed debug logging for troubleshooting
 
         Example:
@@ -145,7 +147,7 @@ class AppBuilder:
         self.artifact_manager: Optional[ObjectProxy] = None
         self.worker_service_id: Optional[str] = None
         self.serve_http_url: Optional[str] = None
-        self.proxy_actor_name: Optional[str] = None
+        self.proxy_actor_name: Optional[str] = proxy_actor_name
         self.data_server_url: Optional[str] = None
 
     def complete_initialization(
@@ -154,7 +156,6 @@ class AppBuilder:
         artifact_manager: ObjectProxy,
         worker_service_id: str,
         serve_http_url: str,
-        proxy_actor_name: str,
     ) -> None:
         """
         Connect the AppBuilder to external services required for operation.
@@ -191,7 +192,6 @@ class AppBuilder:
         self.artifact_manager = artifact_manager
         self.worker_service_id = worker_service_id
         self.serve_http_url = serve_http_url
-        self.proxy_actor_name = proxy_actor_name
 
     def update_data_server_url(self, data_server_url: str) -> None:
         """
@@ -1487,9 +1487,10 @@ if __name__ == "__main__":
             apps_workdir=apps_workdir,
             log_file=None,
             debug=True,
+            proxy_actor_name="TEST_PROXY_ACTOR",
         )
         app_builder.complete_initialization(
-            server, artifact_manager, serve_http_url="https://test-url"
+            server, artifact_manager, worker_service_id="test-worker", serve_http_url="https://test-url"
         )
 
         app = await app_builder.build(

@@ -125,6 +125,7 @@ class AppsManager:
         self.app_builder = AppBuilder(
             apps_workdir=apps_workdir,
             log_file=log_file,
+            proxy_actor_name=self.ray_cluster.proxy_actor_name,
             debug=debug,
         )
 
@@ -782,7 +783,6 @@ class AppsManager:
             artifact_manager=self.artifact_manager,
             worker_service_id=worker_service_id,
             serve_http_url=self.ray_cluster.serve_http_url,
-            proxy_actor_name=self.ray_cluster.proxy_actor_name,
         )
 
         # Ensure applications collection exists

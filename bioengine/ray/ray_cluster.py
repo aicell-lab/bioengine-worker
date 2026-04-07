@@ -159,7 +159,7 @@ class RayCluster:
         self.address = None
         self.serve_http_url = None
         self.proxy_actor_handle = None
-        self.proxy_actor_name = None
+        self.proxy_actor_name = "BIOENGINE_PROXY_ACTOR"
         self.cluster_status_history = OrderedDict()
         self.max_status_history_length = 100
         self.is_ready = asyncio.Event()
@@ -730,11 +730,13 @@ class RayCluster:
             exclude_head_node = self.mode == "slurm"
             check_pending_resources = self.mode == "slurm"
 
-            # Generate a unique name for the proxy actor
-            self.proxy_actor_name = f"BIOENGINE_PROXY_ACTOR-{uuid.uuid4()}"
+            # Reuse a stable detached proxy actor across worker restarts
+            # If it does not exist yet, create it
             proxy_actor = BioEngineProxyActor.options(
                 name=self.proxy_actor_name,
                 namespace="bioengine",
+                lifetime="detached",
+                get_if_exists=True,
             )
             self.proxy_actor_handle = proxy_actor.remote(
                 exclude_head_node=exclude_head_node,

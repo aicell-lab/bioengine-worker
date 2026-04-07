@@ -140,12 +140,6 @@ class ModelCache:
             logger.warning(f"⚠️ Error reading cache directory: {e}")
             return
 
-        for dir_path in local_dirs:
-            try:
-                await self._validate_package(dir_path)
-            except RuntimeError as e:
-                await self._remove_package(dir_path)
-
         # Check for any stale temporary directories
         all_temp_dirs = await asyncio.to_thread(
             lambda: list(self.cache_dir.glob(".temp_*"))
@@ -709,35 +703,6 @@ class ModelCache:
             "skipped": list(remote_file_names - {name for name, _ in results}),
         }
 
-    async def _validate_package(self, package_path: Path) -> bool:
-        """Validate model RDF and return actual package path."""
-        from bioimageio.core import load_model_description
-        from bioimageio.spec import InvalidDescr
-
-        try:
-            # Find the RDF file in the package
-            rdf_path = package_path / "rdf.yaml"
-            if not await asyncio.to_thread(rdf_path.exists):
-                raise FileNotFoundError(f"No rdf.yaml found in {package_path}/")
-
-            # Validate model source
-            model_description = await asyncio.to_thread(
-                load_model_description,
-                rdf_path,
-                perform_io_checks=False,
-            )
-            if isinstance(model_description, InvalidDescr):
-                raise ValueError(
-                    f"Downloaded model at {package_path}/ is invalid: {model_description}"
-                )
-
-            logger.info(f"✅ Model '{package_path.name}' validation successful")
-
-        except Exception as e:
-            raise RuntimeError(
-                f"Model validation failed for '{package_path.name}': {e}"
-            )
-
     async def _create_package(self, model_id: str, stage: bool) -> None:
         """
         Create or update a model package in the cache directory.
@@ -949,9 +914,6 @@ class ModelCache:
             logger.info(
                 f"⚡ Download completed in {download_duration:.2f}s for model '{model_id}'."
             )
-
-            # Validate the downloaded package
-            await self._validate_package(temp_download_dir)
 
             # Atomically move to final location (handle existing directory)
             if await asyncio.to_thread(package_dir.exists):

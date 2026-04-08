@@ -20,6 +20,7 @@ from bioengine.utils import (
     create_application_from_files,
     create_context,
     create_logger,
+    enable_static_hosting_on_artifact,
     ensure_applications_collection,
 )
 
@@ -720,6 +721,7 @@ class AppsManager:
             "authorized_users": application_info["authorized_users"],
             "available_methods": application_info["available_methods"],
             "max_ongoing_requests": application_info["max_ongoing_requests"],
+            "static_site_url": application_info.get("static_site_url"),
             "service_ids": await self._get_application_service_ids(application_id),
             "start_time": application_info["started_at"],
             "last_updated_at": application_info["last_updated_at"],
@@ -1513,6 +1515,27 @@ class AppsManager:
                 required_resources=app.metadata["resources"],
             )
 
+            # Enable static hosting on the artifact if requested in the manifest
+            static_site_url = None
+            if app.metadata.get("static_hosting"):
+                frontend_entry = app.metadata.get("frontend_entry") or "index.html"
+                try:
+                    static_site_url = await enable_static_hosting_on_artifact(
+                        artifact_manager=self.artifact_manager,
+                        artifact_id=artifact_id,
+                        frontend_entry=frontend_entry,
+                        server_url=self.server.config.public_base_url,
+                        logger=self.logger,
+                    )
+                    self.logger.info(
+                        f"Static hosting configured for application '{application_id}': {static_site_url}"
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to enable static hosting for application '{application_id}': {e}. "
+                        "Deployment will continue without static hosting."
+                    )
+
             # Store deployment state with proper timestamps
             self._deployed_applications[application_id] = {
                 "display_name": app.metadata["name"],
@@ -1527,6 +1550,7 @@ class AppsManager:
                 "application_resources": app.metadata["resources"],
                 "authorized_users": app.metadata["authorized_users"],
                 "available_methods": app.metadata["available_methods"],
+                "static_site_url": static_site_url,
                 "started_at": started_at,  # Preserved from original deployment or set for new application
                 "last_updated_at": last_updated_at,  # Same as started_at for new, current time for updates
                 "last_updated_by": user_id,

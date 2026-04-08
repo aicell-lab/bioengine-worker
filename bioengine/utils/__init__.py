@@ -1,6 +1,7 @@
 from .artifact_utils import (
     create_application_from_files,
     create_file_list_from_directory,
+    enable_static_hosting_on_artifact,
     ensure_applications_collection,
     validate_manifest,
 )

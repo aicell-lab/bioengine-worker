@@ -1,6 +1,6 @@
 import base64
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Union
 
 import httpx
@@ -543,6 +543,74 @@ async def commit_artifact(
         raise RuntimeError(f"Failed to commit artifact '{artifact_id}': {e}")
 
     logger.info(f"Successfully committed artifact '{artifact_id}'")
+
+
+async def enable_static_hosting_on_artifact(
+    artifact_manager: ObjectProxy,
+    artifact_id: str,
+    frontend_entry: str,
+    server_url: str,
+    logger: Optional[logging.Logger] = None,
+) -> str:
+    """
+    Enable static site hosting on a Hypha artifact and return the site URL.
+
+    Configures the artifact's ``website_root`` config field so that the Hypha
+    server serves the frontend files as a static website.  The ``frontend_entry``
+    path determines which subdirectory becomes the website root.
+
+    For example, if ``frontend_entry`` is ``"frontend/index.html"``, the
+    ``website_root`` is set to ``"frontend"`` and the resulting site URL is::
+
+        {server_url}/{workspace}/artifacts/{alias}/
+
+    If ``frontend_entry`` is at the artifact root (e.g. ``"index.html"``), the
+    ``website_root`` is set to ``""`` (empty string, i.e. the artifact root).
+
+    Args:
+        artifact_manager: Hypha artifact manager service instance.
+        artifact_id: Fully-qualified artifact ID (``workspace/alias``).
+        frontend_entry: Path to the entry HTML file relative to the artifact
+            root (e.g. ``"frontend/index.html"`` or ``"index.html"``).
+        server_url: Public base URL of the Hypha server
+            (e.g. ``"https://hypha.aicell.io"``).
+        logger: Optional logger instance.
+
+    Returns:
+        The public static site URL for the artifact.
+
+    Raises:
+        RuntimeError: If reading or editing the artifact fails.
+    """
+    if logger is None:
+        logger = create_logger("ArtifactUtils")
+
+    # Derive website_root from the directory portion of frontend_entry
+    parent = str(PurePosixPath(frontend_entry).parent)
+    website_root = "" if parent == "." else parent
+
+    try:
+        # Read existing config to avoid overwriting other settings
+        existing_artifact = await artifact_manager.read(artifact_id)
+        config = dict(existing_artifact.config or {})
+        config["website_root"] = website_root
+
+        await artifact_manager.edit(
+            artifact_id=artifact_id,
+            config=config,
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to enable static hosting on artifact '{artifact_id}': {e}"
+        )
+
+    workspace, alias = artifact_id.split("/", 1)
+    static_site_url = f"{server_url}/{workspace}/artifacts/{alias}/"
+    logger.info(
+        f"Static hosting enabled for artifact '{artifact_id}' "
+        f"(website_root='{website_root}'). URL: {static_site_url}"
+    )
+    return static_site_url
 
 
 async def create_application_from_files(

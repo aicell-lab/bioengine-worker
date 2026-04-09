@@ -18,3 +18,5 @@ deployments:
   - demo_deployment:DemoDeployment
 authorized_users:
   - "*" # Allow all users to access the application
+static_hosting: true
+frontend_entry: "frontend/index.html"

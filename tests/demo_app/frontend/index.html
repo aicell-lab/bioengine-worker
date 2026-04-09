@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BioEngine Demo App</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+    header h1 { font-size: 2rem; font-weight: 700; color: #38bdf8; }
+    header p  { color: #94a3b8; margin-top: 0.25rem; }
+
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 0.75rem;
+      padding: 1.5rem;
+      width: 100%;
+      max-width: 680px;
+      margin-bottom: 1.25rem;
+    }
+
+    .card h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #64748b;
+      margin-bottom: 1rem;
+    }
+
+    label { display: block; font-size: 0.875rem; color: #94a3b8; margin-bottom: 0.25rem; }
+
+    input[type="text"] {
+      width: 100%;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 0.5rem;
+      color: #e2e8f0;
+      font-size: 0.875rem;
+      padding: 0.5rem 0.75rem;
+      outline: none;
+      margin-bottom: 0.75rem;
+    }
+    input[type="text"]:focus { border-color: #38bdf8; }
+
+    .btn {
+      background: #0284c7;
+      color: #fff;
+      border: none;
+      border-radius: 0.5rem;
+      padding: 0.5rem 1.25rem;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 600;
+      transition: background 0.15s;
+    }
+    .btn:hover  { background: #0369a1; }
+    .btn:active { background: #075985; }
+    .btn:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
+
+    .status-dot {
+      display: inline-block;
+      width: 0.6rem;
+      height: 0.6rem;
+      border-radius: 50%;
+      margin-right: 0.4rem;
+      background: #64748b;
+    }
+    .status-dot.connected  { background: #22c55e; }
+    .status-dot.error      { background: #ef4444; }
+    .status-dot.connecting { background: #f59e0b; }
+
+    #status-line { font-size: 0.8rem; color: #94a3b8; display: flex; align-items: center; margin-top: 0.75rem; }
+
+    .result-block {
+      background: #0f172a;
+      border-radius: 0.5rem;
+      padding: 1rem;
+      font-size: 0.8rem;
+      color: #94a3b8;
+      white-space: pre-wrap;
+      word-break: break-all;
+      min-height: 3rem;
+      max-height: 18rem;
+      overflow-y: auto;
+    }
+
+    .ascii-block {
+      font-family: monospace;
+      font-size: 0.62rem;
+      color: #38bdf8;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    .row { display: flex; gap: 0.75rem; align-items: flex-end; }
+    .row input { flex: 1; margin-bottom: 0; }
+
+    .kv-grid { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; font-size: 0.875rem; }
+    .kv-key   { color: #64748b; }
+    .kv-value { color: #e2e8f0; word-break: break-all; }
+
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
+    }
+    .section-header h2 { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>⚙️ BioEngine Demo App</h1>
+  <p>Interactive frontend for the BioEngine Demo Deployment</p>
+</header>
+
+<!-- Connection card -->
+<div class="card">
+  <h2>Connection</h2>
+
+  <label for="serverUrl">Hypha Server URL</label>
+  <input id="serverUrl" type="text" value="https://hypha.aicell.io" />
+
+  <label for="workerServiceId">Worker Service ID (workspace/client-id:bioengine-worker)</label>
+  <input id="workerServiceId" type="text" placeholder="my-workspace/client-id:bioengine-worker" />
+
+  <label for="token">Token (optional — leave blank for anonymous)</label>
+  <div class="row">
+    <input id="token" type="text" placeholder="Leave blank for anonymous access" />
+    <button class="btn" id="connectBtn" onclick="connect()">Connect</button>
+  </div>
+
+  <div id="status-line">
+    <span class="status-dot" id="dot"></span>
+    <span id="statusText">Not connected</span>
+  </div>
+</div>
+
+<!-- Ping card -->
+<div class="card">
+  <div class="section-header">
+    <h2>Ping</h2>
+    <button class="btn" id="pingBtn" onclick="callPing()" disabled>Ping</button>
+  </div>
+  <div class="kv-grid" id="pingResult">
+    <span class="kv-key">status</span><span class="kv-value">—</span>
+  </div>
+</div>
+
+<!-- ASCII art card -->
+<div class="card">
+  <div class="section-header">
+    <h2>ASCII Art</h2>
+    <button class="btn" id="asciiBtn" onclick="callAsciiArt()" disabled>Load</button>
+  </div>
+  <div class="result-block ascii-block" id="asciiResult">Press "Load" to fetch ASCII art…</div>
+</div>
+
+<!-- Raw status card (collapsible) -->
+<div class="card">
+  <div class="section-header">
+    <h2>Application Status (raw)</h2>
+    <button class="btn" id="statusBtn" onclick="callStatus()" disabled>Refresh</button>
+  </div>
+  <div class="result-block" id="statusResult">—</div>
+</div>
+
+<script type="module">
+// ── Hypha-RPC via ESM CDN ─────────────────────────────────────────────────────
+import { connectToServer } from "https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.mjs";
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let server       = null;
+let workerSvc    = null;
+let appSvc       = null;   // websocket service for the deployed demo-app
+let appId        = null;   // Ray Serve application_id (e.g. "witty-hawk-1a2b")
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function setStatus(state, text) {
+  const dot  = document.getElementById("dot");
+  const span = document.getElementById("statusText");
+  dot.className  = "status-dot " + state;
+  span.textContent = text;
+}
+
+function setButtons(enabled) {
+  ["pingBtn","asciiBtn","statusBtn"].forEach(id => {
+    document.getElementById(id).disabled = !enabled;
+  });
+}
+
+function showPingResult(data) {
+  const grid = document.getElementById("pingResult");
+  grid.innerHTML = Object.entries(data).map(([k,v]) =>
+    `<span class="kv-key">${k}</span><span class="kv-value">${v}</span>`
+  ).join("");
+}
+
+// Resolve the first running demo-app replica service from the worker.
+async function findDemoAppService() {
+  const apps = await workerSvc.list_applications({ _rkwargs: true });
+  // Look for a deployed app whose artifact_id ends in /demo-app
+  for (const [id, info] of Object.entries(apps)) {
+    if ((info.artifact_id || "").endsWith("/demo-app")) {
+      return { id, info };
+    }
+  }
+  return null;
+}
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+window.connect = async function () {
+  const serverUrl       = document.getElementById("serverUrl").value.trim();
+  const workerServiceId = document.getElementById("workerServiceId").value.trim();
+  const token           = document.getElementById("token").value.trim() || undefined;
+
+  if (!workerServiceId) {
+    alert("Please enter the Worker Service ID.");
+    return;
+  }
+
+  document.getElementById("connectBtn").disabled = true;
+  setStatus("connecting", "Connecting…");
+  setButtons(false);
+
+  try {
+    const opts = { server_url: serverUrl };
+    if (token) opts.token = token;
+    server = await connectToServer(opts);
+    setStatus("connecting", "Getting worker service…");
+
+    workerSvc = await server.getService(workerServiceId, { _rkwargs: true });
+
+    setStatus("connecting", "Locating demo-app deployment…");
+
+    const result = await findDemoAppService();
+    if (!result) {
+      setStatus("error", "demo-app is not deployed on this worker.");
+      document.getElementById("connectBtn").disabled = false;
+      return;
+    }
+
+    appId = result.id;
+    const serviceIds = result.info.service_ids || [];
+    if (!serviceIds.length || !serviceIds[0].websocket_service_id) {
+      setStatus("error", `demo-app found (${appId}) but has no service endpoint yet. It may still be starting.`);
+      document.getElementById("connectBtn").disabled = false;
+      return;
+    }
+
+    const wsServiceId = serviceIds[0].websocket_service_id;
+    setStatus("connecting", `Connecting to app service (${wsServiceId})…`);
+    appSvc = await server.getService(wsServiceId, { _rkwargs: true });
+
+    setStatus("connected", `Connected — app: ${appId}`);
+    setButtons(true);
+  } catch (err) {
+    setStatus("error", "Error: " + err.message);
+    console.error(err);
+  } finally {
+    document.getElementById("connectBtn").disabled = false;
+  }
+};
+
+window.callPing = async function () {
+  if (!appSvc) return;
+  document.getElementById("pingBtn").disabled = true;
+  try {
+    const res = await appSvc.ping({ _rkwargs: true });
+    showPingResult(res);
+  } catch (err) {
+    showPingResult({ error: err.message });
+  } finally {
+    document.getElementById("pingBtn").disabled = false;
+  }
+};
+
+window.callAsciiArt = async function () {
+  if (!appSvc) return;
+  document.getElementById("asciiBtn").disabled = true;
+  const el = document.getElementById("asciiResult");
+  el.textContent = "Loading…";
+  try {
+    const lines = await appSvc.ascii_art({ _rkwargs: true });
+    el.textContent = Array.isArray(lines) ? lines.join("\n") : String(lines);
+  } catch (err) {
+    el.textContent = "Error: " + err.message;
+  } finally {
+    document.getElementById("asciiBtn").disabled = false;
+  }
+};
+
+window.callStatus = async function () {
+  if (!workerSvc || !appId) return;
+  document.getElementById("statusBtn").disabled = true;
+  const el = document.getElementById("statusResult");
+  try {
+    const res = await workerSvc.get_application_status({
+      application_ids: [appId],
+      _rkwargs: true,
+    });
+    el.textContent = JSON.stringify(res, null, 2);
+  } catch (err) {
+    el.textContent = "Error: " + err.message;
+  } finally {
+    document.getElementById("statusBtn").disabled = false;
+  }
+};
+
+// Auto-fill from URL hash: #server=URL&worker=SERVICE_ID&token=TOKEN
+(function readHash() {
+  const hash = location.hash.replace(/^#\/?colab\/?/, "").replace(/^#/, "");
+  if (!hash) return;
+  const params = new URLSearchParams(hash);
+  if (params.get("server"))  document.getElementById("serverUrl").value = params.get("server");
+  if (params.get("worker"))  document.getElementById("workerServiceId").value = params.get("worker");
+  if (params.get("token"))   document.getElementById("token").value = params.get("token");
+})();
+</script>
+</body>
+</html>

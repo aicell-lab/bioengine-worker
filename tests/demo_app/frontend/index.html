@@ -144,7 +144,7 @@
 <div class="card">
   <h2>Connection</h2>
 
-  <div class="info-row">Service: <span>bioimage-io/demo-app</span> &nbsp;·&nbsp; Server: <span>https://hypha.aicell.io</span></div>
+  <div class="info-row">Server: <span id="infoServer">…</span> &nbsp;·&nbsp; Service: <span id="infoService">…</span></div>
 
   <button class="btn" id="connectBtn" onclick="connect()">Connect</button>
 
@@ -186,8 +186,13 @@
 <script type="module">
 import { connectToServer } from "https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.mjs";
 
-const SERVER_URL  = "https://hypha.aicell.io";
-const SERVICE_ID  = "bioimage-io/demo-app";
+const params     = new URLSearchParams(window.location.search);
+const SERVER_URL = params.get("server")        || "";
+const SERVICE_ID = params.get("ws_service_id") || "";
+
+// Populate the info row with resolved values
+document.getElementById("infoServer").textContent  = SERVER_URL  || "(not provided)";
+document.getElementById("infoService").textContent = SERVICE_ID || "(not provided)";
 
 let svc = null;
 
@@ -203,6 +208,10 @@ function setButtons(enabled) {
 }
 
 window.connect = async function () {
+  if (!SERVER_URL || !SERVICE_ID) {
+    setStatus("error", "Missing server or ws_service_id in URL params");
+    return;
+  }
   document.getElementById("connectBtn").disabled = true;
   setStatus("connecting", "Connecting…");
   setButtons(false);

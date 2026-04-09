@@ -3,6 +3,7 @@ from .artifact_utils import (
     create_file_list_from_directory,
     enable_static_hosting_on_artifact,
     ensure_applications_collection,
+    get_static_site_url,
     validate_manifest,
 )
 from .geo_location import fetch_centroid_coordinates, fetch_geolocation

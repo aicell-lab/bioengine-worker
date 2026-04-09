@@ -20,8 +20,8 @@ from bioengine.utils import (
     create_application_from_files,
     create_context,
     create_logger,
-    enable_static_hosting_on_artifact,
     ensure_applications_collection,
+    get_static_site_url,
 )
 
 
@@ -703,6 +703,24 @@ class AppsManager:
                 message = f"Application '{application_id}' has not been deployed yet."
             deployments = {}
 
+        service_ids = await self._get_application_service_ids(application_id)
+
+        # Build static site URL with runtime config params so the frontend
+        # knows which Hypha server and service replica to connect to.
+        base_static_url = application_info.get("static_site_url")
+        static_site_url = None
+        if base_static_url and service_ids:
+            first = service_ids[0]
+            ws_id = first.get("websocket_service_id") or ""
+            rtc_id = first.get("webrtc_service_id") or ""
+            server_url = self.server.config.public_base_url
+            params = (
+                f"server={server_url}"
+                f"&ws_service_id={ws_id}"
+                f"&webrtc_service_id={rtc_id}"
+            )
+            static_site_url = f"{base_static_url}?{params}"
+
         return {
             "display_name": application_info["display_name"],
             "description": application_info["description"],
@@ -721,8 +739,8 @@ class AppsManager:
             "authorized_users": application_info["authorized_users"],
             "available_methods": application_info["available_methods"],
             "max_ongoing_requests": application_info["max_ongoing_requests"],
-            "static_site_url": application_info.get("static_site_url"),
-            "service_ids": await self._get_application_service_ids(application_id),
+            "static_site_url": static_site_url,
+            "service_ids": service_ids,
             "start_time": application_info["started_at"],
             "last_updated_at": application_info["last_updated_at"],
             "last_updated_by": application_info["last_updated_by"],
@@ -1515,26 +1533,13 @@ class AppsManager:
                 required_resources=app.metadata["resources"],
             )
 
-            # Enable static hosting on the artifact if requested in the manifest
+            # Derive static site URL from the manifest (hosting was set up in save_application)
             static_site_url = None
             if app.metadata.get("static_hosting"):
-                frontend_entry = app.metadata.get("frontend_entry") or "index.html"
-                try:
-                    static_site_url = await enable_static_hosting_on_artifact(
-                        artifact_manager=self.artifact_manager,
-                        artifact_id=artifact_id,
-                        frontend_entry=frontend_entry,
-                        server_url=self.server.config.public_base_url,
-                        logger=self.logger,
-                    )
-                    self.logger.info(
-                        f"Static hosting configured for application '{application_id}': {static_site_url}"
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"Failed to enable static hosting for application '{application_id}': {e}. "
-                        "Deployment will continue without static hosting."
-                    )
+                static_site_url = get_static_site_url(
+                    artifact_id=artifact_id,
+                    server_url=self.server.config.public_base_url,
+                )
 
             # Store deployment state with proper timestamps
             self._deployed_applications[application_id] = {

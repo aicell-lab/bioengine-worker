@@ -545,42 +545,49 @@ async def commit_artifact(
     logger.info(f"Successfully committed artifact '{artifact_id}'")
 
 
+def get_static_site_url(artifact_id: str, server_url: str) -> str:
+    """
+    Return the static site URL for a BioEngine artifact.
+
+    The URL follows the Hypha convention::
+
+        {server_url}/{workspace}/view/{alias}/
+
+    Args:
+        artifact_id: Fully-qualified artifact ID (``workspace/alias``).
+        server_url: Public base URL of the Hypha server.
+
+    Returns:
+        The public static site URL.
+    """
+    workspace, alias = artifact_id.split("/", 1)
+    return f"{server_url}/{workspace}/view/{alias}/"
+
+
 async def enable_static_hosting_on_artifact(
     artifact_manager: ObjectProxy,
     artifact_id: str,
     frontend_entry: str,
-    server_url: str,
     logger: Optional[logging.Logger] = None,
-) -> str:
+) -> None:
     """
-    Enable static site hosting on a Hypha artifact and return the site URL.
+    Configure ``website_root`` on a staged artifact to enable static site hosting.
 
-    Configures the artifact's ``website_root`` config field so that the Hypha
-    server serves the frontend files as a static website.  The ``frontend_entry``
-    path determines which subdirectory becomes the website root.
+    Must be called while the artifact is in stage mode (before commit).  Sets the
+    ``website_root`` config key so the Hypha server serves the frontend files.
 
-    For example, if ``frontend_entry`` is ``"frontend/index.html"``, the
-    ``website_root`` is set to ``"frontend"`` and the resulting site URL is::
-
-        {server_url}/{workspace}/artifacts/{alias}/
-
-    If ``frontend_entry`` is at the artifact root (e.g. ``"index.html"``), the
-    ``website_root`` is set to ``""`` (empty string, i.e. the artifact root).
+    The ``frontend_entry`` path determines which subdirectory becomes the root:
+    - ``"frontend/index.html"``  →  ``website_root = "frontend"``
+    - ``"index.html"``           →  ``website_root = ""`` (artifact root)
 
     Args:
         artifact_manager: Hypha artifact manager service instance.
         artifact_id: Fully-qualified artifact ID (``workspace/alias``).
-        frontend_entry: Path to the entry HTML file relative to the artifact
-            root (e.g. ``"frontend/index.html"`` or ``"index.html"``).
-        server_url: Public base URL of the Hypha server
-            (e.g. ``"https://hypha.aicell.io"``).
+        frontend_entry: Path to the entry HTML file relative to the artifact root.
         logger: Optional logger instance.
 
-    Returns:
-        The public static site URL for the artifact.
-
     Raises:
-        RuntimeError: If reading or editing the artifact fails.
+        RuntimeError: If editing the staged artifact fails.
     """
     if logger is None:
         logger = create_logger("ArtifactUtils")
@@ -590,27 +597,25 @@ async def enable_static_hosting_on_artifact(
     website_root = "" if parent == "." else parent
 
     try:
-        # Read existing config to avoid overwriting other settings
-        existing_artifact = await artifact_manager.read(artifact_id)
+        # Read current staged config so we don't overwrite other settings
+        existing_artifact = await artifact_manager.read(artifact_id, stage=True)
         config = dict(existing_artifact.config or {})
         config["website_root"] = website_root
 
         await artifact_manager.edit(
             artifact_id=artifact_id,
             config=config,
+            stage=True,
         )
     except Exception as e:
         raise RuntimeError(
             f"Failed to enable static hosting on artifact '{artifact_id}': {e}"
         )
 
-    workspace, alias = artifact_id.split("/", 1)
-    static_site_url = f"{server_url}/{workspace}/artifacts/{alias}/"
     logger.info(
-        f"Static hosting enabled for artifact '{artifact_id}' "
-        f"(website_root='{website_root}'). URL: {static_site_url}"
+        f"Static hosting configured for artifact '{artifact_id}' "
+        f"(website_root='{website_root}')"
     )
-    return static_site_url
 
 
 async def create_application_from_files(
@@ -757,6 +762,23 @@ async def create_application_from_files(
                 logger.warning(
                     f"Failed to remove old file '{file_name}': {e}. Continuing anyway..."
                 )
+
+    # Enable static hosting while still in stage mode (requires write access,
+    # which is guaranteed here since we just created/edited this artifact)
+    if application_manifest.get("static_hosting"):
+        frontend_entry = application_manifest.get("frontend_entry") or "index.html"
+        try:
+            await enable_static_hosting_on_artifact(
+                artifact_manager=artifact_manager,
+                artifact_id=artifact.id,
+                frontend_entry=frontend_entry,
+                logger=logger,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to configure static hosting for artifact '{artifact.id}': {e}. "
+                "Continuing without static hosting."
+            )
 
     # Commit the artifact
     await commit_artifact(

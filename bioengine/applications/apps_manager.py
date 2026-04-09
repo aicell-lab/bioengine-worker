@@ -1533,9 +1533,7 @@ class AppsManager:
                 required_resources=app.metadata["resources"],
             )
 
-            # Derive static site URL from the manifest's static_hosting field.
-            # The manifest is public and always readable; the Hypha artifact config
-            # (website_root) is not readable across workspaces.
+            # Derive static site base URL from the current hypha server and application ID
             static_site_url = None
             if app.metadata.get("static_hosting"):
                 static_site_url = get_static_site_url(

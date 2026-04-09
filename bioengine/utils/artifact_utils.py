@@ -357,6 +357,19 @@ async def stage_artifact(
     # Define collection_id early so it's available for artifact creation
     collection_id = f"{workspace}/applications"
 
+    # Build view_config from frontend_entry if present
+    view_config = None
+    frontend_entry = manifest.get("frontend_entry")
+    if frontend_entry:
+        entry_path = PurePosixPath(frontend_entry)
+        parent = str(entry_path.parent)
+        view_config = {
+            "branch": "main",
+            "root_directory": "" if parent == "." else parent,
+            "headers": {},
+            "index": entry_path.name,
+        }
+
     # Check if artifact exists and handle collection placement
     artifact = None
     try:
@@ -377,17 +390,20 @@ async def stage_artifact(
             existing_artifact = None
 
         if existing_artifact:
-            # Edit existing artifact
+            # Edit existing artifact — preserve existing config, then apply overrides
+            artifact_config = dict(existing_artifact.config or {})
+            if permissions:
+                artifact_config["permissions"] = permissions
+            if view_config is not None:
+                artifact_config["view_config"] = view_config
+
             edit_kwargs = {
                 "artifact_id": artifact_id,
                 "manifest": manifest,
                 "type": "application",
                 "stage": True,
             }
-            if permissions:
-                # Set permissions in existing config
-                artifact_config = existing_artifact.config or {}
-                artifact_config["permissions"] = permissions
+            if artifact_config:
                 edit_kwargs["config"] = artifact_config
 
             artifact = await artifact_manager.edit(**edit_kwargs)
@@ -401,6 +417,12 @@ async def stage_artifact(
     # Create new artifact if it doesn't exist or was deleted
     if artifact is None:
         try:
+            initial_config = {}
+            if permissions:
+                initial_config["permissions"] = permissions
+            if view_config is not None:
+                initial_config["view_config"] = view_config
+
             create_kwargs = {
                 "parent_id": collection_id,
                 "type": "application",
@@ -408,8 +430,8 @@ async def stage_artifact(
                 "manifest": manifest,
                 "stage": True,
             }
-            if permissions:
-                create_kwargs["config"] = {"permissions": permissions}
+            if initial_config:
+                create_kwargs["config"] = initial_config
 
             artifact = await artifact_manager.create(**create_kwargs)
             logger.info(f"Created new artifact '{artifact.id}'")
@@ -564,65 +586,6 @@ def get_static_site_url(artifact_id: str, server_url: str) -> str:
     return f"{server_url}/{workspace}/view/{alias}/"
 
 
-async def configure_view_config_on_artifact(
-    artifact_manager: ObjectProxy,
-    artifact_id: str,
-    frontend_entry: str,
-    logger: Optional[logging.Logger] = None,
-) -> None:
-    """
-    Configure ``view_config`` on a staged artifact to enable static site hosting.
-
-    Must be called while the artifact is in stage mode (before commit). Sets the
-    ``view_config`` config key so the Hypha server serves the frontend files.
-
-    The ``frontend_entry`` path determines ``root_directory`` and ``index``:
-    - ``"frontend/index.html"``  →  ``root_directory = "frontend"``, ``index = "index.html"``
-    - ``"index.html"``           →  ``root_directory = ""``, ``index = "index.html"``
-
-    Args:
-        artifact_manager: Hypha artifact manager service instance.
-        artifact_id: Fully-qualified artifact ID (``workspace/alias``).
-        frontend_entry: Path to the entry HTML file relative to the artifact root.
-        logger: Optional logger instance.
-
-    Raises:
-        RuntimeError: If editing the staged artifact fails.
-    """
-    if logger is None:
-        logger = create_logger("ArtifactUtils")
-
-    entry_path = PurePosixPath(frontend_entry)
-    parent = str(entry_path.parent)
-    root_directory = "" if parent == "." else parent
-    index = entry_path.name
-
-    try:
-        # Read current staged config so we don't overwrite other settings
-        existing_artifact = await artifact_manager.read(artifact_id, stage=True)
-        config = dict(existing_artifact.config or {})
-        config["view_config"] = {
-            "branch": "main",
-            "root_directory": root_directory,
-            "headers": {},
-            "index": index,
-        }
-
-        await artifact_manager.edit(
-            artifact_id=artifact_id,
-            config=config,
-            stage=True,
-        )
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to configure view_config on artifact '{artifact_id}': {e}"
-        )
-
-    logger.info(
-        f"view_config configured for artifact '{artifact_id}' "
-        f"(root_directory='{root_directory}', index='{index}')"
-    )
-
 
 async def create_application_from_files(
     artifact_manager: ObjectProxy,
@@ -768,23 +731,6 @@ async def create_application_from_files(
                 logger.warning(
                     f"Failed to remove old file '{file_name}': {e}. Continuing anyway..."
                 )
-
-    # Configure view_config for static site hosting while still in stage mode.
-    # Triggered whenever frontend_entry is specified in the manifest.
-    frontend_entry = application_manifest.get("frontend_entry")
-    if frontend_entry:
-        try:
-            await configure_view_config_on_artifact(
-                artifact_manager=artifact_manager,
-                artifact_id=artifact.id,
-                frontend_entry=frontend_entry,
-                logger=logger,
-            )
-        except Exception as e:
-            logger.warning(
-                f"Failed to configure view_config for artifact '{artifact.id}': {e}. "
-                "Continuing without static hosting."
-            )
 
     # Commit the artifact
     await commit_artifact(

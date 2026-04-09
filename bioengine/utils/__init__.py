@@ -1,5 +1,4 @@
 from .artifact_utils import (
-    configure_view_config_on_artifact,
     create_application_from_files,
     create_file_list_from_directory,
     ensure_applications_collection,

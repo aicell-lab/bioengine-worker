@@ -47,8 +47,7 @@ logger = logging.getLogger("ray.serve")
         # Number of CPUs to allocate for the deployment
         "num_cpus": 1,
         # Number of GPUs to allocate for the deployment
-        # This can be set to 0 is the parameter `disable_gpu` is set to True when deploying
-        "num_gpus": 1,
+        "num_gpus": 0,
         # Memory limit for the deployment (0.5 GB)
         "memory": 0.5 * 1024**3,
         # Runtime environment for the deployment (e.g., dependencies, environment variables)

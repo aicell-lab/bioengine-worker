@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BioEngine Demo App</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    header { text-align: center; margin-bottom: 2rem; }
+    header h1 { font-size: 2rem; font-weight: 700; color: #38bdf8; }
+    header p  { color: #94a3b8; margin-top: 0.25rem; }
+
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 0.75rem;
+      padding: 1.5rem;
+      width: 100%;
+      max-width: 680px;
+      margin-bottom: 1.25rem;
+    }
+
+    .card h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #64748b;
+      margin-bottom: 1rem;
+    }
+
+    label { display: block; font-size: 0.875rem; color: #94a3b8; margin-bottom: 0.25rem; }
+
+    input[type="text"] {
+      width: 100%;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 0.5rem;
+      color: #e2e8f0;
+      font-size: 0.875rem;
+      padding: 0.5rem 0.75rem;
+      outline: none;
+      margin-bottom: 0.75rem;
+    }
+    input[type="text"]:focus { border-color: #38bdf8; }
+
+    .btn {
+      background: #0284c7;
+      color: #fff;
+      border: none;
+      border-radius: 0.5rem;
+      padding: 0.5rem 1.25rem;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 600;
+      transition: background 0.15s;
+    }
+    .btn:hover   { background: #0369a1; }
+    .btn:active  { background: #075985; }
+    .btn:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
+
+    .status-dot {
+      display: inline-block;
+      width: 0.6rem; height: 0.6rem;
+      border-radius: 50%;
+      margin-right: 0.4rem;
+      background: #64748b;
+    }
+    .status-dot.connected  { background: #22c55e; }
+    .status-dot.error      { background: #ef4444; }
+    .status-dot.connecting { background: #f59e0b; }
+
+    #status-line {
+      font-size: 0.8rem; color: #94a3b8;
+      display: flex; align-items: center;
+      margin-top: 0.75rem;
+    }
+
+    .section-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 0.75rem;
+    }
+    .section-header h2 { margin-bottom: 0; }
+
+    .kv-grid {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 0.25rem 1rem;
+      font-size: 0.875rem;
+    }
+    .kv-key   { color: #64748b; }
+    .kv-value { color: #e2e8f0; word-break: break-all; }
+
+    .result-block {
+      background: #0f172a;
+      border-radius: 0.5rem;
+      padding: 1rem;
+      font-size: 0.8rem;
+      color: #94a3b8;
+      white-space: pre-wrap;
+      word-break: break-all;
+      min-height: 3rem;
+      max-height: 18rem;
+      overflow-y: auto;
+    }
+
+    .ascii-block {
+      font-family: monospace;
+      font-size: 0.62rem;
+      color: #38bdf8;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    .row { display: flex; gap: 0.75rem; align-items: flex-end; }
+    .row input { flex: 1; margin-bottom: 0; }
+
+    .info-row {
+      display: flex; gap: 0.5rem; align-items: baseline;
+      font-size: 0.8rem; color: #64748b; margin-bottom: 0.5rem;
+    }
+    .info-row span { color: #94a3b8; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>⚙️ BioEngine Demo App</h1>
+  <p>Interactive frontend for the BioEngine Demo Deployment</p>
+</header>
+
+<!-- Connection card -->
+<div class="card">
+  <h2>Connection</h2>
+
+  <div class="info-row">Server: <span id="infoServer">…</span> &nbsp;·&nbsp; Service: <span id="infoService">…</span></div>
+
+  <button class="btn" id="connectBtn" onclick="connect()">Connect</button>
+
+  <div id="status-line">
+    <span class="status-dot" id="dot"></span>
+    <span id="statusText">Not connected</span>
+  </div>
+</div>
+
+<!-- Ping card -->
+<div class="card">
+  <div class="section-header">
+    <h2>Ping</h2>
+    <button class="btn" id="pingBtn" onclick="callPing()" disabled>Ping</button>
+  </div>
+  <div class="kv-grid" id="pingResult">
+    <span class="kv-key">status</span><span class="kv-value">—</span>
+  </div>
+</div>
+
+<!-- ASCII art card -->
+<div class="card">
+  <div class="section-header">
+    <h2>ASCII Art</h2>
+    <button class="btn" id="asciiBtn" onclick="callAsciiArt()" disabled>Load</button>
+  </div>
+  <div class="result-block ascii-block" id="asciiResult">Press "Load" to fetch ASCII art…</div>
+</div>
+
+<!-- Datasets card -->
+<div class="card">
+  <div class="section-header">
+    <h2>List Datasets</h2>
+    <button class="btn" id="datasetsBtn" onclick="callListDatasets()" disabled>List</button>
+  </div>
+  <div class="result-block" id="datasetsResult">—</div>
+</div>
+
+<script type="module">
+import { connectToServer } from "https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.mjs";
+
+const params     = new URLSearchParams(window.location.search);
+const SERVER_URL = params.get("server")        || "";
+const SERVICE_ID = params.get("ws_service_id") || "";
+
+// Populate the info row with resolved values
+document.getElementById("infoServer").textContent  = SERVER_URL  || "(not provided)";
+document.getElementById("infoService").textContent = SERVICE_ID || "(not provided)";
+
+let svc = null;
+
+function setStatus(state, text) {
+  document.getElementById("dot").className = "status-dot " + state;
+  document.getElementById("statusText").textContent = text;
+}
+
+function setButtons(enabled) {
+  ["pingBtn", "asciiBtn", "datasetsBtn"].forEach(id => {
+    document.getElementById(id).disabled = !enabled;
+  });
+}
+
+window.connect = async function () {
+  if (!SERVER_URL || !SERVICE_ID) {
+    setStatus("error", "Missing server or ws_service_id in URL params");
+    return;
+  }
+  document.getElementById("connectBtn").disabled = true;
+  setStatus("connecting", "Connecting…");
+  setButtons(false);
+  try {
+    const server = await connectToServer({ server_url: SERVER_URL });
+    setStatus("connecting", `Getting service ${SERVICE_ID}…`);
+    svc = await server.getService(SERVICE_ID, { _rkwargs: true });
+    setStatus("connected", `Connected to ${SERVICE_ID}`);
+    setButtons(true);
+  } catch (err) {
+    setStatus("error", "Error: " + err.message);
+    console.error(err);
+  } finally {
+    document.getElementById("connectBtn").disabled = false;
+  }
+};
+
+window.callPing = async function () {
+  if (!svc) return;
+  document.getElementById("pingBtn").disabled = true;
+  try {
+    const res = await svc.ping({ _rkwargs: true });
+    const grid = document.getElementById("pingResult");
+    grid.innerHTML = Object.entries(res).map(([k, v]) =>
+      `<span class="kv-key">${k}</span><span class="kv-value">${v}</span>`
+    ).join("");
+  } catch (err) {
+    document.getElementById("pingResult").innerHTML =
+      `<span class="kv-key">error</span><span class="kv-value">${err.message}</span>`;
+  } finally {
+    document.getElementById("pingBtn").disabled = false;
+  }
+};
+
+window.callAsciiArt = async function () {
+  if (!svc) return;
+  document.getElementById("asciiBtn").disabled = true;
+  const el = document.getElementById("asciiResult");
+  el.textContent = "Loading…";
+  try {
+    const lines = await svc.ascii_art({ _rkwargs: true });
+    el.textContent = Array.isArray(lines) ? lines.join("\n") : String(lines);
+  } catch (err) {
+    el.textContent = "Error: " + err.message;
+  } finally {
+    document.getElementById("asciiBtn").disabled = false;
+  }
+};
+
+window.callListDatasets = async function () {
+  if (!svc) return;
+  document.getElementById("datasetsBtn").disabled = true;
+  const el = document.getElementById("datasetsResult");
+  el.textContent = "Loading…";
+  try {
+    const res = await svc.list_datasets({ _rkwargs: true });
+    el.textContent = JSON.stringify(res, null, 2);
+  } catch (err) {
+    el.textContent = "Error: " + err.message;
+  } finally {
+    document.getElementById("datasetsBtn").disabled = false;
+  }
+};
+
+</script>
+</body>
+</html>

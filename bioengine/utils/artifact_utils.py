@@ -1,6 +1,6 @@
 import base64
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Union
 
 import httpx
@@ -357,6 +357,19 @@ async def stage_artifact(
     # Define collection_id early so it's available for artifact creation
     collection_id = f"{workspace}/applications"
 
+    # Build view_config from frontend_entry if present
+    view_config = None
+    frontend_entry = manifest.get("frontend_entry")
+    if frontend_entry:
+        entry_path = PurePosixPath(frontend_entry)
+        parent = str(entry_path.parent)
+        view_config = {
+            "branch": "main",
+            "root_directory": "" if parent == "." else parent,
+            "headers": {},
+            "index": entry_path.name,
+        }
+
     # Check if artifact exists and handle collection placement
     artifact = None
     try:
@@ -377,17 +390,20 @@ async def stage_artifact(
             existing_artifact = None
 
         if existing_artifact:
-            # Edit existing artifact
+            # Edit existing artifact — preserve existing config, then apply overrides
+            artifact_config = dict(existing_artifact.config or {})
+            if permissions:
+                artifact_config["permissions"] = permissions
+            if view_config is not None:
+                artifact_config["view_config"] = view_config
+
             edit_kwargs = {
                 "artifact_id": artifact_id,
                 "manifest": manifest,
                 "type": "application",
                 "stage": True,
             }
-            if permissions:
-                # Set permissions in existing config
-                artifact_config = existing_artifact.config or {}
-                artifact_config["permissions"] = permissions
+            if artifact_config:
                 edit_kwargs["config"] = artifact_config
 
             artifact = await artifact_manager.edit(**edit_kwargs)
@@ -401,6 +417,12 @@ async def stage_artifact(
     # Create new artifact if it doesn't exist or was deleted
     if artifact is None:
         try:
+            initial_config = {}
+            if permissions:
+                initial_config["permissions"] = permissions
+            if view_config is not None:
+                initial_config["view_config"] = view_config
+
             create_kwargs = {
                 "parent_id": collection_id,
                 "type": "application",
@@ -408,8 +430,8 @@ async def stage_artifact(
                 "manifest": manifest,
                 "stage": True,
             }
-            if permissions:
-                create_kwargs["config"] = {"permissions": permissions}
+            if initial_config:
+                create_kwargs["config"] = initial_config
 
             artifact = await artifact_manager.create(**create_kwargs)
             logger.info(f"Created new artifact '{artifact.id}'")
@@ -543,6 +565,26 @@ async def commit_artifact(
         raise RuntimeError(f"Failed to commit artifact '{artifact_id}': {e}")
 
     logger.info(f"Successfully committed artifact '{artifact_id}'")
+
+
+def get_static_site_url(artifact_id: str, server_url: str) -> str:
+    """
+    Return the static site URL for a BioEngine artifact.
+
+    The URL follows the Hypha convention::
+
+        {server_url}/{workspace}/view/{alias}/
+
+    Args:
+        artifact_id: Fully-qualified artifact ID (``workspace/alias``).
+        server_url: Public base URL of the Hypha server.
+
+    Returns:
+        The public static site URL.
+    """
+    workspace, alias = artifact_id.split("/", 1)
+    return f"{server_url}/{workspace}/view/{alias}/"
+
 
 
 async def create_application_from_files(

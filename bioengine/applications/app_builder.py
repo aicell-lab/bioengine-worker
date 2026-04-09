@@ -23,7 +23,7 @@ from bioengine.datasets import BioEngineDatasets
 from bioengine.utils import create_logger, update_requirements, validate_manifest
 
 
-class AppManifest(TypedDict):
+class AppManifest(TypedDict, total=False):
     """
     Schema definition for BioEngine application manifest files.
 
@@ -40,6 +40,10 @@ class AppManifest(TypedDict):
     • deployments: List of Python files to deploy (format: "file:ClassName")
     • authorized_users: Who can access this app (user IDs or ["*"] for public)
 
+    Optional Fields:
+    • frontend_entry: Entry HTML file for the static frontend (e.g. "frontend/index.html").
+                      When set, static site hosting is configured automatically.
+
     Example YAML:
     ```yaml
     name: "Image Classifier"
@@ -49,6 +53,7 @@ class AppManifest(TypedDict):
     type: "ray-serve"
     deployments: ["classifier:ImageClassifier"]
     authorized_users: ["user123", "*"]
+    frontend_entry: "frontend/index.html"
     ```
     """
 
@@ -59,6 +64,7 @@ class AppManifest(TypedDict):
     type: str
     deployments: List[str]
     authorized_users: List[str]
+    frontend_entry: str
 
 
 class AppBuilder:
@@ -1454,6 +1460,7 @@ class AppBuilder:
                 ],
                 "application_kwargs": application_kwargs,
                 "application_env_vars": application_env_vars,
+                "frontend_entry": manifest.get("frontend_entry"),
             }
 
             self.logger.info(

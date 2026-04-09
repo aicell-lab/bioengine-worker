@@ -2,6 +2,7 @@ from .artifact_utils import (
     create_application_from_files,
     create_file_list_from_directory,
     ensure_applications_collection,
+    get_static_site_url,
     validate_manifest,
 )
 from .geo_location import fetch_centroid_coordinates, fetch_geolocation

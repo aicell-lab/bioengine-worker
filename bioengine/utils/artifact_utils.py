@@ -564,21 +564,21 @@ def get_static_site_url(artifact_id: str, server_url: str) -> str:
     return f"{server_url}/{workspace}/view/{alias}/"
 
 
-async def enable_static_hosting_on_artifact(
+async def configure_view_config_on_artifact(
     artifact_manager: ObjectProxy,
     artifact_id: str,
     frontend_entry: str,
     logger: Optional[logging.Logger] = None,
 ) -> None:
     """
-    Configure ``website_root`` on a staged artifact to enable static site hosting.
+    Configure ``view_config`` on a staged artifact to enable static site hosting.
 
-    Must be called while the artifact is in stage mode (before commit).  Sets the
-    ``website_root`` config key so the Hypha server serves the frontend files.
+    Must be called while the artifact is in stage mode (before commit). Sets the
+    ``view_config`` config key so the Hypha server serves the frontend files.
 
-    The ``frontend_entry`` path determines which subdirectory becomes the root:
-    - ``"frontend/index.html"``  →  ``website_root = "frontend"``
-    - ``"index.html"``           →  ``website_root = ""`` (artifact root)
+    The ``frontend_entry`` path determines ``root_directory`` and ``index``:
+    - ``"frontend/index.html"``  →  ``root_directory = "frontend"``, ``index = "index.html"``
+    - ``"index.html"``           →  ``root_directory = ""``, ``index = "index.html"``
 
     Args:
         artifact_manager: Hypha artifact manager service instance.
@@ -592,15 +592,21 @@ async def enable_static_hosting_on_artifact(
     if logger is None:
         logger = create_logger("ArtifactUtils")
 
-    # Derive website_root from the directory portion of frontend_entry
-    parent = str(PurePosixPath(frontend_entry).parent)
-    website_root = "" if parent == "." else parent
+    entry_path = PurePosixPath(frontend_entry)
+    parent = str(entry_path.parent)
+    root_directory = "" if parent == "." else parent
+    index = entry_path.name
 
     try:
         # Read current staged config so we don't overwrite other settings
         existing_artifact = await artifact_manager.read(artifact_id, stage=True)
         config = dict(existing_artifact.config or {})
-        config["website_root"] = website_root
+        config["view_config"] = {
+            "branch": "main",
+            "root_directory": root_directory,
+            "headers": {},
+            "index": index,
+        }
 
         await artifact_manager.edit(
             artifact_id=artifact_id,
@@ -609,12 +615,12 @@ async def enable_static_hosting_on_artifact(
         )
     except Exception as e:
         raise RuntimeError(
-            f"Failed to enable static hosting on artifact '{artifact_id}': {e}"
+            f"Failed to configure view_config on artifact '{artifact_id}': {e}"
         )
 
     logger.info(
-        f"Static hosting configured for artifact '{artifact_id}' "
-        f"(website_root='{website_root}')"
+        f"view_config configured for artifact '{artifact_id}' "
+        f"(root_directory='{root_directory}', index='{index}')"
     )
 
 
@@ -763,12 +769,12 @@ async def create_application_from_files(
                     f"Failed to remove old file '{file_name}': {e}. Continuing anyway..."
                 )
 
-    # Enable static hosting while still in stage mode (requires write access,
-    # which is guaranteed here since we just created/edited this artifact)
-    if application_manifest.get("static_hosting"):
-        frontend_entry = application_manifest.get("frontend_entry") or "index.html"
+    # Configure view_config for static site hosting while still in stage mode.
+    # Triggered whenever frontend_entry is specified in the manifest.
+    frontend_entry = application_manifest.get("frontend_entry")
+    if frontend_entry:
         try:
-            await enable_static_hosting_on_artifact(
+            await configure_view_config_on_artifact(
                 artifact_manager=artifact_manager,
                 artifact_id=artifact.id,
                 frontend_entry=frontend_entry,
@@ -776,7 +782,7 @@ async def create_application_from_files(
             )
         except Exception as e:
             logger.warning(
-                f"Failed to configure static hosting for artifact '{artifact.id}': {e}. "
+                f"Failed to configure view_config for artifact '{artifact.id}': {e}. "
                 "Continuing without static hosting."
             )
 

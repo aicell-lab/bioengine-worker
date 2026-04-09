@@ -41,8 +41,8 @@ class AppManifest(TypedDict, total=False):
     • authorized_users: Who can access this app (user IDs or ["*"] for public)
 
     Optional Fields:
-    • static_hosting: Enable Hypha artifact static site hosting for a frontend UI
-    • frontend_entry: Entry HTML file for the static frontend (e.g. "frontend/index.html")
+    • frontend_entry: Entry HTML file for the static frontend (e.g. "frontend/index.html").
+                      When set, static site hosting is configured automatically.
 
     Example YAML:
     ```yaml
@@ -53,7 +53,6 @@ class AppManifest(TypedDict, total=False):
     type: "ray-serve"
     deployments: ["classifier:ImageClassifier"]
     authorized_users: ["user123", "*"]
-    static_hosting: true
     frontend_entry: "frontend/index.html"
     ```
     """
@@ -65,7 +64,6 @@ class AppManifest(TypedDict, total=False):
     type: str
     deployments: List[str]
     authorized_users: List[str]
-    static_hosting: bool
     frontend_entry: str
 
 
@@ -1462,7 +1460,6 @@ class AppBuilder:
                 ],
                 "application_kwargs": application_kwargs,
                 "application_env_vars": application_env_vars,
-                "static_hosting": manifest.get("static_hosting", False),
                 "frontend_entry": manifest.get("frontend_entry"),
             }
 

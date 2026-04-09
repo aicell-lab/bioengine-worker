@@ -72,8 +72,7 @@ authorized_users:
 ### Optional Fields
 
 ```yaml
-# Static frontend hosting
-static_hosting: true        # Enable Hypha artifact static site hosting
+# Static frontend hosting — set frontend_entry to enable automatically
 frontend_entry: "frontend/index.html"  # Entry HTML file (relative to artifact root)
 
 # Metadata
@@ -87,9 +86,9 @@ tutorial: tutorial.ipynb
 tags: [bioengine, image-analysis]
 ```
 
-When `static_hosting: true`, BioEngine enables Hypha's static site hosting on the artifact at deployment time. The `frontend_entry` determines the `website_root` directory served (e.g., `frontend/index.html` → `website_root: "frontend"`). The resulting URL is:
+When `frontend_entry` is set, BioEngine configures a `view_config` on the Hypha artifact during `save_application` (while the artifact is staged). The `frontend_entry` determines `root_directory` and `index` (e.g., `frontend/index.html` → `root_directory: "frontend"`, `index: "index.html"`). The resulting URL is:
 ```
-https://hypha.aicell.io/{workspace}/artifacts/{artifact-id}/
+https://hypha.aicell.io/{workspace}/view/{artifact-id}/
 ```
 
 ---

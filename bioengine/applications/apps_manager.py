@@ -1533,9 +1533,10 @@ class AppsManager:
                 required_resources=app.metadata["resources"],
             )
 
-            # Derive static site base URL from the current hypha server and application ID
+            # Derive static site URL from the manifest's frontend_entry field.
+            # If frontend_entry is set, view_config was configured during save_application.
             static_site_url = None
-            if app.metadata.get("static_hosting"):
+            if app.metadata.get("frontend_entry"):
                 static_site_url = get_static_site_url(
                     artifact_id=artifact_id,
                     server_url=self.server.config.public_base_url,

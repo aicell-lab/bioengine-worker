@@ -146,11 +146,7 @@
 
   <div class="info-row">Service: <span>bioimage-io/demo-app</span> &nbsp;·&nbsp; Server: <span>https://hypha.aicell.io</span></div>
 
-  <label for="token">Token (optional — leave blank for anonymous)</label>
-  <div class="row">
-    <input id="token" type="text" placeholder="Leave blank for anonymous access" />
-    <button class="btn" id="connectBtn" onclick="connect()">Connect</button>
-  </div>
+  <button class="btn" id="connectBtn" onclick="connect()">Connect</button>
 
   <div id="status-line">
     <span class="status-dot" id="dot"></span>
@@ -207,14 +203,11 @@ function setButtons(enabled) {
 }
 
 window.connect = async function () {
-  const token = document.getElementById("token").value.trim() || undefined;
   document.getElementById("connectBtn").disabled = true;
   setStatus("connecting", "Connecting…");
   setButtons(false);
   try {
-    const opts = { server_url: SERVER_URL };
-    if (token) opts.token = token;
-    const server = await connectToServer(opts);
+    const server = await connectToServer({ server_url: SERVER_URL });
     setStatus("connecting", `Getting service ${SERVICE_ID}…`);
     svc = await server.getService(SERVICE_ID, { _rkwargs: true });
     setStatus("connected", `Connected to ${SERVICE_ID}`);
@@ -274,13 +267,6 @@ window.callListDatasets = async function () {
   }
 };
 
-// Auto-fill token from URL hash: #token=...
-(function () {
-  const params = new URLSearchParams(
-    location.hash.replace(/^#\/?(?:colab\/?)?/, "")
-  );
-  if (params.get("token")) document.getElementById("token").value = params.get("token");
-})();
 </script>
 </body>
 </html>

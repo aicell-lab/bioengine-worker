@@ -1533,19 +1533,15 @@ class AppsManager:
                 required_resources=app.metadata["resources"],
             )
 
-            # Derive static site URL only if the Hypha artifact has website_root configured
-            # (set during save_application). Reading the artifact config is the ground truth —
-            # the manifest's static_hosting field alone is not sufficient.
+            # Derive static site URL from the manifest's static_hosting field.
+            # The manifest is public and always readable; the Hypha artifact config
+            # (website_root) is not readable across workspaces.
             static_site_url = None
-            try:
-                artifact_info = await self.artifact_manager.read(artifact_id)
-                if "website_root" in (artifact_info.config or {}):
-                    static_site_url = get_static_site_url(
-                        artifact_id=artifact_id,
-                        server_url=self.server.config.public_base_url,
-                    )
-            except Exception:
-                pass  # local artifact or read failed — static URL not available
+            if app.metadata.get("static_hosting"):
+                static_site_url = get_static_site_url(
+                    artifact_id=artifact_id,
+                    server_url=self.server.config.public_base_url,
+                )
 
             # Store deployment state with proper timestamps
             self._deployed_applications[application_id] = {

@@ -696,6 +696,7 @@ class SessionStatus(TypedDict, total=False):
     n_train: int  # Number of training samples
     n_test: int  # Number of test samples
     start_time: str  # Training start time (ISO format)
+    last_continued_time: str | None  # Time of last restart/continue (ISO format), None if never continued
     current_epoch: int  # Current epoch number (1-indexed)
     total_epochs: int  # Total number of epochs
     elapsed_seconds: float  # Elapsed time in seconds
@@ -710,6 +711,7 @@ class SessionStatus(TypedDict, total=False):
     weight_decay: float
     min_train_masks: int
     validation_interval: int | None
+    user_id: str | None  # Hypha user ID of the session owner
 
 
 class SessionStatusWithId(TypedDict, total=False):
@@ -730,6 +732,7 @@ class SessionStatusWithId(TypedDict, total=False):
     n_train: int
     n_test: int
     start_time: str
+    last_continued_time: str | None
     current_epoch: int
     total_epochs: int
     elapsed_seconds: float
@@ -744,6 +747,7 @@ class SessionStatusWithId(TypedDict, total=False):
     weight_decay: float
     min_train_masks: int
     validation_interval: int | None
+    user_id: str | None
 
 
 async def make_artifact_client(
@@ -912,6 +916,7 @@ def update_status(
     n_train: int | None = None,
     n_test: int | None = None,
     start_time: str | None = None,
+    last_continued_time: str | None = None,
     current_epoch: int | None = None,
     total_epochs: int | None = None,
     elapsed_seconds: float | None = None,
@@ -924,6 +929,7 @@ def update_status(
     weight_decay: float | None = None,
     min_train_masks: int | None = None,
     validation_interval: int | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Update the status of a training session."""
     stop_requested = get_stop_request_path(session_id).exists()
@@ -963,6 +969,8 @@ def update_status(
         status_dict["n_test"] = n_test
     if start_time is not None:
         status_dict["start_time"] = start_time
+    if last_continued_time is not None:
+        status_dict["last_continued_time"] = last_continued_time
     if current_epoch is not None:
         status_dict["current_epoch"] = current_epoch
     if total_epochs is not None:
@@ -987,6 +995,8 @@ def update_status(
         status_dict["min_train_masks"] = min_train_masks
     if validation_interval is not None:
         status_dict["validation_interval"] = validation_interval
+    if user_id is not None:
+        status_dict["user_id"] = user_id
 
     status_json = json.dumps(status_dict)
     tmp_path = status_path.with_suffix(".json.tmp")
@@ -3098,6 +3108,7 @@ def generate_rdf_yaml(
     description: str | None = None,
     authors: list[dict[str, Any]] | None = None,
     uploader: dict[str, Any] | None = None,
+    training_dataset_id: str | None = None,
 ) -> dict[str, Any]:
     """Generate BioImage.io RDF YAML structure.
 
@@ -3235,6 +3246,9 @@ def generate_rdf_yaml(
 
     if normalized_uploader is not None:
         rdf["uploader"] = normalized_uploader
+
+    if training_dataset_id is not None:
+        rdf["training_dataset_id"] = training_dataset_id
 
     return rdf
 
@@ -3543,6 +3557,10 @@ class CellposeFinetune:
                 "for every epoch. Requires test_images and test_annotations."
             ),
         ),
+        context: dict[str, Any] | None = Field(
+            None,
+            description="Authentication context, automatically provided by Hypha.",
+        ),
     ) -> dict[str, Any]:
         """Start asynchronous finetuning of a Cellpose model on an artifact dataset.
 
@@ -3572,6 +3590,7 @@ class CellposeFinetune:
             validation_interval = wrapped.get(
                 "validation_interval", validation_interval
             )
+            context = wrapped.get("context", context)
 
         artifact = normalize_optional_param(artifact)
         train_images = normalize_optional_param(train_images)
@@ -3627,8 +3646,14 @@ class CellposeFinetune:
 
         server_url, artifact_id = get_url_and_artifact_id(artifact)
         model_id = await self.resolve_model_id(model)
-        session_id = str(uuid4())
+        now = datetime.now(timezone.utc)
+        short_uuid = str(uuid4()).replace("-", "")[:8]
+        session_id = now.strftime("%Y-%m-%d-%H%M%S") + "-" + short_uuid
         get_session_path(session_id).mkdir(parents=True, exist_ok=True)
+
+        user_id: str | None = None
+        if isinstance(context, dict) and isinstance(context.get("user"), dict):
+            user_id = context["user"].get("id")
 
         update_status(
             session_id=session_id,
@@ -3642,6 +3667,7 @@ class CellposeFinetune:
             weight_decay=weight_decay,
             min_train_masks=min_train_masks,
             validation_interval=validation_interval,
+            user_id=user_id,
         )
 
         training_params = TrainingParams(
@@ -3893,6 +3919,18 @@ class CellposeFinetune:
             validation_interval=params.get("validation_interval"),
         )
         restarted["restarted_from"] = session_id
+        # Record the time this session was continued
+        new_session_id = restarted["session_id"]
+        continued_time = datetime.now(timezone.utc).isoformat()
+        status_path = get_status_path(new_session_id)
+        if status_path.exists():
+            with status_path.open("r+", encoding="utf-8") as f:
+                status_data = json.load(f)
+                status_data["last_continued_time"] = continued_time
+                f.seek(0)
+                f.write(json.dumps(status_data))
+                f.truncate()
+        restarted["last_continued_time"] = continued_time
         return restarted
 
     def _list_sessions_sync(
@@ -3966,6 +4004,7 @@ class CellposeFinetune:
                 n_train=session_data.get("n_train"),
                 n_test=session_data.get("n_test"),
                 start_time=session_data.get("start_time"),
+                last_continued_time=session_data.get("last_continued_time"),
                 current_epoch=session_data.get("current_epoch"),
                 total_epochs=session_data.get("total_epochs"),
                 elapsed_seconds=session_data.get("elapsed_seconds"),
@@ -3980,6 +4019,7 @@ class CellposeFinetune:
                 weight_decay=session_data.get("weight_decay"),
                 min_train_masks=session_data.get("min_train_masks"),
                 validation_interval=session_data.get("validation_interval"),
+                user_id=session_data.get("user_id"),
             )
 
         return sessions
@@ -4011,6 +4051,68 @@ class CellposeFinetune:
         if available.
         """
         return await asyncio.to_thread(self._list_sessions_sync, status_types, limit, dataset_artifact_ids)
+
+    @schema_method(arbitrary_types_allowed=True)  # type: ignore
+    async def delete_training_session(
+        self,
+        session_id: str = Field(description="Session ID to delete"),
+        context: dict[str, Any] | None = Field(
+            None,
+            description="Authentication context, automatically provided by Hypha.",
+        ),
+    ) -> dict[str, Any]:
+        """Delete a training session.
+
+        Only the session owner can delete their own session. The session must
+        not be currently running.
+        """
+        if isinstance(session_id, dict):
+            wrapped = session_id
+            session_id = wrapped.get("session_id", wrapped.get("id", session_id))
+            context = wrapped.get("context", context)
+
+        session_id = str(session_id).strip().replace("\\", "/")
+        if session_id.endswith("/status.json"):
+            session_id = session_id[: -len("/status.json")]
+        session_id = Path(session_id).name
+
+        session_path = get_session_path(session_id)
+        if not session_path.exists():
+            raise ValueError(f"Session '{session_id}' not found")
+
+        status_path = get_status_path(session_id)
+        session_data: dict[str, Any] = {}
+        if status_path.exists():
+            try:
+                session_data = json.loads(status_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Enforce ownership check
+        caller_id: str | None = None
+        if isinstance(context, dict) and isinstance(context.get("user"), dict):
+            caller_id = context["user"].get("id")
+
+        owner_id: str | None = session_data.get("user_id")
+        if owner_id is not None and caller_id != owner_id:
+            raise PermissionError(
+                f"Session '{session_id}' belongs to another user. "
+                "You can only delete your own sessions."
+            )
+
+        # Prevent deletion of running sessions
+        status_type = str(session_data.get("status_type") or "").lower()
+        if status_type in {StatusType.RUNNING.value, StatusType.PREPARING.value}:
+            raise ValueError(
+                f"Session '{session_id}' is currently {status_type}. "
+                "Stop it before deleting."
+            )
+
+        import shutil
+
+        shutil.rmtree(session_path, ignore_errors=True)
+        logger.info(f"Deleted training session {session_id} (caller: {caller_id})")
+        return {"deleted": session_id}
 
     @schema_method(arbitrary_types_allowed=True)  # type: ignore
     async def export_model(
@@ -4281,6 +4383,7 @@ BSD-3-Clause (Cellpose license)
 
             # 6. Generate RDF YAML
             logger.info("Generating RDF YAML descriptor...")
+            training_dataset_id = training_params.get("artifact_id")
             rdf = generate_rdf_yaml(
                 model_name=model_name,
                 session_id=session_id,
@@ -4294,6 +4397,7 @@ BSD-3-Clause (Cellpose license)
                 description=description,
                 authors=normalized_authors,
                 uploader=normalized_uploader,
+                training_dataset_id=training_dataset_id,
             )
 
             def _write_rdf() -> None:
@@ -4386,8 +4490,7 @@ BSD-3-Clause (Cellpose license)
             await artifact_manager.commit(artifact_id)
             logger.info(f"Successfully exported model: {artifact_id}")
 
-            # Update artifact with training dataset ID (stored in artifact config, not in rdf.yaml)
-            training_dataset_id = training_params.get("artifact_id")
+            # Also store training_dataset_id in artifact config for backward compatibility
             if training_dataset_id:
                 try:
                     await artifact_manager.edit(
@@ -4470,20 +4573,16 @@ BSD-3-Clause (Cellpose license)
         dataset_id: str = Field(
             description="Dataset artifact ID to find models trained on it"
         ),
-        collection: str = Field(
-            "bioimage-io/colab-annotations",
-            description="Collection to search in (format: workspace/collection)",
-        ),
     ) -> list[dict[str, Any]]:
         """List all models trained on a specific dataset.
 
         This function queries the artifact manager to find all model artifacts
         that were trained on the specified dataset by checking the
-        training_dataset_id in the artifact config.
+        training_dataset_id in the artifact config. Only searches the
+        bioimage-io/colab-annotations collection.
 
         Args:
             dataset_id: ID of the dataset artifact
-            collection: Collection to search in
 
         Returns:
             List of model artifacts, each containing:
@@ -4499,6 +4598,7 @@ BSD-3-Clause (Cellpose license)
 
         from hypha_rpc import connect_to_server
 
+        collection = "bioimage-io/colab-annotations"
         logger.info(f"Listing models trained on dataset: {dataset_id}")
 
         try:
@@ -4536,11 +4636,13 @@ BSD-3-Clause (Cellpose license)
                 parent_id=collection_id, filters={"type": "model"}
             )
 
-            # Filter models by training_dataset_id
+            # Filter models by training_dataset_id (check both manifest and config)
             matching_models: list[dict[str, Any]] = []
             for artifact in artifacts:
-                config = artifact.get("config", {})
-                if config.get("training_dataset_id") == dataset_id:
+                manifest = artifact.get("manifest", {}) or {}
+                config = artifact.get("config", {}) or {}
+                artifact_dataset_id = manifest.get("training_dataset_id") or config.get("training_dataset_id")
+                if artifact_dataset_id == dataset_id:
                     # Build model info
                     model_id = artifact["id"]
                     model_alias = artifact.get("alias", model_id.split("/")[-1])

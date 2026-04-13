@@ -24,3 +24,4 @@ deployments:
   - main:CellposeFinetune
 authorized_users:
   - "*" # Allow all users to access the application
+frontend_entry: "frontend/index.html"

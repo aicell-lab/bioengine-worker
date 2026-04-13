@@ -3294,7 +3294,16 @@ async def _images_from_artifact(
     imgs: list[npt.NDArray[Any]] = []
     for rel in image_paths:
         local_img = cache_dir / rel
-        imgs.append(imread(local_img))
+        suffix = local_img.suffix.lower()
+        if suffix in (".png", ".jpg", ".jpeg", ".bmp", ".gif"):
+            from PIL import Image
+            img_arr = np.array(Image.open(local_img))
+            # Ensure CHW layout expected by Cellpose when image is multi-channel
+            if img_arr.ndim == 3 and img_arr.shape[2] in (3, 4):
+                img_arr = img_arr.transpose(2, 0, 1)
+            imgs.append(img_arr)
+        else:
+            imgs.append(imread(local_img))
     return imgs
 
 
@@ -3384,6 +3393,7 @@ def _predict_and_encode(
                 "cellpose==4.0.7",
                 "numpy==1.26.4",
                 "tifffile",
+                "Pillow",
                 "hypha-artifact==0.1.2",
             ],
         },

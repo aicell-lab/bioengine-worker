@@ -294,8 +294,22 @@ class RuntimeDeployment:
             return outputs
 
         except Exception as e:
+            # Check for CUDA OOM — the class name varies across PyTorch versions and may
+            # not be importable on the Ray head node (different venv), which causes a
+            # secondary "Failed to unpickle serialized exception" error over RPC.
+            # Re-raise as a plain RuntimeError so it always deserializes cleanly.
+            import torch
+
+            torch.cuda.empty_cache()
+            err_type = type(e).__name__
+            if err_type in ("OutOfMemoryError", "CUDAOutOfMemoryError") or (
+                "out of memory" in str(e).lower()
+            ):
+                oom_msg = f"CUDA out of memory during inference: {str(e)}"
+                logger.error(f"❌ {oom_msg}")
+                raise RuntimeError(oom_msg) from None
             logger.error(f"❌ Prediction failed: {str(e)}")
-            raise e
+            raise
 
 
 if __name__ == "__main__":

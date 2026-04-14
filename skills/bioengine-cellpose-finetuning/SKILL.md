@@ -225,15 +225,30 @@ With < 20 images, use:
 
 ## Real experimental results
 
-### Fluorescence (Session A, 2026-04-08)
-Dataset: `ri-scale/cellpose-test` (80 train / 20 test images, OME-TIFF)
-LR=1e-5, 1000 epochs
+### Fluorescence (Session B, 2026-04-14) — v0.0.19, validated
+Dataset: `ri-scale/cellpose-test` (72 train / 19 test images, OME-TIFF)
+LR=1e-5, 100 epochs, `min_train_masks=1`, `validation_interval=10`
 
 | Epoch | Pixel IoU | F1 | Precision | Recall |
 |---|---|---|---|---|
-| 1 (baseline) | 0.430 | 0.601 | 0.438 | 0.961 |
-| 100 | 0.501 | 0.667 | 0.511 | 0.964 |
-| 1000 | 0.461 | 0.631 | 0.472 | 0.955 |
+| 1 (baseline) | 0.397 | 0.569 | 0.398 | 0.997 |
+| 11 | 0.401 | 0.572 | 0.402 | 0.990 |
+| 41 | 0.430 | 0.602 | 0.437 | 0.964 |
+| 100 | **0.434** | **0.605** | 0.440 | 0.970 |
+
+Instance AP@0.5: **0.477**, AP@0.75: **0.347** (19 test images). Pixel IoU improves +9.3% relative from baseline. Training loss declines from 0.87 → 0.55; test loss stabilises ~epoch 60.
+
+**Interpretation**: Fine-tuning consistently improves fluorescence segmentation. Plateau visible after ~50 epochs at 100ep — longer runs (500+ep) may improve further but risk overfitting with small datasets.
+
+### Fluorescence (Session A, 2026-04-08) — historical reference
+Dataset: `ri-scale/cellpose-test` (80 train / 20 test images, OME-TIFF)
+LR=1e-5, 1000 epochs
+
+| Epoch | Pixel IoU | F1 |
+|---|---|---|
+| 1 (baseline) | 0.430 | 0.601 |
+| 100 | 0.501 | 0.667 |
+| 1000 | 0.461 | 0.631 |
 
 Instance AP@0.5 at epoch 1000: 0.495 (vs baseline ~0.40)
 
@@ -248,6 +263,8 @@ LR=1e-5, enable_clahe=True
 | Fine-tuned 500ep | BL | 18 | 12 | 0.667 |
 
 Raw brightfield baseline (without CLAHE): **0 cells detected**. CLAHE is required.
+
+**Note on brightfield fine-tuning degradation**: With only 13 training images covering 7 of 9 tile positions in a 3×3 well grid, fine-tuning degrades on the held-out tile positions (BL, CL). This is a dataset size/coverage issue — not an application bug. Fluorescence experiments (Session A and B above) confirm the application produces consistent improvement when training data is sufficient.
 
 ## Deploying and updating the cellpose-finetuning app
 

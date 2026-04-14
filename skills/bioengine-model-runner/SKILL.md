@@ -12,6 +12,13 @@ metadata:
 
 # BioEngine Model Runner
 
+## Use this skill when
+
+- The user wants to run a known BioImage.IO model on an image.
+- The user wants to find candidate models for a task (e.g. nuclei segmentation, denoising).
+- The user wants to compare multiple models against ground truth.
+- The user wants to validate a model RDF or run BioImage.IO compliance tests.
+
 ## Quick start
 
 The CLI is bundled in this skill at `bioengine_cli/`. Install its dependencies once:
@@ -82,11 +89,23 @@ bioengine runner infer affable-shark --input cells.tif --output mask.npy
 Use `scripts/utils.py` helpers for normalization and evaluation — do not rewrite tensor logic:
 
 ```python
-from scripts.utils import prepare_image_for_model, normalize_image
+from scripts.utils import (
+    infer_http,               # upload + infer + download in one call; returns np.ndarray
+    get_model_rdf,            # fetch and parse RDF for a model_id
+    get_input_axes_info,      # parse input axes from RDF (handles 0.4.x and 0.5.x)
+    prepare_image_for_model,  # reshape array to required axes (e.g. "bcyx")
+    normalize_image,          # percentile normalization (pmin=1, pmax=99.8)
+    evaluate_segmentation,    # compute IoU and Dice between pred mask and GT mask
+    pad_or_crop_to_valid_size,# adjust H/W to satisfy model step/min constraints
+)
 
-image = normalize_image(raw_image)               # percentile normalization (pmin=1, pmax=99.8)
+image = normalize_image(raw_image)               # percentile normalization
 tensor = prepare_image_for_model(image, axes)    # reshape to model input axes
+pred = infer_http(model_id, tensor)              # upload, infer, download — returns ndarray
+iou, dice = evaluate_segmentation(pred_mask, gt_mask)
 ```
+
+Do NOT write networking or upload/download boilerplate from scratch — `infer_http` handles the full upload → infer → download cycle.
 
 Output key: `outputs[0].name` (RDF 0.4.x) or `outputs[0].id` (RDF 0.5.x). On shape errors: inspect the RDF (`bioengine runner info`), adapt dimensions, retry before discarding the model.
 
@@ -98,7 +117,7 @@ Output key: `outputs[0].name` (RDF 0.4.x) or `outputs[0].id` (RDF 0.5.x). On sha
 - [ ] Step 3: For each candidate — call get_model_documentation to read the README
 - [ ] Step 4: Filter candidates — discard domain mismatches based on documentation
 - [ ] Step 5: Run all suitable models on the same input — bioengine runner compare
-- [ ] Step 6: Score models — utils.evaluate_segmentation() for IoU/Dice
+- [ ] Step 6: Score models — use `compute_instance_f1(pred_labels, gt_labels)` for instance segmentation; `evaluate_segmentation()` for semantic/pixel-level tasks only
 - [ ] Step 7: Save all artifacts to comparison_results/
 - [ ] Step 8: Generate Illustration 1 (ranked barplot), Illustration 2 (montage), Illustration 3 if instance segmentation (object count)
 - [ ] Step 9: Write comparison_summary.json
@@ -146,9 +165,9 @@ doc = r.json()  # Markdown string or null
 
 **Decision rules after reading documentation**:
 - Model trained on H&E/brightfield → skip if input is fluorescence (and vice versa)
-- Model requires 3+ channels → skip if only 1 channel is available (unless you can provide all required channels)
+- Model requires 3+ channels → skip if only 1 channel is available (unless you can provide all required channels). Note this limitation in `comparison_summary.json` under `"notes"` — do NOT annotate this in the figures themselves; it belongs in the HTML report.
 - Model trained on whole-slide-imaging at 40× → skip if your image is at a very different magnification
-- If documentation is None → fall back to RDF tags and test tensor inspection (see domain mismatch section)
+- If documentation is None or returns the bioimage.io spec README (not model-specific) → fall back to RDF `tags`, `description`, and test tensor inspection (see domain mismatch section below). **Known server bug**: `get_model_documentation` returns the same model's README for multiple different models (e.g. fearless-crab's README is returned for fearless-crab, conscientious-seashell, loyal-parrot, and chatty-frog). Detect this by checking if the returned content is identical across models or contains "bioimage.io specification" / starts with "# BioImage.IO". When detected, fall back to RDF tags.
 
 Also check the RDF `tags` and `description` fields from `bioengine runner info` as a secondary signal.
 
@@ -163,54 +182,104 @@ comparison_results/
 ├── illustration2_montage.png          # same at 300 DPI
 ├── illustration3_counts.pdf           # Illustration 3: object count (instance seg only)
 ├── illustration3_counts.png           # same at 300 DPI
-└── comparison_summary.json
+├── comparison_summary.json
+└── model_comparison_report.html       # self-contained HTML with all figures embedded
+```
+
+**Generate HTML report** (always run at the end — auto-discovers all illustrations):
+
+```bash
+python scripts/generate_report.py --output-dir comparison_results/
 ```
 
 ### Required illustrations
 
-Every screening run **must produce at least two illustrations**. Generate them as publication-quality figures (Nature/Cell style):
+Every screening run **must produce at least two illustrations** plus an HTML report. Generate them as publication-quality figures (Nature/Cell style):
 - Figure width: 7.0 inches (Nature Methods single-column)
 - Font: Arial or Helvetica, 7–8 pt for axis labels, 6 pt for tick labels
 - Resolution: 300 DPI PNG + PDF with embedded fonts (`pdf.fonttype=42`, `ps.fonttype=42`)
-- No chartjunk: remove top/right spines, use subtle gridlines (#e0e0e0)
+- No chartjunk: remove top/right spines, subtle gridlines (#e0e0e0, `zorder=0`)
 - Colors: use colorblind-friendly palettes (e.g. ColorBrewer diverging/sequential)
 - All labels must be legible at print size — minimum 6 pt
+- **No panel labels** (no "a", "b", "c") — panels are combined at the journal layout stage
 
 ---
 
 #### Illustration 1 — Ranked metric barplot
 
-**Skip only if there is exactly one suitable model** (a single-candidate result). In that case, embed the metric value as a text annotation in Illustration 2 instead.
+**Skip only if there is exactly one suitable model** (single-candidate result). In that case, embed the metric value as a text annotation in Illustration 2 instead.
 
-**For segmentation tasks** (instance or semantic): use **F1 score (IoU ≥ 0.5)** as the primary metric. Show both F1 and mean IoU as grouped or stacked bars if space allows.
+**For segmentation tasks** (instance or semantic): use **F1 score (IoU ≥ 0.5)** as the primary metric, computed via `compute_instance_f1()` from `scripts/utils.py`. Show F1 only (do NOT show a second grouped bar for mean IoU — this creates confusing small secondary bars).
 
-**For other tasks**: choose the most appropriate metric for the domain (e.g., PSNR/SSIM for denoising, AP for detection) and label the axis accordingly.
+**For other tasks**: choose the most appropriate metric (PSNR/SSIM for denoising, AP for detection) and label the axis accordingly.
 
 **Layout rules**:
 - Horizontal barplot, models sorted **best at top, worst at bottom**
-- Color bars by performance category (e.g. blue = good, purple = acceptable, red = poor, grey/hatched = domain mismatch)
-- Annotate each bar with its numeric metric value (right of bar, 5.5 pt)
-- Add italic annotation for domain-mismatch or wrong-task models (e.g. "(domain mismatch)", "(wrong task)")
-- Include a brief legend for the color categories
-- x-axis range: 0 to 1 for F1/IoU; add dashed reference line at x=1.0
-- y-axis: model IDs (use the bioimage.io slug, not the full name)
-- Panel label: bold "a" at top-left
+- Color bars by performance category (blue = good ≥0.8, purple = acceptable 0.5–0.8, red/orange = poor <0.5, grey+hatch = domain mismatch or excluded)
+- Annotate each bar with its numeric metric value to 3 decimal places, right-aligned after the bar end (5.5 pt, color `#444444`)
+- Legend for color categories: place **outside the plot area, top-right** (use `bbox_to_anchor=(1.0, 1.0), loc="upper left"` on `ax.legend()`). Do NOT place the legend inside the plot — it overlaps the bars.
+- x-axis range: **0 to 1.0** exactly. Do NOT extend to 1.2 — F1 and IoU cannot exceed 1.0. Add a dashed reference line at x=1.0.
+- y-axis: model IDs (bioimage.io slug). No y-axis tick marks (`tick_params(axis="y", length=0)`).
+- Grid lines: `ax.xaxis.grid(True, color="#e0e0e0", lw=0.5, zorder=0)` and `ax.set_axisbelow(True)`. This ensures gridlines render **behind** bars, not on top.
+- Do NOT annotate channel limitations or model notes on the barplot — these belong in the HTML report notes section.
 
 **Python implementation** (use matplotlib; do NOT use seaborn):
 
 ```python
 import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import numpy as np
+
 matplotlib.rcParams.update({
     "font.family": "sans-serif", "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
     "font.size": 7, "axes.titlesize": 7, "axes.labelsize": 7,
     "xtick.labelsize": 6, "ytick.labelsize": 6.5, "legend.fontsize": 6,
     "axes.linewidth": 0.6, "pdf.fonttype": 42, "ps.fonttype": 42,
 })
-fig, ax = plt.subplots(figsize=(3.5, 0.6 * n_models + 0.8))
-bars = ax.barh(y_pos, f1_scores, color=colors, height=0.55)
-ax.set_xlim(0, 1.25)
-ax.axvline(1.0, color="#999999", lw=0.5, ls="--")
-ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+
+CATEGORY_COLORS = {
+    "good":            "#2166ac",   # blue
+    "acceptable":      "#762a83",   # purple
+    "poor":            "#d6604d",   # red-orange
+    "domain_mismatch": "#b0b0b0",   # grey (+ hatch)
+}
+
+fig, ax = plt.subplots(figsize=(3.5, 0.65 * n_models + 0.9))
+y_pos = np.arange(n_models)
+
+bars = ax.barh(y_pos, f1_scores, color=colors, height=0.55, zorder=3)
+for bar, cat in zip(bars, categories):
+    if cat == "domain_mismatch":
+        bar.set_hatch("///")
+        bar.set_edgecolor("#888888")
+
+# Value labels
+for i, f1 in enumerate(f1_scores):
+    ax.text(f1 + 0.012, i, f"{f1:.3f}", va="center", ha="left", fontsize=5.5, color="#444444")
+
+ax.set_yticks(y_pos)
+ax.set_yticklabels(model_names, fontsize=6.5)
+ax.set_xlim(0, 1.0)
+ax.set_xlabel("F1 score  (IoU ≥ 0.5)", labelpad=3)
+ax.set_xticks([0, 0.2, 0.4, 0.6, 0.8, 1.0])
+ax.xaxis.grid(True, color="#e0e0e0", linewidth=0.5, zorder=0)
+ax.set_axisbelow(True)
+ax.axvline(1.0, color="#999999", lw=0.5, ls="--", zorder=2)
+ax.spines["top"].set_visible(False)
+ax.spines["right"].set_visible(False)
+ax.tick_params(axis="y", length=0, pad=4)
+
+legend_handles = [
+    mpatches.Patch(color=CATEGORY_COLORS["good"],            label="Good  (F1 ≥ 0.8)"),
+    mpatches.Patch(color=CATEGORY_COLORS["acceptable"],       label="Acceptable  (0.5–0.8)"),
+    mpatches.Patch(color=CATEGORY_COLORS["poor"],             label="Poor  (F1 < 0.5)"),
+    mpatches.Patch(color=CATEGORY_COLORS["domain_mismatch"],
+                   hatch="///", edgecolor="#888888",           label="Domain mismatch"),
+]
+ax.legend(handles=legend_handles, loc="upper left", bbox_to_anchor=(1.0, 1.0),
+          frameon=False, fontsize=5.5, handlelength=1.2, handleheight=0.8)
+
 fig.savefig("illustration1_barplot.pdf", bbox_inches="tight")
 fig.savefig("illustration1_barplot.png", bbox_inches="tight", dpi=300)
 ```
@@ -219,41 +288,46 @@ fig.savefig("illustration1_barplot.png", bbox_inches="tight", dpi=300)
 
 #### Illustration 2 — Input / GT / Predictions montage
 
-Show all screened models in a single figure. **Models are ordered top-to-bottom (or left-to-right) in the same rank order as Illustration 1** (best first).
+Show all screened models in a single figure. **Models are ordered in the same rank order as Illustration 1** (best first).
 
 **Layout**:
 - Row 1: Input image | Ground truth (if available) — centered, with empty columns as padding if needed
 - Remaining rows: one panel per model prediction, in ranked order
 - If ≤ 6 models: use a 2-column grid (input/GT in cols 1-2 of row 1; pairs of models per row below)
 - If > 6 models: use a 3-column grid
-- Each panel: title = model ID (6 pt), subtitle = metric value e.g. "F1 = 0.909" (5.5 pt, grey) — unless single-candidate (then add metric directly to title)
-- Scale bar in bottom-left of each panel (white, with µm label if pixel size is known)
-- For segmentation outputs: render as colored instance overlay (tab20 colormap, dark background `#141414`). Do NOT show raw probability maps — always postprocess to instance labels first (watershed for UNet, NMS polygon for StarDist).
-- For the input panel: apply CLAHE and display as grayscale (cmap="gray")
+- Each panel: title = model ID (6 pt, bold), subtitle = metric value e.g. "F1 = 0.909" (5.5 pt, grey `#666666`)
+- Do NOT add channel limitation notes to panels — record these in `comparison_summary.json` under `"notes"` and in the HTML report
+- Spacing: panels must be **tight** — use `hspace=0.08` and `wspace=0.04` in GridSpec. Do not leave large white gaps between panels.
+- Background: set `fig.patch.set_facecolor('#141414')` so the figure background matches the panel backgrounds in PDF/PNG output
+- Each panel background: `#141414` (near-black)
+- Scale bar in bottom-left corner (white line + label, 5.5 pt)
+- For segmentation outputs: render as colored instance overlay (tab20 colormap, background `#141414`). Do NOT show raw probability maps — always postprocess to instance labels first.
+- For the input panel: apply CLAHE (`skimage.exposure.equalize_adapthist`) and display as grayscale (`cmap="gray"`)
 - For GT: render as colored instance overlay, same style as predictions
-- Panel letter "b" at top-left of figure
+- No panel labels (no "a", "b", "c")
 
 **Python**:
 ```python
-fig.savefig("illustration2_montage.pdf", bbox_inches="tight")
-fig.savefig("illustration2_montage.png", bbox_inches="tight", dpi=300)
+fig.patch.set_facecolor("#141414")
+fig.savefig("illustration2_montage.pdf", bbox_inches="tight", facecolor=fig.get_facecolor())
+fig.savefig("illustration2_montage.png", bbox_inches="tight", dpi=300, facecolor=fig.get_facecolor())
 ```
 
 ---
 
 #### Illustration 3 — Object count comparison (instance segmentation only)
 
-Only generate this figure for **instance segmentation tasks** (cell segmentation, nucleus counting, etc.).
+Only generate for **instance segmentation tasks** (cell/nucleus counting).
 
 **Layout**:
 - Horizontal barplot, same model order as Illustration 1 (best at top)
 - Bars show predicted object count per model
-- **Red vertical reference line** at the ground truth count (annotate with "GT (n=N)")
-- Annotate each bar with its numeric count
-- Same color scheme as Illustration 1
-- Concise x-axis label: "Predicted cell count" (or "nucleus count", etc.)
-- No y-axis tick labels (shared with Illustration 1 via proximity in the paper)
-- Panel label: bold "c" at top-left
+- **Red vertical reference line** at the ground truth count; annotate with `f"GT  (n = {gt_n})"` in the legend (use a red patch handle)
+- Annotate each bar with its numeric count (right of bar, 5.5 pt)
+- Same color scheme and bar styling as Illustration 1
+- x-axis label: "Predicted nucleus count" (or "cell count" etc.)
+- No y-axis tick labels (blank `""` for all — shared visually with Illustration 1 in the paper layout)
+- No panel labels
 
 ---
 
@@ -268,12 +342,16 @@ Only generate this figure for **instance segmentation tasks** (cell segmentation
   "candidates": ["model-id-1", "model-id-2"],
   "excluded": {"model-id-x": "domain mismatch: trained on H&E brightfield"},
   "metrics": {
-    "model-id-1": {"f1": 0.909, "iou": 0.85, "tp": 10, "n_pred": 10, "n_gt": 12}
+    "model-id-1": {"f1": 0.909, "mean_iou": 0.956, "tp": 10, "fp": 0, "fn": 2, "n_pred": 10, "n_gt": 12}
   },
   "failed_models": {"model-id-3": "shape mismatch error message"},
   "best_model": "model-id-1",
   "ground_truth_n_cells": 12,
-  "notes": {"model-id-2": "HPA model: requires 3 channels"}
+  "ranking": ["model-id-1", "model-id-2"],
+  "evaluation_method": "Instance-level F1 with IoU>=0.5 threshold (compute_instance_f1)",
+  "notes": {
+    "model-id-2": "HPA model: requires 3 channels (DAPI+488+638). Run with ch1=ch2=zeros — degraded performance expected."
+  }
 }
 ```
 
@@ -312,21 +390,41 @@ Model outputs are **raw tensors** — not ready-to-use instance labels. Always r
 
 These models expect **3 channels** (not just nucleus staining):
 - **Channel 0**: 405nm (DAPI/nucleus staining, normalized to [0,1])
-- **Channel 1**: 488nm (ER or microtubule channel, normalized to [0,1])  
+- **Channel 1**: 488nm (ER or microtubule channel, normalized to [0,1])
 - **Channel 2**: 638nm (protein of interest, normalized to [0,1])
 
-Input shape: `(1, 3, 512, 512)` float32. Normalize each channel independently with percentile normalization (p1=1, p99=99.8). Using only the nucleus channel gives degraded results — the model was trained on all 3.
+Input shape: `(1, 3, 512, 512)` float32. Normalize each channel independently with percentile normalization (p1=1, p99=99.8). If only the DAPI channel is available, fill ch1 and ch2 with zeros — performance degrades, but the model still runs. Record this limitation in `comparison_summary.json` under `"notes"`, NOT as an annotation on the figures.
+
+**Output channel selection** (`conscientious-seashell`): output shape is `(1, 3, H, W)` softmax probabilities:
+- ch0 = background (typically high mean ≈ 0.85)
+- ch1 = unused / zeros when input ch1+ch2 are zeros
+- ch2 = nucleus probability (positive correlation with DAPI)
+
+**Critical**: select the nucleus channel using `argmax(correlation_with_dapi)` — NOT `argmax(abs(correlation))`. Background (ch0) has equal absolute correlation magnitude to nucleus (ch2) but negative sign. Using abs() silently selects the background channel.
+
+```python
+# Correct nucleus channel selection for conscientious-seashell
+output = ...  # shape (1, 3, H, W)
+dapi_flat = ch405n.ravel()
+correlations = [np.corrcoef(output[0, c].ravel(), dapi_flat)[0,1] for c in range(3)]
+nucleus_ch = np.argmax(correlations)  # NOT argmax(abs(correlations))
+nucleus_prob = output[0, nucleus_ch]
+```
+
+`loyal-parrot` is a **cell body** model (whole-cell segmentation), not nucleus-only. Include only if the task is whole-cell segmentation. It oversegments when used for nucleus-only tasks.
 
 ### StarDist postprocessing
 
 StarDist output ch0 is the **object probability map** — values are typically very sparse (>99% of pixels near 0 even for images with many nuclei). Apply NMS using the 32 radii channels:
+
+**Threshold tuning**: `prob_thresh=0.5` may miss dim or small nuclei. Use `prob_thresh=0.4` as the default — inspect the probability map distribution and lower the threshold if you see false negatives on visually clear nuclei. The `min_distance` parameter in `peak_local_max` controls over-detection; increase it (e.g. 8–12) for large nuclei.
 
 ```python
 import numpy as np
 from skimage.feature import peak_local_max
 from skimage.draw import polygon
 
-def stardist_nms(prob, radii, prob_thresh=0.5, nms_thresh=0.3, min_radius=5):
+def stardist_nms(prob, radii, prob_thresh=0.4, nms_thresh=0.3, min_radius=5):
     H, W = prob.shape
     n_rays = radii.shape[-1]
     angles = np.linspace(0, 2*np.pi, n_rays, endpoint=False)

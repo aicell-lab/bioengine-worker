@@ -37,6 +37,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Union
 
 from hypha_rpc.utils.schema import schema_method
+from pydantic import Field
 from ray import serve
 
 logger = logging.getLogger("ray.serve")
@@ -106,6 +107,9 @@ class DemoDeployment:
         ascii_art_response = await self.ascii_art()
 
         datasets = await self.list_datasets()
+
+        reversed_result = await self.reverse_text(text="hello")
+        assert reversed_result["reversed"] == "olleh", f"reverse_text failed: {reversed_result}"
 
     # === Internal Methods ===
 
@@ -207,6 +211,23 @@ class DemoDeployment:
             logger.info(f"Files in dataset {dataset_id}: {file_names}")
 
         return data_files
+
+    @schema_method
+    async def reverse_text(
+        self,
+        text: str = Field(..., description="Text to reverse"),
+    ) -> Dict[str, Union[str, int]]:
+        """
+        Reverse a string and return metadata.
+
+        Returns:
+            Dict: original, reversed, length
+        """
+        return {
+            "original": text,
+            "reversed": text[::-1],
+            "length": len(text),
+        }
 
     @schema_method
     async def set_fail_health_check(self) -> None:

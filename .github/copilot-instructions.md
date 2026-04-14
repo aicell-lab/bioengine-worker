@@ -62,7 +62,7 @@ https://hypha.aicell.io/ws-user-github%7C49943582/services/<debug-client-id>:bio
 
 If `BIOENGINE_LOCAL_ARTIFACT_PATH` is set, the worker loads the app from the local path instead of the artifact registry. The path must contain the app directory — e.g.:
 - `bioengine_apps/` for apps like `model-runner` and `cellpose-finetuning`
-- `tests/` for the `demo-app` and `composition-app`
+- `tests/` for the `composition-app`
 
 ```bash
 # When working on BioEngine apps, set the local artifact path:

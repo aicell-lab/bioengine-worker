@@ -223,6 +223,14 @@ skills/
 
 ---
 
+## External Skills
+
+| Skill | URL | Purpose |
+|-------|-----|---------|
+| Hypha | https://hypha.aicell.io/ws/agent-skills/SKILL.md | Connect to the Hypha distributed computing platform — obtain tokens, discover workspaces, call services via RPC or HTTP, manage artifacts, deploy apps |
+
+---
+
 ## Agent Workflow Guidelines
 
 - **Simplicity First**: Make every change as minimal as possible.

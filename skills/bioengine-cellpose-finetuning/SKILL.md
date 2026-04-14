@@ -4,6 +4,7 @@ description: Fine-tunes Cellpose-SAM on user-provided annotated microscopy image
 license: MIT
 metadata:
   service-id: bioimage-io/cellpose-finetuning
+  worker-service-id: bioimage-io/bioengine-worker
   server: https://hypha.aicell.io
   model: Cellpose-SAM (cpsam), Cellpose 4.0.7
   gpu: 4× A40 (BioEngine GPU cluster)
@@ -250,9 +251,10 @@ Raw brightfield baseline (without CLAHE): **0 cells detected**. CLAHE is require
 
 ## Deploying and updating the cellpose-finetuning app
 
-The `cellpose-finetuning` service runs in the `bioimage-io` workspace and requires a `HYPHA_TOKEN` that has write access to that workspace. Pass it on first deployment:
+The `cellpose-finetuning` service is deployed on the BioEngine worker (`bioimage-io/bioengine-worker`) and runs in the `bioimage-io` workspace. It requires a `HYPHA_TOKEN` that has write access to that workspace. Pass it on first deployment:
 
 ```bash
+export BIOENGINE_WORKER_SERVICE_ID=bioimage-io/bioengine-worker
 bioengine apps deploy ./bioengine_apps/cellpose-finetuning/ \
   --env _HYPHA_TOKEN=<bioimage-io-scoped-token>
 ```

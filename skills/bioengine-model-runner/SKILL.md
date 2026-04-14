@@ -4,6 +4,7 @@ description: Searches, validates, tests, and runs inference on BioImage.IO model
 license: MIT
 metadata:
   service-id: bioimage-io/model-runner
+  worker-service-id: bioimage-io/bioengine-worker
   http-base-url: https://hypha.aicell.io/bioimage-io/services/model-runner
   mcp-server: https://hypha.aicell.io/bioimage-io/mcp/model-runner
   cli-package: bioengine (pip install bioengine)
@@ -252,9 +253,10 @@ For Human Protein Atlas fluorescence images, use these keywords in order of reli
 
 ## Deploying and updating the model-runner app
 
-The `model-runner` service runs in the `bioimage-io` workspace and requires a `HYPHA_TOKEN` that has write access to that workspace. Pass it on first deployment:
+The `model-runner` service is deployed on the BioEngine worker (`bioimage-io/bioengine-worker`) and runs in the `bioimage-io` workspace. It requires a `HYPHA_TOKEN` that has write access to that workspace. Pass it on first deployment:
 
 ```bash
+export BIOENGINE_WORKER_SERVICE_ID=bioimage-io/bioengine-worker
 bioengine apps deploy ./bioengine_apps/model-runner/ \
   --env _HYPHA_TOKEN=<bioimage-io-scoped-token>
 ```

@@ -852,20 +852,14 @@ async def deploy_app(app_dir: str, worker_service_id: str = "bioimage-io/bioengi
     })
     worker = await server.get_service(worker_service_id)
 
-    # 1. Save app files to Hypha artifact (commits with the version in manifest.yaml)
+    # 1. Save app files to Hypha artifact
     files = create_file_list_from_directory(Path(app_dir))
     artifact_id = await worker.save_application(files=files)
     print(f"Saved: {artifact_id}")
 
-    # 2. Read the manifest version so we deploy the exact version we just saved
-    import yaml
-    manifest = yaml.safe_load(Path(app_dir, "manifest.yaml").read_text())
-    app_version = manifest.get("version")  # e.g. "1.0.0"
-
-    # 3. Deploy that specific version from the artifact
+    # 2. Deploy from artifact
     app_id = await worker.run_application(
         artifact_id=artifact_id,
-        version=app_version,              # pin to the version saved in step 1
         application_kwargs={
             "CompositionDeployment": {"some_param": "value"},  # optional init kwargs
             "RuntimeB": {"config": "value"},
@@ -1083,7 +1077,6 @@ assert result["status"] == "ok"
 ```python
 await worker.run_application(
     artifact_id="my-workspace/my-composition-app",
-    version="1.0.0",                       # deploy a specific artifact version
     application_kwargs={
         # Keys are class names (not file names)
         "EntryDeployment": {},             # entry usually needs no kwargs

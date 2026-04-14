@@ -1451,6 +1451,57 @@ class EntryDeployment:
         return model_rdf
 
     @schema_method
+    async def get_model_documentation(
+        self,
+        model_id: str = Field(
+            ...,
+            description="Unique identifier of the bioimage.io model (e.g., 'ambitious-ant')",
+        ),
+        stage: Optional[bool] = Field(
+            False,
+            description="Whether to fetch documentation from the staged version (True) or committed version (False)",
+        ),
+    ) -> Optional[str]:
+        """
+        Retrieve the documentation text for a bioimage.io model.
+
+        Reads the 'documentation' field from the model RDF. If the field is set,
+        downloads the referenced file from the artifact and returns its content.
+
+        Returns:
+            The documentation file content as a string, or None if the
+            'documentation' field is absent/None or the file does not exist.
+        """
+        rdf = await self.get_model_rdf(model_id=model_id, stage=stage)
+
+        doc_path = rdf.get("documentation")
+        if not doc_path:
+            logger.info(f"📄 No documentation field in RDF for model '{model_id}'.")
+            return None
+
+        doc_url = f"{self.server_url}/bioimage-io/artifacts/{model_id}/files/{doc_path}"
+        logger.info(f"📄 Downloading documentation '{doc_path}' for model '{model_id}'.")
+
+        response = await self.model_cache._get_url_with_retry(
+            doc_url, params={"stage": str(stage).lower()}
+        )
+
+        if response.status_code == 404:
+            logger.info(
+                f"📄 Documentation file '{doc_path}' not found in artifact for model '{model_id}'."
+            )
+            return None
+
+        try:
+            response.raise_for_status()
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to download documentation for model '{model_id}': {e}")
+            return None
+
+        logger.info(f"✅ Successfully downloaded documentation for model '{model_id}'.")
+        return response.text
+
+    @schema_method
     async def validate(
         self,
         rdf_dict: Dict[str, Union[str, int, float, List, Dict]] = Field(

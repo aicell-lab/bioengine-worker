@@ -14,7 +14,7 @@ maintainers: []
 name: Model Runner
 tags: []
 type: ray-serve
-version: 0.0.1
+version: 0.0.2
 deployments:
   - entry_deployment:EntryDeployment
   - runtime_deployment:RuntimeDeployment

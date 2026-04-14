@@ -237,6 +237,15 @@ skills/
 - **Prove It Works**: Test and verify before marking done.
 - Planning lives in model context — do NOT create planning files in the repo.
 - Lessons go in `.github/copilot-instructions.md` (durable repo-level knowledge).
+- **Test on the live worker**: When working on a BioEngine app, test and debug by deploying to the live `bioimage-io/bioengine-worker` and calling the service directly. Do not write standalone test scripts for app behaviour — use the live service. Deploy with a stable `application_id` matching the artifact alias so the service is consistently addressable:
+  ```python
+  app_id = await worker.run_application(
+      artifact_id='bioimage-io/my-app',
+      version='1.2.3',
+      application_id='my-app',   # gives stable service ID, not a random name
+  )
+  svc = await client.get_service(f'bioimage-io/{app_id}')
+  ```
 - **Commit after live deploy**: Once an app in `bioengine_apps/` is verified working on the live worker, commit the source to git so the deployed version is always reproducible:
   ```bash
   git add bioengine_apps/my-app/

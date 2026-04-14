@@ -237,3 +237,9 @@ skills/
   git push
   ```
   The version in `manifest.yaml` must be bumped whenever app code changes.
+- **Clean up test deployments**: After testing is complete, stop and delete any temporary apps deployed to the live worker:
+  ```python
+  await worker.stop_application(application_id=app_id)
+  await worker.delete_application(application_id=app_id)
+  ```
+  Do not leave test/throwaway deployments running on `bioimage-io/bioengine-worker` — they consume shared cluster resources.

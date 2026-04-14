@@ -331,9 +331,17 @@ async def stage_artifact(
     manifest: Dict[str, Any],
     logger: Optional[logging.Logger] = None,
     permissions: Optional[Dict[str, Any]] = None,
-) -> ObjectProxy:
+) -> tuple:
     """
     Put an artifact into stage mode. Creates a new artifact if it doesn't exist.
+
+    Versioning behaviour:
+    - New artifact or version tag not yet present → branches a new version snapshot
+      (``edit(version='new')``); the caller should commit with the version tag.
+    - Version tag already exists → stages on top of the current head without
+      branching (``edit(version=None)``); the caller should commit *without* a tag
+      so the existing named version is updated in place and other versions are
+      left untouched.
 
     Args:
         artifact_manager: Hypha artifact manager service instance
@@ -343,7 +351,8 @@ async def stage_artifact(
         permissions: Optional permissions to set on the artifact
 
     Returns:
-        The artifact object
+        Tuple of (artifact, version_is_new) where version_is_new is True when the
+        manifest version did not previously exist and should be tagged on commit.
 
     Raises:
         RuntimeError: If artifact creation fails
@@ -372,6 +381,9 @@ async def stage_artifact(
 
     # Check if artifact exists and handle collection placement
     artifact = None
+    version_is_new = True  # new artifact always gets a version tag on commit
+    manifest_version = manifest.get("version")
+
     try:
         # Check if artifact already exists
         existing_artifact = await artifact_manager.read(artifact_id)
@@ -384,9 +396,7 @@ async def stage_artifact(
                 f"(current: {current_parent_id}, expected: {collection_id}). "
                 "Deleting and recreating..."
             )
-            # Delete the existing artifact
             await artifact_manager.delete(artifact_id=artifact_id)
-            # Will create new one below
             existing_artifact = None
 
         if existing_artifact:
@@ -397,18 +407,52 @@ async def stage_artifact(
             if view_config is not None:
                 artifact_config["view_config"] = view_config
 
+            # Decide how to stage based on whether the manifest version is new:
+            #
+            # - New version tag: edit(version='new') branches a fresh snapshot so
+            #   all previous versions stay intact; caller commits with the tag.
+            # - Same version as the LATEST: edit(version=None) stages on the
+            #   current head; caller commits without a tag — updates in place.
+            # - Same version as an OLDER (non-latest) tag: not supported by Hypha
+            #   (edit always targets the latest head), so raise a clear error.
+            existing_versions = [
+                v["version"] for v in (existing_artifact.versions or [])
+            ]
+            version_is_new = bool(
+                manifest_version and manifest_version not in existing_versions
+            )
+
+            if not version_is_new and existing_versions:
+                latest_version = existing_versions[-1]
+                if manifest_version and manifest_version != latest_version:
+                    raise ValueError(
+                        f"Cannot re-save artifact '{artifact_id}' at version "
+                        f"'{manifest_version}': a newer version '{latest_version}' "
+                        f"already exists. Bump the version in manifest.yaml to save "
+                        f"changes (existing versions: {existing_versions})."
+                    )
+
             edit_kwargs = {
                 "artifact_id": artifact_id,
                 "manifest": manifest,
                 "type": "application",
                 "stage": True,
-                "version": "new",  # branch a new version; previous versions remain intact
+                "version": "new" if version_is_new else None,
             }
             if artifact_config:
                 edit_kwargs["config"] = artifact_config
 
             artifact = await artifact_manager.edit(**edit_kwargs)
-            logger.info(f"Editing existing artifact '{artifact_id}' (new version)")
+            if version_is_new:
+                logger.info(
+                    f"Editing existing artifact '{artifact_id}' "
+                    f"(new version: {manifest_version})"
+                )
+            else:
+                logger.info(
+                    f"Editing existing artifact '{artifact_id}' "
+                    f"(updating existing version: {manifest_version or 'latest'})"
+                )
 
     except Exception as e:
         expected_error = f"KeyError: \"Artifact with ID '{artifact_id}' does not exist."
@@ -439,7 +483,7 @@ async def stage_artifact(
         except Exception as e:
             raise RuntimeError(f"Failed to create artifact '{artifact_id}': {e}")
 
-    return artifact
+    return artifact, version_is_new
 
 
 async def upload_file_to_artifact(
@@ -668,8 +712,9 @@ async def create_application_from_files(
     # Add created_by field to the manifest
     application_manifest["created_by"] = user_id
 
-    # Edit or create artifact, put in stage mode
-    artifact = await stage_artifact(
+    # Edit or create artifact, put in stage mode.
+    # version_is_new tells us whether to tag the commit with the manifest version.
+    artifact, version_is_new = await stage_artifact(
         artifact_manager=artifact_manager,
         workspace=workspace,
         manifest=application_manifest,
@@ -738,11 +783,15 @@ async def create_application_from_files(
                     f"Failed to remove old file '{file_name}': {e}. Continuing anyway..."
                 )
 
-    # Commit the artifact, using the version from the manifest if present
+    # Commit the artifact.
+    # Only tag with the manifest version when it is genuinely new; if the version
+    # tag already existed we commit without a tag (updates the artifact in place
+    # without creating a duplicate version entry).
+    commit_version = application_manifest.get("version") if version_is_new else None
     await commit_artifact(
         artifact_manager=artifact_manager,
         artifact_id=artifact.id,
-        version=application_manifest.get("version"),
+        version=commit_version,
         logger=logger,
     )
 

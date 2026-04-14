@@ -288,18 +288,20 @@ fig.savefig("illustration1_barplot.png", bbox_inches="tight", dpi=300)
 
 #### Illustration 2 — Input / GT / Predictions montage
 
-Show all screened models in a single figure. **Models are ordered in the same rank order as Illustration 1** (best first).
+Show all screened models in a single figure. **Models are ordered in the same rank order as Illustration 1** (best first). Iterate over `ranking` directly — **NOT** `plot_order` (which is worst-first and used only for barplot y-axis). Panel idx=0 (top-left) = best model, idx=N-1 (bottom-right) = worst model.
 
 **Layout**:
 - Row 1: Input image | Ground truth (if available) — centered, with empty columns as padding if needed
 - Remaining rows: one panel per model prediction, in ranked order
 - If ≤ 6 models: use a 2-column grid (input/GT in cols 1-2 of row 1; pairs of models per row below)
 - If > 6 models: use a 3-column grid
-- Each panel: title = model ID (6 pt, bold), subtitle = metric value e.g. "F1 = 0.909" (5.5 pt, grey `#666666`)
+- Each panel: title = model ID (6 pt, bold), subtitle = metric value e.g. "F1 = 0.909 | mIoU = 0.956" (5.5 pt, grey `#555555`)
+- **Title and subtitle text must be dark (`#111111` / `#555555`)** — they render above/below the axes on the white figure background, NOT inside the dark panel. Using white text here makes titles invisible.
+- Elements drawn **inside** the panel (scale bar line and label) must be white for contrast against the dark background.
 - Do NOT add channel limitation notes to panels — record these in `comparison_summary.json` under `"notes"` and in the HTML report
-- Spacing: panels must be **tight** — use `hspace=0.08` and `wspace=0.04` in GridSpec. Do not leave large white gaps between panels.
-- Background: set `fig.patch.set_facecolor('#141414')` so the figure background matches the panel backgrounds in PDF/PNG output
-- Each panel background: `#141414` (near-black)
+- Spacing: panels must be **tight** — use `hspace=0.38` and `wspace=0.04` in GridSpec (enough to avoid subtitle/title overlap without large gaps).
+- Figure background: `fig.patch.set_facecolor("white")` — white outer background for journal compatibility
+- Each panel background: **always `#141414`** (near-black), regardless of figure background. Dark panel backgrounds make fluorescence/instance-segmentation overlays look significantly better. Never use white or grey for image panels.
 - Scale bar in bottom-left corner (white line + label, 5.5 pt)
 - For segmentation outputs: render as colored instance overlay (tab20 colormap, background `#141414`). Do NOT show raw probability maps — always postprocess to instance labels first.
 - For the input panel: apply CLAHE (`skimage.exposure.equalize_adapthist`) and display as grayscale (`cmap="gray"`)
@@ -308,7 +310,16 @@ Show all screened models in a single figure. **Models are ordered in the same ra
 
 **Python**:
 ```python
-fig.patch.set_facecolor("#141414")
+fig.patch.set_facecolor("white")                 # white outer background for journal
+# Iterate ranking (best-first): idx=0 → top-left, idx=N-1 → bottom-right
+for idx, model_id in enumerate(ranking):          # NOT plot_order (which is reversed)
+    row = 1 + idx // N_COLS
+    col_start = (idx % N_COLS) * 2
+    ax = fig.add_subplot(gs[row, col_start : col_start + 2])
+    # ... render prediction panel ...
+    ax.set_facecolor("#141414")                  # always dark, regardless of fig bg
+    ax.set_title(model_id, fontsize=6, fontweight="bold", pad=3, color="#111111")
+    ax.text(0.5, -0.06, f"F1 = {metrics[model_id]['f1']:.3f}", ...)  # color="#555555"
 fig.savefig("illustration2_montage.pdf", bbox_inches="tight", facecolor=fig.get_facecolor())
 fig.savefig("illustration2_montage.png", bbox_inches="tight", dpi=300, facecolor=fig.get_facecolor())
 ```
@@ -368,6 +379,39 @@ bioengine runner validate ./my-model/rdf.yaml
 bioengine runner test ambitious-ant
 bioengine runner test ambitious-ant --skip-cache  # force re-download and re-test
 ```
+
+## Inference retry on OOM
+
+GPU workers can return an out-of-memory error when multiple jobs are running simultaneously. The error surfaces as a `RuntimeError` or `torch.OutOfMemoryError` (often re-raised as `Failed to unpickle serialized exception` from the Ray worker). **This is transient — wait and retry.**
+
+Wrap every inference call in a retry loop:
+
+```python
+import time, requests
+
+def infer_with_retry(model_id, input_array, max_retries=3, retry_delay=15):
+    """Run inference, retrying on OOM errors with exponential back-off."""
+    for attempt in range(max_retries):
+        try:
+            result = infer_http(model_id, input_array)
+            return result
+        except Exception as e:
+            err = str(e).lower()
+            is_oom = any(kw in err for kw in [
+                "outofmemory", "out of memory", "cuda out", "unpickle serialized",
+            ])
+            if is_oom and attempt < max_retries - 1:
+                wait = retry_delay * (attempt + 1)   # 15s, 30s, 45s
+                print(f"  OOM on {model_id} (attempt {attempt+1}), retrying in {wait}s…")
+                time.sleep(wait)
+            else:
+                raise
+```
+
+- **Max retries**: 3 (configurable). Total worst-case wait before giving up: ~90 s.
+- **Delay**: linear back-off — 15 s, 30 s, 45 s. GPU memory is freed quickly once the previous job finishes.
+- **Only retry on OOM**: other errors (shape mismatch, model not found, timeout) should fail immediately.
+- If all retries are exhausted, record the model in `failed_models` with the error message and continue with remaining models.
 
 ## Validation loop (quality-critical runs)
 

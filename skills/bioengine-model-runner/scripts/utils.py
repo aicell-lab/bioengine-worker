@@ -47,6 +47,46 @@ def infer_http(model_id, image_array):
     return np.load(out_buffer)
 
 
+def infer_with_retry(model_id, image_array, max_retries=3, retry_delay=15):
+    """
+    Run inference with automatic retry on GPU OOM errors.
+
+    OOM surfaces as RuntimeError / torch.OutOfMemoryError re-raised from a Ray
+    worker, often with the message "Failed to unpickle serialized exception".
+    These are transient — the GPU frees memory once the previous job finishes.
+
+    Args:
+        model_id:     BioImage.IO model slug
+        image_array:  numpy array in the correct input shape for the model
+        max_retries:  number of attempts before giving up (default 3)
+        retry_delay:  base wait in seconds; back-off is linear: delay, 2*delay, 3*delay
+
+    Returns:
+        numpy array — first output of the model
+
+    Raises:
+        The last exception if all retries are exhausted, or immediately on
+        non-OOM errors.
+    """
+    import time
+
+    OOM_KEYWORDS = ["outofmemory", "out of memory", "cuda out", "unpickle serialized"]
+
+    for attempt in range(max_retries):
+        try:
+            return infer_http(model_id, image_array)
+        except Exception as e:
+            err = str(e).lower()
+            is_oom = any(kw in err for kw in OOM_KEYWORDS)
+            if is_oom and attempt < max_retries - 1:
+                wait = retry_delay * (attempt + 1)
+                print(f"  OOM on '{model_id}' (attempt {attempt + 1}/{max_retries}), "
+                      f"retrying in {wait}s…")
+                time.sleep(wait)
+            else:
+                raise
+
+
 def get_model_rdf(model_id):
     """Fetch the RDF yaml for a given model ID."""
     url = f"https://hypha.aicell.io/bioimage-io/artifacts/{model_id}/files/rdf.yaml"

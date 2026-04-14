@@ -27,6 +27,7 @@ from bioengine.utils import create_file_list_from_directory
 async def test_create_and_delete_artifacts(
     bioengine_worker_service: ObjectProxy,
     tests_dir: Path,
+    bioengine_apps_dir: Path,
     test_id: str,
     hypha_workspace: str,
     hypha_user_id: str,
@@ -44,8 +45,8 @@ async def test_create_and_delete_artifacts(
     - Confirm storage cleanup and accessibility removal
     """
     # Define paths to test applications
-    demo_app_path = tests_dir / "demo_app"
-    composition_app_path = tests_dir / "composition_app"
+    demo_app_path = bioengine_apps_dir / "demo-app"
+    composition_app_path = bioengine_apps_dir / "demo-app"
 
     # Verify the test directories exist
     assert demo_app_path.exists(), f"Demo app directory not found: {demo_app_path}"
@@ -735,6 +736,7 @@ async def test_run_application_locally(
 async def test_run_application_from_artifact(
     monkeypatch: pytest.MonkeyPatch,
     tests_dir: Path,
+    bioengine_apps_dir: Path,
     test_id: str,
     hypha_workspace: str,
     bioengine_worker_service: ObjectProxy,
@@ -750,14 +752,14 @@ async def test_run_application_from_artifact(
 
     hyphen_test_id = test_id.replace("_", "-")
 
-    demo_app_path = tests_dir / "demo_app"
+    demo_app_path = bioengine_apps_dir / "demo-app"
     demo_artifact_id = f"{hypha_workspace}/demo-app-{hyphen_test_id}"
     demo_app_config = {
         "artifact_id": demo_artifact_id,
         "disable_gpu": True,
     }  # Test random application ID generation
 
-    composition_app_path = tests_dir / "composition_app"
+    composition_app_path = bioengine_apps_dir / "demo-app"
     composition_artifact_id = f"{hypha_workspace}/composition-app-{hyphen_test_id}"
     composition_app_config = {
         "artifact_id": composition_artifact_id,

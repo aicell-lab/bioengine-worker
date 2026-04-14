@@ -265,6 +265,135 @@ class TrainingParams(TypedDict):
     session_id: str
     min_train_masks: int
     validation_interval: int | None
+    enable_clahe: bool
+
+
+def _apply_clahe(img_array: npt.NDArray[Any]) -> npt.NDArray[Any]:
+    """Convert image to grayscale uint8 and apply CLAHE contrast enhancement.
+
+    Accepts (H, W), (H, W, C) or (C, H, W) arrays.
+    Returns a (H, W) uint8 array with enhanced contrast.
+    """
+    import cv2
+
+    arr = np.asarray(img_array)
+    # Convert CHW -> HWC if needed (detect by checking if first dim is small)
+    if arr.ndim == 3 and arr.shape[0] in (1, 2, 3, 4) and arr.shape[0] < arr.shape[1]:
+        arr = arr.transpose(1, 2, 0)
+    # Convert to grayscale
+    if arr.ndim == 3:
+        if arr.shape[2] == 1:
+            arr = arr[:, :, 0]
+        elif arr.shape[2] >= 3:
+            # Weighted luminance conversion
+            arr = (
+                0.299 * arr[:, :, 0].astype(np.float32)
+                + 0.587 * arr[:, :, 1].astype(np.float32)
+                + 0.114 * arr[:, :, 2].astype(np.float32)
+            ).astype(np.uint8)
+    # Ensure uint8
+    if arr.dtype != np.uint8:
+        arr_min = float(arr.min())
+        arr_max = float(arr.max())
+        if arr_max > arr_min:
+            arr = ((arr.astype(np.float32) - arr_min) / (arr_max - arr_min) * 255).astype(
+                np.uint8
+            )
+        else:
+            arr = np.zeros(arr.shape, dtype=np.uint8)
+    # Apply CLAHE
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(16, 16))
+    return clahe.apply(arr)
+
+
+def _preprocess_images_clahe(
+    file_paths: list[Path],
+    preproc_dir: Path,
+) -> list[Path]:
+    """Apply CLAHE to images and save as TIFFs; return updated paths."""
+    import tifffile
+    from PIL import Image as PILImage
+
+    preproc_dir.mkdir(parents=True, exist_ok=True)
+    new_paths: list[Path] = []
+    for fp in file_paths:
+        suffix = fp.suffix.lower()
+        if suffix in (".png", ".jpg", ".jpeg", ".bmp", ".gif"):
+            img_arr = np.array(PILImage.open(fp))
+        else:
+            img_arr = tifffile.imread(fp)
+        processed = _apply_clahe(img_arr)
+        out_path = preproc_dir / (fp.stem + "_clahe.tif")
+        tifffile.imwrite(str(out_path), processed)
+        new_paths.append(out_path)
+    logger.debug(
+        "CLAHE preprocessing: saved %d images to %s", len(new_paths), preproc_dir
+    )
+    return new_paths
+
+
+def _normalize_label_files(
+    label_paths: list[Path],
+    out_dir: Path,
+) -> list[Path]:
+    """Convert label files to integer uint16 TIFFs that Cellpose can load correctly.
+
+    Cellpose uses ``cv2.imread(path, -1)`` for non-TIFF files. For palette-mode
+    PNGs (PIL mode "P") this expands the palette to BGRA, destroying the integer
+    label indices. PIL preserves them correctly. This function reads every label
+    with PIL and saves it as a uint16 TIFF so Cellpose's internal loader works.
+    """
+    import tifffile
+    from PIL import Image as PILImage
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    new_paths: list[Path] = []
+    for fp in label_paths:
+        suffix = fp.suffix.lower()
+        if suffix in (".tif", ".tiff"):
+            # Already TIFF — load and re-save as uint16 to ensure integer dtype
+            try:
+                lbl_arr = tifffile.imread(fp)
+                if lbl_arr.dtype in (np.uint16, np.int32, np.uint32):
+                    new_paths.append(fp)
+                    continue
+            except Exception:
+                pass
+        # Load with PIL (handles palette PNGs, regular PNGs, JPEGs, etc.)
+        pil_img = PILImage.open(fp)
+        lbl_arr = np.array(pil_img)
+        # Palette PNGs (mode "P") give a 2-D uint8 array with the correct integer
+        # label indices — no further conversion needed.
+        if lbl_arr.ndim == 3:
+            # For RGB/RGBA label images: take the first channel (red = label index
+            # for standard annotation tool exports) or convert to grayscale.
+            if lbl_arr.shape[2] in (3, 4):
+                lbl_arr = lbl_arr[:, :, 0]
+        out_path = out_dir / (fp.stem + "_labels.tif")
+        tifffile.imwrite(str(out_path), lbl_arr.astype(np.uint16))
+        new_paths.append(out_path)
+    logger.debug(
+        "Label normalisation: saved %d label files to %s", len(new_paths), out_dir
+    )
+    return new_paths
+
+
+def _load_label_array(label_path: Path) -> npt.NDArray[Any]:
+    """Load a label mask from any supported format using PIL (palette-PNG safe)."""
+    import tifffile
+    from PIL import Image as PILImage
+
+    suffix = label_path.suffix.lower()
+    if suffix in (".tif", ".tiff"):
+        try:
+            return tifffile.imread(label_path)
+        except Exception:
+            pass
+    pil_img = PILImage.open(label_path)
+    lbl_arr = np.array(pil_img)
+    if lbl_arr.ndim == 3 and lbl_arr.shape[2] in (3, 4):
+        lbl_arr = lbl_arr[:, :, 0]
+    return lbl_arr
 
 
 class DatasetSplit(TypedDict):
@@ -1703,6 +1832,7 @@ def run_blocking_task(
             epoch_callback=epoch_callback,
             batch_callback=batch_callback,
             validation_interval=training_params["validation_interval"],
+            rescale=True,
         )
     except TrainingStoppedError:
         elapsed = time.time() - t0
@@ -1798,7 +1928,6 @@ def run_blocking_task(
     ):
         try:
             from cellpose import metrics as cp_metrics
-            from tifffile import imread as tiff_imread
 
             logger.info(
                 "Session %s: Computing instance segmentation metrics on test set...",
@@ -1820,6 +1949,8 @@ def run_blocking_task(
             )
 
             # Run full Cellpose eval on each test image
+            # Use _load_label_array (PIL-based) so palette-mode PNGs and other
+            # non-TIFF formats are loaded correctly instead of via tifffile.
             masks_true_all: list[npt.NDArray[Any]] = []
             masks_pred_all: list[npt.NDArray[Any]] = []
 
@@ -1827,8 +1958,8 @@ def run_blocking_task(
                 dataset_split["test_files"],
                 dataset_split["test_labels_files"],
             ):
-                img = tiff_imread(img_path)
-                lbl = tiff_imread(lbl_path)
+                img = _load_label_array(img_path)  # images are now TIFFs (CLAHE or original)
+                lbl = _load_label_array(lbl_path)  # labels may still be palette PNGs if skipped
 
                 # Run inference with the trained model
                 mask_pred = cellpose_model.eval(
@@ -1938,6 +2069,61 @@ async def finetune_cellpose(
             "Creating dataset split...",
         )
         dataset_split = create_dataset_split(train_pairs, test_pairs)
+
+        # Always normalise label files to integer TIFF format so Cellpose's
+        # internal loader (cv2.imread) can read them correctly.  Palette-mode
+        # PNGs produced by BioImage.IO Colab are otherwise expanded to BGRA by
+        # cv2, which destroys the integer label indices and corrupts training.
+        logger.info("Session %s: Normalising label files to integer TIFF format", session_id)
+        update_status(
+            session_id,
+            StatusType.PREPARING,
+            "Normalising label files...",
+        )
+        labels_dir = data_save_path / "_labels"
+        normalised_train_labels = _normalize_label_files(
+            dataset_split["train_labels_files"], labels_dir
+        )
+        normalised_test_labels = (
+            _normalize_label_files(dataset_split["test_labels_files"], labels_dir)
+            if dataset_split["test_labels_files"]
+            else None
+        )
+        dataset_split = DatasetSplit(
+            train_files=dataset_split["train_files"],
+            train_labels_files=normalised_train_labels,
+            test_files=dataset_split["test_files"],
+            test_labels_files=normalised_test_labels,
+        )
+
+        if training_params.get("enable_clahe"):
+            logger.info("Session %s: Applying CLAHE preprocessing to images", session_id)
+            update_status(
+                session_id,
+                StatusType.PREPARING,
+                "Applying CLAHE preprocessing to images...",
+            )
+            preproc_dir = data_save_path / "_preprocessed"
+            preprocessed_train = _preprocess_images_clahe(
+                dataset_split["train_files"], preproc_dir
+            )
+            preprocessed_test = (
+                _preprocess_images_clahe(dataset_split["test_files"], preproc_dir)
+                if dataset_split["test_files"]
+                else None
+            )
+            dataset_split = DatasetSplit(
+                train_files=preprocessed_train,
+                train_labels_files=dataset_split["train_labels_files"],
+                test_files=preprocessed_test,
+                test_labels_files=dataset_split["test_labels_files"],
+            )
+            logger.info(
+                "Session %s: CLAHE preprocessing done (%d train, %d test)",
+                session_id,
+                len(preprocessed_train),
+                len(preprocessed_test) if preprocessed_test else 0,
+            )
 
         model_save_path = get_session_path(session_id)
         model_save_path.mkdir(parents=True, exist_ok=True)
@@ -3567,6 +3753,16 @@ class CellposeFinetune:
                 "for every epoch. Requires test_images and test_annotations."
             ),
         ),
+        enable_clahe: bool = Field(
+            False,
+            description=(
+                "Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) "
+                "preprocessing to training and test images before training. "
+                "Recommended for brightfield or phase-contrast microscopy images "
+                "where raw pixel values span a narrow range (e.g. 19–81 out of 255). "
+                "Without CLAHE, Cellpose-SAM cannot detect cells in such images."
+            ),
+        ),
         context: dict[str, Any] | None = Field(
             None,
             description="Authentication context, automatically provided by Hypha.",
@@ -3600,6 +3796,7 @@ class CellposeFinetune:
             validation_interval = wrapped.get(
                 "validation_interval", validation_interval
             )
+            enable_clahe = bool(wrapped.get("enable_clahe", enable_clahe))
             context = wrapped.get("context", context)
 
         artifact = normalize_optional_param(artifact)
@@ -3696,6 +3893,7 @@ class CellposeFinetune:
             session_id=session_id,
             min_train_masks=min_train_masks,
             validation_interval=validation_interval,
+            enable_clahe=bool(enable_clahe),
         )
 
         # Save training parameters for later export
@@ -4755,6 +4953,15 @@ BSD-3-Clause (Cellpose license)
                 "numpy arrays. Useful for browser clients."
             ),
         ),
+        enable_clahe: bool = Field(
+            False,
+            description=(
+                "Apply CLAHE preprocessing to input images before inference. "
+                "Recommended for brightfield or phase-contrast microscopy images. "
+                "Converts to grayscale and applies contrast-limited adaptive histogram "
+                "equalization (clipLimit=3.0, tileGridSize=16×16)."
+            ),
+        ),
     ) -> list[PredictionItemModel]:
         """Run Cellpose inference on artifact images and return encoded masks.
 
@@ -4782,6 +4989,7 @@ BSD-3-Clause (Cellpose license)
             flow_threshold = wrapped.get("flow_threshold", flow_threshold)
             cellprob_threshold = wrapped.get("cellprob_threshold", cellprob_threshold)
             niter = wrapped.get("niter", niter)
+            enable_clahe = bool(wrapped.get("enable_clahe", enable_clahe))
             return_flows = wrapped.get("return_flows", return_flows)
             json_safe = wrapped.get("json_safe", json_safe)
 
@@ -4826,6 +5034,10 @@ BSD-3-Clause (Cellpose license)
                 )
             else:
                 images = []
+
+            if enable_clahe and images:
+                logger.info("Applying CLAHE preprocessing to %d inference images", len(images))
+                images = [_apply_clahe(img) for img in images]
 
             return _predict_and_encode(
                 model=model_obj,

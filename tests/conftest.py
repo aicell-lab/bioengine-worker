@@ -78,6 +78,12 @@ def tests_dir(workspace_folder: Path) -> Path:
     return workspace_folder / "tests"
 
 
+@pytest.fixture(scope="session")
+def bioengine_apps_dir(workspace_folder: Path) -> Path:
+    """Return bioengine_apps directory."""
+    return workspace_folder / "bioengine_apps"
+
+
 @pytest.fixture(scope="session", autouse=True)
 def validate_environment(workspace_folder) -> str:
     requirements_file = workspace_folder / "requirements.txt"

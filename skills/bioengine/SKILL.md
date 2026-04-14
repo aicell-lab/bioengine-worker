@@ -1,11 +1,14 @@
 ---
-name: bioengine-apps
-description: Builds, deploys, and manages BioEngine applications on Ray Serve infrastructure via Hypha. Use when the user wants to create a new BioEngine app, write a Ray Serve deployment class, configure a manifest.yaml, deploy to a BioEngine worker, monitor application status, or manage running applications.
+name: bioengine
+description: Complete BioEngine skill — builds, deploys, and manages BioEngine applications on Ray Serve/Hypha, and provides access to all pre-deployed BioEngine services (model runner, Cellpose fine-tuning, and more). Use this as the single entry point for any BioEngine task. For deep usage of specific services, load the referenced app skills below.
 license: MIT
 compatibility: Requires Python ≥3.9, Ray ≥2.33.0, hypha-rpc ≥0.21.11, pydantic ≥2.11.0, httpx ≥0.28.1. Network access to hypha.aicell.io required.
 metadata:
   docs-source: https://raw.githubusercontent.com/aicell-lab/bioengine-worker/refs/heads/main/bioengine_apps/README.md
   cli-package: bioengine (pip install bioengine)
+  app-skills:
+    - ../bioengine-model-runner/SKILL.md      # BioImage.IO model search and inference
+    - ../bioengine-cellpose-finetuning/SKILL.md  # Cellpose-SAM fine-tuning on custom data
 ---
 
 # BioEngine Apps
@@ -334,3 +337,14 @@ result = await svc.process(input_data="Hello")
 
 - Full manifest fields and deployment config: [references/manifest_reference.md](references/manifest_reference.md)
 - CLI source and advanced usage: [references/cli_reference.md](references/cli_reference.md)
+
+## BioEngine app skills
+
+The following app-specific skills provide deeper documentation for pre-deployed BioEngine services. Load them autonomously when the user's task involves one of these services:
+
+| Skill file | When to load |
+|---|---|
+| [`../bioengine-model-runner/SKILL.md`](../bioengine-model-runner/SKILL.md) | User wants to search, run inference on, or validate BioImage.IO models (segmentation, denoising, detection, restoration) |
+| [`../bioengine-cellpose-finetuning/SKILL.md`](../bioengine-cellpose-finetuning/SKILL.md) | User wants to fine-tune Cellpose on their own annotated microscopy images, monitor training metrics, or export a trained model |
+
+More app skills will be added here as new BioEngine applications are developed.

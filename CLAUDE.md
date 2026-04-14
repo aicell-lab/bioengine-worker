@@ -172,7 +172,54 @@ pytest tests/end_to_end/ -v
 - `bioengine/applications/app_builder.py` — `build()` constructs Ray Serve app from artifact
 - `tests/demo_app/` — Minimal example BioEngine app
 - `bioengine_apps/model-runner/` — Production model-runner app
+- `bioengine_apps/cellpose-finetuning/` — Cellpose fine-tuning app
 - `pyproject.toml` — Package version and dependencies
+
+---
+
+## BioEngine Skills
+
+The `skills/` directory contains AI agent skills for working with BioEngine. Skills are Markdown documents that describe a capability to an AI agent so it can autonomously use the relevant APIs.
+
+### Skill structure
+
+```
+skills/
+├── bioengine/                          # Main entry-point skill — load this first
+│   ├── SKILL.md                        # Core skill: app deployment + references to app skills
+│   ├── bioengine_cli/                  # CLI source (installable with pip install -e .)
+│   └── references/
+│       ├── manifest_reference.md       # Full manifest.yaml field reference
+│       └── cli_reference.md            # CLI command reference
+├── bioengine-model-runner/             # App skill: BioImage.IO model inference
+│   ├── SKILL.md
+│   ├── bioengine_cli/                  # Same CLI source (shared)
+│   └── references/
+│       ├── api_reference.md
+│       ├── cli_reference.md
+│       └── rdf_format.md
+└── bioengine-cellpose-finetuning/      # App skill: Cellpose fine-tuning
+    └── SKILL.md
+```
+
+### How skills are used
+
+- **`skills/bioengine/SKILL.md`** is the single skill users pass to an AI agent. It covers app deployment, the CLI, and all platform concepts. It also lists app-specific skills for the agent to load autonomously when needed.
+- **App skills** (`bioengine-model-runner`, `bioengine-cellpose-finetuning`) are deeper references for specific deployed services. They are not loaded by default — the agent reads `bioengine/SKILL.md` first and picks up the relevant app skill based on the user's task.
+
+### Working on skills
+
+- **Main skill** (`skills/bioengine/SKILL.md`): Update when the worker API, CLI commands, manifest format, or deployment rules change.
+- **Model runner skill** (`skills/bioengine-model-runner/SKILL.md`): Update when the `bioengine_apps/model-runner/` service API changes (new inference parameters, new CLI commands, new model formats).
+- **Cellpose fine-tuning skill** (`skills/bioengine-cellpose-finetuning/SKILL.md`): Update when `bioengine_apps/cellpose-finetuning/main.py` service API changes (new training parameters, new status fields, new export options, known pitfalls discovered during testing).
+
+### Adding a new app skill
+
+1. Create `skills/<app-name>/SKILL.md` with frontmatter (`name`, `description`, `license`, `metadata.service-id`).
+2. Add an entry to the `## BioEngine app skills` table in `skills/bioengine/SKILL.md`.
+3. Add the path to the `metadata.app-skills` list in the `bioengine/SKILL.md` frontmatter.
+
+---
 
 ## Agent Workflow Guidelines
 

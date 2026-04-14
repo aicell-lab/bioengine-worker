@@ -170,8 +170,7 @@ pytest tests/end_to_end/ -v
 - `bioengine/utils/artifact_utils.py` — All Hypha artifact CRUD helpers
 - `bioengine/applications/apps_manager.py` — `run_application`, `save_application`, lifecycle
 - `bioengine/applications/app_builder.py` — `build()` constructs Ray Serve app from artifact
-- `bioengine_apps/demo-app/` — Minimal example BioEngine app (single deployment + frontend)
-- `bioengine_apps/hello-world/` — Simple hello-world app (reference for single-deployment pattern)
+- `bioengine_apps/demo-app/` — Reference BioEngine app (single deployment + frontend; ping, ascii_art, list_datasets, reverse_text)
 - `bioengine_apps/composition-demo/` — Multi-deployment composition app (entry + 3 runtimes, reference for composition pattern)
 - `bioengine_apps/model-runner/` — Production model-runner app
 - `bioengine_apps/cellpose-finetuning/` — Cellpose fine-tuning app
@@ -223,6 +222,14 @@ skills/
 
 ---
 
+## External Skills
+
+| Skill | URL | Purpose |
+|-------|-----|---------|
+| Hypha | https://hypha.aicell.io/ws/agent-skills/SKILL.md | Connect to the Hypha distributed computing platform — obtain tokens, discover workspaces, call services via RPC or HTTP, manage artifacts, deploy apps |
+
+---
+
 ## Agent Workflow Guidelines
 
 - **Simplicity First**: Make every change as minimal as possible.
@@ -237,9 +244,9 @@ skills/
   git push
   ```
   The version in `manifest.yaml` must be bumped whenever app code changes.
-- **Version bump rules** — two CI workflows enforce this:
-  - **`deploy-applications.yml`** triggers on any push to `bioengine_apps/**` (or manual dispatch). Before merging to `main`, bump `version` in the affected app's `manifest.yaml`.
-  - **`docker-publish.yml`** triggers on pushes to `bioengine/**`, `requirements*.txt`, `pyproject.toml`, or `docker/**`. It enforces that the version in `pyproject.toml` is strictly greater than the latest published image tag — the push will fail if the version has not been bumped.
+- **Version bump rules**:
+  - **`deploy-applications.yml`** is manual-dispatch only (push trigger disabled — agents deploy directly via the worker API). Always bump `version` in the affected app's `manifest.yaml` when app code changes.
+  - **`docker-publish.yml`** triggers on changes to any of these paths: `bioengine/**`, `requirements*.txt`, `pyproject.toml`, `docker/**`, `.dockerignore`. It enforces that `version` in `pyproject.toml` is strictly greater than the latest published image tag — CI will fail if not bumped. **Always create a PR** (never push directly to `main`) and **bump `version` in `pyproject.toml`** before opening the PR whenever any of those paths are touched.
 - **Clean up test deployments**: After testing is complete, stop and delete any temporary apps deployed to the live worker:
   ```python
   await worker.stop_application(application_id=app_id)   # stops the Ray Serve deployment

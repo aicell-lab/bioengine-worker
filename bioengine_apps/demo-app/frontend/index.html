@@ -183,6 +183,18 @@
   <div class="result-block" id="datasetsResult">—</div>
 </div>
 
+<!-- Reverse Text card -->
+<div class="card">
+  <div class="section-header">
+    <h2>Reverse Text</h2>
+    <button class="btn" id="reverseBtn" onclick="callReverseText()" disabled>Reverse</button>
+  </div>
+  <div class="row">
+    <input type="text" id="reverseInput" placeholder="Enter text to reverse…" value="Hello BioEngine!" />
+  </div>
+  <div class="result-block" id="reverseResult">—</div>
+</div>
+
 <script type="module">
 import { connectToServer } from "https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.mjs";
 
@@ -202,7 +214,7 @@ function setStatus(state, text) {
 }
 
 function setButtons(enabled) {
-  ["pingBtn", "asciiBtn", "datasetsBtn"].forEach(id => {
+  ["pingBtn", "asciiBtn", "datasetsBtn", "reverseBtn"].forEach(id => {
     document.getElementById(id).disabled = !enabled;
   });
 }
@@ -273,6 +285,22 @@ window.callListDatasets = async function () {
     el.textContent = "Error: " + err.message;
   } finally {
     document.getElementById("datasetsBtn").disabled = false;
+  }
+};
+
+window.callReverseText = async function () {
+  if (!svc) return;
+  document.getElementById("reverseBtn").disabled = true;
+  const el = document.getElementById("reverseResult");
+  const text = document.getElementById("reverseInput").value;
+  el.textContent = "Loading…";
+  try {
+    const res = await svc.reverse_text({ text, _rkwargs: true });
+    el.textContent = JSON.stringify(res, null, 2);
+  } catch (err) {
+    el.textContent = "Error: " + err.message;
+  } finally {
+    document.getElementById("reverseBtn").disabled = false;
   }
 };
 

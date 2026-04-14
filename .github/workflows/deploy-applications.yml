@@ -1,11 +1,11 @@
 name: Deploy BioEngine Applications
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'bioengine_apps/**'
+  # push:  # Disabled: agents deploy via worker API before committing; push trigger causes redundant re-deploy
+  #   branches:
+  #     - main
+  #   paths:
+  #     - 'bioengine_apps/**'
   workflow_dispatch:
     inputs:
       directory:

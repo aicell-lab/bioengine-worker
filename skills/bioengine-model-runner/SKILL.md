@@ -67,8 +67,9 @@ All commands accept `--json` for machine-parseable output and `--server-url` to 
 ```text
 - [ ] Step 1: Search for models — bioengine runner search --keywords <task>
 - [ ] Step 2: Inspect the best candidate — bioengine runner info <model-id>
-- [ ] Step 3: Run inference — bioengine runner infer <model-id> --input image.tif --output result.npy
-- [ ] Step 4: Validate output — load result.npy with numpy, check shape and values
+- [ ] Step 3: Read model documentation — get_model_documentation(model_id) — verify domain compatibility
+- [ ] Step 4: Run inference — bioengine runner infer <model-id> --input image.tif --output result.npy
+- [ ] Step 5: Validate output — load result.npy with numpy, check shape and values
 ```
 
 ```bash
@@ -94,12 +95,14 @@ Output key: `outputs[0].name` (RDF 0.4.x) or `outputs[0].id` (RDF 0.5.x). On sha
 ```text
 - [ ] Step 1: Clarify task type (segmentation / denoising / restoration / detection)
 - [ ] Step 2: Search models — use keywords from assets/search_keywords.yaml
-- [ ] Step 3: Run all models on the same input — bioengine runner compare
-- [ ] Step 4: Score models — utils.evaluate_segmentation() for IoU/Dice
-- [ ] Step 5: Save all artifacts to comparison_results/
-- [ ] Step 6: Generate montage SVG and barplot SVG
-- [ ] Step 7: Write comparison_summary.json
-- [ ] Step 8: Generate HTML report
+- [ ] Step 3: For each candidate — call get_model_documentation to read the README
+- [ ] Step 4: Filter candidates — discard domain mismatches based on documentation
+- [ ] Step 5: Run all suitable models on the same input — bioengine runner compare
+- [ ] Step 6: Score models — utils.evaluate_segmentation() for IoU/Dice
+- [ ] Step 7: Save all artifacts to comparison_results/
+- [ ] Step 8: Generate Illustration 1 (ranked barplot), Illustration 2 (montage), Illustration 3 if instance segmentation (object count)
+- [ ] Step 9: Write comparison_summary.json
+- [ ] Step 10: Generate HTML report
 ```
 
 ```bash
@@ -109,37 +112,168 @@ bioengine runner compare affable-shark ambitious-ant chatty-frog \
   --output-dir comparison_results/
 ```
 
+### Step 3: Read model documentation before running
+
+**Always call `get_model_documentation` for every candidate before running inference.** This fetches the model's README markdown file, which contains:
+- Training data domain (brightfield, fluorescence, H&E, electron microscopy, etc.)
+- Required input channels and expected staining protocols
+- Recommended preprocessing steps
+- Known limitations and magnification constraints
+
+**HTTP endpoint**:
+```
+GET https://hypha.aicell.io/bioimage-io/services/model-runner/get_model_documentation?model_id={model_id}
+```
+
+**Python (RPC)**:
+```python
+from hypha_rpc import connect_to_server
+server = await connect_to_server(server_url="https://hypha.aicell.io")
+runner = await server.get_service("bioimage-io/model-runner")
+doc = await runner.get_model_documentation(model_id="affable-shark")
+# Returns: Markdown string or None if no documentation file exists
+```
+
+**HTTP (requests)**:
+```python
+import requests
+r = requests.get(
+    "https://hypha.aicell.io/bioimage-io/services/model-runner/get_model_documentation",
+    params={"model_id": "affable-shark"}
+)
+doc = r.json()  # Markdown string or null
+```
+
+**Decision rules after reading documentation**:
+- Model trained on H&E/brightfield → skip if input is fluorescence (and vice versa)
+- Model requires 3+ channels → skip if only 1 channel is available (unless you can provide all required channels)
+- Model trained on whole-slide-imaging at 40× → skip if your image is at a very different magnification
+- If documentation is None → fall back to RDF tags and test tensor inspection (see domain mismatch section)
+
+Also check the RDF `tags` and `description` fields from `bioengine runner info` as a secondary signal.
+
 **Artifact layout** (always save here — create folder if missing):
 
 ```
 comparison_results/
-├── {model_id}_{output_key}.npy        # raw prediction per model
-├── model_comparison_montage.svg       # row 1: input+GT centered; rows below: predictions
-├── model_comparison_barplot.svg       # grouped metrics bar chart per model
+├── {model_id}_output.npy              # raw prediction per model
+├── illustration1_barplot.pdf          # Illustration 1: ranked metric barplot
+├── illustration1_barplot.png          # same at 300 DPI
+├── illustration2_montage.pdf          # Illustration 2: input/GT/predictions montage
+├── illustration2_montage.png          # same at 300 DPI
+├── illustration3_counts.pdf           # Illustration 3: object count (instance seg only)
+├── illustration3_counts.png           # same at 300 DPI
 └── comparison_summary.json
 ```
 
-**Montage layout rule**: input and ground truth in the middle of row 1 (e.g., 4 columns → skip col 1, input col 2, GT col 3, skip col 4). Max 4 columns unless user specifies otherwise. No metric text in image titles.
+### Required illustrations
 
-**Generate HTML report**:
+Every screening run **must produce at least two illustrations**. Generate them as publication-quality figures (Nature/Cell style):
+- Figure width: 7.0 inches (Nature Methods single-column)
+- Font: Arial or Helvetica, 7–8 pt for axis labels, 6 pt for tick labels
+- Resolution: 300 DPI PNG + PDF with embedded fonts (`pdf.fonttype=42`, `ps.fonttype=42`)
+- No chartjunk: remove top/right spines, use subtle gridlines (#e0e0e0)
+- Colors: use colorblind-friendly palettes (e.g. ColorBrewer diverging/sequential)
+- All labels must be legible at print size — minimum 6 pt
 
-```bash
-python scripts/generate_report.py \
-  --summary comparison_results/comparison_summary.json \
-  --montage comparison_results/model_comparison_montage.svg \
-  --barplot comparison_results/model_comparison_barplot.svg
+---
+
+#### Illustration 1 — Ranked metric barplot
+
+**Skip only if there is exactly one suitable model** (a single-candidate result). In that case, embed the metric value as a text annotation in Illustration 2 instead.
+
+**For segmentation tasks** (instance or semantic): use **F1 score (IoU ≥ 0.5)** as the primary metric. Show both F1 and mean IoU as grouped or stacked bars if space allows.
+
+**For other tasks**: choose the most appropriate metric for the domain (e.g., PSNR/SSIM for denoising, AP for detection) and label the axis accordingly.
+
+**Layout rules**:
+- Horizontal barplot, models sorted **best at top, worst at bottom**
+- Color bars by performance category (e.g. blue = good, purple = acceptable, red = poor, grey/hatched = domain mismatch)
+- Annotate each bar with its numeric metric value (right of bar, 5.5 pt)
+- Add italic annotation for domain-mismatch or wrong-task models (e.g. "(domain mismatch)", "(wrong task)")
+- Include a brief legend for the color categories
+- x-axis range: 0 to 1 for F1/IoU; add dashed reference line at x=1.0
+- y-axis: model IDs (use the bioimage.io slug, not the full name)
+- Panel label: bold "a" at top-left
+
+**Python implementation** (use matplotlib; do NOT use seaborn):
+
+```python
+import matplotlib
+matplotlib.rcParams.update({
+    "font.family": "sans-serif", "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+    "font.size": 7, "axes.titlesize": 7, "axes.labelsize": 7,
+    "xtick.labelsize": 6, "ytick.labelsize": 6.5, "legend.fontsize": 6,
+    "axes.linewidth": 0.6, "pdf.fonttype": 42, "ps.fonttype": 42,
+})
+fig, ax = plt.subplots(figsize=(3.5, 0.6 * n_models + 0.8))
+bars = ax.barh(y_pos, f1_scores, color=colors, height=0.55)
+ax.set_xlim(0, 1.25)
+ax.axvline(1.0, color="#999999", lw=0.5, ls="--")
+ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+fig.savefig("illustration1_barplot.pdf", bbox_inches="tight")
+fig.savefig("illustration1_barplot.png", bbox_inches="tight", dpi=300)
 ```
+
+---
+
+#### Illustration 2 — Input / GT / Predictions montage
+
+Show all screened models in a single figure. **Models are ordered top-to-bottom (or left-to-right) in the same rank order as Illustration 1** (best first).
+
+**Layout**:
+- Row 1: Input image | Ground truth (if available) — centered, with empty columns as padding if needed
+- Remaining rows: one panel per model prediction, in ranked order
+- If ≤ 6 models: use a 2-column grid (input/GT in cols 1-2 of row 1; pairs of models per row below)
+- If > 6 models: use a 3-column grid
+- Each panel: title = model ID (6 pt), subtitle = metric value e.g. "F1 = 0.909" (5.5 pt, grey) — unless single-candidate (then add metric directly to title)
+- Scale bar in bottom-left of each panel (white, with µm label if pixel size is known)
+- For segmentation outputs: render as colored instance overlay (tab20 colormap, dark background `#141414`). Do NOT show raw probability maps — always postprocess to instance labels first (watershed for UNet, NMS polygon for StarDist).
+- For the input panel: apply CLAHE and display as grayscale (cmap="gray")
+- For GT: render as colored instance overlay, same style as predictions
+- Panel letter "b" at top-left of figure
+
+**Python**:
+```python
+fig.savefig("illustration2_montage.pdf", bbox_inches="tight")
+fig.savefig("illustration2_montage.png", bbox_inches="tight", dpi=300)
+```
+
+---
+
+#### Illustration 3 — Object count comparison (instance segmentation only)
+
+Only generate this figure for **instance segmentation tasks** (cell segmentation, nucleus counting, etc.).
+
+**Layout**:
+- Horizontal barplot, same model order as Illustration 1 (best at top)
+- Bars show predicted object count per model
+- **Red vertical reference line** at the ground truth count (annotate with "GT (n=N)")
+- Annotate each bar with its numeric count
+- Same color scheme as Illustration 1
+- Concise x-axis label: "Predicted cell count" (or "nucleus count", etc.)
+- No y-axis tick labels (shared with Illustration 1 via proximity in the paper)
+- Panel label: bold "c" at top-left
+
+---
 
 **comparison_summary.json schema**:
 
 ```json
 {
   "task": "nuclei segmentation",
+  "dataset": "Human Protein Atlas field 3235, 512x512 center crop",
+  "input_channel": "405nm (DAPI/nucleus)",
   "keywords": ["nuclei", "fluorescence"],
   "candidates": ["model-id-1", "model-id-2"],
-  "metrics": {"model-id-1": {"iou": 0.82, "dice": 0.87}},
-  "failed_models": {"model-id-3": "shape mismatch"},
-  "best_model": "model-id-1"
+  "excluded": {"model-id-x": "domain mismatch: trained on H&E brightfield"},
+  "metrics": {
+    "model-id-1": {"f1": 0.909, "iou": 0.85, "tp": 10, "n_pred": 10, "n_gt": 12}
+  },
+  "failed_models": {"model-id-3": "shape mismatch error message"},
+  "best_model": "model-id-1",
+  "ground_truth_n_cells": 12,
+  "notes": {"model-id-2": "HPA model: requires 3 channels"}
 }
 ```
 
@@ -228,11 +362,14 @@ StarDist models tagged `whole-slide-imaging` are trained at specific magnificati
 
 **Critical**: Some models tagged `nuclei` or `segmentation` are trained on H&E brightfield images, not fluorescence. In brightfield/H&E, nuclei appear **dark on a bright background**; in fluorescence, nuclei are **bright on a dark background**. Running a brightfield-trained model on fluorescence data (or vice versa) produces detections with zero overlap with actual nuclei — F1=0.
 
-**How to detect domain mismatch**:
+**Prevention (do this first)**: Call `get_model_documentation(model_id)` before running any model. The README describes the training domain explicitly. Exclude models with incompatible domains before running inference — this saves time and prevents misleading results.
+
+**Fallback detection** (if documentation is None or ambiguous):
 1. Check the model's test input: `inputs[0].test_tensor.source` — download it and inspect visually
 2. If test input has high mean pixel values (e.g. >80 for 8-bit) across all channels → brightfield
 3. If test input has low mean with bright spots → fluorescence
-4. After inference: check probability at ground-truth nucleus centroids — if all ≈ 0.000, domain is wrong
+4. Check RDF `tags` for `"brightfield"`, `"histopathology"`, `"H&E"` → skip for fluorescence tasks
+5. After inference: if probability at ground-truth nucleus centroids is all ≈ 0.000 → domain is wrong
 
 **Input scale is NOT the cause**: StarDist models (`chatty-frog`, `fearless-crab`) internally normalize their input. Sending [0,1] vs [0,255] values produces identical outputs (correlation=1.000). The domain difference (fluorescence vs brightfield) is the actual problem.
 

@@ -402,12 +402,13 @@ async def stage_artifact(
                 "manifest": manifest,
                 "type": "application",
                 "stage": True,
+                "version": "new",  # branch a new version; previous versions remain intact
             }
             if artifact_config:
                 edit_kwargs["config"] = artifact_config
 
             artifact = await artifact_manager.edit(**edit_kwargs)
-            logger.info(f"Editing existing artifact '{artifact_id}'")
+            logger.info(f"Editing existing artifact '{artifact_id}' (new version)")
 
     except Exception as e:
         expected_error = f"KeyError: \"Artifact with ID '{artifact_id}' does not exist."

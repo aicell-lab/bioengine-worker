@@ -3589,7 +3589,7 @@ def _predict_and_encode(
     autoscaling_config={
         "min_replicas": 1,
         "initial_replicas": 1,
-        "max_replicas": 2,
+        "max_replicas": 1,
         "target_num_ongoing_requests_per_replica": 0.8,
         "metrics_interval_s": 2.0,
         "look_back_period_s": 10.0,

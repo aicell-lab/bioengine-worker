@@ -237,6 +237,9 @@ skills/
   git push
   ```
   The version in `manifest.yaml` must be bumped whenever app code changes.
+- **Version bump rules** — two CI workflows enforce this:
+  - **`deploy-applications.yml`** triggers on any push to `bioengine_apps/**` (or manual dispatch). Before merging to `main`, bump `version` in the affected app's `manifest.yaml`.
+  - **`docker-publish.yml`** triggers on pushes to `bioengine/**`, `requirements*.txt`, `pyproject.toml`, or `docker/**`. It enforces that the version in `pyproject.toml` is strictly greater than the latest published image tag — the push will fail if the version has not been bumped.
 - **Clean up test deployments**: After testing is complete, stop and delete any temporary apps deployed to the live worker:
   ```python
   await worker.stop_application(application_id=app_id)   # stops the Ray Serve deployment

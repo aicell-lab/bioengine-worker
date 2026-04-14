@@ -226,9 +226,30 @@ logger.error("something broke")
 ```
 
 - Use `num_gpus: 0` for CPU-only deployments.
+- **Use `num_gpus: 1` (never fractional) for GPU deployments.** Fractional values (e.g. `0.5`) allow multiple apps to share a single physical GPU, causing VRAM contention and OOM errors. With `num_gpus: 1`, Ray schedules the deployment on a dedicated GPU node.
 - Entry/orchestrator deployments in composition apps should use `num_cpus: 0, num_gpus: 0` — they spend most of their time waiting for responses from runtime deployments.
 - GPU allocation can be overridden at deploy time with `disable_gpu=True`.
-- There are **limited GPUs** on the shared `bioimage-io/bioengine-worker`. Prefer CPU deployments unless the task genuinely requires a GPU.
+- The `bioimage-io/bioengine-worker` cluster has **4 × NVIDIA A40 (16 GiB) worker nodes** — check current availability with `worker.get_status()` before deploying GPU-heavy apps (see "Checking cluster resources" below).
+
+### Checking cluster resources
+
+Call `get_status()` on the worker service to inspect total and used CPUs/GPUs across the cluster:
+
+```python
+status = await worker.get_status()
+cluster = status["ray_cluster"]["cluster"]
+print(f"GPUs: {cluster['used_gpu']} / {cluster['total_gpu']} used")
+print(f"CPUs: {cluster['used_cpu']} / {cluster['total_cpu']} used")
+
+# Per-node detail (GPU memory, accelerator type, etc.)
+for node_id, node in status["ray_cluster"]["nodes"].items():
+    if node["total_gpu"] > 0:
+        vram_used = node["used_gpu_memory"] / 1024**3
+        vram_total = node["total_gpu_memory"] / 1024**3
+        print(f"  {node['node_ip']} ({node['accelerator_type']}): "
+              f"{node['used_gpu']}/{node['total_gpu']} GPU, "
+              f"{vram_used:.1f}/{vram_total:.1f} GiB VRAM")
+```
 
 ---
 
@@ -1014,7 +1035,7 @@ Creating a new deployment (without `--app-id`) starts fresh — no env vars, no 
 | Save before deploy | Always call `save_application` (via CLI or API) first |
 | `@schema_method` on public API | Non-decorated methods are internal only |
 | Match manifest filename to param name | `runtime_a:RuntimeA` → `def __init__(self, runtime_a: DeploymentHandle)` |
-| CPU-only for shared worker | Limited GPUs on `bioimage-io/bioengine-worker`; use `num_gpus: 0` unless needed |
+| GPU deployments use `num_gpus: 1` | Never use fractional GPU values — they allow VRAM sharing across apps and cause OOM. Use `num_gpus: 0` for CPU-only. |
 
 ---
 

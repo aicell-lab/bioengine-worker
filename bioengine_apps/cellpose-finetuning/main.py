@@ -3571,7 +3571,7 @@ def _predict_and_encode(
 # ---------------------------------------------------------------------------
 @serve.deployment(  # type: ignore
     ray_actor_options={
-        "num_gpus": 0.75,
+        "num_gpus": 1,
         "num_cpus": 4,
         "memory": 12 * GB,
         "runtime_env": {

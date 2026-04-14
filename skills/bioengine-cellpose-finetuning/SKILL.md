@@ -248,6 +248,23 @@ LR=1e-5, enable_clahe=True
 
 Raw brightfield baseline (without CLAHE): **0 cells detected**. CLAHE is required.
 
+## Deploying and updating the cellpose-finetuning app
+
+The `cellpose-finetuning` service runs in the `bioimage-io` workspace and requires a `HYPHA_TOKEN` that has write access to that workspace. Pass it on first deployment:
+
+```bash
+bioengine apps deploy ./bioengine_apps/cellpose-finetuning/ \
+  --env _HYPHA_TOKEN=<bioimage-io-scoped-token>
+```
+
+**When updating an existing deployment**, the new version automatically inherits all env vars (including `HYPHA_TOKEN`) and all init args/kwargs from the previous app — do **not** pass `--env` again unless intentionally rotating a secret:
+
+```bash
+bioengine apps upload ./bioengine_apps/cellpose-finetuning/
+bioengine apps run bioimage-io/cellpose-finetuning --app-id <existing-app-id>
+# HYPHA_TOKEN and all other env vars are carried over automatically
+```
+
 ## Authentication
 
 ```python

@@ -250,6 +250,23 @@ For Human Protein Atlas fluorescence images, use these keywords in order of reli
 
 `conscientious-seashell` = HPA nucleus model (3-channel). `loyal-parrot` = HPA cell body model (3-channel).
 
+## Deploying and updating the model-runner app
+
+The `model-runner` service runs in the `bioimage-io` workspace and requires a `HYPHA_TOKEN` that has write access to that workspace. Pass it on first deployment:
+
+```bash
+bioengine apps deploy ./bioengine_apps/model-runner/ \
+  --env _HYPHA_TOKEN=<bioimage-io-scoped-token>
+```
+
+**When updating an existing deployment**, the new version automatically inherits all env vars (including `HYPHA_TOKEN`) and all init args/kwargs from the previous app — do **not** pass `--env` again unless intentionally rotating a secret:
+
+```bash
+bioengine apps upload ./bioengine_apps/model-runner/
+bioengine apps run bioimage-io/model-runner --app-id <existing-app-id>
+# HYPHA_TOKEN and all other env vars are carried over automatically
+```
+
 ## References
 
 - Full API endpoint docs and examples: [references/api_reference.md](references/api_reference.md)

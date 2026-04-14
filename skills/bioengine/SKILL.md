@@ -124,19 +124,19 @@ bioengine apps stop <app-id>
 
 ## Updating a running application
 
-To update a running application without losing its environment variables (e.g., secrets, tokens), use `--app-id` with the **same ID as the running app**. The worker reuses all env vars from the previous deployment:
+To update a running application without losing its environment variables (e.g., secrets, tokens), use `--app-id` with the **same ID as the running app**. The worker reuses **all env vars and init args/kwargs** from the previous deployment — nothing needs to be re-supplied:
 
 ```bash
 # 1. Upload new code (updates the artifact in-place)
 bioengine apps upload ./my-app/
 
-# 2. Redeploy with the SAME app-id → env vars are preserved
+# 2. Redeploy with the SAME app-id → env vars + init args are preserved
 bioengine apps run my-workspace/my-app --app-id my-running-app-id
 ```
 
-This is the correct way to push code fixes to production apps. Creating a new app (without `--app-id`) starts fresh with no env vars, which will break apps that depend on `HYPHA_TOKEN` or other secrets.
+This is the correct way to push code fixes to production apps. Creating a new app (without `--app-id`) starts fresh with no env vars or init args, which will break apps that depend on `HYPHA_TOKEN`, workspace-scoped tokens, or other secrets.
 
-**Important**: If the app was originally deployed with a `HYPHA_TOKEN` that has workspace-specific permissions (e.g., access to `bioimage-io`), those env vars are only preserved when you use the same `--app-id`. A new deployment will fail if the app code reads `os.environ["HYPHA_TOKEN"]` and no token was passed.
+**Apps that require a `bioimage-io` workspace token** (e.g., `model-runner`, `cellpose-finetuning`) must be started with a `HYPHA_TOKEN` that has write access to the `bioimage-io` workspace. When updating such an app using `--app-id`, the token is automatically inherited — do **not** pass a new token unless intentionally rotating it.
 
 ## CLI reference
 

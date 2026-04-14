@@ -1,11 +1,6 @@
 name: Deploy BioEngine Applications
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'bioengine_apps/**'
   workflow_dispatch:
     inputs:
       directory:

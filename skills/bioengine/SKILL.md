@@ -185,6 +185,19 @@ async def process(
 
 Non-decorated methods are internal only.
 
+**Constraint: no mutable defaults in `Field()`**. `list` and `dict` defaults fail at load time with a `ValueError`. Use `None` and check inside the method:
+
+```python
+# WRONG — crashes at startup
+async def foo(self, values: list = Field([1, 2, 3], ...)) -> dict: ...
+
+# CORRECT — use None, then assign default inside
+async def foo(self, values: list = Field(None, description="Numbers")) -> dict:
+    if values is None:
+        values = [1, 2, 3]
+    ...
+```
+
 ---
 
 ## Logging
@@ -792,9 +805,9 @@ window.callPing = async () => {
 
 **Key points:**
 - Import `connectToServer` from the CDN — no npm/bundler needed.
-- `server_url` and `ws_service_id` come from URL query params injected by BioEngine.
-- Always pass `{ _rkwargs: true }` to every service call — BioEngine requires it.
-- The `ws_service_id` is the WebSocket service ID, available in the app's status response.
+- `server_url` and `ws_service_id` come from URL query params injected by BioEngine into the static site URL.
+- Always pass `{ _rkwargs: true }` to every service call in **JavaScript**. This is a JS-only convention required by `hypha-rpc`.
+- In **Python**, call service methods directly without `_rkwargs`: `await service.ping()`.
 
 ---
 
@@ -804,7 +817,7 @@ window.callPing = async () => {
 
 ```bash
 # Install CLI (once)
-pip install hypha-rpc httpx click
+pip install hypha-rpc httpx click bioengine
 
 # Set credentials
 export HYPHA_TOKEN=<your-token>
@@ -860,28 +873,86 @@ async def deploy_app(app_dir: str, worker_service_id: str = "bioimage-io/bioengi
 asyncio.run(deploy_app("./my-app/"))
 ```
 
-## Step 2 — Monitor deployment
+## Step 2 — Monitor deployment + live debug
+
+**Application states**: `NOT_STARTED` → `DEPLOYING` → `RUNNING` (success) or `DEPLOY_FAILED`.  
+**Deployment states** (per deployment inside the app): `UPDATING` → `HEALTHY` (success) or `UNHEALTHY`.
+
+The app is fully ready when `status == "RUNNING"` and all deployments show `HEALTHY`.
 
 ```bash
 bioengine apps status
 bioengine apps logs <app-id> --tail 100
 ```
 
-Or via Python:
+Via Python — poll until ready, inspect on failure:
 ```python
-status = await worker.get_application_status(application_id=app_id)
-print(status)
+import asyncio
+
+async def wait_until_healthy(worker, app_id: str, timeout: int = 300):
+    """Poll until app is RUNNING with all deployments HEALTHY."""
+    for _ in range(timeout // 5):
+        # Pass a single-element list → returns status dict directly (not nested)
+        status = await worker.get_application_status(application_ids=[app_id])
+        state = status.get("status", "")
+        deployments = status.get("deployments", [])
+        print(f"  [{state}] {status.get('message', '')}")
+        for d in deployments:
+            replica_states = [r.get("state") for r in d.get("replicas", [])]
+            print(f"    {d['name']}: {d['status']} — replicas: {replica_states}")
+        if state == "RUNNING" and all(d.get("status") == "HEALTHY" for d in deployments):
+            return status
+        if state == "DEPLOY_FAILED":
+            # Print full logs for each unhealthy deployment
+            for d in deployments:
+                print(f"\n--- Logs for {d['name']} ---")
+                for r in d.get("replicas", []):
+                    print(r.get("log", ""))
+            raise RuntimeError(f"Deployment failed: {status.get('message')}")
+        await asyncio.sleep(5)
+    raise TimeoutError(f"App {app_id} did not become healthy within {timeout}s")
+
+status = await wait_until_healthy(worker, app_id)
+print("App is healthy!")
 ```
 
+The `status["deployments"]` list contains per-deployment details with `name`, `status`, `message`, and `replicas` (each replica has `state`, `actor_id`, `log`). Use this to diagnose startup failures.
+
 ## Step 3 — Call the deployed service
+
+Extract the WebSocket service ID from the status and connect:
 
 ```python
 from hypha_rpc import connect_to_server
 
+# The ws_service_id is inside status["service_ids"][0]["websocket_service_id"]
+ws_service_id = status["service_ids"][0]["websocket_service_id"]
+
 server = await connect_to_server({"server_url": "https://hypha.aicell.io", "token": token})
-service = await server.get_service(ws_service_id)  # from status["ws_service_id"]
-result = await service.ping(_rkwargs=True)
+service = await server.get_service(ws_service_id)
+
+# Python: call methods directly — NO _rkwargs
+result = await service.ping()
+result2 = await service.process(values=[1, 2, 3])
 ```
+
+The frontend URL (with service ID already embedded as query param) is at `status["static_site_url"]`.
+
+## Step 4 — Bump version and commit after successful deploy
+
+Once the live app is verified working:
+
+1. **Bump the version** in `manifest.yaml` (e.g. `1.0.0` → `1.1.0` for a feature, `1.0.0` → `1.0.1` for a fix).
+2. **Re-save** the updated app to keep the artifact in sync.
+3. **Commit** the app source to git so the deployed version is always reproducible:
+
+```bash
+git add bioengine_apps/my-app/
+git commit -m "feat(my-app): add X feature, bump version to 1.1.0"
+git push
+```
+
+Always keep `bioengine_apps/` in sync with what is running live on the worker.
 
 ---
 

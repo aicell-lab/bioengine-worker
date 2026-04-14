@@ -170,7 +170,9 @@ pytest tests/end_to_end/ -v
 - `bioengine/utils/artifact_utils.py` — All Hypha artifact CRUD helpers
 - `bioengine/applications/apps_manager.py` — `run_application`, `save_application`, lifecycle
 - `bioengine/applications/app_builder.py` — `build()` constructs Ray Serve app from artifact
-- `tests/demo_app/` — Minimal example BioEngine app
+- `bioengine_apps/demo-app/` — Minimal example BioEngine app (single deployment + frontend)
+- `bioengine_apps/hello-world/` — Simple hello-world app (reference for single-deployment pattern)
+- `bioengine_apps/composition-demo/` — Multi-deployment composition app (entry + 3 runtimes, reference for composition pattern)
 - `bioengine_apps/model-runner/` — Production model-runner app
 - `bioengine_apps/cellpose-finetuning/` — Cellpose fine-tuning app
 - `pyproject.toml` — Package version and dependencies
@@ -228,3 +230,10 @@ skills/
 - **Prove It Works**: Test and verify before marking done.
 - Planning lives in model context — do NOT create planning files in the repo.
 - Lessons go in `.github/copilot-instructions.md` (durable repo-level knowledge).
+- **Commit after live deploy**: Once an app in `bioengine_apps/` is verified working on the live worker, commit the source to git so the deployed version is always reproducible:
+  ```bash
+  git add bioengine_apps/my-app/
+  git commit -m "feat(my-app): describe change, bump version to X.Y.Z"
+  git push
+  ```
+  The version in `manifest.yaml` must be bumped whenever app code changes.

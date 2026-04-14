@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>BioEngine Hello World</title>
+  <style>
+    body { font-family: system-ui; background: #0f172a; color: #e2e8f0;
+           min-height: 100vh; display: flex; flex-direction: column;
+           align-items: center; padding: 2rem 1rem; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: .75rem;
+            padding: 1.5rem; width: 100%; max-width: 640px; margin-bottom: 1rem; }
+    h1 { color: #38bdf8; margin-top: 0; }
+    button { background: #0284c7; color: #fff; border: none; border-radius: .5rem;
+             padding: .5rem 1.25rem; cursor: pointer; font-weight: 600; margin: .25rem; }
+    button:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
+    input { background: #0f172a; color: #e2e8f0; border: 1px solid #334155;
+            border-radius: .5rem; padding: .5rem; width: 100%; box-sizing: border-box;
+            margin-bottom: .5rem; }
+    pre { background: #0f172a; border-radius: .5rem; padding: 1rem;
+          font-size: .8rem; white-space: pre-wrap; min-height: 3rem;
+          color: #94a3b8; overflow-y: auto; max-height: 16rem; }
+    #statusBadge { display: inline-block; padding: .25rem .75rem; border-radius: 1rem;
+                   font-size: .85rem; font-weight: 600; }
+    .connected { background: #14532d; color: #86efac; }
+    .disconnected { background: #450a0a; color: #fca5a5; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h1>👋 BioEngine Hello World</h1>
+  <button id="connectBtn" onclick="connect()">Connect to Service</button>
+  <span id="statusBadge" class="disconnected">Not connected</span>
+</div>
+
+<div class="card">
+  <h3>Ping</h3>
+  <button id="pingBtn" onclick="callPing()" disabled>Ping Service</button>
+  <pre id="pingResult">—</pre>
+</div>
+
+<div class="card">
+  <h3>Reverse Text</h3>
+  <input id="textInput" type="text" placeholder="Enter text to reverse..." value="Hello BioEngine!" />
+  <button id="reverseBtn" onclick="callReverse()" disabled>Reverse Text</button>
+  <pre id="reverseResult">—</pre>
+</div>
+
+<script type="module">
+import { connectToServer }
+  from "https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.mjs";
+
+const p          = new URLSearchParams(window.location.search);
+const SERVER_URL = p.get("server")        || "https://hypha.aicell.io";
+const SERVICE_ID = p.get("ws_service_id") || "";
+
+let svc = null;
+
+window.connect = async () => {
+  const badge = document.getElementById("statusBadge");
+  badge.textContent = "Connecting…";
+  badge.className = "disconnected";
+  try {
+    const server = await connectToServer({ server_url: SERVER_URL });
+    svc = await server.getService(SERVICE_ID, { _rkwargs: true });
+    badge.textContent = "Connected ✓";
+    badge.className = "connected";
+    document.getElementById("pingBtn").disabled = false;
+    document.getElementById("reverseBtn").disabled = false;
+  } catch (e) {
+    badge.textContent = "Error: " + e.message;
+  }
+};
+
+window.callPing = async () => {
+  document.getElementById("pingResult").textContent = "Loading…";
+  try {
+    const r = await svc.ping({ _rkwargs: true });
+    document.getElementById("pingResult").textContent = JSON.stringify(r, null, 2);
+  } catch (e) {
+    document.getElementById("pingResult").textContent = "Error: " + e.message;
+  }
+};
+
+window.callReverse = async () => {
+  const text = document.getElementById("textInput").value;
+  document.getElementById("reverseResult").textContent = "Loading…";
+  try {
+    const r = await svc.reverse_text({ text, _rkwargs: true });
+    document.getElementById("reverseResult").textContent = JSON.stringify(r, null, 2);
+  } catch (e) {
+    document.getElementById("reverseResult").textContent = "Error: " + e.message;
+  }
+};
+</script>
+</body>
+</html>

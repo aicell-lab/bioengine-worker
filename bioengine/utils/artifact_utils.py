@@ -543,6 +543,7 @@ async def remove_file_from_artifact(
 async def commit_artifact(
     artifact_manager: ObjectProxy,
     artifact_id: str,
+    version: Optional[str] = None,
     logger: Optional[logging.Logger] = None,
 ) -> None:
     """
@@ -551,6 +552,7 @@ async def commit_artifact(
     Args:
         artifact_manager: Hypha artifact manager service instance
         artifact_id: The artifact ID
+        version: Optional version tag (e.g. "1.0.0"). If None, Hypha defaults to "latest".
         logger: Optional logger instance for debugging
 
     Raises:
@@ -560,11 +562,14 @@ async def commit_artifact(
         logger = create_logger("ArtifactUtils")
 
     try:
-        await artifact_manager.commit(artifact_id=artifact_id)
+        kwargs = {"artifact_id": artifact_id}
+        if version is not None:
+            kwargs["version"] = version
+        await artifact_manager.commit(**kwargs)
     except Exception as e:
         raise RuntimeError(f"Failed to commit artifact '{artifact_id}': {e}")
 
-    logger.info(f"Successfully committed artifact '{artifact_id}'")
+    logger.info(f"Successfully committed artifact '{artifact_id}' (version={version or 'latest'})")
 
 
 def get_static_site_url(artifact_id: str, server_url: str) -> str:
@@ -732,10 +737,11 @@ async def create_application_from_files(
                     f"Failed to remove old file '{file_name}': {e}. Continuing anyway..."
                 )
 
-    # Commit the artifact
+    # Commit the artifact, using the version from the manifest if present
     await commit_artifact(
         artifact_manager=artifact_manager,
         artifact_id=artifact.id,
+        version=application_manifest.get("version"),
         logger=logger,
     )
 

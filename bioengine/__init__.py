@@ -5,8 +5,7 @@ def _get_version():
     """Get version from package metadata"""
     try:
         return md.metadata("bioengine")["Version"]
-    except:
-        print("Could not get version from package metadata. Is the package installed?")
+    except Exception:
         return None
 
 

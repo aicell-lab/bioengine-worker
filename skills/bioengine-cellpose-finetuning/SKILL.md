@@ -306,11 +306,29 @@ The `cellpose-finetuning` service is deployed on the BioEngine worker (`bioimage
 
 ### First-time deployment (no existing app)
 
-```bash
-export BIOENGINE_WORKER_SERVICE_ID=bioimage-io/bioengine-worker
-bioengine apps deploy ./bioengine_apps/cellpose-finetuning/ \
-  --env _HYPHA_TOKEN=<bioimage-io-scoped-token>
+The `--env` flag does NOT work for first-time deployments — the `"*"` wildcard key is ignored by the worker's `build()` function. Use the Python API with the `hypha_token` parameter instead:
+
+```python
+from hypha_rpc import connect_to_server
+import os
+
+server = await connect_to_server({"server_url": "https://hypha.aicell.io", "token": os.environ["HYPHA_TOKEN"]})
+worker = await server.get_service("bioimage-io/bioengine-worker")
+
+# Upload code first
+import subprocess
+subprocess.run(["bioengine", "apps", "upload", "./bioengine_apps/cellpose-finetuning/",
+                "--worker", "bioimage-io/bioengine-worker"])
+
+# Deploy with bioimage-io workspace token
+result = await worker.run_application(
+    artifact_id="bioimage-io/cellpose-finetuning",
+    application_id="cellpose-finetuning",
+    hypha_token=os.environ["BIOIMAGE_IO_TOKEN"],  # bioimage-io workspace token from .env
+)
 ```
+
+The `hypha_token` parameter sets `HYPHA_TOKEN` in the Ray actor environment. Store it in `.env` as `BIOIMAGE_IO_TOKEN`.
 
 ### Updating an existing deployment — ALWAYS use `--app-id`
 

@@ -302,7 +302,9 @@ Raw brightfield baseline (without CLAHE): **0 cells detected**. CLAHE is require
 
 ## Deploying and updating the cellpose-finetuning app
 
-The `cellpose-finetuning` service is deployed on the BioEngine worker (`bioimage-io/bioengine-worker`) and runs in the `bioimage-io` workspace. It requires a `HYPHA_TOKEN` that has write access to that workspace. Pass it on first deployment:
+The `cellpose-finetuning` service is deployed on the BioEngine worker (`bioimage-io/bioengine-worker`) and runs in the `bioimage-io` workspace. It requires a `HYPHA_TOKEN` that has write access to that workspace.
+
+### First-time deployment (no existing app)
 
 ```bash
 export BIOENGINE_WORKER_SERVICE_ID=bioimage-io/bioengine-worker
@@ -310,12 +312,29 @@ bioengine apps deploy ./bioengine_apps/cellpose-finetuning/ \
   --env _HYPHA_TOKEN=<bioimage-io-scoped-token>
 ```
 
-**When updating an existing deployment**, the new version automatically inherits all env vars (including `HYPHA_TOKEN`) and all init args/kwargs from the previous app — do **not** pass `--env` again unless intentionally rotating a secret:
+### Updating an existing deployment — ALWAYS use `--app-id`
+
+> **CRITICAL**: `bioengine apps run` without `--app-id` creates a **brand-new** deployment with **no env vars** — `HYPHA_TOKEN` will be missing and the app will fail to start (UNHEALTHY). You MUST pass `--app-id <existing-app-id>` to update in-place and inherit credentials.
 
 ```bash
+# Step 1: Upload the new code
+export BIOENGINE_WORKER_SERVICE_ID=bioimage-io/bioengine-worker
 bioengine apps upload ./bioengine_apps/cellpose-finetuning/
-bioengine apps run bioimage-io/cellpose-finetuning --app-id <existing-app-id>
-# HYPHA_TOKEN and all other env vars are carried over automatically
+
+# Step 2: Find the existing app ID (look for the running cellpose-finetuning instance)
+bioengine apps status
+# → Application: cellpose-finetuning   Status: RUNNING
+
+# Step 3: Update in-place — --app-id is NOT optional
+bioengine apps run bioimage-io/cellpose-finetuning --app-id cellpose-finetuning
+# HYPHA_TOKEN and all other env vars are carried over automatically from the running app
+```
+
+If you accidentally run without `--app-id` and get a new DEPLOY_FAILED app:
+```bash
+# Stop the broken new app, then retry with --app-id
+echo "y" | bioengine apps stop <failed-app-id>
+bioengine apps run bioimage-io/cellpose-finetuning --app-id cellpose-finetuning
 ```
 
 ## Authentication

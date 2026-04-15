@@ -1323,10 +1323,11 @@ def train_seg_with_callbacks(
     device = net.device
 
     original_net_dtype = None
-    if device.type == "mps" and net.dtype == torch.bfloat16:
+    if net.dtype == torch.bfloat16:
         original_net_dtype = torch.bfloat16
-        train_logger.warning(
-            "Training with bfloat16 on MPS is not supported, using float32 network instead"
+        train_logger.info(
+            "Converting bfloat16 network to float32 for training "
+            "(bfloat16 precision is insufficient for weight updates at lr<=1e-4)"
         )
         net.dtype = torch.float32
         net.to(torch.float32)

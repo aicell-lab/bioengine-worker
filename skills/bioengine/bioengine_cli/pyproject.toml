@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bioengine"
 version = "0.1.0"
-description = "BioEngine CLI — run AI models for microscopy image analysis from the command line"
+description = "BioEngine CLI — deploy, manage, and call BioEngine AI model services from the command line"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"

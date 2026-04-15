@@ -42,11 +42,12 @@ def async_command(f):
 
 # ── Connection ───────────────────────────────────────────────────────────────
 
-async def connect_model_runner(server_url: str, token: Optional[str] = None):
+async def connect_service(server_url: str, service_id: str, token: Optional[str] = None):
     """
-    Connect to Hypha and return the model-runner service proxy.
+    Connect to Hypha and return any service proxy by ID.
 
-    The model-runner service is public; no token is required.
+    Handles the "Multiple services found" error that occurs when multiple replicas
+    of a service are running — falls back to listing services and picking the first match.
     """
     from hypha_rpc import connect_to_server
 
@@ -55,26 +56,36 @@ async def connect_model_runner(server_url: str, token: Optional[str] = None):
         connect_kwargs["token"] = token
 
     server = await connect_to_server(connect_kwargs)
-    service = await server.get_service(MODEL_RUNNER_SERVICE_ID)
-    return service
+    try:
+        return await server.get_service(service_id)
+    except Exception as exc:
+        if "Multiple services found" not in str(exc):
+            raise
+        # Multiple replicas registered — list and pick the first match
+        workspace = service_id.split("/")[0] if "/" in service_id else server.config.workspace
+        alias = service_id.split("/", 1)[-1]
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            r = await client.get(f"{server_url}/{workspace}/services", timeout=15)
+            r.raise_for_status()
+            services = r.json()
+        matches = [
+            f"{workspace}/{s['id']}"
+            for s in services
+            if alias in s.get("id", "")
+        ]
+        if not matches:
+            raise RuntimeError(f"No service matching '{service_id}' found in workspace '{workspace}'") from exc
+        return await server.get_service(matches[0])
+
+
+async def connect_model_runner(server_url: str, token: Optional[str] = None):
+    """Connect to Hypha and return the model-runner service proxy (public, no token required)."""
+    return await connect_service(server_url, MODEL_RUNNER_SERVICE_ID, token)
 
 
 async def connect_worker(server_url: str, worker_service_id: str, token: Optional[str] = None):
-    """
-    Connect to Hypha and return the BioEngine worker service proxy.
-
-    The worker service requires a token and workspace; both are embedded in
-    worker_service_id (e.g. 'my-workspace/bioengine-worker').
-    """
-    from hypha_rpc import connect_to_server
-
-    connect_kwargs: Dict[str, Any] = {"server_url": server_url}
-    if token:
-        connect_kwargs["token"] = token
-
-    server = await connect_to_server(connect_kwargs)
-    service = await server.get_service(worker_service_id)
-    return service
+    """Connect to Hypha and return the BioEngine worker service proxy."""
+    return await connect_service(server_url, worker_service_id, token)
 
 
 # ── Image I/O ────────────────────────────────────────────────────────────────

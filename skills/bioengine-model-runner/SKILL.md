@@ -21,26 +21,11 @@ metadata:
 
 ## Quick start
 
-The CLI is bundled in this skill at `bioengine_cli/`. Install its dependencies once:
+The CLI is in the main bioengine skill at `../bioengine/bioengine_cli/`. Install once:
 
 ```bash
-pip install hypha-rpc httpx numpy tifffile Pillow click
-```
-
-Then use the bundled CLI directly from the skill root:
-
-```bash
-python -m bioengine_cli runner search --keywords nuclei segmentation --limit 5
-python -m bioengine_cli runner info affable-shark
-python -m bioengine_cli runner infer affable-shark --input cells.tif --output mask.npy
-```
-
-Alternatively, install as a package for the shorter `bioengine` command:
-
-```bash
-pip install -e bioengine_cli/   # installs from bundled source
-# or: pip install bioengine     # install from PyPI
-bioengine runner search --keywords nuclei segmentation --limit 5
+pip install -e ../bioengine/bioengine_cli/
+# or: pip install bioengine
 ```
 
 **No authentication required** — the model-runner service is public.
@@ -48,16 +33,19 @@ bioengine runner search --keywords nuclei segmentation --limit 5
 
 ## CLI reference
 
-| Command | Purpose |
-|---|---|
-| `bioengine runner search [--keywords ...] [--limit N]` | Find runnable models in BioImage.IO |
-| `bioengine runner info <model-id>` | Model metadata: inputs, outputs, weights |
-| `bioengine runner validate <rdf.yaml>` | Validate RDF format against bioimage.io spec |
-| `bioengine runner test <model-id>` | Run official BioImage.IO test suite |
-| `bioengine runner infer <model-id> --input <file> --output <file>` | Run inference |
-| `bioengine runner compare <id1> <id2> ... --input <file>` | Run multiple models, save all outputs |
+The `bioengine call` command is the generic interface for calling any service method. Model-runner specific operations map to service methods called via `bioengine call`:
 
-All commands accept `--json` for machine-parseable output and `--server-url` to override the default server.
+| Operation | Command |
+|---|---|
+| Search models | `bioengine call bioimage-io/model-runner search_models --args '{"keywords": [...], "limit": 10}' --json` |
+| Model metadata/RDF | `bioengine call bioimage-io/model-runner get_model_rdf --args '{"model_id": "<id>"}' --json` |
+| Model documentation | `bioengine call bioimage-io/model-runner get_model_documentation --args '{"model_id": "<id>"}' --json` |
+| Validate RDF | `bioengine call bioimage-io/model-runner validate --args '{"model_id": "<id>"}' --json` |
+| Test model | `bioengine call bioimage-io/model-runner test --args '{"model_id": "<id>"}' --json` |
+| Run inference | Use `scripts/utils.py:infer_http()` (handles upload, RPC, download automatically) |
+| List methods | `bioengine call bioimage-io/model-runner --list-methods` |
+
+All commands accept `--json` for machine-parseable output.
 
 ## Default operating mode
 
@@ -81,9 +69,9 @@ All commands accept `--json` for machine-parseable output and `--server-url` to 
 
 ```bash
 # Full example
-bioengine runner search --keywords nuclei segmentation --limit 5 --json
-bioengine runner info affable-shark
-bioengine runner infer affable-shark --input cells.tif --output mask.npy
+bioengine call bioimage-io/model-runner search_models --args '{"keywords": ["nuclei", "segmentation"], "limit": 5}' --json
+bioengine call bioimage-io/model-runner get_model_rdf --args '{"model_id": "affable-shark"}' --json
+# For inference, use scripts/utils.py:infer_http() — handles upload, RPC, download
 ```
 
 Use `scripts/utils.py` helpers for normalization and evaluation — do not rewrite tensor logic:
@@ -107,7 +95,7 @@ iou, dice = evaluate_segmentation(pred_mask, gt_mask)
 
 Do NOT write networking or upload/download boilerplate from scratch — `infer_http` handles the full upload → infer → download cycle.
 
-Output key: `outputs[0].name` (RDF 0.4.x) or `outputs[0].id` (RDF 0.5.x). On shape errors: inspect the RDF (`bioengine runner info`), adapt dimensions, retry before discarding the model.
+Output key: `outputs[0].name` (RDF 0.4.x) or `outputs[0].id` (RDF 0.5.x). On shape errors: inspect the RDF via `get_model_rdf`, adapt dimensions, retry before discarding the model.
 
 ## Model screening / comparison workflow
 
@@ -116,7 +104,7 @@ Output key: `outputs[0].name` (RDF 0.4.x) or `outputs[0].id` (RDF 0.5.x). On sha
 - [ ] Step 2: Search models — use keywords from assets/search_keywords.yaml
 - [ ] Step 3: For each candidate — call get_model_documentation to read the README
 - [ ] Step 4: Filter candidates — discard domain mismatches based on documentation
-- [ ] Step 5: Run all suitable models on the same input — bioengine runner compare
+- [ ] Step 5: Run all suitable models on the same input — use `infer_http()` from `scripts/utils.py` in a loop
 - [ ] Step 6: Score models — use `compute_instance_f1(pred_labels, gt_labels)` for instance segmentation; `evaluate_segmentation()` for semantic/pixel-level tasks only
 - [ ] Step 7: Save all artifacts to comparison_results/
 - [ ] Step 8: Generate Illustration 1 (ranked barplot), Illustration 2 (montage), Illustration 3 if instance segmentation (object count)
@@ -124,11 +112,16 @@ Output key: `outputs[0].name` (RDF 0.4.x) or `outputs[0].id` (RDF 0.5.x). On sha
 - [ ] Step 10: Generate HTML report
 ```
 
-```bash
+```python
 # Run multiple models and save all outputs
-bioengine runner compare affable-shark ambitious-ant chatty-frog \
-  --input cells.tif \
-  --output-dir comparison_results/
+from scripts.utils import infer_http
+import numpy as np
+
+model_ids = ["affable-shark", "ambitious-ant", "chatty-frog"]
+results = {}
+for model_id in model_ids:
+    results[model_id] = infer_http(model_id, input_array)
+    np.save(f"comparison_results/{model_id}_output.npy", results[model_id])
 ```
 
 ### Step 3: Read model documentation before running
@@ -169,7 +162,7 @@ doc = r.json()  # Markdown string or null
 - Model trained on whole-slide-imaging at 40× → skip if your image is at a very different magnification
 - If documentation is None or returns the bioimage.io spec README (not model-specific) → fall back to RDF `tags`, `description`, and test tensor inspection (see domain mismatch section below). **Known server bug**: `get_model_documentation` returns the same model's README for multiple different models (e.g. fearless-crab's README is returned for fearless-crab, conscientious-seashell, loyal-parrot, and chatty-frog). Detect this by checking if the returned content is identical across models or contains "bioimage.io specification" / starts with "# BioImage.IO". When detected, fall back to RDF tags.
 
-Also check the RDF `tags` and `description` fields from `bioengine runner info` as a secondary signal.
+Also check the RDF `tags` and `description` fields from `get_model_rdf` as a secondary signal.
 
 **Artifact layout** (always save here — create folder if missing):
 
@@ -369,15 +362,15 @@ Only generate for **instance segmentation tasks** (cell/nucleus counting).
 ## Validation / testing workflow
 
 ```text
-- [ ] Step 1: bioengine runner validate rdf.yaml — format compliance check
-- [ ] Step 2: bioengine runner test <model-id> — runs official BioImage.IO test suite (may be cached)
+- [ ] Step 1: validate_rdf — format compliance check
+- [ ] Step 2: test_model — runs official BioImage.IO test suite (may be cached)
 - [ ] Step 3: Review output — check status (passed/failed) and details
 ```
 
 ```bash
-bioengine runner validate ./my-model/rdf.yaml
-bioengine runner test ambitious-ant
-bioengine runner test ambitious-ant --skip-cache  # force re-download and re-test
+bioengine call bioimage-io/model-runner validate_rdf --args '{"rdf_source": "./my-model/rdf.yaml"}' --json
+bioengine call bioimage-io/model-runner test_model --args '{"model_id": "ambitious-ant"}' --json
+bioengine call bioimage-io/model-runner test_model --args '{"model_id": "ambitious-ant", "skip_cache": true}' --json
 ```
 
 ## Inference retry on OOM
@@ -415,7 +408,7 @@ def infer_with_retry(model_id, input_array, max_retries=3, retry_delay=15):
 
 ## Validation loop (quality-critical runs)
 
-Run inference → if failure, inspect error and RDF constraints (`bioengine runner info`) → adjust dimensions or normalization → rerun → repeat until success or clear incompatibility → record what changed and why.
+Run inference → if failure, inspect error and RDF constraints (`get_model_rdf`) → adjust dimensions or normalization → rerun → repeat until success or clear incompatibility → record what changed and why.
 
 ## Output interpretation guide
 

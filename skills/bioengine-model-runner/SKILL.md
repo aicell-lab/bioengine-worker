@@ -362,15 +362,18 @@ Only generate for **instance segmentation tasks** (cell/nucleus counting).
 ## Validation / testing workflow
 
 ```text
-- [ ] Step 1: validate_rdf — format compliance check
-- [ ] Step 2: test_model — runs official BioImage.IO test suite (may be cached)
+- [ ] Step 1: validate — format compliance check (pass rdf_dict, not a file path)
+- [ ] Step 2: test — runs official BioImage.IO test suite (may be cached)
 - [ ] Step 3: Review output — check status (passed/failed) and details
 ```
 
 ```bash
-bioengine call bioimage-io/model-runner validate_rdf --args '{"rdf_source": "./my-model/rdf.yaml"}' --json
-bioengine call bioimage-io/model-runner test_model --args '{"model_id": "ambitious-ant"}' --json
-bioengine call bioimage-io/model-runner test_model --args '{"model_id": "ambitious-ant", "skip_cache": true}' --json
+# validate takes rdf_dict (the parsed YAML as a dict), not a file path
+bioengine call bioimage-io/model-runner validate --args '{"rdf_dict": {"type": "model", ...}}' --json
+
+# test takes model_id
+bioengine call bioimage-io/model-runner test --args '{"model_id": "ambitious-ant"}' --json
+bioengine call bioimage-io/model-runner test --args '{"model_id": "ambitious-ant", "skip_cache": true}' --json
 ```
 
 ## Inference retry on OOM

@@ -28,6 +28,31 @@ BioEngine applications are Ray Serve classes packaged as Hypha artifacts. They e
 
 ---
 
+## Server and workspace defaults
+
+**Default Hypha server**: `https://hypha.aicell.io` — use this unless the user specifies another.
+
+**Public BioEngine services** (live on `bioimage-io` workspace, no auth required to call):
+
+| Service | Service ID | Description |
+|---|---|---|
+| Model Runner | `bioimage-io/model-runner` | Run/search/validate BioImage.IO models |
+| Cellpose Fine-tuning | `bioimage-io/cellpose-finetuning` | Fine-tune Cellpose-SAM on custom data |
+| BioEngine Worker | `bioimage-io/bioengine-worker` | Cluster management (admin ops) |
+
+**User-deployed workers**: A user can start their own BioEngine worker in any Hypha workspace. In that case, derive service IDs from their workspace:
+
+```
+Workspace: ws-user-github|49943582
+→ Worker:              ws-user-github|49943582/bioengine-worker
+→ Model runner:        ws-user-github|49943582/model-runner
+→ Cellpose finetuning: ws-user-github|49943582/cellpose-finetuning
+```
+
+Always use the public `bioimage-io` workspace unless the user explicitly provides their own workspace.
+
+---
+
 ## Application structure
 
 ```

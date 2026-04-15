@@ -28,8 +28,11 @@ pip install -e ../bioengine/bioengine_cli/
 # or: pip install bioengine
 ```
 
-**No authentication required** — the model-runner service is public.
+**Default server**: `https://hypha.aicell.io`  
+**Default service ID**: `bioimage-io/model-runner` (live, public, no auth required)  
 **No local GPU required** — computation runs on BioEngine remote workers.
+
+If the user has their own BioEngine worker in workspace `ws-user-github|49943582`, the service ID becomes `ws-user-github|49943582/model-runner`. Use `bioimage-io/model-runner` unless the user specifies otherwise.
 
 ## CLI reference
 

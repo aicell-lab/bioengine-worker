@@ -27,6 +27,10 @@ Fine-tune Cellpose-SAM on your own annotated microscopy images — no local GPU,
 
 ## Quick start
 
+**Default server**: `https://hypha.aicell.io`  
+**Default service ID**: `bioimage-io/cellpose-finetuning` (live on the public BioEngine cluster)  
+If the user has their own BioEngine worker in workspace `ws-user-github|49943582`, the service ID becomes `ws-user-github|49943582/cellpose-finetuning`. Use `bioimage-io/cellpose-finetuning` unless specified otherwise.
+
 ```python
 from hypha_rpc import connect_to_server
 
@@ -210,6 +214,36 @@ Returns a list of `{"input_path": str, "output": np.ndarray}` dicts.
 Returns `{"artifact_id": "...", "model_name": "...", "status": "exported", "url": "https://..."}`.
 
 ## Known behaviours and pitfalls
+
+### Inference image size limit — resize large images before calling infer
+The `infer()` RPC call times out silently when the input image is too large. **Always resize images so the longest side is ≤ 320 pixels before passing to `infer()`**. Images up to ~384px on the longest side sometimes work but are unreliable (observed timeouts at 384×360 on large fluorescence volumes). Use 320 as a safe upper bound.
+
+```python
+from skimage.transform import resize as sk_resize
+import numpy as np
+
+def resize_for_inference(img, max_side=320):
+    h, w = img.shape[:2]
+    if max(h, w) <= max_side:
+        return img
+    scale = max_side / max(h, w)
+    new_h, new_w = int(h * scale), int(w * scale)
+    return sk_resize(img.astype(np.float32), (new_h, new_w),
+                     anti_aliasing=True, preserve_range=True).astype(img.dtype)
+
+img_small = resize_for_inference(img)
+result = await svc.infer(model=model_id, input_arrays=[img_small], ...)
+pred = result[0]["output"]  # shape matches img_small, not original img
+```
+
+When computing IoU against ground-truth masks, resize the GT mask to match the prediction shape (use `order=0` nearest-neighbour to preserve integer labels):
+
+```python
+from skimage.transform import resize as sk_resize
+gt_resized = sk_resize(gt.astype(np.float32), pred.shape,
+                       order=0, anti_aliasing=False,
+                       preserve_range=True).astype(np.int32)
+```
 
 ### Palette-mode PNG labels (BioImage.IO Colab output)
 BioImage.IO Colab saves annotation masks as palette-mode PNGs (PIL mode "P"). The service handles these correctly — they are converted to integer TIFF internally before training. No pre-conversion needed.

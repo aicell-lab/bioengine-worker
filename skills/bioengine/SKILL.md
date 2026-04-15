@@ -17,6 +17,7 @@ BioEngine applications are Ray Serve classes packaged as Hypha artifacts. They e
 
 | Goal | Read |
 |---|---|
+| Discover methods on any service | `bioengine call <service-id> --list-methods` |
 | Call any deployed service | [CLI: bioengine call](#cli-quick-reference) |
 | Build a single-deployment app | [Simple app template](#simple-app-template) |
 | Build a multi-deployment composition app | [references/app_templates.md](references/app_templates.md) |

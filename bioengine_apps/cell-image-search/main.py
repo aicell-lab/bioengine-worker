@@ -242,6 +242,11 @@ def _build_index(
 
 
 def _load_index(workspace_dir: str):
+    import sys, os
+    # Ensure pip_packages (installed during ingestion) are on path
+    _pip_dir = str(Path(workspace_dir) / "pip_packages")
+    if os.path.isdir(_pip_dir) and _pip_dir not in sys.path:
+        sys.path.insert(0, _pip_dir)
     import faiss
     import pandas as pd
     out_dir = _index_dir(workspace_dir)
@@ -284,6 +289,10 @@ def _compute_umap(
     random_state: int = 42,
     force_recompute: bool = False,
 ) -> dict[str, Any]:
+    import sys, os
+    _pip_dir = str(Path(workspace_dir) / "pip_packages")
+    if os.path.isdir(_pip_dir) and _pip_dir not in sys.path:
+        sys.path.insert(0, _pip_dir)
     import faiss
     import pandas as pd
     out_dir = _index_dir(workspace_dir)
@@ -451,7 +460,44 @@ def request_stop(workspace_dir: str, session_id: str) -> None:
 # DATASET LISTING
 # ===========================================================================
 
-def _list_jump_image_paths(n_plates: int = 10) -> list[dict]:
+def _rowcol_to_alpha(well_str: str) -> str:
+    """Convert JUMP well format 'r01c29' to plate-map format 'A29'."""
+    try:
+        row = int(well_str[1:3])
+        col = int(well_str[4:6])
+        return chr(ord("A") + row - 1) + f"{col:02d}"
+    except Exception:
+        return well_str
+
+
+def _fetch_jump_well_lookup() -> dict:
+    """Download JUMP well→compound lookup from GitHub (well.csv.gz, ~5.7 MB).
+
+    Returns dict keyed by (source, plate_id, well_alpha) → JCP2022 compound ID.
+    ``plate_id`` is the part before ``__`` in the full measurement folder name.
+    """
+    import gzip, io, urllib.request
+    import pandas as pd
+    url = (
+        "https://raw.githubusercontent.com/jump-cellpainting/datasets"
+        "/main/metadata/well.csv.gz"
+    )
+    logger.info("Fetching JUMP compound metadata from GitHub…")
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            df = pd.read_csv(gzip.GzipFile(fileobj=io.BytesIO(resp.read())))
+        lookup = {
+            (row.Metadata_Source, row.Metadata_Plate, row.Metadata_Well): row.Metadata_JCP2022
+            for row in df.itertuples(index=False)
+        }
+        logger.info("JUMP compound lookup loaded: %d well entries", len(lookup))
+        return lookup
+    except Exception as e:
+        logger.warning("Could not fetch JUMP compound lookup: %s", e)
+        return {}
+
+
+def _list_jump_image_paths(n_plates: int = 10, compound_lookup: dict | None = None) -> list[dict]:
     """List JUMP CP image paths from S3.
 
     Actual structure:
@@ -516,13 +562,19 @@ def _list_jump_image_paths(n_plates: int = 10) -> list[dict]:
                         ch = int(fname.split("-ch")[1].split("s")[0])
                     except Exception:
                         continue
+                    well_rc = f"r{row:02d}c{col:02d}"
+                    well_alpha = _rowcol_to_alpha(well_rc)
+                    plate_id = plate.split("__")[0]
+                    jcp_id = (compound_lookup or {}).get(
+                        (source, plate_id, well_alpha), "unknown"
+                    )
                     records.append({
                         "s3_key": key, "bucket": BUCKET,
-                        "plate": plate, "well": f"r{row:02d}c{col:02d}",
+                        "plate": plate, "well": well_rc,
                         "site": site, "channel": ch,
                         "source": source, "batch": batch,
                         "image_path": f"s3://{BUCKET}/{key}",
-                        "compound": "unknown", "moa_class": "unknown",
+                        "compound": jcp_id, "moa_class": "unknown",
                     })
                     added += 1
                 if added > 0:
@@ -682,7 +734,9 @@ async def run_ingestion(
         _upd(IngestionStatus.PREPARING, "Listing dataset images…")
 
         if dataset == "jump-cp":
-            records = _list_jump_image_paths(n_plates=n_plates)
+            _loop = asyncio.get_event_loop()
+            compound_lookup = await _loop.run_in_executor(None, _fetch_jump_well_lookup)
+            records = _list_jump_image_paths(n_plates=n_plates, compound_lookup=compound_lookup)
         elif dataset == "zarr" and zarr_url:
             records = _list_zarr_paths(zarr_url)
         else:
@@ -1375,6 +1429,57 @@ def _make_deployment():
                 "nearest_score": nn.get("score", 0.0),
                 "nearest_compound": nn.get("compound", "unknown"),
                 "nearest_moa": nn.get("moa_class", "unknown"),
+            }
+
+        @schema_method
+        async def enrich_metadata_with_compounds(self) -> dict:
+            """Download JUMP compound metadata and enrich the existing index metadata.
+
+            Fetches well.csv.gz from the JUMP datasets GitHub repo and updates
+            the ``compound`` column in metadata.parquet using JCP2022 compound IDs.
+            Safe to call on a running index — does not rebuild the FAISS index.
+            """
+            import pandas as pd
+
+            meta_path = Path(self._workspace_dir) / "cell_search" / "metadata.parquet"
+            if not meta_path.exists():
+                return {"error": "No metadata.parquet found. Run ingestion first."}
+
+            loop = asyncio.get_event_loop()
+            lookup = await loop.run_in_executor(None, _fetch_jump_well_lookup)
+            if not lookup:
+                return {"error": "Could not download JUMP compound metadata."}
+
+            df = pd.read_parquet(meta_path)
+            n_before = int((df["compound"] != "unknown").sum()) if "compound" in df.columns else 0
+
+            def _enrich(row):
+                plate_id = str(row.get("plate", "")).split("__")[0]
+                well_rc = str(row.get("well", ""))
+                source = str(row.get("source", ""))
+                well_alpha = _rowcol_to_alpha(well_rc)
+                return lookup.get((source, plate_id, well_alpha), "unknown")
+
+            df["compound"] = [_enrich(r) for r in df.to_dict("records")]
+            df.to_parquet(meta_path, index=False)
+
+            # Reload in-memory metadata
+            self._metadata_df = df
+
+            # Invalidate UMAP cache so it gets recomputed with compound labels
+            umap_cache = Path(self._workspace_dir) / "cell_search" / "umap_cache.npz"
+            if umap_cache.exists():
+                umap_cache.unlink()
+
+            n_after = int((df["compound"] != "unknown").sum())
+            n_unique = int(df["compound"].nunique())
+            return {
+                "status": "ok",
+                "n_total": len(df),
+                "n_enriched": n_after,
+                "n_unknown": len(df) - n_after,
+                "n_unique_compounds": n_unique,
+                "enriched_pct": round(100 * n_after / len(df), 1),
             }
 
     return CellImageSearch

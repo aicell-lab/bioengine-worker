@@ -1,0 +1,31 @@
+name: Cell Morphology Search Engine
+id: cell-image-search
+id_emoji: "🔬"
+description: >
+  Large-scale biological image similarity search engine.
+  Index 58M+ single-cell images from the JUMP Cell Painting dataset using
+  DINOv2 ViT-B/14 embeddings and a FAISS vector database. Drag-and-drop any
+  fluorescence microscopy image to find morphologically similar cells in <100ms.
+  Discover drug mechanism-of-action by phenotypic similarity across 116,000 wells.
+documentation: README.md
+authors:
+  - {name: BioEngine Team, affiliation: KTH Royal Institute of Technology, github_user: aicell-lab}
+license: MIT
+format_version: 0.5.0
+git_repo: https://github.com/aicell-lab/bioengine-worker
+type: ray-serve
+version: 0.12.0
+tags:
+  - bioengine
+  - image-search
+  - cell-painting
+  - deep-learning
+  - faiss
+  - dinov2
+  - similarity-search
+  - drug-discovery
+deployments:
+  - main:CellImageSearch
+authorized_users:
+  - "*"
+frontend_entry: "frontend/index.html"

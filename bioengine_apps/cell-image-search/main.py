@@ -288,6 +288,7 @@ def _compute_umap(
     n_samples: int = 10_000,
     random_state: int = 42,
     force_recompute: bool = False,
+    color_by: str = "compound",
 ) -> dict[str, Any]:
     import sys, os
     _pip_dir = str(Path(workspace_dir) / "pip_packages")
@@ -296,7 +297,9 @@ def _compute_umap(
     import faiss
     import pandas as pd
     out_dir = _index_dir(workspace_dir)
-    cache_path = out_dir / "umap_cache.npz"
+    # Per-color_by cache so switching doesn't require full recompute of PCA/UMAP
+    safe_cb = color_by.replace("/", "_")
+    cache_path = out_dir / f"umap_cache_{safe_cb}.npz"
 
     if cache_path.exists() and not force_recompute:
         data = np.load(cache_path, allow_pickle=True)
@@ -337,14 +340,22 @@ def _compute_umap(
     meta_path = out_dir / "metadata.parquet"
     if meta_path.exists():
         df = pd.read_parquet(meta_path)
-        col = "moa_class" if "moa_class" in df.columns else ("compound" if "compound" in df.columns else None)
+        # Use requested color_by column; fall back to compound, then moa_class
+        if color_by in df.columns:
+            col = color_by
+        elif "compound" in df.columns:
+            col = "compound"
+        elif "moa_class" in df.columns:
+            col = "moa_class"
+        else:
+            col = None
         if col:
             unique_labels = df[col].unique().tolist()
             palette = _color_palette(len(unique_labels))
             cmap = {lbl: palette[i % len(palette)] for i, lbl in enumerate(unique_labels)}
             for i, idx in enumerate(sample_idx):
                 if idx < len(df):
-                    lbl = str(df.iloc[idx].get(col, "unknown"))
+                    lbl = str(df.iloc[idx][col]) if col in df.columns else "unknown"
                     labels[i] = lbl
                     colors[i] = cmap.get(lbl, "#888888")
 
@@ -1410,13 +1421,13 @@ def _make_deployment():
         async def get_umap_preview(
             self,
             n_samples: int = Field(10_000, ge=100, le=100_000),
-            color_by: str = Field("moa_class"),
+            color_by: str = Field("compound"),
             force_recompute: bool = Field(False),
         ) -> dict:
             """Compute or return cached UMAP projection of the indexed cells."""
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(
-                None, _compute_umap, self._workspace_dir, n_samples, 42, force_recompute
+                None, _compute_umap, self._workspace_dir, n_samples, 42, force_recompute, color_by
             )
 
         @schema_method
@@ -1489,9 +1500,9 @@ def _make_deployment():
             # Reload in-memory metadata
             self._metadata_df = df
 
-            # Invalidate UMAP cache so it gets recomputed with compound labels
-            umap_cache = Path(self._workspace_dir) / "cell_search" / "umap_cache.npz"
-            if umap_cache.exists():
+            # Invalidate all UMAP caches so they get recomputed with new compound labels
+            umap_dir = Path(self._workspace_dir) / "cell_search"
+            for umap_cache in umap_dir.glob("umap_cache*.npz"):
                 umap_cache.unlink()
 
             n_after = int((df["compound"] != "unknown").sum())

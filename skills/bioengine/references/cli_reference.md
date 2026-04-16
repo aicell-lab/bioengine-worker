@@ -72,17 +72,24 @@ Arguments:
   APP_DIR   Directory with manifest.yaml and deployment .py file(s)
 
 Options:
-  --app-id ID        Stable instance ID (pass same ID to update in-place; default: auto-generated)
-  --no-gpu           Disable GPU even if worker has GPUs
-  --env KEY=VALUE    Environment variable (repeat for multiple; prefix with _ for secrets)
-  --worker SERVICE   Worker service ID (or BIOENGINE_WORKER_SERVICE_ID)
-  --token TOKEN      Auth token (or HYPHA_TOKEN)
+  --app-id ID          Stable instance ID (pass same ID to update in-place; default: auto-generated)
+  --no-gpu             Disable GPU even if worker has GPUs
+  --env KEY=VALUE      Environment variable (repeat for multiple; prefix with _ for secrets)
+  --hypha-token TOKEN  Token injected as HYPHA_TOKEN inside the Ray actor.
+                       Required for apps that connect back to Hypha.
+                       Defaults to --token / HYPHA_TOKEN env var.
+                       Pass --hypha-token '' to deploy without a token.
+  --worker SERVICE     Worker service ID (or BIOENGINE_WORKER_SERVICE_ID)
+  --token TOKEN        Auth token (or HYPHA_TOKEN)
 ```
+
+> **Important**: `--env HYPHA_TOKEN=...` is silently ignored — always use `--hypha-token` to inject the token.
 
 ```bash
 bioengine apps deploy ./my-app/
 bioengine apps deploy ./my-app/ --app-id my-app   # stable ID — enables in-place updates
 bioengine apps deploy ./my-app/ --no-gpu --env _API_KEY=secret
+bioengine apps deploy ./my-app/ --app-id my-app --hypha-token $HYPHA_TOKEN
 ```
 
 ### `bioengine apps upload`
@@ -102,15 +109,22 @@ Usage: bioengine apps run [OPTIONS] ARTIFACT_ID
 Deploy a BioEngine application from artifact storage.
 
 Options:
-  --app-id ID     Instance ID (pass same ID to update in-place)
-  --version VER   Specific artifact version (default: latest)
-  --no-gpu        Disable GPU
-  --env KEY=VALUE Environment variable
+  --app-id ID          Instance ID (pass same ID to update in-place)
+  --version VER        Specific artifact version (default: latest)
+  --no-gpu             Disable GPU
+  --env KEY=VALUE      Environment variable (repeat for multiple)
+  --hypha-token TOKEN  Token injected as HYPHA_TOKEN inside the Ray actor.
+                       Required for apps that connect back to Hypha.
+                       Defaults to --token / HYPHA_TOKEN env var.
+                       Pass --hypha-token '' to deploy without a token.
 ```
+
+> **Important**: `--env HYPHA_TOKEN=...` is silently ignored — always use `--hypha-token` to inject the token.
 
 ```bash
 bioengine apps run bioimage-io/my-app
 bioengine apps run bioimage-io/my-app --app-id production --version 1.2.0
+bioengine apps run bioimage-io/my-app --hypha-token $HYPHA_TOKEN
 ```
 
 ### `bioengine apps list`

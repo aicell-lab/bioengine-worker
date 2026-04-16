@@ -224,11 +224,24 @@ def upload(app_dir, public, worker_service_id, token, server_url):
     help=(
         "Environment variable to pass to the deployment "
         "(e.g. --env DEBUG=true). Repeat for multiple variables. "
-        "Prefix with _ to mark as secret (hidden in status output)."
+        "Prefix with _ to mark as secret (hidden in status output). "
+        "Note: use --hypha-token to pass HYPHA_TOKEN — --env HYPHA_TOKEN=... is silently ignored."
+    ),
+)
+@click.option(
+    "--hypha-token",
+    "hypha_token",
+    default=None,
+    metavar="TOKEN",
+    help=(
+        "Hypha token to inject into the deployment as the HYPHA_TOKEN environment variable. "
+        "Required for apps that connect back to Hypha (artifact access, dataset streaming, etc.). "
+        "Defaults to the value of --token / HYPHA_TOKEN if not set. "
+        "Pass --hypha-token '' to explicitly deploy without a token."
     ),
 )
 @add_worker_options
-def run_app(artifact_id, application_id, version, disable_gpu, env_vars, worker_service_id, token, server_url):
+def run_app(artifact_id, application_id, version, disable_gpu, env_vars, hypha_token, worker_service_id, token, server_url):
     """
     Deploy a BioEngine application from artifact storage.
 
@@ -236,13 +249,23 @@ def run_app(artifact_id, application_id, version, disable_gpu, env_vars, worker_
     (e.g. 'my-workspace/my-app'). The app is deployed asynchronously on the
     BioEngine worker; check status with `bioengine apps status <app-id>`.
 
+    Apps that connect back to Hypha (to access artifacts, datasets, or other
+    services) need HYPHA_TOKEN set inside the Ray actor. Pass --hypha-token to
+    inject it. If omitted, the auth token (--token / HYPHA_TOKEN env var) is
+    used automatically.
+
     \b
     Examples:
       bioengine apps run my-workspace/my-app
       bioengine apps run my-workspace/my-app --app-id production-v1
       bioengine apps run my-workspace/my-app --no-gpu --env DEBUG=true
+      bioengine apps run my-workspace/my-app --hypha-token $HYPHA_TOKEN
     """
     server_url, worker_service_id, token = require_worker(worker_service_id, token, server_url)
+
+    # Default hypha_token to the auth token unless explicitly set to empty string
+    if hypha_token is None:
+        hypha_token = token
 
     # Parse KEY=VALUE env vars
     parsed_env: dict = {}
@@ -258,14 +281,13 @@ def run_app(artifact_id, application_id, version, disable_gpu, env_vars, worker_
             run_kwargs = {
                 "artifact_id": artifact_id,
                 "disable_gpu": disable_gpu,
+                "hypha_token": hypha_token or None,
             }
             if application_id:
                 run_kwargs["application_id"] = application_id
             if version:
                 run_kwargs["version"] = version
             if parsed_env:
-                # Worker API accepts per-deployment env vars; we apply to all
-                # by passing a generic key. This maps to application_env_vars.
                 run_kwargs["application_env_vars"] = {"*": parsed_env}
 
             deployed_id = await worker.run_application(**run_kwargs)
@@ -546,20 +568,41 @@ def stop(app_id, yes, worker_service_id, token, server_url):
     "env_vars",
     multiple=True,
     metavar="KEY=VALUE",
-    help="Environment variable for the deployment (repeat for multiple).",
+    help=(
+        "Environment variable for the deployment (repeat for multiple). "
+        "Note: use --hypha-token to pass HYPHA_TOKEN — --env HYPHA_TOKEN=... is silently ignored."
+    ),
+)
+@click.option(
+    "--hypha-token",
+    "hypha_token",
+    default=None,
+    metavar="TOKEN",
+    help=(
+        "Hypha token to inject into the deployment as the HYPHA_TOKEN environment variable. "
+        "Required for apps that connect back to Hypha (artifact access, dataset streaming, etc.). "
+        "Defaults to the value of --token / HYPHA_TOKEN if not set. "
+        "Pass --hypha-token '' to explicitly deploy without a token."
+    ),
 )
 @add_worker_options
-def deploy(app_dir, application_id, disable_gpu, env_vars, worker_service_id, token, server_url):
+def deploy(app_dir, application_id, disable_gpu, env_vars, hypha_token, worker_service_id, token, server_url):
     """
     Upload and immediately deploy a local BioEngine app directory.
 
     Combines `bioengine apps upload` and `bioengine apps run` into one step.
     APP_DIR must contain a manifest.yaml and at least one Python deployment file.
 
+    Apps that connect back to Hypha (to access artifacts, datasets, or other
+    services) need HYPHA_TOKEN set inside the Ray actor. Pass --hypha-token to
+    inject it. If omitted, the auth token (--token / HYPHA_TOKEN env var) is
+    used automatically.
+
     \b
     Examples:
       bioengine apps deploy ./my-app/
       bioengine apps deploy ./my-pipeline/ --app-id pipeline-v1 --no-gpu
+      bioengine apps deploy ./my-app/ --hypha-token $HYPHA_TOKEN
     """
     server_url, worker_service_id, token = require_worker(worker_service_id, token, server_url)
     app_path = Path(app_dir).resolve()
@@ -573,6 +616,10 @@ def deploy(app_dir, application_id, disable_gpu, env_vars, worker_service_id, to
             f"No manifest.yaml found in '{app_dir}'.",
             "Every BioEngine app must have a manifest.yaml.",
         )
+
+    # Default hypha_token to the auth token unless explicitly set to empty string
+    if hypha_token is None:
+        hypha_token = token
 
     parsed_env: dict = {}
     for kv in env_vars:
@@ -612,6 +659,7 @@ def deploy(app_dir, application_id, disable_gpu, env_vars, worker_service_id, to
         run_kwargs = {
             "artifact_id": artifact_id,
             "disable_gpu": disable_gpu,
+            "hypha_token": hypha_token or None,
         }
         if application_id:
             run_kwargs["application_id"] = application_id

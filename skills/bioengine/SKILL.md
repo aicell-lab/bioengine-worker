@@ -282,6 +282,14 @@ bioengine apps deploy ./my-app/                   # upload + deploy in one step
 bioengine apps deploy ./my-app/ --app-id my-app   # stable ID (enables in-place updates)
 ```
 
+> **HYPHA_TOKEN inside the deployment**: Many apps connect back to Hypha from inside the Ray actor (to access artifacts, datasets, or other services) and need `HYPHA_TOKEN` set in their environment. The `--hypha-token` flag injects this automatically. It defaults to your auth token, so **for most apps you should always pass it explicitly**:
+> ```bash
+> bioengine apps deploy ./my-app/ --app-id my-app --hypha-token $HYPHA_TOKEN
+> # Python API equivalent:
+> await worker.run_application(artifact_id="ws/my-app", hypha_token=token)
+> ```
+> **Do NOT use `--env HYPHA_TOKEN=...`** — `--env` is keyed by deployment class name internally, and the `"*"` wildcard the CLI uses is silently ignored by the app builder. Only `--hypha-token` / the `hypha_token` parameter work.
+
 **Step 2 — Monitor:**
 ```bash
 bioengine apps status                             # all running apps
@@ -342,9 +350,9 @@ bioengine call <service-id> <method> --args '{"k": "v"}' --json  # with argument
 bioengine call <service-id> <method> --arg key=val   # individual args (auto-typed)
 
 # Deploy and manage apps
-bioengine apps deploy ./my-app/ [--app-id ID]        # upload + deploy
+bioengine apps deploy ./my-app/ [--app-id ID] [--hypha-token $HYPHA_TOKEN]  # upload + deploy
 bioengine apps upload ./my-app/                      # upload only
-bioengine apps run <workspace/app-id> [--app-id ID]  # deploy from artifact
+bioengine apps run <workspace/app-id> [--app-id ID] [--hypha-token $HYPHA_TOKEN]  # deploy from artifact
 bioengine apps list                                  # list artifacts
 bioengine apps status [APP_ID...] [--logs N]         # running app status
 bioengine apps logs <app-id> [--tail N]              # view logs
@@ -368,6 +376,7 @@ All commands accept `--json` for machine-readable output and respect `HYPHA_TOKE
 | `num_gpus: 1` for GPU, never fractional | Fractional allows VRAM sharing → OOM |
 | Entry deployment: `num_cpus: 0, num_gpus: 0` | Orchestrators just route; no compute needed |
 | Save before deploy | Always call `save_application` (via CLI or API) first |
+| Pass `hypha_token` when deploying | Apps that call Hypha internally need this. Use `--hypha-token $HYPHA_TOKEN` (CLI) or `hypha_token=token` (Python). `--env HYPHA_TOKEN=...` is silently ignored. |
 | `@schema_method` on public API | Non-decorated methods are internal only |
 | Match manifest filename to param name | `runtime_a:RuntimeA` → `def __init__(self, runtime_a: DeploymentHandle)` |
 | No mutable defaults in `Field()` | Use `None`, assign default inside method |
@@ -384,6 +393,8 @@ All commands accept `--json` for machine-readable output and respect `HYPHA_TOKE
 | Blocking inference stalls event loop | Wrap with `asyncio.get_event_loop().run_in_executor(None, fn)` |
 | `AttributeError` deserializing exception | Re-raise third-party exceptions as plain `RuntimeError` at RPC boundary |
 | `Multiple services found` error | Use `connect_service()` from bioengine_cli.utils (handles multi-replica) |
+| Deployment UNHEALTHY — `HYPHA_TOKEN` not set | App needs to connect to Hypha internally but token was not injected. Use `--hypha-token $HYPHA_TOKEN` (CLI) or `hypha_token=token` (Python API). Never use `--env HYPHA_TOKEN=...` — it is silently ignored. |
+| App status says `UNHEALTHY`, deployment message mentions missing env var | Check `bioengine apps status <app-id> --logs 50` to read the deployment error. The most common cause is a missing `HYPHA_TOKEN`; fix with `--hypha-token`. |
 
 ---
 

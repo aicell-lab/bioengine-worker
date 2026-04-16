@@ -7,6 +7,7 @@ metadata:
   app-skills:
     - ../bioengine-model-runner/SKILL.md
     - ../bioengine-cellpose-finetuning/SKILL.md
+    - ../bioengine-cell-image-search/SKILL.md
 ---
 
 # BioEngine Apps
@@ -416,3 +417,4 @@ Load these autonomously when the user's task involves a specific deployed servic
 |---|---|
 | [`../bioengine-model-runner/SKILL.md`](../bioengine-model-runner/SKILL.md) | Search, infer, validate, or compare BioImage.IO models |
 | [`../bioengine-cellpose-finetuning/SKILL.md`](../bioengine-cellpose-finetuning/SKILL.md) | Fine-tune Cellpose on custom annotated microscopy images |
+| [`../bioengine-cell-image-search/SKILL.md`](../bioengine-cell-image-search/SKILL.md) | Search 58M+ cells by morphological similarity, index JUMP Cell Painting data |

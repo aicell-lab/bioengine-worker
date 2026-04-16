@@ -470,10 +470,30 @@ def _rowcol_to_alpha(well_str: str) -> str:
         return well_str
 
 
+def _fetch_jump_compound_names() -> dict:
+    """Download JUMP perturbation control names (tiny file, 740 bytes).
+
+    Returns dict: JCP2022_ID → compound_name for the 18 control compounds.
+    """
+    import urllib.request, io
+    import pandas as pd
+    url = (
+        "https://raw.githubusercontent.com/jump-cellpainting/datasets"
+        "/main/metadata/perturbation_control.csv"
+    )
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            df = pd.read_csv(io.BytesIO(resp.read()))
+        return dict(zip(df["Metadata_JCP2022"], df["Metadata_Name"]))
+    except Exception:
+        return {}
+
+
 def _fetch_jump_well_lookup() -> dict:
     """Download JUMP well→compound lookup from GitHub (well.csv.gz, ~5.7 MB).
 
-    Returns dict keyed by (source, plate_id, well_alpha) → JCP2022 compound ID.
+    Returns dict keyed by (source, plate_id, well_alpha) → compound name
+    (JCP2022 ID resolved to common name for controls, raw JCP2022 ID otherwise).
     ``plate_id`` is the part before ``__`` in the full measurement folder name.
     """
     import gzip, io, urllib.request
@@ -484,13 +504,16 @@ def _fetch_jump_well_lookup() -> dict:
     )
     logger.info("Fetching JUMP compound metadata from GitHub…")
     try:
+        compound_names = _fetch_jump_compound_names()
         with urllib.request.urlopen(url, timeout=60) as resp:
             df = pd.read_csv(gzip.GzipFile(fileobj=io.BytesIO(resp.read())))
         lookup = {
-            (row.Metadata_Source, row.Metadata_Plate, row.Metadata_Well): row.Metadata_JCP2022
+            (row.Metadata_Source, row.Metadata_Plate, row.Metadata_Well):
+                compound_names.get(row.Metadata_JCP2022, row.Metadata_JCP2022)
             for row in df.itertuples(index=False)
         }
-        logger.info("JUMP compound lookup loaded: %d well entries", len(lookup))
+        logger.info("JUMP compound lookup loaded: %d well entries (%d named controls)",
+                    len(lookup), len(compound_names))
         return lookup
     except Exception as e:
         logger.warning("Could not fetch JUMP compound lookup: %s", e)

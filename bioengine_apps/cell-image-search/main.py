@@ -129,14 +129,13 @@ def _decode_image_bytes(data: bytes) -> np.ndarray:
 # ===========================================================================
 
 class _DINOv2Embedder:
-    """DINOv2 ViT-S/14 wrapper (384-dim, L2-normalised output).
+    """DINOv2 ViT-B/14 wrapper (768-dim, L2-normalised output).
 
-    ViT-S is ~4x smaller than ViT-B (22M vs 86M params) and ~3x faster on CPU.
-    Switch to dinov2_vitb14 + EMBED_DIM=768 for higher quality at the cost of speed.
+    Falls back to ViT-S/14 on CPU if ViT-B is too slow; override via MODEL_NAME.
     """
 
-    MODEL_NAME = "dinov2_vits14"
-    EMBED_DIM = 384
+    MODEL_NAME = "dinov2_vitb14"
+    EMBED_DIM = 768
 
     def __init__(self, device: str = "cuda", fp16: bool = True) -> None:
         self.device = device
@@ -939,7 +938,7 @@ def _make_deployment():
     @serve.deployment(
         ray_actor_options={
             "num_cpus": 4,
-            "num_gpus": 0,
+            "num_gpus": 1,
             "memory": int(8 * 1024**3),
         },
         max_ongoing_requests=10,

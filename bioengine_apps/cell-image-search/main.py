@@ -129,10 +129,14 @@ def _decode_image_bytes(data: bytes) -> np.ndarray:
 # ===========================================================================
 
 class _DINOv2Embedder:
-    """DINOv2 ViT-B/14 wrapper (768-dim, L2-normalised output)."""
+    """DINOv2 ViT-S/14 wrapper (384-dim, L2-normalised output).
 
-    MODEL_NAME = "dinov2_vitb14"
-    EMBED_DIM = 768
+    ViT-S is ~4x smaller than ViT-B (22M vs 86M params) and ~3x faster on CPU.
+    Switch to dinov2_vitb14 + EMBED_DIM=768 for higher quality at the cost of speed.
+    """
+
+    MODEL_NAME = "dinov2_vits14"
+    EMBED_DIM = 384
 
     def __init__(self, device: str = "cuda", fp16: bool = True) -> None:
         self.device = device
@@ -142,10 +146,20 @@ class _DINOv2Embedder:
     def load(self) -> None:
         import torch
         logger.info("Loading DINOv2 %s on %s (fp16=%s)", self.MODEL_NAME, self.device, self.fp16)
-        self._model = torch.hub.load("facebookresearch/dinov2", self.MODEL_NAME, pretrained=True)
-        self._model.eval().to(self.device)
+        model = torch.hub.load("facebookresearch/dinov2", self.MODEL_NAME, pretrained=True)
+        model.eval()
         if self.fp16 and self.device != "cpu":
-            self._model = self._model.half()
+            model = model.half()
+        model = model.to(self.device)
+        if self.device == "cpu":
+            try:
+                model = torch.quantization.quantize_dynamic(
+                    model, {torch.nn.Linear}, dtype=torch.qint8
+                )
+                logger.info("Applied INT8 dynamic quantization (CPU speedup)")
+            except Exception as qe:
+                logger.warning("INT8 quantization failed (%s), using FP32.", qe)
+        self._model = model
         logger.info("DINOv2 loaded, embed_dim=%d", self.EMBED_DIM)
 
     def embed_batch(self, images_rgb: list[np.ndarray], batch_size: int = 64) -> np.ndarray:
@@ -691,7 +705,8 @@ async def run_ingestion(
 
         def _process_group_local(group_records: list, n_crops: int, embedder: Any) -> list | None:
             """Process one image group on the head node: load → crop → embed."""
-            import io, base64
+            import io, base64, time as _time
+            _gt0 = _time.time()
             try:
                 if len(group_records) == 1 and group_records[0].get("zarr_url"):
                     rec = group_records[0]
@@ -709,26 +724,37 @@ async def run_ingestion(
                     from botocore import UNSIGNED
                     from botocore.config import Config
                     from PIL import Image as _PILRead
-                    s3c = boto3.client("s3", region_name="us-east-1",
-                                       config=Config(signature_version=UNSIGNED))
+                    from concurrent.futures import ThreadPoolExecutor as _TPE
+                    # Download all channels in parallel to maximize S3 bandwidth utilization
                     recs = sorted(group_records, key=lambda r: r["channel"])
-                    chans, meta_base = [], {}
-                    for rec in recs:
-                        obj = s3c.get_object(Bucket=rec["bucket"], Key=rec["s3_key"])
+                    meta_base = {k: v for k, v in recs[0].items() if k not in ("s3_key", "channel")} if recs else {}
+
+                    def _dl_chan(rec):
+                        _s3 = boto3.client("s3", region_name="us-east-1",
+                                           config=Config(signature_version=UNSIGNED))
+                        obj = _s3.get_object(Bucket=rec["bucket"], Key=rec["s3_key"])
                         # Use PIL (Pillow) which has native LZW TIFF support
                         # (tifffile requires 'imagecodecs' package for LZW decoding)
-                        chan_img = np.array(_PILRead.open(_io.BytesIO(obj["Body"].read())))
-                        chans.append(chan_img)
-                        meta_base = {k: v for k, v in rec.items() if k not in ("s3_key", "channel")}
+                        return np.array(_PILRead.open(_io.BytesIO(obj["Body"].read())))
+
+                    with _TPE(max_workers=len(recs)) as pool:
+                        chans = list(pool.map(_dl_chan, recs))
+                    _t_dl = _time.time() - _gt0
+
                     if not chans:
                         return None
                     mc_img = np.stack(chans, axis=-1)
+                    _t_stack = _time.time() - _gt0
                     crp = _extract_cell_crops(mc_img, n_crops=n_crops)
                     if not crp:
                         return None
                     rgb_crops = [_to_rgb_uint8(c) for c in crp]
+                    _t_crop = _time.time() - _gt0
 
                 embeddings = embedder.embed_batch(rgb_crops, batch_size=64)
+                _t_emb = _time.time() - _gt0
+                logger.debug("Timing: dl=%.1fs, crop=%.1fs, emb=%.1fs, total=%.1fs, n_crops=%d",
+                             _t_dl, _t_crop - _t_dl, _t_emb - _t_crop, _t_emb, len(rgb_crops))
                 from PIL import Image as _PIL
                 results = []
                 for i, (emb, crop_rgb) in enumerate(zip(embeddings, rgb_crops)):
@@ -750,45 +776,62 @@ async def run_ingestion(
              f"Embedding {n_total_images} image groups on head node (DINOv2)…",
              n_tot=n_total_expected)
 
+        # Set up embed worker pool (supports both single embedder and list)
+        _workers = _embedder if isinstance(_embedder, list) else [_embedder]
+        _pool_q: asyncio.Queue = asyncio.Queue()
+        for _w in _workers:
+            _pool_q.put_nowait(_w)
+
+        async def _run_group(group: list, idx: int):
+            """Acquire an embedder from the pool, process group, release embedder."""
+            emb = await _pool_q.get()
+            try:
+                return (idx, await loop.run_in_executor(
+                    None, _process_group_local, group, n_crops_per_image, emb))
+            finally:
+                _pool_q.put_nowait(emb)
+
+        # Launch all group tasks up front; pool_q bounds actual concurrency to len(_workers).
+        all_tasks = [asyncio.create_task(_run_group(g, i)) for i, g in enumerate(image_groups)]
+
         all_results = []
         first_error: str | None = None
+        n_done = 0
 
-        for i, group in enumerate(image_groups):
+        for task in all_tasks:
             if is_stop_requested(workspace_dir, session_id):
+                for t in all_tasks[n_done:]:
+                    t.cancel()
                 _upd(IngestionStatus.STOPPED, "Stopped by user.",
                      n_emb=len(all_results), n_tot=n_total_expected)
                 return
 
-            # Run in thread pool so asyncio event loop stays alive (Hypha keepalive)
-            res = await loop.run_in_executor(
-                None, _process_group_local, group, n_crops_per_image, _embedder
-            )
+            _idx, res = await task
             if isinstance(res, tuple) and res[0] == "ERROR":
                 if first_error is None:
                     first_error = res[1]
                     logger.error("First group error: %s", first_error)
-                # Only surface error in log for first few failures
-                if i < 5:
+                if _idx < 5:
                     _upd(IngestionStatus.RUNNING,
-                         f"Group {i+1} error: {first_error}",
+                         f"Group {_idx+1} error: {first_error}",
                          n_emb=0, n_tot=n_total_expected,
                          log_lines=[f"[{time.strftime('%H:%M:%S')}] ERROR: {first_error}"])
             elif res:
                 all_results.extend(res)
-                first_error = None  # Reset — some succeed
+                first_error = None
 
-            # Status update every 5 images
-            if (i + 1) % 5 == 0 or i == n_total_images - 1:
+            n_done += 1
+            if n_done % 5 == 0 or n_done == n_total_images:
                 elapsed = time.time() - t0
                 tput = len(all_results) / max(elapsed, 1)
                 log_line = (
                     f"[{time.strftime('%H:%M:%S')}] "
-                    f"{i+1}/{n_total_images} images · "
+                    f"{n_done}/{n_total_images} images · "
                     f"{len(all_results):,} cells · "
                     f"{tput:.1f} cells/s"
                 )
                 _upd(IngestionStatus.RUNNING,
-                     f"Embedded {len(all_results):,} cells ({i+1}/{n_total_images} images)",
+                     f"Embedded {len(all_results):,} cells ({n_done}/{n_total_images} images)",
                      n_emb=len(all_results), n_tot=n_total_expected,
                      throughput=tput, log_lines=[log_line])
 
@@ -953,6 +996,7 @@ def _make_deployment():
             self._logger.info("Loading DINOv2 on %s…", device)
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, self._embedder.load)
+            self._embed_workers = [self._embedder]
             self._logger.info("DINOv2 ready.")
 
             index_loaded = await self._try_load_index()
@@ -1016,7 +1060,7 @@ def _make_deployment():
                         n_plates=cfg.get("n_plates", 10),
                         zarr_url=ds.get("zarr_url") or None,
                         n_crops_per_image=cfg.get("n_crops_per_image", 80),
-                        _embedder=self._embedder,
+                        _embedder=self._embed_workers,  # pass full worker pool for concurrency
                         n_gpu_workers=cfg.get("n_gpu_workers", 4),
                     )
                     await self._try_load_index()
@@ -1049,7 +1093,7 @@ def _make_deployment():
             return {
                 "status": "ok",
                 "uptime_seconds": round(time.time() - self._start_time, 1),
-                "model": "DINOv2 ViT-B/14 (768-dim)",
+                "model": f"DINOv2 {_DINOv2Embedder.MODEL_NAME} ({_DINOv2Embedder.EMBED_DIM}-dim)",
                 "index_loaded": self._index is not None,
                 "n_cells_indexed": n_cells,
                 "index_type": self._index_info.get("index_type", "none"),

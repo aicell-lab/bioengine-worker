@@ -647,7 +647,7 @@ async def run_ingestion(
     if _pip_dir not in sys.path:
         sys.path.insert(0, _pip_dir)
 
-    _pkg_needed = [("boto3", "boto3"), ("scikit-image", "skimage"), ("Pillow", "PIL")]
+    _pkg_needed = [("boto3", "boto3"), ("scikit-image", "skimage"), ("Pillow", "PIL"), ("faiss-cpu", "faiss")]
     _missing = [pkg for pkg, mod in _pkg_needed if not _try_import(mod)]
     if _missing:
         logger.info("Installing missing packages to %s: %s", _pip_dir, _missing)
@@ -664,12 +664,13 @@ async def run_ingestion(
 
     t0 = time.time()
 
-    def _upd(status, msg, n_emb=0, n_tot=0, throughput=0.0, log_lines=None):
+    def _upd(status, msg, n_emb=0, n_tot=0, throughput=0.0, log_lines=None, **extra):
         write_status(workspace_dir, session_id, status, msg,
                      n_embedded=n_emb, n_total=n_tot,
                      throughput_per_sec=throughput,
                      elapsed_seconds=time.time() - t0,
-                     log_lines=log_lines or [f"[{time.strftime('%H:%M:%S')}] {msg}"])
+                     log_lines=log_lines or [f"[{time.strftime('%H:%M:%S')}] {msg}"],
+                     **extra)
 
     try:
         _upd(IngestionStatus.PREPARING, "Listing dataset images…")

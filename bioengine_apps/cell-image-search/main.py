@@ -647,7 +647,13 @@ async def run_ingestion(
     if _pip_dir not in sys.path:
         sys.path.insert(0, _pip_dir)
 
-    _pkg_needed = [("boto3", "boto3"), ("scikit-image", "skimage"), ("Pillow", "PIL"), ("faiss-cpu", "faiss")]
+    _pkg_needed = [
+        ("boto3", "boto3"),
+        ("scikit-image", "skimage"),
+        ("Pillow", "PIL"),
+        ("faiss-cpu", "faiss"),
+        ("umap-learn", "umap"),
+    ]
     _missing = [pkg for pkg, mod in _pkg_needed if not _try_import(mod)]
     if _missing:
         logger.info("Installing missing packages to %s: %s", _pip_dir, _missing)
@@ -919,9 +925,9 @@ PRECONFIGURED_DATASETS: list[dict] = [
     {
         "name": "JUMP Cell Painting — Demo",
         "type": "jump-cp",
-        "description": "JUMP-CP (cpg0016): 2 plates, ~13K cells. "
+        "description": "JUMP-CP (cpg0016): 10 plates, ~80K cells. "
                        "Public AWS S3. Standard for drug MOA profiling.",
-        "config": {"n_plates": 2, "n_crops_per_image": 80, "n_gpu_workers": 1},
+        "config": {"n_plates": 10, "n_crops_per_image": 80, "n_gpu_workers": 1},
     },
 ]
 

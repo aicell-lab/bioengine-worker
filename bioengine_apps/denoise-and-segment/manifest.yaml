@@ -1,0 +1,15 @@
+name: Denoise and Segment
+id: denoise-and-segment
+id_emoji: "🔬"
+description: "Two-model pipeline: content-aware image restoration (CARE/N2V from BioImage.IO) followed by Cellpose instance segmentation. Demonstrates BioEngine model chaining for noisy fluorescence microscopy."
+type: ray-serve
+format_version: 0.5.0
+version: 1.0.0
+authors:
+  - {name: "BioEngine Team", affiliation: "KTH Royal Institute of Technology", github_user: "oeway"}
+license: MIT
+tags: [denoising, segmentation, pipeline, fluorescence, cellpose, care]
+deployments:
+  - denoise_segment_deployment:DenoiseAndSegmentDeployment
+authorized_users:
+  - "*"

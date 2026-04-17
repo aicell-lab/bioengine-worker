@@ -1,0 +1,22 @@
+authors:
+  - { affiliation: KTH, github_user: nilsmechtel, name: Nils Mechtel }
+  - { affiliation: KTH, github_user: hugokallander, name: Hugo Dettner Källander }
+covers: []
+description: DEBUG version of cellpose-finetuning for diagnostic testing. Adds run_diagnostic method with synthetic data and weight reset capabilities.
+documentation: "README.md"
+format_version: 0.5.0
+git_repo: "https://github.com/aicell-lab/bioengine-worker/tree/main/bioengine_apps/cellpose-finetuning"
+id: cellpose-finetuning-debug
+id_emoji: "🔬"
+license: MIT
+links: []
+maintainers: []
+name: Cellpose Fine-Tuning (Debug)
+tags: [cell-segmentation, deep-learning, biomedical-imaging, fine-tuning, debug]
+type: ray-serve
+version: 0.0.1
+deployments:
+  - main:CellposeFinetune
+authorized_users:
+  - "*"
+frontend_entry: "frontend/index.html"

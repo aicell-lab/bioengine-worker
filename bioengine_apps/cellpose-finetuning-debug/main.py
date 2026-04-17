@@ -1833,7 +1833,7 @@ def run_blocking_task(
             epoch_callback=epoch_callback,
             batch_callback=batch_callback,
             validation_interval=training_params["validation_interval"],
-            rescale=False,  # Cellpose-SAM paper: fine-tuning does not rescale by diameter
+            rescale=True,
         )
     except TrainingStoppedError:
         elapsed = time.time() - t0
@@ -5056,6 +5056,430 @@ BSD-3-Clause (Cellpose license)
             if _is_cuda_oom_message(err_msg):
                 raise RuntimeError(_resource_contention_guidance("Inference")) from e
             raise
+
+    @schema_method(arbitrary_types_allowed=True)  # type: ignore
+    async def run_diagnostic(
+        self,
+        n_images: int = Field(5, description="Number of synthetic training images to generate"),
+        n_epochs: int = Field(
+            200,
+            description="Training epochs (200 is sufficient to detect convergence on simple data)",
+        ),
+        learning_rate: float = Field(
+            5e-5, description="Learning rate — same default as production fine-tuning"
+        ),
+        reset_encoder: bool = Field(
+            True,
+            description=(
+                "Reset the image encoder (largest child — SAM ViT backbone) to random init. "
+                "Tests whether the architecture can learn from scratch."
+            ),
+        ),
+        reset_decoder: bool = Field(
+            True,
+            description=(
+                "Reset all decoder/head modules to random init. "
+                "Combine with reset_encoder=False to test decoder-only learning."
+            ),
+        ),
+        n_cells: int = Field(8, description="Approximate number of cells per synthetic image"),
+        radius_min: int = Field(15, description="Minimum cell radius in pixels"),
+        radius_max: int = Field(35, description="Maximum cell radius in pixels"),
+        seed: int = Field(42, description="Random seed for reproducibility"),
+    ) -> dict:
+        """Run a comprehensive diagnostic on the cellpose fine-tuning pipeline.
+
+        Generates trivially-learnable synthetic fluorescence images (bright circular
+        blobs on dark background) and trains the model, reporting:
+          - Architecture breakdown (encoder vs decoder param counts)
+          - Gradient flow (are gradients reaching each module?)
+          - Per-epoch loss curve (is loss decreasing?)
+          - Per-layer weight change (are weights actually updating?)
+          - Pass/fail verdict: loss must drop ≥20% over training
+
+        Typical usage patterns:
+          reset_encoder=True, reset_decoder=True  → tests if architecture can learn at all
+          reset_encoder=False, reset_decoder=False → tests if pretrained cpsam can fine-tune
+          reset_encoder=False, reset_decoder=True  → decoder-only learning with SAM features
+        """
+        import asyncio
+        import functools
+        loop = asyncio.get_event_loop()
+        fn = functools.partial(
+            _diagnostic_start,
+            n_images, n_epochs, learning_rate, reset_encoder, reset_decoder,
+            n_cells, radius_min, radius_max, seed,
+        )
+        result = await loop.run_in_executor(None, fn)
+        return result
+
+
+# ── DIAGNOSTIC HELPERS ──────────────────────────────────────────────────────
+
+def _generate_synthetic_fluorescence(
+    n_images: int = 5,
+    img_size: int = 256,
+    n_cells: int = 8,
+    radius_min: int = 15,
+    radius_max: int = 35,
+    seed: int = 42,
+) -> tuple:
+    """Generate synthetic fluorescence images with circular cell blobs and instance masks.
+
+    Returns:
+        images: list of (H, W) float32 arrays in [0, 1]
+        masks:  list of (H, W) int32 instance label arrays
+    """
+    import numpy as np
+    from scipy.ndimage import gaussian_filter
+
+    rng = np.random.default_rng(seed)
+    images, masks_list = [], []
+    for i in range(n_images):
+        img = np.zeros((img_size, img_size), dtype=np.float32)
+        mask = np.zeros((img_size, img_size), dtype=np.int32)
+        cell_id = 1
+        n = n_cells + rng.integers(-2, 3)
+        margin = radius_max + 5
+        for _ in range(n):
+            cx = int(rng.integers(margin, img_size - margin))
+            cy = int(rng.integers(margin, img_size - margin))
+            r  = int(rng.integers(radius_min, radius_max + 1))
+            brightness = float(rng.uniform(0.55, 1.0))
+            yy, xx = np.ogrid[:img_size, :img_size]
+            circle = (xx - cx) ** 2 + (yy - cy) ** 2 <= r ** 2
+            img[circle] = brightness
+            mask[circle] = cell_id
+            cell_id += 1
+        img = gaussian_filter(img, sigma=1.5)
+        img += rng.normal(0, 0.03, img.shape).astype(np.float32)
+        img = np.clip(img, 0, 1)
+        images.append(img)
+        masks_list.append(mask)
+    return images, masks_list
+
+
+def _reset_module_weights(module: Any) -> None:
+    """Reinitialise all parameters in a module with kaiming/zeros init."""
+    import torch
+    for m in module.modules():
+        if hasattr(m, "reset_parameters"):
+            try:
+                m.reset_parameters()
+            except Exception:
+                pass
+        elif isinstance(m, torch.nn.Linear):
+            torch.nn.init.kaiming_normal_(m.weight)
+            if m.bias is not None:
+                torch.nn.init.zeros_(m.bias)
+        elif isinstance(m, torch.nn.Conv2d):
+            torch.nn.init.kaiming_normal_(m.weight)
+            if m.bias is not None:
+                torch.nn.init.zeros_(m.bias)
+        elif isinstance(m, (torch.nn.LayerNorm, torch.nn.GroupNorm, torch.nn.BatchNorm2d)):
+            if getattr(m, "weight", None) is not None:
+                torch.nn.init.ones_(m.weight)
+            if getattr(m, "bias", None) is not None:
+                torch.nn.init.zeros_(m.bias)
+
+
+# ── DIAGNOSTIC WORKER (called via run_in_executor from CellposeFinetune.run_diagnostic) ──
+
+def _diagnostic_start(
+    n_images: int,
+    n_epochs: int,
+    learning_rate: float,
+    reset_encoder: bool,
+    reset_decoder: bool,
+    n_cells: int,
+    radius_min: int,
+    radius_max: int,
+    seed: int,
+) -> dict:
+    """Blocking worker: run full diagnostic and return result dict.
+
+    Architecture note (cellpose.vit_sam.Transformer):
+      net.encoder  — SAM ViT-L image encoder (~307M params)
+        .patch_embed — modified Conv2d (stride=8 vs SAM's 16)
+        .pos_embed   — learnable position embeddings
+        .blocks      — transformer attention blocks (with stochastic depth rdrop=0.4)
+        .neck        — output neck conv layers
+      net.out       — single Conv2d(256, 3*64, 1) cellpose readout head (~50K params)
+      net.W2        — fixed pixel-shuffle matrix (not trainable)
+    """
+    import numpy as np
+    import torch
+    import time
+    import tempfile
+    import traceback as tb
+    from pathlib import Path
+    from cellpose import models as cpmodels, core as cpcore
+
+    diag: dict = {
+        "config": {
+            "n_images": n_images,
+            "n_epochs": n_epochs,
+            "learning_rate": learning_rate,
+            "reset_encoder": reset_encoder,
+            "reset_decoder": reset_decoder,
+            "n_cells": n_cells,
+            "radius_min": radius_min,
+            "radius_max": radius_max,
+            "seed": seed,
+        },
+        "architecture": {},
+        "reset_log": [],
+        "gradient_flow_before_training": {},
+        "losses": [],
+        "grad_norms_by_epoch": {},
+        "weight_change": {},
+        "summary": {},
+        "errors": [],
+    }
+
+    try:
+        # ── 1. Synthetic data ──────────────────────────────────────────────
+        train_images, train_masks = _generate_synthetic_fluorescence(
+            n_images=n_images,
+            n_cells=n_cells,
+            radius_min=radius_min,
+            radius_max=radius_max,
+            seed=seed,
+        )
+        diag["data_info"] = {
+            "n_images": n_images,
+            "image_shape": list(train_images[0].shape),
+            "cells_per_image": [int(np.max(m)) for m in train_masks],
+        }
+
+        # ── 2. Load fresh pretrained cpsam model ───────────────────────────
+        use_gpu = cpcore.use_gpu()
+        cellpose_model = cpmodels.CellposeModel(gpu=use_gpu, model_type="cpsam")
+        net = cellpose_model.net
+
+        # Convert to float32 (bfloat16 insufficient for weight updates at lr<=1e-4)
+        net = net.to(torch.float32)
+        net.dtype = torch.float32
+        device = next(net.parameters()).device
+        diag["device"] = str(device)
+
+        # ── 3. Inspect architecture ────────────────────────────────────────
+        # Known structure: net.encoder (SAM ViT-L) + net.out (1×1 Conv readout)
+        total_params = sum(p.numel() for p in net.parameters())
+        trainable_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
+        children_info = {}
+        for name, module in net.named_children():
+            n_p = sum(p.numel() for p in module.parameters())
+            n_trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
+            children_info[name] = {
+                "type": type(module).__name__,
+                "params": n_p,
+                "trainable_params": n_trainable,
+                "params_pct": round(100 * n_p / max(total_params, 1), 2),
+            }
+            # Deeper breakdown for encoder
+            if name == "encoder":
+                sub = {}
+                for sname, smod in module.named_children():
+                    sp = sum(p.numel() for p in smod.parameters())
+                    sub[sname] = {"type": type(smod).__name__, "params": sp}
+                children_info[name]["submodules"] = sub
+        diag["architecture"] = {
+            "total_params": total_params,
+            "trainable_params": trainable_params,
+            "children": children_info,
+            "rdrop": getattr(net, "rdrop", "unknown"),
+        }
+
+        # ── 4. Gradient flow check on dummy input (pretrained weights) ─────
+        net.train()
+        # Disable rdrop for deterministic probe
+        _rdrop_saved = net.rdrop
+        net.rdrop = 0.0
+        x_probe = torch.randn(1, 3, 256, 256, dtype=torch.float32, device=device)
+        y_probe = net(x_probe)[0]
+        y_probe.sum().backward()
+        net.rdrop = _rdrop_saved
+
+        def _grad_stats(module):
+            grads = [p.grad.detach().abs() for p in module.parameters() if p.grad is not None]
+            no_grad = sum(1 for p in module.parameters() if p.grad is None)
+            if not grads:
+                return {"mean": 0.0, "max": 0.0, "has_grad": 0, "no_grad": no_grad}
+            all_g = torch.cat([g.flatten() for g in grads])
+            return {
+                "mean": float(all_g.mean()),
+                "max": float(all_g.max()),
+                "has_grad": len(grads),
+                "no_grad": no_grad,
+            }
+
+        grad_flow = {}
+        for name, module in net.named_children():
+            grad_flow[name] = _grad_stats(module)
+            # Sub-breakdown for encoder
+            if name == "encoder":
+                sub_flow = {}
+                for sname, smod in module.named_children():
+                    sub_flow[sname] = _grad_stats(smod)
+                grad_flow[f"{name}_submodules"] = sub_flow
+
+        # Encoder block-level gradient analysis
+        if hasattr(net, "encoder") and hasattr(net.encoder, "blocks"):
+            block_grads = []
+            for i, blk in enumerate(net.encoder.blocks):
+                stats = _grad_stats(blk)
+                block_grads.append({"block": i, "mean_grad": stats["mean"], "max_grad": stats["max"]})
+            grad_flow["encoder_blocks"] = block_grads
+            # Check for vanishing gradients (early blocks should have non-zero grads)
+            early = [b["mean_grad"] for b in block_grads[:4]]
+            late = [b["mean_grad"] for b in block_grads[-4:]]
+            grad_flow["vanishing_gradient_check"] = {
+                "early_blocks_mean": float(np.mean(early)),
+                "late_blocks_mean": float(np.mean(late)),
+                "ratio_early_to_late": float(np.mean(early) / (np.mean(late) + 1e-12)),
+            }
+
+        diag["gradient_flow_before_training"] = grad_flow
+
+        # Zero gradients before weight reset / training
+        for p in net.parameters():
+            if p.grad is not None:
+                p.grad.zero_()
+
+        # ── 5. Reset weights ───────────────────────────────────────────────
+        # Architecture is known: net.encoder = SAM ViT, net.out = cellpose head
+        if reset_encoder:
+            if hasattr(net, "encoder"):
+                enc_params = sum(p.numel() for p in net.encoder.parameters())
+                _reset_module_weights(net.encoder)
+                diag["reset_log"].append(
+                    f"Encoder reset: 'encoder' (SAM ViT-L image encoder, "
+                    f"{enc_params:,} params, {100*enc_params/total_params:.1f}%) "
+                    f"→ kaiming_normal_ / zeros init"
+                )
+            else:
+                diag["reset_log"].append("WARNING: net.encoder not found — no encoder reset")
+
+        if reset_decoder:
+            if hasattr(net, "out"):
+                out_params = sum(p.numel() for p in net.out.parameters())
+                _reset_module_weights(net.out)
+                diag["reset_log"].append(
+                    f"Decoder reset: 'out' (Conv2d readout head, "
+                    f"{out_params:,} params) → kaiming_normal_ / zeros init"
+                )
+            else:
+                diag["reset_log"].append("WARNING: net.out not found — no decoder reset")
+
+        # ── 6. Snapshot weights before training ────────────────────────────
+        snapshot_before = {
+            pname: p.data.detach().clone()
+            for pname, p in net.named_parameters()
+        }
+
+        # ── 7. Training on synthetic data ──────────────────────────────────
+        losses_per_epoch: list[dict] = []
+        grad_norms_by_epoch: dict[str, dict] = {}
+
+        def epoch_cb(epoch, train_loss, test_loss, elapsed, val_metrics):
+            losses_per_epoch.append({
+                "epoch": epoch,
+                "train_loss": float(train_loss),
+                "test_loss": float(test_loss) if test_loss is not None else None,
+            })
+            if epoch % 10 == 0:
+                norms: dict = {}
+                for cname, cmod in net.named_children():
+                    gs = [
+                        p.grad.detach().norm().item()
+                        for p in cmod.parameters()
+                        if p.grad is not None
+                    ]
+                    norms[cname] = float(np.mean(gs)) if gs else 0.0
+                # Also capture encoder sub-module norms
+                if hasattr(net, "encoder"):
+                    for sname, smod in net.encoder.named_children():
+                        gs = [p.grad.detach().norm().item()
+                              for p in smod.parameters() if p.grad is not None]
+                        norms[f"encoder.{sname}"] = float(np.mean(gs)) if gs else 0.0
+                grad_norms_by_epoch[str(epoch)] = norms
+
+        t0 = time.time()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            try:
+                train_seg_with_callbacks(
+                    net=net,
+                    train_data=train_images,
+                    train_labels=train_masks,
+                    learning_rate=learning_rate,
+                    n_epochs=n_epochs,
+                    save_path=Path(tmp_dir),
+                    model_name="diag_model",
+                    min_train_masks=1,
+                    rescale=True,
+                    batch_size=1,
+                    weight_decay=0.1,
+                    epoch_callback=epoch_cb,
+                    validation_interval=None,
+                )
+            except Exception as e:
+                diag["errors"].append(
+                    f"Training: {type(e).__name__}: {str(e)[:400]}\n"
+                    f"{tb.format_exc()[-600:]}"
+                )
+        diag["training_elapsed_s"] = round(time.time() - t0, 1)
+        diag["losses"] = losses_per_epoch
+        diag["grad_norms_by_epoch"] = grad_norms_by_epoch
+
+        # ── 8. Weight change summary ───────────────────────────────────────
+        weight_change: dict[str, dict] = {}
+        for cname, cmod in net.named_children():
+            deltas, rel_deltas = [], []
+            for pname, p in cmod.named_parameters():
+                full = f"{cname}.{pname}"
+                if full in snapshot_before:
+                    delta = (p.data - snapshot_before[full]).norm().item()
+                    init_norm = snapshot_before[full].norm().item()
+                    deltas.append(delta)
+                    rel_deltas.append(delta / (init_norm + 1e-8))
+            weight_change[cname] = {
+                "mean_abs_change": float(np.mean(deltas)) if deltas else 0.0,
+                "mean_relative_change": float(np.mean(rel_deltas)) if rel_deltas else 0.0,
+                "max_relative_change": float(np.max(rel_deltas)) if rel_deltas else 0.0,
+            }
+        diag["weight_change"] = weight_change
+
+        # ── 9. Summary ─────────────────────────────────────────────────────
+        if losses_per_epoch:
+            first5 = [e["train_loss"] for e in losses_per_epoch[:5]]
+            last5  = [e["train_loss"] for e in losses_per_epoch[-5:]]
+            mean_first = float(np.mean(first5))
+            mean_last  = float(np.mean(last5))
+            reduction_pct = float(100 * (1 - mean_last / (mean_first + 1e-12)))
+            total_weight_change = sum(
+                v["mean_relative_change"] for v in weight_change.values()
+            )
+            is_learning = mean_last < mean_first * 0.8
+            diag["summary"] = {
+                "first_5_epochs_mean_loss": mean_first,
+                "last_5_epochs_mean_loss": mean_last,
+                "loss_reduction_pct": round(reduction_pct, 1),
+                "total_relative_weight_change": round(total_weight_change, 4),
+                "is_learning": is_learning,
+                "verdict": (
+                    "✅ PASS — Model IS learning (loss reduced ≥20%)"
+                    if is_learning
+                    else "❌ FAIL — Model is NOT learning (loss did not drop ≥20%)"
+                ),
+            }
+
+    except Exception as e:
+        diag["errors"].append(
+            f"Fatal: {type(e).__name__}: {str(e)}\n{tb.format_exc()[-800:]}"
+        )
+
+    return diag
 
 
 async def infer(

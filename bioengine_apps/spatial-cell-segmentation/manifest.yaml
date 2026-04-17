@@ -1,0 +1,15 @@
+name: Spatial Cell Segmentation
+id: spatial-cell-segmentation
+id_emoji: "🧬"
+description: "Cell segmentation for spatial transcriptomics data (Xenium, CosMx, Visium HD, MERSCOPE). Uses Cellpose with DAPI/stain channel input optimised for tissue sections. Integrates with AnnData/Squidpy workflows."
+type: ray-serve
+format_version: 0.5.0
+version: 1.0.0
+authors:
+  - {name: "BioEngine Team", affiliation: "KTH Royal Institute of Technology", github_user: "oeway"}
+license: MIT
+tags: [spatial-transcriptomics, xenium, cosmx, cell-segmentation, tissue, anndata]
+deployments:
+  - spatial_segmentation_deployment:SpatialSegmentationDeployment
+authorized_users:
+  - "*"

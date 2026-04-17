@@ -1,0 +1,19 @@
+name: StarDist + Cellpose Ensemble
+id: stardist-cellpose-ensemble
+id_emoji: "🎯"
+covers: []
+description: "Consensus cell nuclei segmentation: runs StarDist and Cellpose in parallel, merges instance masks by IoU matching to produce a high-confidence ensemble. Higher accuracy than either model alone on challenging samples."
+type: ray-serve
+format_version: 0.5.0
+version: 1.0.0
+authors:
+  - {name: "BioEngine Team", affiliation: "KTH Royal Institute of Technology", github_user: "oeway"}
+maintainers: [oeway]
+license: MIT
+git_repo: https://github.com/aicell-lab/bioengine-worker
+links: []
+tags: [ensemble, stardist, cellpose, nuclei, segmentation, consensus, fluorescence]
+deployments:
+  - ensemble_deployment:EnsembleDeployment
+authorized_users:
+  - "*"

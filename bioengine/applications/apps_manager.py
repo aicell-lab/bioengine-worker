@@ -1547,7 +1547,7 @@ class AppsManager:
                 "display_name": app.metadata["name"],
                 "description": app.metadata["description"],
                 "artifact_id": artifact_id,
-                "version": version,
+                "version": app.metadata["version"],
                 "application_kwargs": app.metadata["application_kwargs"],
                 "application_env_vars": app.metadata["application_env_vars"],
                 "hypha_token": hypha_token,

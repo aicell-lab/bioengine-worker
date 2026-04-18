@@ -219,7 +219,7 @@ class AppBuilder:
 
     async def _load_manifest(
         self, artifact_id: str, version: Optional[str] = None
-    ) -> AppManifest:
+    ) -> tuple[AppManifest, Optional[str]]:
         """
         Download and parse the application manifest that describes what to deploy.
 
@@ -247,7 +247,9 @@ class AppBuilder:
             version: Specific version to load (None = latest version)
 
         Returns:
-            Parsed manifest as a typed dictionary
+            Tuple of (manifest, resolved_version) where resolved_version is the
+            actual version string from the artifact manager (e.g. "0.0.25"), or
+            None when loading from local filesystem.
 
         Raises:
             ValueError: Manifest not found in artifact
@@ -262,6 +264,7 @@ class AppBuilder:
             ```
         """
         manifest = None
+        resolved_version: Optional[str] = version
 
         if os.environ.get("BIOENGINE_LOCAL_ARTIFACT_PATH"):
             # Try to load the file content from local path
@@ -283,10 +286,17 @@ class AppBuilder:
             if manifest is None:
                 raise ValueError(f"Manifest not found in artifact {artifact_id}.")
 
+            # Resolve the actual version when "latest" was requested
+            if version is None:
+                versions = artifact.get("versions") or []
+                if versions:
+                    latest = max(versions, key=lambda v: v["created_at"])
+                    resolved_version = latest["version"]
+
         # Validate the manifest structure
         validate_manifest(manifest)
 
-        return manifest
+        return manifest, resolved_version
 
     async def _update_ray_actor_options(
         self,
@@ -1276,8 +1286,11 @@ class AppBuilder:
         )
 
         try:
-            # Load the artifact manifest
-            manifest = await self._load_manifest(artifact_id, version)
+            # Load the artifact manifest and resolve the actual version
+            manifest, version = await self._load_manifest(artifact_id, version)
+            self.logger.info(
+                f"Resolved application '{application_id}' artifact '{artifact_id}' to version '{version}'"
+            )
 
             # Load all deployments defined in the manifest
             deployment_import_paths = manifest["deployments"]
@@ -1453,6 +1466,7 @@ class AppBuilder:
             app.metadata = {
                 "name": manifest["name"],
                 "description": manifest["description"],
+                "version": version,
                 "resources": required_resources,
                 "authorized_users": manifest["authorized_users"],
                 "available_methods": [

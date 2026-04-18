@@ -266,6 +266,7 @@ class TrainingParams(TypedDict):
     min_train_masks: int
     validation_interval: int | None
     enable_clahe: bool
+    rescale: bool
 
 
 def _apply_clahe(img_array: npt.NDArray[Any]) -> npt.NDArray[Any]:
@@ -1833,7 +1834,7 @@ def run_blocking_task(
             epoch_callback=epoch_callback,
             batch_callback=batch_callback,
             validation_interval=training_params["validation_interval"],
-            rescale=False,  # Cellpose-SAM paper: fine-tuning does not rescale by diameter
+            rescale=training_params["rescale"],
         )
     except TrainingStoppedError:
         elapsed = time.time() - t0
@@ -3764,6 +3765,19 @@ class CellposeFinetune:
                 "Without CLAHE, Cellpose-SAM cannot detect cells in such images."
             ),
         ),
+        rescale: bool = Field(
+            False,
+            description=(
+                "Whether to rescale images by estimated cell diameter during training. "
+                "When True, Cellpose estimates a per-image diameter and rescales so "
+                "cells match the model's expected size — this can substantially improve "
+                "fine-tuning on datasets where cell size differs from the default training "
+                "distribution (e.g. large plant cells, small bacteria). "
+                "When False (default, per the Cellpose-SAM paper), no diameter-based "
+                "rescaling is applied. Does not affect inference; use the 'diameter' "
+                "parameter in infer() to control rescaling at inference time."
+            ),
+        ),
         context: dict[str, Any] | None = Field(
             None,
             description="Authentication context, automatically provided by Hypha.",
@@ -3798,6 +3812,7 @@ class CellposeFinetune:
                 "validation_interval", validation_interval
             )
             enable_clahe = bool(wrapped.get("enable_clahe", enable_clahe))
+            rescale = bool(wrapped.get("rescale", rescale))
             context = wrapped.get("context", context)
 
         artifact = normalize_optional_param(artifact)
@@ -3895,6 +3910,7 @@ class CellposeFinetune:
             min_train_masks=min_train_masks,
             validation_interval=validation_interval,
             enable_clahe=bool(enable_clahe),
+            rescale=bool(rescale),
         )
 
         # Save training parameters for later export

@@ -597,7 +597,7 @@ async def commit_artifact(
     Args:
         artifact_manager: Hypha artifact manager service instance
         artifact_id: The artifact ID
-        version: Optional version tag (e.g. "1.0.0"). If None, Hypha defaults to "latest".
+        version: Optional version tag (e.g. "1.0.0"). If None, Hypha assigns "v0" for the first commit, then increments (v1, v2, …) for subsequent unversioned commits.
         logger: Optional logger instance for debugging
 
     Raises:

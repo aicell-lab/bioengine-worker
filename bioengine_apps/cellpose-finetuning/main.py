@@ -832,6 +832,7 @@ class SessionStatus(TypedDict, total=False):
     elapsed_seconds: float  # Elapsed time in seconds
     current_batch: int  # Current batch number within epoch (0-indexed)
     total_batches: int  # Total number of batches per epoch
+    current_loss: float | None  # Most recent per-epoch training loss (last element of train_losses)
     exported_artifact_id: str  # Artifact ID if model has been exported
     model_modified: bool  # Flag indicating if model was modified since last export
     model: str
@@ -868,6 +869,7 @@ class SessionStatusWithId(TypedDict, total=False):
     elapsed_seconds: float
     current_batch: int
     total_batches: int
+    current_loss: float | None  # Most recent per-epoch training loss (last element of train_losses)
     exported_artifact_id: str
     model_modified: bool
     model: str
@@ -4042,6 +4044,14 @@ class CellposeFinetune:
         status_mtime: float,
     ) -> dict[str, Any]:
         """Normalize stale in-progress sessions when no active task is present."""
+        # Always populate current_loss as the last element of train_losses so
+        # callers can do status.get("current_loss") without inspecting the list.
+        train_losses = session_data.get("train_losses")
+        if train_losses and isinstance(train_losses, list):
+            session_data["current_loss"] = float(train_losses[-1])
+        else:
+            session_data.setdefault("current_loss", None)
+
         status_type = str(session_data.get("status_type") or "unknown").lower()
         if status_type not in {"waiting", "preparing", "running"}:
             return session_data

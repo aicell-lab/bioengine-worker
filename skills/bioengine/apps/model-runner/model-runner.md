@@ -97,9 +97,9 @@ Output key: `outputs[0].name` (RDF 0.4.x) or `outputs[0].id` (RDF 0.5.x). On sha
 - [ ] Step 3: For each candidate — call get_model_documentation to read the README
 - [ ] Step 4: Filter candidates — discard domain mismatches based on documentation
 - [ ] Step 5: Run all suitable models on the same input — use `infer_http()` from `scripts/utils.py` in a loop
-- [ ] Step 6: Score models — use `compute_instance_f1(pred_labels, gt_labels)` for instance segmentation; `evaluate_segmentation()` for semantic/pixel-level tasks only
+- [ ] Step 6: Score models — compute mAP over IoU thresholds 0.1–0.95 (step 0.05) using `compute_instance_f1(pred_labels, gt_labels, iou_thresh=t)` for each threshold `t`; `evaluate_segmentation()` for semantic/pixel-level tasks only
 - [ ] Step 7: Save all artifacts to comparison_results/
-- [ ] Step 8: Generate Illustration 1 (ranked barplot), Illustration 2 (montage), Illustration 3 if instance segmentation (object count)
+- [ ] Step 8: Generate Illustration 1 (F1 vs IoU threshold curve), Illustration 2 (montage)
 - [ ] Step 9: Write comparison_summary.json
 - [ ] Step 10: Generate HTML report
 ```
@@ -161,12 +161,10 @@ Also check the RDF `tags` and `description` fields from `get_model_rdf` as a sec
 ```
 comparison_results/
 ├── {model_id}_output.npy              # raw prediction per model
-├── illustration1_barplot.pdf          # Illustration 1: ranked metric barplot
-├── illustration1_barplot.png          # same at 300 DPI
+├── illustration1_f1_vs_iou.pdf        # Illustration 1: F1 vs IoU threshold curves
+├── illustration1_f1_vs_iou.png        # same at 300 DPI
 ├── illustration2_montage.pdf          # Illustration 2: input/GT/predictions montage
 ├── illustration2_montage.png          # same at 300 DPI
-├── illustration3_counts.pdf           # Illustration 3: object count (instance seg only)
-├── illustration3_counts.png           # same at 300 DPI
 ├── comparison_summary.json
 └── model_comparison_report.html       # self-contained HTML with all figures embedded
 ```
@@ -179,7 +177,7 @@ python scripts/generate_report.py --output-dir comparison_results/
 
 ### Required illustrations
 
-Every screening run **must produce at least two illustrations** plus an HTML report. Generate them as publication-quality figures (Nature/Cell style):
+Every screening run **must produce two illustrations** plus an HTML report. Generate them as publication-quality figures (Nature/Cell style):
 - Figure width: 7.0 inches (Nature Methods single-column)
 - Font: Arial or Helvetica, 7–8 pt for axis labels, 6 pt for tick labels
 - Resolution: 300 DPI PNG + PDF with embedded fonts (`pdf.fonttype=42`, `ps.fonttype=42`)
@@ -190,83 +188,61 @@ Every screening run **must produce at least two illustrations** plus an HTML rep
 
 ---
 
-#### Illustration 1 — Ranked metric barplot
+#### Illustration 1 — F1 vs IoU threshold curve
 
-**Skip only if there is exactly one suitable model** (single-candidate result). In that case, embed the metric value as a text annotation in Illustration 2 instead.
+**Skip only if there is exactly one suitable model** (single-candidate result). In that case, embed the mAP value as a text annotation in Illustration 2 instead.
 
-**For segmentation tasks** (instance or semantic): use **F1 score (IoU ≥ 0.5)** as the primary metric, computed via `compute_instance_f1()` from `scripts/utils.py`. Show F1 only (do NOT show a second grouped bar for mean IoU — this creates confusing small secondary bars).
+**For instance segmentation tasks**: compute F1 at each IoU threshold from 0.1 to 0.95 (step 0.05; 18 thresholds) via `compute_instance_f1(pred_labels, gt_labels, iou_thresh=t)`. Plot one curve per model. The mAP is the area under this curve (mean of the 18 F1 values). This shows both peak performance and how quickly each model degrades at strict IoU requirements.
 
-**For other tasks**: choose the most appropriate metric (PSNR/SSIM for denoising, AP for detection) and label the axis accordingly.
+**For other tasks**: choose the most appropriate metric (PSNR/SSIM for denoising) and label the axis accordingly.
 
 **Layout rules**:
-- Horizontal barplot, models sorted **best at top, worst at bottom**
-- Color bars by performance category (blue = good ≥0.8, purple = acceptable 0.5–0.8, red/orange = poor <0.5, grey+hatch = domain mismatch or excluded)
-- Annotate each bar with its numeric metric value to 3 decimal places, right-aligned after the bar end (5.5 pt, color `#444444`)
-- Legend for color categories: place **outside the plot area, top-right** (use `bbox_to_anchor=(1.0, 1.0), loc="upper left"` on `ax.legend()`). Do NOT place the legend inside the plot — it overlaps the bars.
-- x-axis range: **0 to 1.0** exactly. Do NOT extend to 1.2 — F1 and IoU cannot exceed 1.0. Add a dashed reference line at x=1.0.
-- y-axis: model IDs (bioimage.io slug). No y-axis tick marks (`tick_params(axis="y", length=0)`).
-- Grid lines: `ax.xaxis.grid(True, color="#e0e0e0", lw=0.5, zorder=0)` and `ax.set_axisbelow(True)`. This ensures gridlines render **behind** bars, not on top.
-- Do NOT annotate channel limitations or model notes on the barplot — these belong in the HTML report notes section.
+- x-axis: IoU threshold 0.1→0.95; y-axis: F1 score 0→1
+- One line per model, colored consistently with the montage (use a shared COLOR_MAP keyed by model name, ordered best→worst by mAP; colorblind-friendly palette)
+- Legend with model IDs and mAP values, placed outside the plot area (upper right)
+- No top/right spines; subtle gridlines (#e0e0e0)
+- figsize=(6.5, 3.0) for Nature Methods single-column
 
 **Python implementation** (use matplotlib; do NOT use seaborn):
 
 ```python
+import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import numpy as np
 
 matplotlib.rcParams.update({
     "font.family": "sans-serif", "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
     "font.size": 7, "axes.titlesize": 7, "axes.labelsize": 7,
-    "xtick.labelsize": 6, "ytick.labelsize": 6.5, "legend.fontsize": 6,
+    "xtick.labelsize": 6, "ytick.labelsize": 6, "legend.fontsize": 6,
     "axes.linewidth": 0.6, "pdf.fonttype": 42, "ps.fonttype": 42,
 })
 
-CATEGORY_COLORS = {
-    "good":            "#2166ac",   # blue
-    "acceptable":      "#762a83",   # purple
-    "poor":            "#d6604d",   # red-orange
-    "domain_mismatch": "#b0b0b0",   # grey (+ hatch)
-}
+THRESHOLDS = np.round(np.arange(0.1, 1.0, 0.05), 2)
+# Assign colors best→worst by mAP rank (colorblind-friendly, no green — reserved for GT overlays)
+COLORS_N = ["#5B8DB8", "#C47D45", "#3AAFA9", "#8B6BA8"]   # blue, orange, teal, purple
+rank_order = sorted(models, key=lambda m: map_scores[m], reverse=True)
+COLOR_MAP = {m: COLORS_N[i] for i, m in enumerate(rank_order)}
 
-fig, ax = plt.subplots(figsize=(3.5, 0.65 * n_models + 0.9))
-y_pos = np.arange(n_models)
+fig, ax = plt.subplots(figsize=(6.5, 3.0))
+for model_id in rank_order:
+    f1_curve = [results[model_id][f"f1_{t}"] for t in THRESHOLDS]
+    mAP = np.mean(f1_curve)
+    ax.plot(THRESHOLDS, f1_curve, color=COLOR_MAP[model_id], lw=1.5,
+            label=f"{model_id}  (mAP={mAP:.3f})")
 
-bars = ax.barh(y_pos, f1_scores, color=colors, height=0.55, zorder=3)
-for bar, cat in zip(bars, categories):
-    if cat == "domain_mismatch":
-        bar.set_hatch("///")
-        bar.set_edgecolor("#888888")
-
-# Value labels
-for i, f1 in enumerate(f1_scores):
-    ax.text(f1 + 0.012, i, f"{f1:.3f}", va="center", ha="left", fontsize=5.5, color="#444444")
-
-ax.set_yticks(y_pos)
-ax.set_yticklabels(model_names, fontsize=6.5)
-ax.set_xlim(0, 1.0)
-ax.set_xlabel("F1 score  (IoU ≥ 0.5)", labelpad=3)
-ax.set_xticks([0, 0.2, 0.4, 0.6, 0.8, 1.0])
-ax.xaxis.grid(True, color="#e0e0e0", linewidth=0.5, zorder=0)
+ax.set_xlabel("IoU threshold", labelpad=3)
+ax.set_ylabel("F1 score", labelpad=3)
+ax.set_xlim(0.1, 0.95)
+ax.set_ylim(0, 1.0)
+ax.xaxis.grid(True, color="#e0e0e0", lw=0.5, zorder=0)
+ax.yaxis.grid(True, color="#e0e0e0", lw=0.5, zorder=0)
 ax.set_axisbelow(True)
-ax.axvline(1.0, color="#999999", lw=0.5, ls="--", zorder=2)
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
-ax.tick_params(axis="y", length=0, pad=4)
+ax.legend(loc="upper right", frameon=False, fontsize=6, handlelength=1.5)
 
-legend_handles = [
-    mpatches.Patch(color=CATEGORY_COLORS["good"],            label="Good  (F1 ≥ 0.8)"),
-    mpatches.Patch(color=CATEGORY_COLORS["acceptable"],       label="Acceptable  (0.5–0.8)"),
-    mpatches.Patch(color=CATEGORY_COLORS["poor"],             label="Poor  (F1 < 0.5)"),
-    mpatches.Patch(color=CATEGORY_COLORS["domain_mismatch"],
-                   hatch="///", edgecolor="#888888",           label="Domain mismatch"),
-]
-ax.legend(handles=legend_handles, loc="upper left", bbox_to_anchor=(1.0, 1.0),
-          frameon=False, fontsize=5.5, handlelength=1.2, handleheight=0.8)
-
-fig.savefig("illustration1_barplot.pdf", bbox_inches="tight")
-fig.savefig("illustration1_barplot.png", bbox_inches="tight", dpi=300)
+fig.savefig("illustration1_f1_vs_iou.pdf", bbox_inches="tight")
+fig.savefig("illustration1_f1_vs_iou.png", bbox_inches="tight", dpi=300)
 ```
 
 ---
@@ -311,22 +287,6 @@ fig.savefig("illustration2_montage.png", bbox_inches="tight", dpi=300, facecolor
 
 ---
 
-#### Illustration 3 — Object count comparison (instance segmentation only)
-
-Only generate for **instance segmentation tasks** (cell/nucleus counting).
-
-**Layout**:
-- Horizontal barplot, same model order as Illustration 1 (best at top)
-- Bars show predicted object count per model
-- **Red vertical reference line** at the ground truth count; annotate with `f"GT  (n = {gt_n})"` in the legend (use a red patch handle)
-- Annotate each bar with its numeric count (right of bar, 5.5 pt)
-- Same color scheme and bar styling as Illustration 1
-- x-axis label: "Predicted nucleus count" (or "cell count" etc.)
-- No y-axis tick labels (blank `""` for all — shared visually with Illustration 1 in the paper layout)
-- No panel labels
-
----
-
 **comparison_summary.json schema**:
 
 ```json
@@ -337,14 +297,17 @@ Only generate for **instance segmentation tasks** (cell/nucleus counting).
   "keywords": ["nuclei", "fluorescence"],
   "candidates": ["model-id-1", "model-id-2"],
   "excluded": {"model-id-x": "domain mismatch: trained on H&E brightfield"},
+  "mAP_summary": {
+    "model-id-1": {"mAP": 0.783, "mAP_std": 0.045}
+  },
   "metrics": {
-    "model-id-1": {"f1": 0.909, "mean_iou": 0.956, "tp": 10, "fp": 0, "fn": 2, "n_pred": 10, "n_gt": 12}
+    "model-id-1": {"f1_mean": 0.909, "f1_std": 0.04, "per_sample": {...}}
   },
   "failed_models": {"model-id-3": "shape mismatch error message"},
   "best_model": "model-id-1",
   "ground_truth_n_cells": 12,
   "ranking": ["model-id-1", "model-id-2"],
-  "evaluation_method": "Instance-level F1 with IoU>=0.5 threshold (compute_instance_f1)",
+  "evaluation_method": "mAP: mean F1 over IoU thresholds 0.1–0.95 (step 0.05, 18 thresholds); greedy matching per threshold",
   "notes": {
     "model-id-2": "HPA model: requires 3 channels (DAPI+488+638). Run with ch1=ch2=zeros — degraded performance expected."
   }

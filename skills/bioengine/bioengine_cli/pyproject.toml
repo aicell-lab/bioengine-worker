@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bioengine"
-version = "0.1.0"
+version = "0.6.15"
 description = "BioEngine CLI — deploy, manage, and call BioEngine AI model services from the command line"
 readme = "README.md"
 license = {text = "MIT"}

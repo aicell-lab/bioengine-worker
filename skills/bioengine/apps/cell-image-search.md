@@ -1,22 +1,6 @@
----
-name: bioengine-cell-image-search
-description: >
-  Searches 58M+ single-cell morphology images from JUMP Cell Painting using DINOv2 embeddings
-  and FAISS vector search. Use when the user wants to find morphologically similar cells,
-  discover drug mechanism-of-action by phenotypic similarity, build a cell image index,
-  or visualise the embedding space via UMAP.
-license: MIT
-metadata:
-  service-id: bioimage-io/cell-image-search
-  worker-service-id: bioimage-io/bioengine-worker
-  server: https://hypha.aicell.io
-  model: DINOv2 ViT-B/14 (768-dim)
-  gpu: 1× A40 (BioEngine GPU cluster)
-  app-version: 0.21.3
-  frontend-url: https://hypha.aicell.io/bioimage-io/view/cell-image-search/?ws_service_id=bioimage-io/cell-image-search
----
-
 # BioEngine Cell Morphology Search Engine
+
+**Service ID**: `bioimage-io/cell-image-search` · **Server**: `https://hypha.aicell.io`
 
 Search 58 million+ single-cell images from the JUMP Cell Painting dataset by morphological
 similarity — powered by DINOv2 ViT-B/14 embeddings and FAISS vector search.

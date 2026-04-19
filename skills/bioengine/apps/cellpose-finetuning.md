@@ -1,17 +1,6 @@
----
-name: bioengine-cellpose-finetuning
-description: Fine-tunes Cellpose-SAM on user-provided annotated microscopy images via the BioEngine cellpose-finetuning service. Use when the user wants to adapt Cellpose to a novel cell morphology, train on their own annotated data, monitor training progress, evaluate per-epoch metrics, or export a trained model to the BioImage.IO Model Zoo.
-license: MIT
-metadata:
-  service-id: bioimage-io/cellpose-finetuning
-  worker-service-id: bioimage-io/bioengine-worker
-  server: https://hypha.aicell.io
-  model: Cellpose-SAM (cpsam), Cellpose 4.0.7
-  gpu: 4× A40 (BioEngine GPU cluster)
-  app-version: 0.0.19
----
-
 # BioEngine Cellpose Fine-Tuning
+
+**Service ID**: `bioimage-io/cellpose-finetuning` · **Server**: `https://hypha.aicell.io`
 
 Fine-tune Cellpose-SAM on your own annotated microscopy images — no local GPU, no code, entirely browser- and API-accessible via BioEngine.
 

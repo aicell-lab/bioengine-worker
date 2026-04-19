@@ -1,16 +1,6 @@
----
-name: bioengine-model-runner
-description: Searches, validates, tests, and runs inference on BioImage.IO models via the BioEngine model-runner service. Use when the user wants to run microscopy image analysis, find segmentation/denoising/restoration/detection models, compare multiple models against ground truth, validate a model RDF, or test BioImage.IO model compliance.
-license: MIT
-metadata:
-  service-id: bioimage-io/model-runner
-  worker-service-id: bioimage-io/bioengine-worker
-  http-base-url: https://hypha.aicell.io/bioimage-io/services/model-runner
-  mcp-server: https://hypha.aicell.io/bioimage-io/mcp/model-runner
-  cli-package: bioengine (pip install bioengine)
----
-
 # BioEngine Model Runner
+
+**Service ID**: `bioimage-io/model-runner` · **Server**: `https://hypha.aicell.io`
 
 ## Use this skill when
 
@@ -21,11 +11,10 @@ metadata:
 
 ## Quick start
 
-The CLI is in the main bioengine skill at `../bioengine/bioengine_cli/`. Install once:
+Install the CLI once:
 
 ```bash
-pip install -e ../bioengine/bioengine_cli/
-# or: pip install bioengine
+pip install -e skills/bioengine/bioengine_cli/
 ```
 
 **Default server**: `https://hypha.aicell.io`  

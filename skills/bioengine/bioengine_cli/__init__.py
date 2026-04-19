@@ -6,4 +6,4 @@
 #   4. hypha-cli is Node.js and adds a foreign-language dependency for biologists
 #   5. The worker SDK (bioengine-worker) is Python — sharing utilities is natural
 
-__version__ = "0.1.0"
+__version__ = "0.6.15"

@@ -1,57 +1,47 @@
 ---
 name: bioengine
-description: Builds, deploys, and manages BioEngine applications on Ray Serve/Hypha, and calls any pre-deployed BioEngine service (model runner, Cellpose fine-tuning, etc.). Use this as the single entry point for any BioEngine task: building new apps, deploying to a worker, calling service methods, checking cluster resources. For deep usage of specific services, load the referenced app skills.
+description: Builds, deploys, and manages BioEngine applications on Ray Serve/Hypha, and calls any pre-deployed BioEngine service (model runner, Cellpose fine-tuning, cell image search). Use as the single entry point for any BioEngine task: building new apps, deploying to a worker, calling service methods, or checking cluster resources. Load app subskills in apps/ when working with a specific deployed service.
 license: MIT
 metadata:
   cli-package: bioengine (pip install -e skills/bioengine/bioengine_cli/)
   app-skills:
-    - ../bioengine-model-runner/SKILL.md
-    - ../bioengine-cellpose-finetuning/SKILL.md
-    - ../bioengine-cell-image-search/SKILL.md
+    - apps/model-runner/model-runner.md
+    - apps/cellpose-finetuning.md
+    - apps/cell-image-search.md
 ---
 
-# BioEngine Apps
+# BioEngine
 
-BioEngine applications are Ray Serve classes packaged as Hypha artifacts. They expose model inference, distributed training, data exploration, and custom pipelines as Hypha RPC services.
+BioEngine applications are Ray Serve classes packaged as Hypha artifacts, exposing model inference, training, and data pipelines as Hypha RPC services.
 
 ## Quick orientation
 
-| Goal | Read |
+| Goal | Where |
 |---|---|
-| Discover methods on any service | `bioengine call <service-id> --list-methods` |
-| Call any deployed service | [CLI: bioengine call](#cli-quick-reference) |
-| Build a single-deployment app | [Simple app template](#simple-app-template) |
-| Build a multi-deployment composition app | [references/app_templates.md](references/app_templates.md) |
-| Multiplexing / model integration / fine-tuning | [references/model_serving.md](references/model_serving.md) |
-| Deploy + monitor | [Deploy workflow](#deploy-workflow) |
-| Check cluster GPU availability | [Checking cluster resources](#checking-cluster-resources) |
+| Build and deploy an app | [Deploy workflow](#deploy-workflow) |
+| Multi-deployment composition app | [references/app_templates.md](references/app_templates.md) |
+| Call any deployed service | `bioengine call <service-id> --list-methods` |
+| Model multiplexing / HuggingFace / BioImage.IO integration | [references/model_serving.md](references/model_serving.md) |
 | Full manifest fields | [references/manifest_reference.md](references/manifest_reference.md) |
 | Full CLI reference | [references/cli_reference.md](references/cli_reference.md) |
+| Run BioImage.IO model inference | [apps/model-runner/model-runner.md](apps/model-runner/model-runner.md) |
+| Fine-tune Cellpose on custom data | [apps/cellpose-finetuning.md](apps/cellpose-finetuning.md) |
+| Search cell morphology (JUMP dataset) | [apps/cell-image-search.md](apps/cell-image-search.md) |
 
 ---
 
-## Server and workspace defaults
+## Server and service defaults
 
 **Default Hypha server**: `https://hypha.aicell.io` — use this unless the user specifies another.
 
-**Public BioEngine services** (live on `bioimage-io` workspace, no auth required to call):
+| Service | Service ID |
+|---|---|
+| Model Runner | `bioimage-io/model-runner` |
+| Cellpose Fine-Tuning | `bioimage-io/cellpose-finetuning` |
+| Cell Image Search | `bioimage-io/cell-image-search` |
+| BioEngine Worker | `bioimage-io/bioengine-worker` |
 
-| Service | Service ID | Description |
-|---|---|---|
-| Model Runner | `bioimage-io/model-runner` | Run/search/validate BioImage.IO models |
-| Cellpose Fine-tuning | `bioimage-io/cellpose-finetuning` | Fine-tune Cellpose-SAM on custom data |
-| BioEngine Worker | `bioimage-io/bioengine-worker` | Cluster management (admin ops) |
-
-**User-deployed workers**: A user can start their own BioEngine worker in any Hypha workspace. In that case, derive service IDs from their workspace:
-
-```
-Workspace: ws-user-github|49943582
-→ Worker:              ws-user-github|49943582/bioengine-worker
-→ Model runner:        ws-user-github|49943582/model-runner
-→ Cellpose finetuning: ws-user-github|49943582/cellpose-finetuning
-```
-
-Always use the public `bioimage-io` workspace unless the user explicitly provides their own workspace.
+User-deployed worker in workspace `ws-user-github|49943582` → service IDs like `ws-user-github|49943582/model-runner`.
 
 ---
 
@@ -59,212 +49,76 @@ Always use the public `bioimage-io` workspace unless the user explicitly provide
 
 ```
 my-app/
-├── manifest.yaml          # Required: identity, deployments, auth
-├── my_deployment.py       # Required: Ray Serve class
-└── frontend/index.html    # Optional: static UI
+├── manifest.yaml          # identity, deployments, auth
+├── my_deployment.py       # Ray Serve class
+└── frontend/index.html    # optional static UI
 ```
 
-For a composition app (entry + multiple runtimes):
-```
-my-app/
-├── manifest.yaml
-├── entry_deployment.py    # Orchestrates runtimes — no CPU/GPU
-├── runtime_a.py
-└── runtime_b.py
-```
-
----
-
-## Manifest reference
-
+**Minimal manifest.yaml:**
 ```yaml
-name: My Application
-id: my-application          # Unique lowercase ID — also the artifact alias
+name: My App
+id: my-app
 id_emoji: "🔬"
 description: "..."
 type: ray-serve
-format_version: 0.5.0
 version: 1.0.0
-authors:
-  - {name: "...", affiliation: "...", github_user: "..."}
+format_version: 0.5.0
 license: MIT
-tags: [bioengine]
-
-deployments:                # Ordered list: first is always the entry/main deployment
-  - my_deployment:MyDeployment       # single deployment
-  # For composition: - entry_deployment:EntryDeployment, - runtime_a:RuntimeA, ...
-
+deployments:
+  - my_deployment:MyDeployment   # python_filename_without_py:ClassName
 authorized_users:
-  - "*"                     # Public; or list specific user IDs
-
-frontend_entry: "frontend/index.html"   # Optional: static UI
+  - "*"
 ```
 
-**Deployment format**: `python_filename_without_py:ClassName`  
-**Composition naming rule**: the filename (e.g. `runtime_a`) **must exactly match** the parameter name in `EntryDeployment.__init__` that holds the `DeploymentHandle`.
+For composition apps (entry + multiple runtimes) and frontend UI, see [references/app_templates.md](references/app_templates.md).
 
 ---
 
-## Pip requirements — set them early and freeze versions
-
-Ray caches runtime environments by content hash. Changing any package version causes a full rebuild (5–15 min). **Decide all pip requirements before writing business logic, and pin every version.**
+## Deployment class skeleton
 
 ```python
-@serve.deployment(
-    ray_actor_options={
-        "runtime_env": {
-            "pip": ["numpy==1.26.4", "scipy==1.13.0"],  # pin exact versions
-        },
-    }
-)
-```
-
----
-
-## Import pattern
-
-- **Standard library + BioEngine core** (`asyncio`, `os`, `logging`, `hypha_rpc`, `ray.serve`, `pydantic`): import at the **top** of the file.
-- **Third-party packages** (`runtime_env.pip`): import **inside each method**. Ray serializes deployment classes; top-level third-party imports break serialization.
-
-```python
-# Top-level — OK
-import asyncio, logging, os
+import asyncio, logging, time
 from ray import serve
-from hypha_rpc.utils.schema import schema_method
-
-# Inside method — required for third-party packages
-async def process(self, data):
-    import numpy as np    # correct
-    import torch          # correct
-```
-
----
-
-## Lifecycle methods
-
-```python
-async def async_init(self) -> None:
-    """Called once after __init__, before accepting requests. Load models here."""
-    self.model = await self._load_model()
-
-async def test_deployment(self) -> None:
-    """Called once after async_init. Raise to fail startup (smoke test)."""
-    result = await self.ping()
-    assert result["status"] == "ok"
-
-async def check_health(self) -> None:
-    """Called periodically by Ray Serve. Raise to signal unhealthy."""
-    if self._unhealthy:
-        raise RuntimeError("unhealthy")
-```
-
-**Order**: `__init__` → `async_init` → `test_deployment` → `check_health` (periodic)
-
----
-
-## Public API methods
-
-Decorate public methods with `@schema_method`. These become the callable API over Hypha RPC.
-
-```python
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 
-@schema_method
-async def process(
-    self,
-    text: str = Field(..., description="Input text"),
-    max_length: int = Field(100, description="Maximum output length"),
-) -> dict:
-    """Process text and return result."""
-    return {"result": text[:max_length]}
-```
+logger = logging.getLogger("ray.serve")  # never use print()
 
-**No mutable defaults in `Field()`**: use `None` and assign the default inside the method — `Field([1, 2, 3])` crashes at startup.
-
----
-
-## Logging
-
-```python
-logger = logging.getLogger("ray.serve")
-logger.info("message")    # never use print()
-```
-
----
-
-## GPU / CPU resources
-
-```python
-ray_actor_options={
-    "num_cpus": 1,
-    "num_gpus": 1,          # 1 = dedicated GPU node; 0 = CPU-only
-    "memory": 4 * 1024**3,  # 4 GB RAM limit
-}
-```
-
-- **Use `num_gpus: 1`** for GPU deployments — never fractional values. Fractional (e.g. `0.5`) allows VRAM sharing across apps, causing OOM errors.
-- **Use `num_gpus: 0`** for CPU-only.
-- Entry/orchestrator deployments in composition apps: `num_cpus: 0, num_gpus: 0`.
-- Override at deploy time: `disable_gpu=True` in `run_application()`.
-
-### Checking cluster resources
-
-```python
-status = await worker.get_status()
-cluster = status["ray_cluster"]["cluster"]
-print(f"GPUs: {cluster['used_gpu']} / {cluster['total_gpu']} used")
-
-for nid, node in status["ray_cluster"]["nodes"].items():
-    if node["total_gpu"] > 0:
-        vram_gb = node["used_gpu_memory"] / 1024**3
-        total_gb = node["total_gpu_memory"] / 1024**3
-        print(f"  {node['node_ip']} ({node['accelerator_type']}): "
-              f"{node['used_gpu']}/{node['total_gpu']} GPU, {vram_gb:.1f}/{total_gb:.1f} GiB VRAM")
-```
-
-Or via CLI: `bioengine cluster status`
-
----
-
-## Image data conventions (RPC boundary)
-
-Never pass raw numpy arrays across Hypha RPC — they are not JSON-serialisable.
-
-| Direction | Client | Server |
-|---|---|---|
-| Send image | `image_list = img.tolist()` | `arr = np.array(image_list, dtype=np.float32)` |
-| Receive labels | `labels = np.array(result["labels"])` | `"labels": masks.astype(np.int32).tolist()` |
-
-For images > 100 MB, use Hypha artifact URLs instead of inline data.
-
----
-
-## Simple app template
-
-See [references/app_templates.md](references/app_templates.md) for the full code. Skeleton:
-
-```python
 @serve.deployment(
     ray_actor_options={
-        "num_cpus": 1, "num_gpus": 0, "memory": 1 * 1024**3,
-        "runtime_env": {"pip": ["numpy==1.26.4"]},
+        "num_cpus": 1,
+        "num_gpus": 1,           # 1 for GPU, 0 for CPU-only; never fractional
+        "memory": 4 * 1024**3,
+        "runtime_env": {
+            "pip": ["numpy==1.26.4"],  # pin exact versions — any change = full rebuild
+        },
     },
     max_ongoing_requests=10,
 )
 class MyDeployment:
-    def __init__(self) -> None: self.start_time = time.time()
+    def __init__(self) -> None:
+        self.start_time = time.time()
 
-    async def async_init(self) -> None: ...
-    async def test_deployment(self) -> None: ...
+    async def async_init(self) -> None:
+        """Called once before accepting requests. Load models here."""
+        import numpy as np  # third-party: always import inside methods
+
+    async def test_deployment(self) -> None:
+        """Smoke test — raise to fail startup."""
+        assert (await self.ping())["status"] == "ok"
 
     @schema_method
     async def ping(self) -> dict:
-        """Ping the service."""
+        """Return service status."""
         return {"status": "ok", "uptime": time.time() - self.start_time}
 ```
 
-For model multiplexing, model integration (HuggingFace, Zenodo, BioImage.IO), auto-scaling, and fine-tuning patterns, see [references/model_serving.md](references/model_serving.md).
+**Key rules:**
+- Import third-party packages **inside methods** — top-level imports break Ray serialization
+- `num_gpus: 1` for GPU, `num_gpus: 0` for CPU-only; never use fractional values
+- Entry/orchestrator deployments in composition apps: `num_cpus: 0, num_gpus: 0`
+- `Field(None)` not `Field([...])` for mutable defaults — mutable defaults crash at startup
+- Never return raw numpy arrays over RPC — call `.tolist()` first
 
 ---
 
@@ -272,115 +126,50 @@ For model multiplexing, model integration (HuggingFace, Zenodo, BioImage.IO), au
 
 ```bash
 pip install -e skills/bioengine/bioengine_cli/
-
 export HYPHA_TOKEN=<your-token>
 export BIOENGINE_WORKER_SERVICE_ID=bioimage-io/bioengine-worker
 ```
 
-**Step 1 — Upload and deploy:**
 ```bash
-bioengine apps deploy ./my-app/                   # upload + deploy in one step
-bioengine apps deploy ./my-app/ --app-id my-app   # stable ID (enables in-place updates)
-```
+# 1. Upload + deploy in one step
+bioengine apps deploy ./my-app/ --app-id my-app --hypha-token $HYPHA_TOKEN
 
-> **HYPHA_TOKEN inside the deployment**: Many apps connect back to Hypha from inside the Ray actor (to access artifacts, datasets, or other services) and need `HYPHA_TOKEN` set in their environment. The `--hypha-token` flag injects this automatically. It defaults to your auth token, so **for most apps you should always pass it explicitly**:
-> ```bash
-> bioengine apps deploy ./my-app/ --app-id my-app --hypha-token $HYPHA_TOKEN
-> # Python API equivalent:
-> await worker.run_application(artifact_id="ws/my-app", hypha_token=token)
-> ```
-> **Do NOT use `--env HYPHA_TOKEN=...`** — `--env` is keyed by deployment class name internally, and the `"*"` wildcard the CLI uses is silently ignored by the app builder. Only `--hypha-token` / the `hypha_token` parameter work.
+# 2. Monitor (wait for all deployments to reach HEALTHY)
+bioengine apps status my-app --logs 50
 
-**Step 2 — Monitor:**
-```bash
-bioengine apps status                             # all running apps
-bioengine apps status my-app --logs 50            # one app + logs
-bioengine apps logs my-app --tail 200
-```
-
-App states: `NOT_STARTED` → `DEPLOYING` → `RUNNING` or `DEPLOY_FAILED`.  
-Deployment states: `UPDATING` → `HEALTHY` or `UNHEALTHY`. App is ready when all deployments are `HEALTHY`.
-
-**Step 3 — Call the service:**
-```bash
+# 3. Call
 bioengine call bioimage-io/my-app ping --json
-bioengine call bioimage-io/my-app process --args '{"values": [1, 2, 3]}' --json
 ```
 
-Or via Python:
-```python
-from hypha_rpc import connect_to_server
-server = await connect_to_server({"server_url": "https://hypha.aicell.io", "token": token})
-svc = await server.get_service("bioimage-io/my-app")
-result = await svc.ping()
-```
+> **HYPHA_TOKEN inside deployments**: Apps that connect back to Hypha internally need `HYPHA_TOKEN` set in the Ray actor environment. Always pass `--hypha-token $HYPHA_TOKEN` (CLI) or `hypha_token=token` (Python API). Do **NOT** use `--env HYPHA_TOKEN=...` — it is silently ignored by the app builder.
 
-**Step 4 — Bump version and commit:**
-```bash
-# After verifying the app works on the live worker:
-git add bioengine_apps/my-app/
-git commit -m "feat(my-app): add X, bump version to 1.1.0"
-git push
-```
-
-Always bump `version` in `manifest.yaml` when changing app code.
-
----
-
-## Updating a running application
-
-Pass `--app-id` with the existing ID to update in-place (inherits all env vars and init kwargs):
-
+**Update a running app in-place** (inherits all env vars automatically):
 ```bash
 bioengine apps upload ./my-app/
-bioengine apps run my-workspace/my-app --app-id my-running-app-id
+bioengine apps run my-workspace/my-app --app-id my-app
 ```
+
+App states: `NOT_STARTED` → `DEPLOYING` → `RUNNING` / `DEPLOY_FAILED`  
+Deployments ready when all reach `HEALTHY`. Check logs: `bioengine apps logs my-app --tail 100`.
+
+After verifying on the live worker: bump `version` in `manifest.yaml` and commit.
 
 ---
 
 ## CLI quick reference
 
 ```bash
-# Install
-pip install -e skills/bioengine/bioengine_cli/
-
-# Call any service method
-bioengine call <service-id> --list-methods           # discover available methods
-bioengine call <service-id> <method> --json          # call a method, JSON output
-bioengine call <service-id> <method> --args '{"k": "v"}' --json  # with arguments
-bioengine call <service-id> <method> --arg key=val   # individual args (auto-typed)
-
-# Deploy and manage apps
-bioengine apps deploy ./my-app/ [--app-id ID] [--hypha-token $HYPHA_TOKEN]  # upload + deploy
-bioengine apps upload ./my-app/                      # upload only
-bioengine apps run <workspace/app-id> [--app-id ID] [--hypha-token $HYPHA_TOKEN]  # deploy from artifact
-bioengine apps list                                  # list artifacts
-bioengine apps status [APP_ID...] [--logs N]         # running app status
-bioengine apps logs <app-id> [--tail N]              # view logs
-bioengine apps stop <app-id> [-y]                    # stop app
-
-# Cluster resources
-bioengine cluster status [--json]                    # GPU/CPU availability
+bioengine call <svc-id> --list-methods                          # discover methods
+bioengine call <svc-id> <method> --args '{"k": "v"}' --json    # call with args
+bioengine apps deploy ./my-app/ [--app-id ID] [--hypha-token $HYPHA_TOKEN]
+bioengine apps upload ./my-app/
+bioengine apps run <ws/app-id> [--app-id ID]
+bioengine apps status [APP_ID] [--logs N]
+bioengine apps stop <app-id> [-y]
+bioengine cluster status [--json]
 ```
 
-All commands accept `--json` for machine-readable output and respect `HYPHA_TOKEN`, `BIOENGINE_WORKER_SERVICE_ID`, `BIOENGINE_SERVER_URL` env vars.
-
----
-
-## Deployment rules summary
-
-| Rule | Detail |
-|---|---|
-| Freeze pip versions early | Changing any package = full env rebuild (5–15 min) |
-| Import third-party inside methods | Top-level imports break Ray serialization |
-| Use `logger`, not `print` | `logger = logging.getLogger("ray.serve")` |
-| `num_gpus: 1` for GPU, never fractional | Fractional allows VRAM sharing → OOM |
-| Entry deployment: `num_cpus: 0, num_gpus: 0` | Orchestrators just route; no compute needed |
-| Save before deploy | Always call `save_application` (via CLI or API) first |
-| Pass `hypha_token` when deploying | Apps that call Hypha internally need this. Use `--hypha-token $HYPHA_TOKEN` (CLI) or `hypha_token=token` (Python). `--env HYPHA_TOKEN=...` is silently ignored. |
-| `@schema_method` on public API | Non-decorated methods are internal only |
-| Match manifest filename to param name | `runtime_a:RuntimeA` → `def __init__(self, runtime_a: DeploymentHandle)` |
-| No mutable defaults in `Field()` | Use `None`, assign default inside method |
+All commands respect `HYPHA_TOKEN`, `BIOENGINE_WORKER_SERVICE_ID`, `BIOENGINE_SERVER_URL` env vars.
 
 ---
 
@@ -388,33 +177,34 @@ All commands accept `--json` for machine-readable output and respect `HYPHA_TOKE
 
 | Problem | Fix |
 |---|---|
-| `ModuleNotFoundError` at import | Add to `runtime_env.pip`, import inside method |
-| numpy array returned over RPC | Call `.tolist()` on all arrays before returning |
-| Long cold start on first request | Set `min_replicas: 1`, preload model in `async_init()` |
-| Blocking inference stalls event loop | Wrap with `asyncio.get_event_loop().run_in_executor(None, fn)` |
-| `AttributeError` deserializing exception | Re-raise third-party exceptions as plain `RuntimeError` at RPC boundary |
-| `Multiple services found` error | Use `connect_service()` from bioengine_cli.utils (handles multi-replica) |
-| Deployment UNHEALTHY — `HYPHA_TOKEN` not set | App needs to connect to Hypha internally but token was not injected. Use `--hypha-token $HYPHA_TOKEN` (CLI) or `hypha_token=token` (Python API). Never use `--env HYPHA_TOKEN=...` — it is silently ignored. |
-| App status says `UNHEALTHY`, deployment message mentions missing env var | Check `bioengine apps status <app-id> --logs 50` to read the deployment error. The most common cause is a missing `HYPHA_TOKEN`; fix with `--hypha-token`. |
+| `ModuleNotFoundError` at import | Add to `runtime_env.pip`; import inside method |
+| numpy array over RPC error | Call `.tolist()` before returning |
+| Long cold start on first request | `min_replicas: 1`; preload model in `async_init()` |
+| Blocking inference stalls event loop | `await asyncio.get_event_loop().run_in_executor(None, fn)` |
+| `Multiple services found` error | Use `connect_service()` from `bioengine_cli.utils` |
+| App UNHEALTHY — `HYPHA_TOKEN` missing | Use `--hypha-token $HYPHA_TOKEN`, not `--env HYPHA_TOKEN=...` |
+| Composition param name mismatch | `runtime_a:RuntimeA` must match `__init__` param name `runtime_a` |
+| `Field()` mutable default crash | Use `Field(None)`, assign default inside method |
 
 ---
 
 ## References
 
-- **App code templates**: [references/app_templates.md](references/app_templates.md) — simple app, composition app, frontend UI
-- **Model serving patterns**: [references/model_serving.md](references/model_serving.md) — multiplexing, HuggingFace/Zenodo/BioImage.IO integration, auto-scaling, fine-tuning
-- **Full manifest fields**: [references/manifest_reference.md](references/manifest_reference.md)
-- **Full CLI reference**: [references/cli_reference.md](references/cli_reference.md)
-- **Example apps**: [`bioengine_apps/demo-app/`](https://github.com/aicell-lab/bioengine-worker/tree/main/bioengine_apps/demo-app), [`bioengine_apps/model-runner/`](https://github.com/aicell-lab/bioengine-worker/tree/main/bioengine_apps/model-runner)
+| What | File |
+|---|---|
+| App code templates (simple, composition, frontend) | [references/app_templates.md](references/app_templates.md) |
+| Model serving patterns (multiplexing, HuggingFace, auto-scaling) | [references/model_serving.md](references/model_serving.md) |
+| Full manifest fields | [references/manifest_reference.md](references/manifest_reference.md) |
+| Full CLI reference | [references/cli_reference.md](references/cli_reference.md) |
 
 ---
 
-## BioEngine app skills
+## App-specific subskills
 
-Load these autonomously when the user's task involves a specific deployed service:
+Load these when the user's task involves a specific deployed service:
 
-| Skill file | When to load |
-|---|---|
-| [`../bioengine-model-runner/SKILL.md`](../bioengine-model-runner/SKILL.md) | Search, infer, validate, or compare BioImage.IO models |
-| [`../bioengine-cellpose-finetuning/SKILL.md`](../bioengine-cellpose-finetuning/SKILL.md) | Fine-tune Cellpose on custom annotated microscopy images |
-| [`../bioengine-cell-image-search/SKILL.md`](../bioengine-cell-image-search/SKILL.md) | Search 58M+ cells by morphological similarity, index JUMP Cell Painting data |
+| Service | Subskill | When to load |
+|---|---|---|
+| Model Runner | [apps/model-runner/model-runner.md](apps/model-runner/model-runner.md) | Search, infer, validate, or compare BioImage.IO models |
+| Cellpose Fine-Tuning | [apps/cellpose-finetuning.md](apps/cellpose-finetuning.md) | Fine-tune Cellpose on custom annotated microscopy images |
+| Cell Image Search | [apps/cell-image-search.md](apps/cell-image-search.md) | Search 58M+ cells by morphological similarity |

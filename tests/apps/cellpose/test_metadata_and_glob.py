@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import sys
 from pathlib import Path
 
-from bioengine_apps.cellpose_finetuning.main import (
-    list_matching_artifact_paths,
-    make_training_pairs_from_metadata,
-    match_image_annotation_pairs,
-)
+# apps/cellpose-finetuning uses a hyphen so it can't be imported directly
+_main_path = Path(__file__).parents[3] / "apps" / "cellpose-finetuning" / "main.py"
+_spec = importlib.util.spec_from_file_location("cellpose_finetuning_main", _main_path)
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+list_matching_artifact_paths = _mod.list_matching_artifact_paths
+make_training_pairs_from_metadata = _mod.make_training_pairs_from_metadata
+match_image_annotation_pairs = _mod.match_image_annotation_pairs
 
 
 def test_match_image_annotation_pairs_with_nested_globs() -> None:

@@ -155,6 +155,12 @@ export BIOENGINE_LOCAL_ARTIFACT_PATH=/path/to/bioengine-worker/tests
 pytest tests/end_to_end/ -v
 ```
 
+### Test Organization
+
+- `tests/end_to_end/` — Integration tests for the core worker (applications manager, datasets, code executor)
+- `tests/apps/` — Tests for individual BioEngine apps; one subfolder per app (e.g. `tests/apps/cellpose/`)
+- `tests/apps/<app-name>/` — **All tests specific to a BioEngine app must go here**, not in `tests/end_to_end/`
+
 ---
 
 ## Code Conventions

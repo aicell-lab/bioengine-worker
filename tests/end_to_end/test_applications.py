@@ -101,7 +101,7 @@ async def test_create_and_delete_artifacts(
         pytest.fail("Composition app manifest missing 'id' field")
 
     # Verify the artifact IDs do not already exist
-    existing_artifacts = await bioengine_worker_service.list_applications()
+    existing_artifacts = await bioengine_worker_service.list_apps()
     assert (
         demo_artifact_id not in existing_artifacts
     ), f"Demo artifact ID {demo_artifact_id} already exists"
@@ -112,7 +112,7 @@ async def test_create_and_delete_artifacts(
     test_completed = False
     try:
         # Create demo-app artifact
-        created_demo_artifact_id = await bioengine_worker_service.save_application(
+        created_demo_artifact_id = await bioengine_worker_service.upload_app(
             files=demo_app_files
         )
 
@@ -127,7 +127,7 @@ async def test_create_and_delete_artifacts(
 
         # Create composition-app artifact
         created_composition_artifact_id = (
-            await bioengine_worker_service.save_application(
+            await bioengine_worker_service.upload_app(
                 files=composition_app_files
             )
         )
@@ -144,7 +144,7 @@ async def test_create_and_delete_artifacts(
         ), "Created composition artifact ID should match manifest ID and workspace"
 
         # Verify artifacts exist
-        available_artifacts = await bioengine_worker_service.list_applications()
+        available_artifacts = await bioengine_worker_service.list_apps()
         assert (
             demo_artifact_id in available_artifacts
         ), "Demo artifact should be listed in available artifacts"
@@ -153,7 +153,7 @@ async def test_create_and_delete_artifacts(
         ), "Composition artifact should be listed in available artifacts"
 
         # Update demo-app artifact
-        updated_demo_artifact_id = await bioengine_worker_service.save_application(
+        updated_demo_artifact_id = await bioengine_worker_service.upload_app(
             files=demo_app_files
         )
         assert (
@@ -162,7 +162,7 @@ async def test_create_and_delete_artifacts(
 
         # Update composition-app artifact
         updated_composition_artifact_id = (
-            await bioengine_worker_service.save_application(
+            await bioengine_worker_service.upload_app(
                 files=composition_app_files
             )
         )
@@ -171,7 +171,7 @@ async def test_create_and_delete_artifacts(
         ), "Updated composition artifact ID should match original"
 
         # Verify updated artifacts still exist
-        available_artifacts = await bioengine_worker_service.list_applications()
+        available_artifacts = await bioengine_worker_service.list_apps()
         assert (
             demo_artifact_id in available_artifacts
         ), "Demo artifact should be listed in available artifacts"
@@ -218,14 +218,14 @@ async def test_create_and_delete_artifacts(
         ), "Composition app manifest should be in applications collection"
 
         # Delete both artifacts
-        await bioengine_worker_service.delete_application(artifact_id=demo_artifact_id)
+        await bioengine_worker_service.delete_app(artifact_id=demo_artifact_id)
 
-        await bioengine_worker_service.delete_application(
+        await bioengine_worker_service.delete_app(
             artifact_id=composition_artifact_id
         )
 
         # Verify artifacts no longer exist
-        available_artifacts = await bioengine_worker_service.list_applications()
+        available_artifacts = await bioengine_worker_service.list_apps()
         assert (
             demo_artifact_id not in available_artifacts
         ), "Demo artifact should be removed from available artifacts"
@@ -240,7 +240,7 @@ async def test_create_and_delete_artifacts(
         cleanup_errors = []
         if demo_artifact_id and not test_completed:
             try:
-                await bioengine_worker_service.delete_application(
+                await bioengine_worker_service.delete_app(
                     artifact_id=demo_artifact_id
                 )
             except Exception as e:
@@ -250,7 +250,7 @@ async def test_create_and_delete_artifacts(
 
         if composition_artifact_id and not test_completed:
             try:
-                await bioengine_worker_service.delete_application(
+                await bioengine_worker_service.delete_app(
                     artifact_id=composition_artifact_id
                 )
             except Exception as e:
@@ -274,7 +274,7 @@ async def test_startup_application(
     Test that all startup applications are properly deployed.
 
     This test validates the AppsManager status reporting and startup application deployment:
-    1. Retrieves application status using get_application_status
+    1. Retrieves application status using get_app_status
     2. Validates application status structure and content
     3. Checks that startup applications are properly deployed and healthy
     4. Verifies application metadata, resource allocation, and service registration
@@ -296,7 +296,7 @@ async def test_startup_application(
     ), "No startup applications configured for this test. Please define at least one in the fixture."
 
     # Get application status (returns all deployed applications when application_ids is None)
-    apps_status = await bioengine_worker_service.get_application_status()
+    apps_status = await bioengine_worker_service.get_app_status()
 
     # Validate apps_status is properly structured
     assert isinstance(apps_status, dict), "Application status should be a dictionary"
@@ -604,7 +604,7 @@ async def test_startup_application(
 
 @pytest.mark.end_to_end
 @pytest.mark.asyncio
-async def test_run_application_locally(
+async def test_deploy_app_locally(
     monkeypatch: pytest.MonkeyPatch,
     tests_dir: Path,
     hypha_workspace: str,
@@ -645,7 +645,7 @@ async def test_run_application_locally(
     try:
         for app_config in app_configs:
             # Deploy the application
-            application_id = await bioengine_worker_service.run_application(
+            application_id = await bioengine_worker_service.deploy_app(
                 **app_config
             )
             deployed_app_ids.append(application_id)
@@ -657,7 +657,7 @@ async def test_run_application_locally(
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            bioengine_apps = await bioengine_worker_service.get_application_status(
+            bioengine_apps = await bioengine_worker_service.get_app_status(
                 application_ids=deployed_app_ids
             )
 
@@ -683,7 +683,7 @@ async def test_run_application_locally(
             )
 
         # Check that both apps are healthy and have running replicas
-        bioengine_apps = await bioengine_worker_service.get_application_status(
+        bioengine_apps = await bioengine_worker_service.get_app_status(
             application_ids=deployed_app_ids
         )
 
@@ -723,7 +723,7 @@ async def test_run_application_locally(
         # Cleanup: Ensure applications are undeployed (even if test fails)
         for app_id in deployed_app_ids:
             try:
-                await bioengine_worker_service.stop_application(
+                await bioengine_worker_service.stop_app(
                     application_id=app_id
                 )
                 print(f"Undeployed application: {app_id}")
@@ -733,7 +733,7 @@ async def test_run_application_locally(
 
 @pytest.mark.end_to_end
 @pytest.mark.asyncio
-async def test_run_application_from_artifact(
+async def test_deploy_app_from_artifact(
     monkeypatch: pytest.MonkeyPatch,
     tests_dir: Path,
     bioengine_apps_dir: Path,
@@ -805,7 +805,7 @@ async def test_run_application_from_artifact(
             ), f"Artifact ID mismatch: expected {artifact_id}, got {created_artifact_id}"
 
             # Create the artifact
-            result_artifact_id = await bioengine_worker_service.save_application(
+            result_artifact_id = await bioengine_worker_service.upload_app(
                 files=files
             )
             assert (
@@ -814,7 +814,7 @@ async def test_run_application_from_artifact(
             print(f"Created artifact: {artifact_id}")
 
         # Verify artifacts exist
-        available_artifacts = await bioengine_worker_service.list_applications()
+        available_artifacts = await bioengine_worker_service.list_apps()
         for artifact_id in artifact_ids:
             assert (
                 artifact_id in available_artifacts
@@ -822,7 +822,7 @@ async def test_run_application_from_artifact(
 
         # Deploy applications from artifacts
         for app_config in app_configs:
-            application_id = await bioengine_worker_service.run_application(
+            application_id = await bioengine_worker_service.deploy_app(
                 **app_config
             )
             deployed_app_ids.append(application_id)
@@ -834,7 +834,7 @@ async def test_run_application_from_artifact(
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            bioengine_apps = await bioengine_worker_service.get_application_status(
+            bioengine_apps = await bioengine_worker_service.get_app_status(
                 application_ids=deployed_app_ids
             )
 
@@ -860,7 +860,7 @@ async def test_run_application_from_artifact(
             )
 
         # Check that both apps are healthy and have running replicas
-        bioengine_apps = await bioengine_worker_service.get_application_status(
+        bioengine_apps = await bioengine_worker_service.get_app_status(
             application_ids=deployed_app_ids
         )
 
@@ -900,7 +900,7 @@ async def test_run_application_from_artifact(
         # Cleanup: Delete all created artifacts (even if test fails)
         for artifact_id in artifact_ids:
             try:
-                await bioengine_worker_service.delete_application(
+                await bioengine_worker_service.delete_app(
                     artifact_id=artifact_id
                 )
                 print(f"Deleted artifact: {artifact_id}")
@@ -910,7 +910,7 @@ async def test_run_application_from_artifact(
         # Cleanup: Ensure applications are undeployed (even if test fails)
         for app_id in deployed_app_ids:
             try:
-                await bioengine_worker_service.stop_application(
+                await bioengine_worker_service.stop_app(
                     application_id=app_id
                 )
                 print(f"Undeployed application: {app_id}")
@@ -938,10 +938,10 @@ async def test_call_demo_app_functions(
     monkeypatch.setenv("BIOENGINE_LOCAL_ARTIFACT_PATH", str(tests_dir))
     assert os.getenv("BIOENGINE_LOCAL_ARTIFACT_PATH") == str(tests_dir)
 
-    # Deploy the demo-app with apps_manager.run_application from local path
+    # Deploy the demo-app with apps_manager.deploy_app from local path
     demo_artifact_id = f"{hypha_workspace}/demo-app"
 
-    app_id = await bioengine_worker_service.run_application(
+    app_id = await bioengine_worker_service.deploy_app(
         artifact_id=demo_artifact_id, disable_gpu=True
     )
 
@@ -952,7 +952,7 @@ async def test_call_demo_app_functions(
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            app_status_result = await bioengine_worker_service.get_application_status(
+            app_status_result = await bioengine_worker_service.get_app_status(
                 application_ids=[app_id]
             )
 
@@ -969,7 +969,7 @@ async def test_call_demo_app_functions(
             pytest.fail("Demo app deployment timed out")
 
         # Get the service ID from the application status
-        app_status_result = await bioengine_worker_service.get_application_status(
+        app_status_result = await bioengine_worker_service.get_app_status(
             application_ids=[app_id]
         )
         app_status = app_status_result[app_id]
@@ -1054,7 +1054,7 @@ async def test_call_demo_app_functions(
     finally:
         # Cleanup: Ensure applications are undeployed (even if test fails)
         try:
-            await bioengine_worker_service.stop_application(application_id=app_id)
+            await bioengine_worker_service.stop_app(application_id=app_id)
             print(f"Undeployed application: {app_id}")
         except Exception as e:
             warnings.warn(f"Failed to undeploy application {app_id}: {e}")
@@ -1080,7 +1080,7 @@ async def test_call_composition_app_functions(
     monkeypatch.setenv("BIOENGINE_LOCAL_ARTIFACT_PATH", str(tests_dir))
     assert os.getenv("BIOENGINE_LOCAL_ARTIFACT_PATH") == str(tests_dir)
 
-    # Deploy the composition-app with apps_manager.run_application from local path
+    # Deploy the composition-app with apps_manager.deploy_app from local path
     composition_app_config = {
         "artifact_id": f"{hypha_workspace}/composition_app",
         "application_kwargs": {
@@ -1090,7 +1090,7 @@ async def test_call_composition_app_functions(
         "disable_gpu": True,
     }
 
-    app_id = await bioengine_worker_service.run_application(**composition_app_config)
+    app_id = await bioengine_worker_service.deploy_app(**composition_app_config)
 
     try:
         # Wait for deployment to complete
@@ -1099,7 +1099,7 @@ async def test_call_composition_app_functions(
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            app_status_result = await bioengine_worker_service.get_application_status(
+            app_status_result = await bioengine_worker_service.get_app_status(
                 application_ids=[app_id]
             )
 
@@ -1116,7 +1116,7 @@ async def test_call_composition_app_functions(
             pytest.fail("Composition app deployment timed out")
 
         # Get the service ID from the application status
-        app_status_result = await bioengine_worker_service.get_application_status(
+        app_status_result = await bioengine_worker_service.get_app_status(
             application_ids=[app_id]
         )
         app_status = app_status_result[app_id]
@@ -1220,7 +1220,7 @@ async def test_call_composition_app_functions(
     finally:
         # Cleanup: Ensure applications are undeployed (even if test fails)
         try:
-            await bioengine_worker_service.stop_application(application_id=app_id)
+            await bioengine_worker_service.stop_app(application_id=app_id)
             print(f"Undeployed application: {app_id}")
         except Exception as e:
             warnings.warn(f"Failed to undeploy application {app_id}: {e}")

@@ -12,7 +12,7 @@ from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 
 from bioengine import __version__
-from bioengine.ray import RayCluster
+from bioengine.cluster import RayCluster
 from bioengine.utils import check_permissions, create_logger
 
 
@@ -60,7 +60,7 @@ def ray_task(func, args, kwargs):
         ```
 
     Note:
-        This is an internal Ray task function used by CodeExecutor.execute_python_code().
+        This is an internal Ray task function used by CodeExecutor.run_code().
         Users don't call this directly - it's invoked automatically by the Ray runtime.
     """
     import asyncio
@@ -135,7 +135,7 @@ class CodeExecutor:
         await executor.initialize(admin_users=["admin@company.com"])
 
         # Execute some data analysis code
-        result = await executor.execute_python_code(
+        result = await executor.run_code(
             code=\"\"\"
             def analyze_sales(data):
                 total = sum(data)
@@ -251,7 +251,7 @@ class CodeExecutor:
             ```
 
         Note:
-            This is an internal method used by execute_python_code() when processing
+            This is an internal method used by run_code() when processing
             source code mode execution.
         """
         exec_namespace = {}
@@ -295,13 +295,13 @@ class CodeExecutor:
             ```
 
         Note:
-            This method must be called before any execute_python_code() attempts,
+            This method must be called before any run_code() attempts,
             otherwise all execution requests will be rejected with PermissionError.
         """
         self.admin_users = admin_users
 
     @schema_method(arbitrary_types_allowed=True)
-    async def execute_python_code(
+    async def run_code(
         self,
         code: Optional[str] = Field(
             None,
@@ -398,14 +398,14 @@ class CodeExecutor:
 
         EXAMPLES:
         Basic source execution:
-        await execute_python_code(
+        await run_code(
             code="def analyze(data): return sum(data)",
             function_name="analyze",
             args=[[1,2,3,4,5]]
         )
 
         Resource-constrained execution:
-        await execute_python_code(
+        await run_code(
             code="def process_large_dataset(data): return expensive_computation(data)",
             function_name="process_large_dataset",
             args=[large_dataset],
@@ -414,7 +414,7 @@ class CodeExecutor:
 
         Pre-serialized function execution:
         func_bytes = cloudpickle.dumps(my_complex_function)
-        await execute_python_code(
+        await run_code(
             mode="pickle",
             func_bytes=func_bytes,
             args=[arg1, arg2],

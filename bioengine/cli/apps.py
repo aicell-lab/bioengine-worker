@@ -8,8 +8,8 @@ and a Hypha authentication token. These can be set via CLI flags or environment 
 
 API signatures verified against:
   bioengine-worker/bioengine/worker/worker.py
-  bioengine-worker/bioengine/applications/apps_manager.py
-  bioengine-worker/scripts/save_application.py
+  bioengine-worker/bioengine/apps/manager.py
+  bioengine-worker/scripts/upload_app.py
 """
 from __future__ import annotations
 
@@ -178,7 +178,7 @@ def upload(app_dir, public, worker_service_id, token, server_url):
 
         try:
             worker = await connect_worker(server_url, worker_service_id, token)
-            artifact_id = await worker.save_application(files=files)
+            artifact_id = await worker.upload_app(files=files)
         except Exception as exc:
             error_exit(f"Upload failed: {exc}")
 
@@ -290,7 +290,7 @@ def run_app(artifact_id, application_id, version, disable_gpu, env_vars, hypha_t
             if parsed_env:
                 run_kwargs["application_env_vars"] = {"*": parsed_env}
 
-            deployed_id = await worker.run_application(**run_kwargs)
+            deployed_id = await worker.deploy_app(**run_kwargs)
         except Exception as exc:
             error_exit(f"Deployment failed: {exc}")
 
@@ -324,7 +324,7 @@ def list_apps(as_json, worker_service_id, token, server_url):
     async def _run():
         try:
             worker = await connect_worker(server_url, worker_service_id, token)
-            result = await worker.list_applications()
+            result = await worker.list_apps()
         except Exception as exc:
             error_exit(f"Failed to list applications: {exc}")
 
@@ -385,7 +385,7 @@ def status(app_ids, logs_tail, as_json, worker_service_id, token, server_url):
         try:
             worker = await connect_worker(server_url, worker_service_id, token)
             ids = list(app_ids) if app_ids else None
-            result = await worker.get_application_status(
+            result = await worker.get_app_status(
                 application_ids=ids,
                 logs_tail=logs_tail,
             )
@@ -471,7 +471,7 @@ def logs(app_id, tail, as_json, worker_service_id, token, server_url):
     async def _run():
         try:
             worker = await connect_worker(server_url, worker_service_id, token)
-            result = await worker.get_application_status(
+            result = await worker.get_app_status(
                 application_ids=[app_id],
                 logs_tail=tail,
             )
@@ -542,7 +542,7 @@ def stop(app_id, yes, worker_service_id, token, server_url):
     async def _run():
         try:
             worker = await connect_worker(server_url, worker_service_id, token)
-            await worker.stop_application(application_id=app_id)
+            await worker.stop_app(application_id=app_id)
         except Exception as exc:
             error_exit(f"Failed to stop application '{app_id}': {exc}")
 
@@ -648,7 +648,7 @@ def deploy(app_dir, application_id, disable_gpu, env_vars, hypha_token, worker_s
         click.echo(f"Uploading {len(files)} file(s) from '{app_path.name}'...")
         try:
             worker = await connect_worker(server_url, worker_service_id, token)
-            artifact_id = await worker.save_application(files=files)
+            artifact_id = await worker.upload_app(files=files)
         except Exception as exc:
             error_exit(f"Upload failed: {exc}")
 
@@ -667,7 +667,7 @@ def deploy(app_dir, application_id, disable_gpu, env_vars, hypha_token, worker_s
             run_kwargs["application_env_vars"] = {"*": parsed_env}
 
         try:
-            deployed_id = await worker.run_application(**run_kwargs)
+            deployed_id = await worker.deploy_app(**run_kwargs)
         except Exception as exc:
             error_exit(f"Deployment failed (artifact was uploaded): {exc}")
 

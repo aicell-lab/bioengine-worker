@@ -1,7 +1,7 @@
 """
 Targeted test for artifact version commit behaviour.
 
-Verifies that save_application commits the artifact under the version
+Verifies that upload_app commits the artifact under the version
 declared in manifest.yaml instead of always defaulting to "latest".
 
 Three cases are tested:
@@ -93,8 +93,8 @@ async def artifact_manager(hypha_client):
 # ── tests ───────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_save_application_commits_manifest_version(worker, artifact_manager):
-    """save_application must commit the artifact under the version in manifest.yaml."""
+async def test_upload_app_commits_manifest_version(worker, artifact_manager):
+    """upload_app must commit the artifact under the version in manifest.yaml."""
     artifact_alias = "version-test-app-pytest"
     artifact_id = f"bioimage-io/{artifact_alias}"
     test_version = "2.3.4"
@@ -105,7 +105,7 @@ async def test_save_application_commits_manifest_version(worker, artifact_manage
         pass
 
     try:
-        saved_id = await worker.save_application(files=_make_files(artifact_alias, test_version))
+        saved_id = await worker.upload_app(files=_make_files(artifact_alias, test_version))
         assert saved_id == artifact_id, f"Unexpected artifact ID: {saved_id}"
 
         # The artifact must be retrievable by its version tag
@@ -123,7 +123,7 @@ async def test_save_application_commits_manifest_version(worker, artifact_manage
 
 
 @pytest.mark.asyncio
-async def test_save_application_new_version_creates_isolated_snapshot(worker, artifact_manager):
+async def test_upload_app_new_version_creates_isolated_snapshot(worker, artifact_manager):
     """Bumping the version in manifest.yaml creates a new isolated snapshot.
 
     After saving v1 and then v2, both version tags must be independently
@@ -139,12 +139,12 @@ async def test_save_application_new_version_creates_isolated_snapshot(worker, ar
         pass
 
     try:
-        await worker.save_application(files=_make_files(artifact_alias, v1))
+        await worker.upload_app(files=_make_files(artifact_alias, v1))
         a1 = await artifact_manager.read(artifact_id=artifact_id, version=v1)
         assert a1 is not None, f"Artifact not found at version {v1}"
         assert a1.manifest.get("version") == v1
 
-        await worker.save_application(files=_make_files(artifact_alias, v2))
+        await worker.upload_app(files=_make_files(artifact_alias, v2))
         a2 = await artifact_manager.read(artifact_id=artifact_id, version=v2)
         assert a2 is not None, f"Artifact not found at version {v2}"
         assert a2.manifest.get("version") == v2
@@ -163,7 +163,7 @@ async def test_save_application_new_version_creates_isolated_snapshot(worker, ar
 
 
 @pytest.mark.asyncio
-async def test_save_application_resave_latest_version_updates_inplace(worker, artifact_manager):
+async def test_upload_app_resave_latest_version_updates_inplace(worker, artifact_manager):
     """Re-saving the same (latest) version updates the artifact in place.
 
     No new version tag is created; the existing version tag reflects the
@@ -179,9 +179,9 @@ async def test_save_application_resave_latest_version_updates_inplace(worker, ar
         pass
 
     try:
-        await worker.save_application(files=_make_files(artifact_alias, version))
+        await worker.upload_app(files=_make_files(artifact_alias, version))
         # Re-saving the same version must not raise
-        await worker.save_application(files=_make_files(artifact_alias, version))
+        await worker.upload_app(files=_make_files(artifact_alias, version))
 
         artifact = await artifact_manager.read(artifact_id=artifact_id, version=version)
         assert artifact is not None
@@ -194,7 +194,7 @@ async def test_save_application_resave_latest_version_updates_inplace(worker, ar
 
 
 @pytest.mark.asyncio
-async def test_save_application_resave_older_version_raises(worker, artifact_manager):
+async def test_upload_app_resave_older_version_raises(worker, artifact_manager):
     """Re-saving an older (non-latest) version must raise a ValueError.
 
     Once a newer version exists, trying to overwrite an older version is
@@ -210,12 +210,12 @@ async def test_save_application_resave_older_version_raises(worker, artifact_man
         pass
 
     try:
-        await worker.save_application(files=_make_files(artifact_alias, v1))
-        await worker.save_application(files=_make_files(artifact_alias, v2))
+        await worker.upload_app(files=_make_files(artifact_alias, v1))
+        await worker.upload_app(files=_make_files(artifact_alias, v2))
 
         # Attempting to re-save v1 when v2 is the latest must raise
         with pytest.raises(Exception, match=r"[Cc]annot re-save|newer version|already exists"):
-            await worker.save_application(files=_make_files(artifact_alias, v1))
+            await worker.upload_app(files=_make_files(artifact_alias, v1))
     finally:
         try:
             await artifact_manager.delete(artifact_id)

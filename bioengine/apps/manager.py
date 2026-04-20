@@ -13,8 +13,8 @@ from ray import serve
 from ray.serve.schema import ApplicationDetails, ServeStatus
 
 from bioengine import __version__
-from bioengine.applications.app_builder import AppBuilder
-from bioengine.ray import RayCluster
+from bioengine.apps.builder import AppBuilder
+from bioengine.cluster import RayCluster
 from bioengine.utils import (
     check_permissions,
     create_application_from_files,
@@ -375,7 +375,7 @@ class AppsManager:
         resource management regardless of how the deployment ends.
 
         Note:
-            Application building and resource validation are now done in run_application()
+            Application building and resource validation are now done in deploy_app()
             before this task is created, providing immediate user feedback for errors.
             The built app is stored in _deployed_applications["built_app"] to avoid duplicate builds.
 
@@ -398,7 +398,7 @@ class AppsManager:
             version = self._deployed_applications[application_id]["version"]
 
             # Use the pre-built app from _deployed_applications
-            # This was built and validated in run_application() before this task was created
+            # This was built and validated in deploy_app() before this task was created
             app = self._deployed_applications[application_id]["built_app"]
 
             # Run the deployment in Ray Serve with unique route prefix
@@ -632,7 +632,7 @@ class AppsManager:
         replica_ids = (
             await self.ray_cluster.proxy_actor_handle.get_deployment_replicas.remote(
                 application_id=application_id,
-                deployment_name="BioEngineProxyDeployment",
+                deployment_name="ProxyDeployment",
             )
         )
         if replica_ids:
@@ -654,7 +654,7 @@ class AppsManager:
             ]
         return service_ids
 
-    async def _get_application_status(
+    async def _get_app_status(
         self,
         application_id: str,
         serve_status: ServeStatus,
@@ -672,7 +672,7 @@ class AppsManager:
             return {
                 "status": "NOT_RUNNING",
                 "message": f"Application '{application_id}' is not currently deployed. "
-                f"To deploy this application, call run_application(application_id='{application_id}', ...) "
+                f"To deploy this application, call deploy_app(application_id='{application_id}', ...) "
                 f"with the appropriate artifact_id and parameters.",
             }
 
@@ -822,7 +822,7 @@ class AppsManager:
             if application_id in self._deployed_applications:
                 continue
 
-            if "BioEngineProxyDeployment" not in application.deployments:
+            if "ProxyDeployment" not in application.deployments:
                 continue
 
             try:
@@ -920,9 +920,9 @@ class AppsManager:
             application_ids = []
 
             # Get valid startup config keys
-            run_application_schema = self.run_application.__schema__
+            deploy_app_schema = self.deploy_app.__schema__
 
-            parameters = run_application_schema["parameters"]["properties"]
+            parameters = deploy_app_schema["parameters"]["properties"]
 
             valid_keys = set(parameters.keys()) - {"context"}
 
@@ -950,14 +950,14 @@ class AppsManager:
 
                 admin_context = create_context(self.admin_users[0])
 
-                run_application_kwargs = {
+                deploy_app_kwargs = {
                     key: value
                     for key, value in app_config.items()
                     if key in valid_keys
                 }
-                run_application_kwargs["context"] = admin_context
+                deploy_app_kwargs["context"] = admin_context
 
-                application_id = await self.run_application(**run_application_kwargs)
+                application_id = await self.deploy_app(**deploy_app_kwargs)
                 application_ids.append(application_id)
 
     async def monitor_applications(self) -> None:
@@ -1031,7 +1031,7 @@ class AppsManager:
             raise e
 
     @schema_method
-    async def save_application(
+    async def upload_app(
         self,
         files: List[dict] = Field(
             ...,
@@ -1047,7 +1047,7 @@ class AppsManager:
 
         This method allows you to upload a complete BioEngine application package including
         all necessary files, code, and configuration. The application can then be deployed
-        to Ray Serve using the run_application method.
+        to Ray Serve using the deploy_app method.
 
         Application Structure:
         - manifest.yaml: Required configuration file defining the application metadata,
@@ -1091,7 +1091,7 @@ class AppsManager:
             raise RuntimeError(f"Failed to create/update artifact: {e}")
 
         # Verify the artifact is in the collection
-        available_artifacts = await self.list_applications(context=context)
+        available_artifacts = await self.list_apps(context=context)
         if created_artifact_id not in available_artifacts:
             raise ValueError(
                 f"Artifact '{created_artifact_id}' could not be created or is not in the collection."
@@ -1104,7 +1104,7 @@ class AppsManager:
         return created_artifact_id
 
     @schema_method
-    async def list_applications(
+    async def list_apps(
         self,
         context: Dict[str, Any] = Field(
             ...,
@@ -1154,7 +1154,7 @@ class AppsManager:
         return bioengine_apps
 
     @schema_method
-    async def get_application_manifest(
+    async def get_app_manifest(
         self,
         artifact_id: str = Field(
             ...,
@@ -1205,7 +1205,7 @@ class AppsManager:
             )
 
     @schema_method
-    async def delete_application(
+    async def delete_app(
         self,
         artifact_id: str = Field(
             ...,
@@ -1258,7 +1258,7 @@ class AppsManager:
         await self.artifact_manager.delete(artifact_id)
 
         # Verify deletion
-        available_artifacts = await self.list_applications(context=context)
+        available_artifacts = await self.list_apps(context=context)
         if artifact_id in available_artifacts:
             raise ValueError(
                 f"Artifact '{artifact_id}' could not be deleted. It still exists in the collection."
@@ -1267,7 +1267,7 @@ class AppsManager:
         self.logger.info(f"Successfully deleted artifact '{artifact_id}'.")
 
     @schema_method
-    async def run_application(
+    async def deploy_app(
         self,
         artifact_id: str = Field(
             ...,
@@ -1350,7 +1350,7 @@ class AppsManager:
         5. Redeploys with new configuration
 
         The deployment runs asynchronously - this method returns immediately after starting
-        the deployment process. Use get_application_status() to monitor deployment progress and health.
+        the deployment process. Use get_app_status() to monitor deployment progress and health.
 
         Resource Management:
         - Automatically scales Ray cluster if needed (SLURM mode)
@@ -1534,7 +1534,7 @@ class AppsManager:
             )
 
             # Derive static site URL from the manifest's frontend_entry field.
-            # If frontend_entry is set, view_config was configured during save_application.
+            # If frontend_entry is set, view_config was configured during upload_app.
             static_site_url = None
             if app.metadata.get("frontend_entry"):
                 static_site_url = get_static_site_url(
@@ -1580,11 +1580,11 @@ class AppsManager:
             return application_id
 
     @schema_method
-    async def stop_application(
+    async def stop_app(
         self,
         application_id: str = Field(
             ...,
-            description="Unique identifier of the deployed application to remove. This is the application ID that was returned when the application was deployed using run_application().",
+            description="Unique identifier of the deployed application to remove. This is the application ID that was returned when the application was deployed using deploy_app().",
         ),
         context: Dict[str, Any] = Field(
             ...,
@@ -1653,7 +1653,7 @@ class AppsManager:
         ] = undeployment_task
 
     @schema_method
-    async def stop_all_applications(
+    async def stop_all_apps(
         self,
         timeout_seconds: int = Field(
             180,
@@ -1716,7 +1716,7 @@ class AppsManager:
 
         # Cancel all deployment tasks
         for application_id in deployed_application_ids:
-            await self.stop_application(application_id, context)
+            await self.stop_app(application_id, context)
 
         async def undeploy_and_track(application_id: str) -> bool:
             try:
@@ -1750,7 +1750,7 @@ class AppsManager:
             )
 
     @schema_method
-    async def get_application_status(
+    async def get_app_status(
         self,
         application_ids: Optional[List[str]] = Field(
             None,
@@ -1814,15 +1814,15 @@ class AppsManager:
 
         Examples:
             # Get all applications (returns dict of all apps)
-            all_apps = await get_application_status()
+            all_apps = await get_app_status()
             # Returns: {"app1": {...}, "app2": {...}}
 
             # Get multiple specific applications (returns dict)
-            apps = await get_application_status(application_ids=["app1", "app2"])
+            apps = await get_app_status(application_ids=["app1", "app2"])
             # Returns: {"app1": {...}, "app2": {...}}
 
             # Get single application (returns status directly)
-            app = await get_application_status(application_ids=["app1"])
+            app = await get_app_status(application_ids=["app1"])
             # Returns: {...} (single app status, not {"app1": {...}})
         """
         # Determine which applications to check
@@ -1845,7 +1845,7 @@ class AppsManager:
 
         # Iterate over applications to check
         status_tasks = [
-            self._get_application_status(
+            self._get_app_status(
                 application_id=application_id,
                 serve_status=serve_status,
                 n_previous_replica=n_previous_replica,

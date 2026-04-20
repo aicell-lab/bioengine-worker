@@ -23,11 +23,11 @@ BioEngine Worker is a **Kubernetes-based compute engine and AI application deplo
 ┌────────────▼───────────────────────────┐
 │         BioEngineWorker                │  ← bioengine/worker/worker.py
 │  ┌─────────────────────────────────┐   │
-│  │  RayCluster                     │   │  ← bioengine/ray/ray_cluster.py
+│  │  RayCluster                     │   │  ← bioengine/cluster/ray_cluster.py
 │  │  (SLURM / single / external)    │   │
 │  └─────────────────────────────────┘   │
 │  ┌─────────────────────────────────┐   │
-│  │  AppsManager                    │   │  ← bioengine/applications/apps_manager.py
+│  │  AppsManager                    │   │  ← bioengine/apps/manager.py
 │  │  (Ray Serve lifecycle +         │   │
 │  │   artifact management)          │   │
 │  └─────────────────────────────────┘   │
@@ -43,9 +43,9 @@ BioEngine Worker is a **Kubernetes-based compute engine and AI application deplo
 | Component | File | Responsibility |
 |-----------|------|----------------|
 | `BioEngineWorker` | `bioengine/worker/worker.py` | Main orchestrator; Hypha service registration |
-| `AppsManager` | `bioengine/applications/apps_manager.py` | Application lifecycle (deploy/stop/status) |
-| `AppBuilder` | `bioengine/applications/app_builder.py` | Build Ray Serve apps from artifacts |
-| `RayCluster` | `bioengine/ray/ray_cluster.py` | Ray cluster lifecycle (SLURM/local/external) |
+| `AppsManager` | `bioengine/apps/manager.py` | Application lifecycle (deploy/stop/status) |
+| `AppBuilder` | `bioengine/apps/builder.py` | Build Ray Serve apps from artifacts |
+| `RayCluster` | `bioengine/cluster/ray_cluster.py` | Ray cluster lifecycle (SLURM/local/external) |
 | `BioEngineDatasets` | `bioengine/datasets/datasets.py` | Zarr dataset streaming |
 | Artifact utilities | `bioengine/utils/artifact_utils.py` | Hypha artifact CRUD helpers |
 
@@ -86,7 +86,7 @@ tutorial: tutorial.ipynb
 tags: [bioengine, image-analysis]
 ```
 
-When `frontend_entry` is set, BioEngine configures a `view_config` on the Hypha artifact during `save_application` (while the artifact is staged). The `frontend_entry` determines `root_directory` and `index` (e.g., `frontend/index.html` → `root_directory: "frontend"`, `index: "index.html"`). The resulting URL is:
+When `frontend_entry` is set, BioEngine configures a `view_config` on the Hypha artifact during `upload_app` (while the artifact is staged). The `frontend_entry` determines `root_directory` and `index` (e.g., `frontend/index.html` → `root_directory: "frontend"`, `index: "index.html"`). The resulting URL is:
 ```
 https://hypha.aicell.io/{workspace}/view/{artifact-id}/
 ```
@@ -111,14 +111,14 @@ The BioEngine worker registers as a Hypha service. Key methods:
 |--------|:-----:|-------------|
 | `get_status` | | Overall worker status |
 | `check_access` | | Check caller permissions |
-| `list_applications` | ✓ | List deployed applications |
-| `run_application` | ✓ | Deploy an application from artifact |
-| `stop_application` | ✓ | Stop a running application |
-| `get_application_status` | | Status of specific application |
-| `save_application` | ✓ | Create/update application artifact |
-| `get_application_manifest` | ✓ | Get manifest for an application |
-| `delete_application` | ✓ | Delete an application artifact |
-| `execute_python_code` | ✓ | Run Python code in Ray task |
+| `list_apps` | ✓ | List deployed applications |
+| `deploy_app` | ✓ | Deploy an application from artifact |
+| `stop_app` | ✓ | Stop a running application |
+| `get_app_status` | | Status of specific application |
+| `upload_app` | ✓ | Create/update application artifact |
+| `get_app_manifest` | ✓ | Get manifest for an application |
+| `delete_app` | ✓ | Delete an application artifact |
+| `run_code` | ✓ | Run Python code in Ray task |
 | `list_datasets` | | Available datasets |
 
 ---
@@ -175,8 +175,8 @@ pytest tests/end_to_end/ -v
 
 - `bioengine/cli/` — BioEngine CLI (`bioengine` command); entry point is `bioengine.cli.cli:main`
 - `bioengine/utils/artifact_utils.py` — All Hypha artifact CRUD helpers
-- `bioengine/applications/apps_manager.py` — `run_application`, `save_application`, lifecycle
-- `bioengine/applications/app_builder.py` — `build()` constructs Ray Serve app from artifact
+- `bioengine/apps/manager.py` — `deploy_app`, `upload_app`, lifecycle
+- `bioengine/apps/builder.py` — `build()` constructs Ray Serve app from artifact
 - `apps/demo-app/` — Reference BioEngine app (single deployment + frontend; ping, ascii_art, list_datasets, reverse_text)
 - `apps/composition-demo/` — Multi-deployment composition app (entry + 3 runtimes, reference for composition pattern)
 - `apps/model-runner/` — Production model-runner app
@@ -204,7 +204,7 @@ bioimage.io/public/skills/bioengine/
     └── cell-image-search.md        # Cell image search
 ```
 
-The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install "bioengine[cli]"` (or `pip install -e ".[cli]"` for development).
+The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install "bioengine[cli] @ git+https://github.com/aicell-lab/bioengine-worker.git"` (or `pip install -e ".[cli]"` for development).
 
 ### How skills are used
 
@@ -241,7 +241,7 @@ The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install
 - Lessons go in `.github/copilot-instructions.md` (durable repo-level knowledge).
 - **Test on the live worker**: When working on a BioEngine app, test and debug by deploying to the live `bioimage-io/bioengine-worker` and calling the service directly. Do not write standalone test scripts for app behaviour — use the live service. Deploy with a stable `application_id` matching the artifact alias so the service is consistently addressable:
   ```python
-  app_id = await worker.run_application(
+  app_id = await worker.deploy_app(
       artifact_id='bioimage-io/my-app',
       version='1.2.3',
       application_id='my-app',   # gives stable service ID, not a random name
@@ -260,7 +260,7 @@ The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install
   - **`docker-publish.yml`** triggers on changes to any of these paths: `bioengine/**`, `requirements*.txt`, `pyproject.toml`, `docker/**`, `.dockerignore`. It enforces that `version` in `pyproject.toml` is strictly greater than the latest published image tag — CI will fail if not bumped. **Always create a PR** (never push directly to `main`) and **bump `version` in `pyproject.toml`** before opening the PR whenever any of those paths are touched.
 - **Clean up test deployments**: After testing is complete, stop and delete any temporary apps deployed to the live worker:
   ```python
-  await worker.stop_application(application_id=app_id)   # stops the Ray Serve deployment
-  await worker.delete_application(artifact_id=app_id)    # deletes the Hypha artifact
+  await worker.stop_app(application_id=app_id)   # stops the Ray Serve deployment
+  await worker.delete_app(artifact_id=app_id)    # deletes the Hypha artifact
   ```
   Do not leave test/throwaway deployments running on `bioimage-io/bioengine-worker` — they consume shared cluster resources.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bioengine"
-version = "0.6.16"
+version = "0.7.0"
 description = "BioEngine — CLI and SDK for deploying and calling AI model services on BioEngine workers"
 requires-python = ">=3.11"
 authors = [
@@ -12,13 +12,34 @@ authors = [
 ]
 readme = "README.md"
 license = {file = "LICENSE"}
+keywords = [
+    "bioimage-analysis",
+    "deep-learning",
+    "image-segmentation",
+    "ray-serve",
+    "hypha",
+    "cellpose",
+    "model-zoo",
+    "gpu-computing",
+    "ai-agents",
+    "microscopy",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
 dependencies = [
-    "click>=8.1",
     "httpx>=0.28.1",
     "hypha-rpc>=0.21.11",
     "numpy==1.26.4",
     "pyyaml>=6.0.2",
-    "rich>=13.0",
 ]
 
 [project.scripts]
@@ -26,6 +47,8 @@ bioengine = "bioengine.cli.cli:main"
 
 [project.optional-dependencies]
 cli = [
+    "click>=8.1",
+    "rich>=13.0",
     "tifffile>=2023.1.1",
     "Pillow>=10.0",
 ]

@@ -18,7 +18,7 @@ from ray._private.runtime_env.packaging import get_uri_for_directory
 from ray.serve.handle import DeploymentHandle
 
 import bioengine
-from bioengine.applications.proxy_deployment import BioEngineProxyDeployment
+from bioengine.apps.proxy_deployment import ProxyDeployment
 from bioengine.datasets import BioEngineDatasets
 from bioengine.utils import create_logger, update_requirements, validate_manifest
 
@@ -1341,7 +1341,7 @@ class AppBuilder:
                 ]["env_vars"]
 
             # Calculate the total number of required resources
-            proxy_deployment = BioEngineProxyDeployment
+            proxy_deployment = ProxyDeployment
             required_resources = self._calculate_required_resources(
                 deployments + [proxy_deployment]
             )

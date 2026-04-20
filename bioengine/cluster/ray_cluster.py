@@ -14,8 +14,8 @@ import ray
 from ray import serve
 
 import bioengine
-from bioengine.ray.proxy_actor import BioEngineProxyActor
-from bioengine.ray.slurm_workers import SlurmWorkers
+from bioengine.cluster.proxy_actor import BioEngineProxyActor
+from bioengine.cluster.slurm_workers import SlurmWorkers
 from bioengine.utils import (
     acquire_free_port,
     create_logger,

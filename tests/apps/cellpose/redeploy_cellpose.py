@@ -24,7 +24,7 @@ async def redeploy(artifact_id: str, application_id: str):
 
         # Start the new deployment
         print("Starting new deployment with latest artifact...")
-        app_id = await worker.run_application(
+        app_id = await worker.deploy_app(
             artifact_id=artifact_id,
             application_id=application_id,
             hypha_token=token,
@@ -39,7 +39,7 @@ async def redeploy(artifact_id: str, application_id: str):
         import pprint
 
         for i in range(10):
-            app_status = await worker.get_application_status(
+            app_status = await worker.get_app_status(
                 application_ids=[application_id]
             )
             print(f"DEBUG: Status check {i}:")

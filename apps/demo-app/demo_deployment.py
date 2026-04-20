@@ -20,10 +20,10 @@ IMPORT HANDLING:
 
 GPU allocation is managed by the AppBuilder which overwrites the num_gpus parameter
 in the ray actor options based on the disable_gpu parameter (default: False) passed to
-run_application().
+deploy_app().
 
 Resource allocation is validated against available cluster resources before deployment.
-See bioengine/applications/apps_manager.py for the deployment orchestration logic.
+See bioengine/apps/manager.py for the deployment orchestration logic.
 
 Ray Serve deployment parameters: https://docs.ray.io/en/latest/serve/api/doc/ray.serve.deployment_decorator.html
 BioEngine app deployment guide: See project README for artifact structure requirements.

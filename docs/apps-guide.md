@@ -409,7 +409,7 @@ deployments:
 )
 ```
 
-> **Note**: GPU allocation is managed by BioEngine. The `disable_gpu=True` parameter in `run_application()` will override GPU requests to force CPU-only execution.
+> **Note**: GPU allocation is managed by BioEngine. The `disable_gpu=True` parameter in `deploy_app()` will override GPU requests to force CPU-only execution.
 
 ### Logging in Applications
 
@@ -487,11 +487,11 @@ logger.error("Error occurred")  # What error? Where?
 
 #### Viewing Application Logs
 
-Logs are accessible through the `get_application_status()` method:
+Logs are accessible through the `get_app_status()` method:
 
 ```python
 # Get application status with logs
-status = await bioengine_worker_service.get_application_status(
+status = await bioengine_worker_service.get_app_status(
     application_ids=["my-app-id"],
     logs_tail=50,           # Get last 50 log lines per replica
     n_previous_replica=1,   # Include logs from 1 previous replica
@@ -530,7 +530,7 @@ workspace = os.environ["HYPHA_WORKSPACE"]        # Current workspace
 artifact_id = os.environ["HYPHA_ARTIFACT_ID"]    # Full artifact ID (workspace/name)
 worker_service_id = os.environ["BIOENGINE_WORKER_SERVICE_ID"]  # Worker service ID
 
-# Authentication (if provided via run_application)
+# Authentication (if provided via deploy_app)
 token = os.environ.get("HYPHA_TOKEN")            # User authentication token
 ```
 
@@ -700,7 +700,7 @@ Once you've created your application directory with the required files, you can 
 
 #### Setup Requirements
 
-Before using the `save_application.py` script, you need to clone the BioEngine repository and install it:
+Before using the `upload_app.py` script, you need to clone the BioEngine repository and install it:
 
 ```bash
 # Clone the repository
@@ -718,7 +718,7 @@ pip install .
 #### How to Upload
 
 ```bash
-python scripts/save_application.py --directory <path-to-your-app>
+python scripts/upload_app.py --directory <path-to-your-app>
 ```
 
 This command will:
@@ -732,7 +732,7 @@ This command will:
 You can use the `--worker-service-id` flag to upload applications through a BioEngine worker service. This approach has several advantages:
 
 ```bash
-python scripts/save_application.py \
+python scripts/upload_app.py \
     --directory <path-to-your-app> \
     --worker-service-id bioimage-io/bioengine-worker
 ```
@@ -749,7 +749,7 @@ python scripts/save_application.py \
     ```
 - **`--token` command-line argument**: You can also pass the token directly as an argument to the script:
     ```bash
-    python scripts/save_application.py --directory <path-to-your-app> --token "your-hypha-token-here"
+    python scripts/upload_app.py --directory <path-to-your-app> --token "your-hypha-token-here"
     ```
 - **Interactive login**: If no token is provided, you'll be prompted to log in interactively when running the script.
 
@@ -762,7 +762,7 @@ In addition to authentication, you can specify the Hypha server URL and workspac
 
 **Full Example:**
 ```bash
-python scripts/save_application.py \
+python scripts/upload_app.py \
     --directory "apps/model-runner" \
     --server-url "https://hypha.aicell.io" \
     --workspace "bioimage-io" \
@@ -771,7 +771,7 @@ python scripts/save_application.py \
 
 **Example with BioEngine Worker:**
 ```bash
-python scripts/save_application.py \
+python scripts/upload_app.py \
     --directory "apps/model-runner" \
     --server-url "https://hypha.aicell.io" \
     --worker-service-id "bioimage-io/bioengine-worker"
@@ -886,18 +886,18 @@ Deploy your application using the BioEngine worker service:
 
 ```python
 # Basic deployment - creates a new application with auto-generated ID
-application_id = await bioengine_worker_service.run_application(
+application_id = await bioengine_worker_service.deploy_app(
     artifact_id="workspace/my-app"
 )
 
 # Deployment with custom application ID
-application_id = await bioengine_worker_service.run_application(
+application_id = await bioengine_worker_service.deploy_app(
     artifact_id="workspace/my-app",
     application_id="my-custom-id",      # Specify your own ID
 )
 
 # Advanced deployment with full configuration
-application_id = await bioengine_worker_service.run_application(
+application_id = await bioengine_worker_service.deploy_app(
     artifact_id="workspace/my-app",
     version=None,                       # Latest version
     application_id="custom-id",         # Custom instance ID
@@ -919,7 +919,7 @@ application_id = await bioengine_worker_service.run_application(
 
 #### Updating Existing Applications
 
-You can update a running application by calling `run_application` with the **same `application_id`** but a **different `artifact_id`** (or version). This allows you to:
+You can update a running application by calling `deploy_app` with the **same `application_id`** but a **different `artifact_id`** (or version). This allows you to:
 - Deploy a newer version of your application
 - Switch to a completely different artifact while keeping the same application ID
 - Update configuration parameters while keeping others unchanged
@@ -933,7 +933,7 @@ You can update a running application by calling `run_application` with the **sam
 
 ```python
 # Initial deployment
-app_id = await bioengine_worker_service.run_application(
+app_id = await bioengine_worker_service.deploy_app(
     artifact_id="workspace/my-app-v1",
     application_id="my-app",
     disable_gpu=False,
@@ -941,14 +941,14 @@ app_id = await bioengine_worker_service.run_application(
 )
 
 # Update to a newer artifact version - keeps all other settings
-await bioengine_worker_service.run_application(
+await bioengine_worker_service.deploy_app(
     artifact_id="workspace/my-app-v2",  # New artifact
     application_id="my-app",             # Same app ID = update
     # All other parameters inherited from current deployment
 )
 
 # Update specific parameters only - keeps artifact and other settings
-await bioengine_worker_service.run_application(
+await bioengine_worker_service.deploy_app(
     artifact_id="workspace/my-app-v2",  # Can keep same or change
     application_id="my-app",             # Same app ID = update
     max_ongoing_requests=20,             # Update this parameter
@@ -956,7 +956,7 @@ await bioengine_worker_service.run_application(
 )
 
 # Update with new configuration
-await bioengine_worker_service.run_application(
+await bioengine_worker_service.deploy_app(
     artifact_id="workspace/my-app-v2",
     application_id="my-app",
     application_kwargs={                 # New initialization parameters
@@ -982,7 +982,7 @@ await bioengine_worker_service.run_application(
 
 ### Deploy Application Parameters
 
-The `run_application` method supports these parameters:
+The `deploy_app` method supports these parameters:
 
 - **`artifact_id`** *(required)*: Application artifact identifier
 - **`version`** *(optional)*: Specific artifact version to deploy
@@ -1039,7 +1039,7 @@ class MyDeployment:
 ```python
 # Get worker status to find application services
 app_id = "my-application-id"  # Replace with your application ID
-app_status = await bioengine_worker_service.get_application_status(
+app_status = await bioengine_worker_service.get_app_status(
     application_ids=[app_id]
 )
 
@@ -1088,15 +1088,15 @@ result = await webrtc_service.process_data(
 
 ```python
 # Start application
-app_id = await bioengine_worker_service.run_application("workspace/my-app")
+app_id = await bioengine_worker_service.deploy_app("workspace/my-app")
 
 # Monitor application status (basic)
-app_status = await bioengine_worker_service.get_application_status(
+app_status = await bioengine_worker_service.get_app_status(
     application_ids=[app_id]
 )
 
 # Monitor with detailed logs
-app_status = await bioengine_worker_service.get_application_status(
+app_status = await bioengine_worker_service.get_app_status(
     application_ids=[app_id],
     logs_tail=100,           # Get last 100 log lines per replica
     n_previous_replica=2,    # Include logs from 2 previous replicas
@@ -1109,12 +1109,12 @@ for deployment_name, deployment_info in app_status["deployments"].items():
     print(f"Logs:\n{deployment_info['logs']}")
 
 # Stop application when done
-await bioengine_worker_service.stop_application(app_id)
+await bioengine_worker_service.stop_app(app_id)
 ```
 
 #### Monitoring Application Status
 
-The `get_application_status()` method provides comprehensive information about your deployed applications:
+The `get_app_status()` method provides comprehensive information about your deployed applications:
 
 **Parameters:**
 - **`application_ids`** *(optional)*: List of application IDs to check. If `None`, returns all deployed applications. If a single-item list, returns status directly (not wrapped in a dictionary).
@@ -1133,7 +1133,7 @@ The `get_application_status()` method provides comprehensive information about y
 
 ```python
 # Get detailed status with extended logs
-status = await bioengine_worker_service.get_application_status(
+status = await bioengine_worker_service.get_app_status(
     application_ids=["my-failing-app"],
     logs_tail=-1,            # Get all available logs
     n_previous_replica=3,    # Check logs from last 3 replica attempts

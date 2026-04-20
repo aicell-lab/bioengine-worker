@@ -13,9 +13,9 @@ from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 
 from bioengine import __version__
-from bioengine.applications import AppsManager
+from bioengine.apps import AppsManager
 from bioengine.datasets import BioEngineDatasets
-from bioengine.ray import RayCluster
+from bioengine.cluster import RayCluster
 from bioengine.utils import (
     fetch_centroid_coordinates,
     fetch_geolocation,
@@ -625,16 +625,16 @@ class BioEngineWorker:
             # 📦 Dataset management
             "list_datasets": self.list_datasets,
             # 🧮 Code execution
-            "execute_python_code": self.code_executor.execute_python_code,  # Requires admin permissions
+            "run_code": self.code_executor.run_code,  # Requires admin permissions
             # 🚀 Application management
-            "save_application": self.apps_manager.save_application,  # Requires admin permissions
-            "list_applications": self.apps_manager.list_applications,  # Requires admin permissions
-            "get_application_manifest": self.apps_manager.get_application_manifest,  # Requires admin permissions
-            "delete_application": self.apps_manager.delete_application,  # Requires admin permissions
-            "run_application": self.apps_manager.run_application,  # Requires admin permissions
-            "stop_application": self.apps_manager.stop_application,  # Requires admin permissions
-            "stop_all_applications": self.apps_manager.stop_all_applications,  # Requires admin permissions
-            "get_application_status": self.apps_manager.get_application_status,
+            "upload_app": self.apps_manager.upload_app,  # Requires admin permissions
+            "list_apps": self.apps_manager.list_apps,  # Requires admin permissions
+            "get_app_manifest": self.apps_manager.get_app_manifest,  # Requires admin permissions
+            "delete_app": self.apps_manager.delete_app,  # Requires admin permissions
+            "deploy_app": self.apps_manager.deploy_app,  # Requires admin permissions
+            "stop_app": self.apps_manager.stop_app,  # Requires admin permissions
+            "stop_all_apps": self.apps_manager.stop_all_apps,  # Requires admin permissions
+            "get_app_status": self.apps_manager.get_app_status,
         }
         # TODO: return more informative error messages, e.g. include traceback
         service_info = await self.server.register_service(
@@ -718,7 +718,7 @@ class BioEngineWorker:
         if hasattr(self, "apps_manager") and self.apps_manager:
             try:
                 admin_context = getattr(self, "_admin_context", None)
-                await self.apps_manager.stop_all_applications(admin_context)
+                await self.apps_manager.stop_all_apps(admin_context)
             except Exception as e:
                 self.logger.error(f"Error cleaning up apps manager: {e}")
 

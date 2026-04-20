@@ -14,7 +14,7 @@ from bioengine.utils import (
 )
 
 
-async def save_application(
+async def upload_app(
     directory: str,
     server_url: str,
     workspace: str = None,
@@ -93,7 +93,7 @@ async def save_application(
 
         # Create or update the artifact using the bioengine service
         try:
-            artifact_id = await bioengine_service.save_application(files=files)
+            artifact_id = await bioengine_service.upload_app(files=files)
             logger.info(
                 f"Successfully created/updated application artifact '{artifact_id}'."
             )
@@ -183,7 +183,7 @@ if __name__ == "__main__":
         permissions = {"*": "r"}
 
     asyncio.run(
-        save_application(
+        upload_app(
             directory=args.directory,
             server_url=args.server_url,
             workspace=args.workspace,

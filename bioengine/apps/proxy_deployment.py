@@ -45,7 +45,7 @@ logger = logging.getLogger("ray.serve")
     health_check_period_s=10,  # Check health every 10 seconds
     health_check_timeout_s=5,  # Timeout after 5 seconds
 )
-class BioEngineProxyDeployment:
+class ProxyDeployment:
     """
     A Ray Serve deployment that acts as a proxy for BioEngine applications.
 
@@ -77,7 +77,7 @@ class BioEngineProxyDeployment:
        - Bypasses server for direct client communication
 
     Architecture:
-    External Clients → Hypha Server → BioEngineProxyDeployment → BioEngine Application
+    External Clients → Hypha Server → ProxyDeployment → BioEngine Application
                                            (Ray Cluster)             (Ray Cluster)
     """
 
@@ -272,7 +272,7 @@ class BioEngineProxyDeployment:
             Dictionary with completion status and request ID
         """
         logger.debug(
-            f"🌐 Received '{request.method}' request to BioEngineProxyDeployment"
+            f"🌐 Received '{request.method}' request to ProxyDeployment"
         )
 
         # Only accept POST requests for mimic coordination
@@ -1022,9 +1022,9 @@ if __name__ == "__main__":
         def __getattr__(self, name):
             return MockMethod(name)
 
-    # Example usage of BioEngineProxyDeployment
+    # Example usage of ProxyDeployment
     async def test_proxy_deployment():
-        rtc_deployment_class = BioEngineProxyDeployment.func_or_class
+        rtc_deployment_class = ProxyDeployment.func_or_class
         entry_deployment_handle = MockHandle()
         method_schema = {
             "name": "test_method",

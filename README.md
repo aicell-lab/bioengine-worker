@@ -1,249 +1,199 @@
 <div align="center">
   <img src="docs/assets/bioengine-icon.svg" alt="BioEngine Logo" width="200"/>
-  
-  # BioEngine Worker
-  
-  **Cloud-powered AI for simplified bioimage analysis**
-  
+
+  # BioEngine
+
+  **Execution and adaptation layer for bioimage AI — run, screen, fine-tune, and deploy BioImage Model Zoo models through AI agents**
+
   [![GitHub](https://img.shields.io/badge/github-aicell--lab%2Fbioengine--worker-black?logo=github)](https://github.com/aicell-lab/bioengine-worker)
   [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue)](https://github.com/orgs/aicell-lab/packages/container/package/bioengine-worker)
   [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-  
-  [🚀 Try It Now](#-quick-start) • [📚 Documentation](#-documentation) • [🎯 Examples](#-use-cases) • [💬 Community](https://github.com/aicell-lab/bioengine-worker/discussions)
-  
+
 </div>
 
 ---
 
-## 🌟 What is BioEngine?
+## What is BioEngine?
 
-BioEngine is a **distributed AI platform** that brings the power of cloud computing to bioimage analysis. It enables researchers to:
+Foundation models and curated repositories have transformed bioimage AI, yet most researchers cannot readily run, adapt, or extend them on available hardware. **BioEngine fills this gap as the execution and adaptation layer between curated AI and scalable compute**, deployable on a laptop, workstation, or cluster.
 
-- 🔬 **Deploy AI models** for image analysis with automatic scaling
-- 📊 **Stream large datasets** efficiently with privacy-preserving access control
-- ⚡ **Run compute-intensive workflows** on HPC clusters or cloud infrastructure
-- 🔌 **Access resources remotely** through a unified API via [Hypha](https://docs.amun.ai/#/)
+BioEngine exposes its capabilities through a **SKILL.md contract** — a plain-text file designed for general-purpose AI agents to acquire domain knowledge and invoke GPU services directly. A scientist describes their imaging goal in plain language to any AI agent. The agent parses the contract, selects the appropriate service, and dispatches the GPU workflow. Results return as segmented images, ranked comparison tables, or a live web application, with no command-line access, software installation, or IT ticket required.
 
-Built on [Ray](https://www.ray.io/) and [Ray Serve](https://docs.ray.io/en/latest/serve/index.html), BioEngine automatically manages resource allocation, scaling, and deployment across various computing environments.
+## Capabilities
 
-## 🎯 Use Cases
+| Capability | Description |
+|-----------|-------------|
+| **Model screening** | Agent queries BioImage Model Zoo, filters by compatibility, runs inference, and ranks by mAP — 58 candidates screened to 4 ranked in a single session |
+| **Real-time inference** | Sub-second latency for live microscopy feedback loops; per-frame statistics (cell count, masks, morphology) returned to the controlling agent |
+| **Collaborative fine-tuning** | Browser-based annotation against Cellpose-SAM pre-segmentations; fine-tuning triggered with one click; F1 rose from 0.36 → 0.71 across 1,600 training epochs on PlantSeg data |
+| **Agent-built applications** | Agent generates deployment manifest, GPU workflow, and web UI from a single plain-language prompt; mean F1 = 0.920 ± 0.037 on Lucchi++ FIB-SEM benchmark |
 
-### Try Models on the Public BioEngine
+## Quick Start
 
-Experience BioEngine instantly by testing AI models on the community instance:
+### Public BioEngine (no setup)
 
-1. **Visit [BioImage.IO Model Zoo](https://bioimage.io/#/models)**
-2. **Select any model** from the collection
-3. **Click "TEST RUN MODEL"** to execute on the public BioEngine worker (`bioimage-io/bioengine-worker`)
-4. **See results** powered by cloud infrastructure—no setup required!
+Test AI models instantly via the community instance:
 
-### Deploy Your Own Applications
+1. Visit **[BioImage.IO Model Zoo](https://bioimage.io/#/models)**
+2. Select any model and click **"TEST RUN MODEL"**
+3. Execution runs on the public BioEngine worker (`bioimage-io/bioengine-worker`)
 
-Create custom AI-powered analysis services:
-
-- **Model Inference Services**: Deploy ML models for real-time predictions
-- **Training Pipelines**: Run distributed model training workflows  
-- **Data Exploration Tools**: Build interactive analysis and visualization services
-- **Custom Workflows**: Design specialized processing pipelines
-
-**👉 Learn more**: [BioEngine Applications Guide](docs/apps-guide.md)
-
-### Share Scientific Datasets
-
-Serve large datasets with streaming and access control:
-
-- **Privacy-preserving**: Fine-grained user permissions
-- **Efficient streaming**: Partial data access for Zarr datasets
-- **Easy sharing**: HTTP-based access through Hypha
-
-**👉 Learn more**: [BioEngine Datasets Guide](docs/datasets-guide.md)
-
-## 🚀 Quick Start
-
-### Try the BioEngine Dashboard
-
-The easiest way to get started is through the web interface:
-
-**🌐 Visit [bioimage.io/#/bioengine](https://bioimage.io/#/bioengine)**
-
-The dashboard provides:
-- 📋 **Interactive Configuration Wizard**: Generate deployment commands for your environment
-- 🖥️ **Instance Management**: View and control BioEngine workers
-- 📊 **Resource Monitoring**: Track cluster resources and application status
-- 🎮 **Application Deployment**: Deploy and manage AI applications
-
-### Run Locally with Docker
-
-Start a local BioEngine worker on your workstation:
+### CLI
 
 ```bash
-# Clone the repository
-git clone https://github.com/aicell-lab/bioengine-worker.git
-cd bioengine-worker
+pip install "bioengine[cli] @ git+https://github.com/aicell-lab/bioengine-worker.git"
 
-# Create required directories
-mkdir -p .bioengine data
+# Call any service method
+bioengine call bioimage-io/bioengine-worker get_status
 
-# Start with Docker Compose
-UID=$(id -u) GID=$(id -g) docker compose up
+# List running applications
+bioengine apps list --worker bioimage-io/bioengine-worker
+
+# Run a model
+bioengine call bioimage-io/my-app predict --arg input=image.tif
 ```
 
-**What happens:**
-- Starts a local Ray cluster with your machine's resources
-- Registers as a Hypha service for remote access
-- Mounts `.bioengine/` for workspace and `data/` for datasets
-
-**Configuration:**
-- Add `HYPHA_TOKEN` to `.env` file (or you'll be prompted to login)
-- Customize resources via `--head-num-cpus` and `--head-num-gpus`
-- See all options: `docker run --rm ghcr.io/aicell-lab/bioengine-worker:latest python -m bioengine.worker --help`
-
-**💡 Pro Tip**: Visit the [BioEngine Dashboard](https://bioimage.io/#/bioengine) to generate custom deployment commands for your environment!
-
-## 📚 Documentation
-
-### Core Guides
-
-- **[🚀 BioEngine Applications](docs/apps-guide.md)** - Deploy AI models and create custom services
-- **[📊 BioEngine Datasets](docs/datasets-guide.md)** - Share and stream large scientific datasets
-- **[🖥️ Deployment Guide](docs/deployment-guide.md)** - Step-by-step setup for all deployment modes
-- **[🎮 BioEngine Dashboard](https://bioimage.io/#/bioengine)** - Web-based configuration and management
-
-### Deployment Modes
-
-BioEngine supports three deployment modes to fit your infrastructure:
-
-| Mode | Description | Best For | Guide |
-|------|-------------|----------|-------|
-| **single-machine** | Local Ray cluster on one machine | Workstations, development, small-scale analysis | [→](docs/deployment-guide.md#mode-1-single-machine) |
-| **external-cluster** | Connect to existing Ray cluster | Kubernetes, pre-configured HPC environments | [→](docs/deployment-guide.md#mode-2-external-cluster-kubernetes--kuberay) |
-| **slurm** | Auto-scaling via SLURM jobs | HPC clusters with SLURM scheduler | [→](docs/deployment-guide.md#mode-3-slurm--hpc) |
-
-## 🔧 Advanced Usage
-
-### Programmatic Access
-
-Once a BioEngine worker is running, access it remotely via Python:
+### Python SDK
 
 ```python
-from hypha_rpc import connect_to_server, login
+from hypha_rpc import connect_to_server
 
-# Authenticate and connect
-token = await login({"server_url": "https://hypha.aicell.io"})
-server = await connect_to_server({
-    "server_url": "https://hypha.aicell.io",
-    "token": token,
-})
+server = await connect_to_server({"server_url": "https://hypha.aicell.io", "token": token})
+worker = await server.get_service("bioimage-io/bioengine-worker")
 
-# Get the BioEngine worker service
-workspace = server.config.workspace
-worker_service = await server.get_service(f"{workspace}/bioengine-worker")
-
-# Check worker status
-status = await worker_service.get_status()
-print(f"Ray cluster: {status['ray_cluster']}")
+# Screen models
+status = await worker.get_status()
 
 # Deploy an application
-app_id = await worker_service.run_application(
-    artifact_id="workspace/my-app",
-    application_id="my-instance",
+app_id = await worker.deploy_app(
+    artifact_id="bioimage-io/cellpose-finetuning",
+    application_id="cellpose-finetuning",
 )
 
 # Get application status
-app_status = await worker_service.get_application_status(
-    application_ids=[app_id]
-)
+app_status = await worker.get_app_status(application_ids=[app_id])
 ```
 
-### Available Service Methods
+### Deploy Your Own Worker
 
-The BioEngine worker service provides comprehensive functionality:
-
-**Resource Management:**
-- `get_status()` - Get worker and cluster status
-- `stop_worker()` - Shut down the worker
-
-**Dataset Operations:**
-- `list_datasets()` - List available datasets
-
-**Application Management:**
-- `run_application(artifact_id, ...)` - Deploy an application
-- `stop_application(application_id)` - Stop a running application
-- `get_application_status(application_ids)` - Get application status
-- `list_applications()` - List all deployed applications
-
-**Development:**
-- `execute_python_code(code, ...)` - Execute Python code remotely
-- `check_access()` - Verify user permissions
-
-See the [Applications Guide](docs/apps-guide.md) for detailed usage examples.
-
-## 🏗️ Architecture
-
-BioEngine consists of three main components:
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Hypha Server                         │
-│            (RPC & Service Discovery)                    │
-└────────────┬────────────────────────────────────────────┘
-             │
-             │ Remote Access
-             │
-┌────────────▼────────────────────────────────────────────┐
-│              BioEngine Worker                           │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │  Ray Cluster (Distributed Computing)             │  │
-│  │  • Ray Serve (Model Deployment)                  │  │
-│  │  • Auto-scaling Worker Management                │  │
-│  └──────────────────────────────────────────────────┘  │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │  Applications Manager                            │  │
-│  │  • Deploy & manage AI services                   │  │
-│  │  • Resource allocation                           │  │
-│  └──────────────────────────────────────────────────┘  │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │  Datasets Manager                                │  │
-│  │  • HTTP streaming with access control            │  │
-│  │  • Zarr store for efficient data access          │  │
-│  └──────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────┘
+```bash
+# Docker (single machine)
+git clone https://github.com/aicell-lab/bioengine-worker.git
+cd bioengine-worker
+mkdir -p .bioengine data
+UID=$(id -u) GID=$(id -g) docker compose up
 ```
 
-## 🤝 Contributing
+See [Deployment Guide](docs/deployment-guide.md) for SLURM/HPC and Kubernetes modes.
 
-We welcome contributions! Whether you're fixing bugs, adding features, or improving documentation:
+## Architecture
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+```
+┌────────────────────────────────────────┐
+│            Hypha Server                │
+│   (RPC, service discovery, artifacts)  │
+└────────────┬───────────────────────────┘
+             │ WebSocket / RPC
+┌────────────▼───────────────────────────┐
+│         BioEngineWorker                │
+│                                        │
+│  ┌─────────────────────────────────┐   │
+│  │  SKILL.md contract              │   │
+│  │  (agent-readable interface)     │   │
+│  └─────────────────────────────────┘   │
+│  ┌─────────────────────────────────┐   │
+│  │  Ray Cluster                    │   │
+│  │  (SLURM / single / Kubernetes)  │   │
+│  └─────────────────────────────────┘   │
+│  ┌─────────────────────────────────┐   │
+│  │  Applications Manager           │   │
+│  │  (Ray Serve lifecycle +         │   │
+│  │   artifact management)          │   │
+│  └─────────────────────────────────┘   │
+│  ┌─────────────────────────────────┐   │
+│  │  Datasets Manager               │   │
+│  │  (Zarr HTTP streaming)          │   │
+│  └─────────────────────────────────┘   │
+└────────────────────────────────────────┘
+```
 
-## 📄 License
+**Stack:** [Ray](https://www.ray.io/) + [Ray Serve](https://docs.ray.io/en/latest/serve/index.html) for distributed GPU inference, [Hypha](https://docs.amun.ai/#/) for RPC service discovery and artifact management.
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+## Deployment Modes
 
-## 🙏 Acknowledgments
+| Mode | Use Case | Guide |
+|------|----------|-------|
+| `single-machine` | Workstation, development, small-scale | [→](docs/deployment-guide.md#mode-1-single-machine) |
+| `external-cluster` | Kubernetes, pre-configured Ray clusters | [→](docs/deployment-guide.md#mode-2-external-cluster-kubernetes--kuberay) |
+| `slurm` | HPC clusters with SLURM scheduler | [→](docs/deployment-guide.md#mode-3-slurm--hpc) |
 
-BioEngine is built on top of several excellent open-source projects:
-- [Ray](https://www.ray.io/) - Distributed computing framework
-- [Hypha](https://docs.amun.ai/#/) - Service orchestration and RPC
-- [Zarr](https://zarr.readthedocs.io/) - Chunked array storage
+## Worker Service API
 
-## 📞 Support
+The worker registers as a Hypha service. Key methods:
 
-- 💬 [GitHub Discussions](https://github.com/aicell-lab/bioengine-worker/discussions) - Ask questions and share ideas
-- 🐛 [Issue Tracker](https://github.com/aicell-lab/bioengine-worker/issues) - Report bugs or request features
-- 📧 Contact: [bioimage.io](https://bioimage.io)
+| Method | Description |
+|--------|-------------|
+| `get_status()` | Worker and cluster status |
+| `deploy_app(artifact_id, ...)` | Deploy an application |
+| `stop_app(application_id)` | Stop a running application |
+| `get_app_status(application_ids)` | Status of specific applications |
+| `list_apps()` | All deployed applications |
+| `upload_app(...)` | Create/update application artifact |
+| `run_code(code, ...)` | Run Python in a Ray task |
+| `list_datasets()` | Available datasets |
 
----
+## Applications
 
-<div align="center">
-  
-**Made with ❤️ by the BioImage.IO community**
+BioEngine applications are self-contained deployable units: a `manifest.yaml` + Python deployment code + optional web frontend. They can compose multiple AI models, wrap models with custom pre/post-processing, and expose arbitrary web UIs.
 
-[Website](https://bioimage.io) • [Dashboard](https://bioimage.io/#/bioengine) • [GitHub](https://github.com/aicell-lab/bioengine-worker)
+An AI agent given a SKILL.md contract can generate and deploy a new application from a plain-language prompt — generating the manifest, GPU workflow, and web interface with no manual programming.
 
-</div>
+**Reference apps:**
+- [`apps/demo-app/`](apps/demo-app/) — minimal single-deployment app
+- [`apps/cellpose-finetuning/`](apps/cellpose-finetuning/) — browser-based collaborative fine-tuning
+- [`apps/model-runner/`](apps/model-runner/) — production BioImage Model Zoo inference
+
+See [Applications Guide](docs/apps-guide.md) for full documentation.
+
+## Documentation
+
+- [Applications Guide](docs/apps-guide.md) — build and deploy BioEngine applications
+- [Datasets Guide](docs/datasets-guide.md) — share and stream large scientific datasets
+- [Deployment Guide](docs/deployment-guide.md) — single-machine, Kubernetes, and SLURM setup
+- [BioEngine Dashboard](https://bioimage.io/#/bioengine) — web-based configuration and management
+
+## Development Setup
+
+```bash
+conda activate bioengine-worker
+pip install -e ".[worker,cli,dev]"
+source .env   # loads HYPHA_TOKEN
+
+# Run locally
+python -m bioengine.worker \
+    --mode single-machine \
+    --head-num-gpus 1 \
+    --workspace-dir ~/.bioengine \
+    --debug
+
+# Run tests
+pytest tests/end_to_end/ -v
+```
+
+## Citation
+
+BioEngine is described in the following preprint (bioRxiv, submitted):
+
+> Mechtel N, Dettner Källander H, Cheng S, Zhang H, AI4Life Consortium, Ouyang W.
+> **BioEngine: scalable execution and adaptation of bioimage AI through agent-readable interfaces.**
+> *bioRxiv* (2025).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## Acknowledgements
+
+BioEngine is built on [Ray](https://www.ray.io/), [Hypha](https://docs.amun.ai/#/), and [Zarr](https://zarr.readthedocs.io/).
+Supported by the SciLifeLab & Wallenberg Data Driven Life Science Program, AI4Life (EU Horizon Europe grant 101057970), and the Berzelius GPU resource.

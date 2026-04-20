@@ -505,7 +505,7 @@ Before deploying, upload the latest application code to the artifact store:
 export HYPHA_TOKEN=$(grep HYPHA_TOKEN .env | cut -d '=' -f2)
 
 # Upload the folder content
-python scripts/save_application.py \
+python scripts/upload_app.py \
     --directory "apps/cellpose-finetuning" \
     --server-url "https://hypha.aicell.io" \
     --token "$HYPHA_TOKEN"
@@ -527,13 +527,13 @@ python tests/cellpose_legacy_scripts/redeploy_cellpose.py \
 **Note for Test Deployments:**
 When deploying the test version (using `manifest-test.yaml`), ensure you specify the correct IDs as shown above. The service will be available at `<your-workspace>/cellpose-finetuning-test`. The deployment class in `main.py` is aliased as `CellposeFinetuneTest` for this purpose.
 
-This calls `run_application()` with `hypha_token=token`, which injects `HYPHA_TOKEN` into the Ray worker's environment as a secret env var. The token is required for the service to access artifacts (datasets and models) on behalf of users.
+This calls `deploy_app()` with `hypha_token=token`, which injects `HYPHA_TOKEN` into the Ray worker's environment as a secret env var. The token is required for the service to access artifacts (datasets and models) on behalf of users.
 
 ### When to Redeploy
 
 You must redeploy the service when:
 - **The token expires**: The `HYPHA_TOKEN` baked into the Ray worker at deploy time has a fixed expiry. If training fails with `HYPHA_TOKEN environment variable is not set`, the token has likely expired. Generate a fresh token, update `.env`, and redeploy.
-- **Code changes**: After updating `main.py` or other files, upload the new code with `save_application.py` and then redeploy.
+- **Code changes**: After updating `main.py` or other files, upload the new code with `upload_app.py` and then redeploy.
 
 ### Troubleshooting
 

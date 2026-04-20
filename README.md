@@ -23,7 +23,7 @@ BioEngine is a **distributed AI platform** that brings the power of cloud comput
 - 🔬 **Deploy AI models** for image analysis with automatic scaling
 - 📊 **Stream large datasets** efficiently with privacy-preserving access control
 - ⚡ **Run compute-intensive workflows** on HPC clusters or cloud infrastructure
-- 🔌 **Access resources remotely** through a unified API via [Hypha](https://ha.amun.ai/)
+- 🔌 **Access resources remotely** through a unified API via [Hypha](https://docs.amun.ai/#/)
 
 Built on [Ray](https://www.ray.io/) and [Ray Serve](https://docs.ray.io/en/latest/serve/index.html), BioEngine automatically manages resource allocation, scaling, and deployment across various computing environments.
 
@@ -229,7 +229,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 BioEngine is built on top of several excellent open-source projects:
 - [Ray](https://www.ray.io/) - Distributed computing framework
-- [Hypha](https://ha.amun.ai/) - Service orchestration and RPC
+- [Hypha](https://docs.amun.ai/#/) - Service orchestration and RPC
 - [Zarr](https://zarr.readthedocs.io/) - Chunked array storage
 
 ## 📞 Support

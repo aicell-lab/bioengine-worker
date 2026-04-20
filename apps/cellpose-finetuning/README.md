@@ -167,7 +167,7 @@ Run inference on images.
 - `artifact` (str, optional): Artifact ID containing images
 - `image_paths` (list, optional): List of image paths within artifact
 - `input_arrays` (list, optional): List of numpy arrays (C, H, W) format
-- `diameter` (float, optional): Expected cell diameter (None for auto-detect)
+- `diameter` (float, optional): Expected cell diameter in pixels. When set, the image is rescaled so cells are at ~30 px average diameter before inference. Cellpose-SAM was trained on cells in the **7.5–120 px** range — cells outside this range require explicit `diameter` to rescale into range. `None` = auto-detect.
 - `flow_threshold` (float): Flow error threshold (default: 0.4)
 - `cellprob_threshold` (float): Cell probability threshold (default: 0.0)
 - `niter` (int, optional): Number of iterations for dynamics (None for auto)
@@ -200,7 +200,7 @@ Start asynchronous model fine-tuning.
 - `min_train_masks` (int): Minimum number of masks per training batch (default: 5). Lower values speed up training.
 - `validation_interval` (int, optional): Epochs between validation evaluations. Always validates on the first epoch. Default (None) validates every 10 epochs. Set to 1 for every epoch. Requires `test_images` and `test_annotations`.
 - `enable_clahe` (bool): Apply CLAHE preprocessing to images before training (default: False). **Required for brightfield/phase-contrast images** — see [Brightfield images](#brightfield--phase-contrast-images) section below.
-- `rescale` (bool): Rescale images during training (default: False).
+- `rescale` (bool): Rescale images during training so cells are at ~30 px average diameter (default: False). Recommended when your cells are outside the 7.5–120 px range that Cellpose-SAM was trained on.
 
 **Returns:** Dict with `"session_id"` and initial `"status_type"`
 
@@ -458,6 +458,16 @@ LR=1e-5, `enable_clahe=True`
 Fine-tuning degraded on held-out tiles with only 13 training images — this is a data coverage issue, not a bug.
 
 ## Inference Parameters Guide
+
+### `diameter` (default: None)
+
+Cellpose-SAM was trained on cells with diameters in the **7.5–120 px** range. Performance degrades significantly outside this range.
+
+When you provide a `diameter` value (or set `rescale=True` during training), the image is rescaled so that cells are at an average diameter of **30 px** before being passed to the model. With `diameter=None`, Cellpose attempts to auto-detect the diameter — this works well for typical cell sizes but may fail for very large or very small cells.
+
+- If your cells are larger than ~120 px: set `diameter` to the actual cell size so the image is downscaled into the valid range.
+- If your cells are smaller than ~7.5 px: upscaling via `diameter` may help, but results can be unreliable.
+- For fine-tuning with `rescale=True`: images are rescaled to 30 px average cell diameter during training, matching the model's training distribution.
 
 ### `flow_threshold` (default: 0.4)
 - **Higher values** (e.g., 0.6): More lenient, returns more masks (may include poorly-shaped ones)

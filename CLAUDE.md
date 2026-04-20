@@ -129,7 +129,7 @@ Use the existing `bioengine-worker` conda environment:
 
 ```bash
 conda activate bioengine-worker
-pip install -e ".[worker,dev]"
+pip install -e ".[worker,cli,dev]"
 source .env   # loads HYPHA_TOKEN
 ```
 
@@ -173,6 +173,7 @@ pytest tests/end_to_end/ -v
 
 ## Key File Locations
 
+- `bioengine/cli/` — BioEngine CLI (`bioengine` command); entry point is `bioengine.cli.cli:main`
 - `bioengine/utils/artifact_utils.py` — All Hypha artifact CRUD helpers
 - `bioengine/applications/apps_manager.py` — `run_application`, `save_application`, lifecycle
 - `bioengine/applications/app_builder.py` — `build()` constructs Ray Serve app from artifact
@@ -180,7 +181,7 @@ pytest tests/end_to_end/ -v
 - `apps/composition-demo/` — Multi-deployment composition app (entry + 3 runtimes, reference for composition pattern)
 - `apps/model-runner/` — Production model-runner app
 - `apps/cellpose-finetuning/` — Cellpose fine-tuning app
-- `pyproject.toml` — Package version and dependencies
+- `pyproject.toml` — Package version and dependencies; install with `pip install -e ".[cli]"` for CLI use
 - `../bioimage.io/public/skills/bioengine/` — Agent skills for working with BioEngine (separate repo)
 
 ---
@@ -194,7 +195,6 @@ Skills live in the **`../bioimage.io/public/skills/bioengine/`** directory (sepa
 ```
 bioimage.io/public/skills/bioengine/
 ├── SKILL.md                        # Main entry-point — load this first
-├── bioengine_cli/                  # CLI source (pip install -e .)
 ├── references/
 │   ├── manifest_reference.md       # Full manifest.yaml field reference
 │   └── cli_reference.md            # CLI command reference
@@ -203,6 +203,8 @@ bioimage.io/public/skills/bioengine/
     ├── cellpose-finetuning.md      # Cellpose fine-tuning
     └── cell-image-search.md        # Cell image search
 ```
+
+The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install "bioengine[cli]"` (or `pip install -e ".[cli]"` for development).
 
 ### How skills are used
 

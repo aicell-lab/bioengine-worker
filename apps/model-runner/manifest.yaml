@@ -3,7 +3,7 @@ authors:
 covers: []
 description: Runs and compares BioImage.IO models through the BioEngine service. It supports microscopy image inference, model search, and validation.
 documentation: "README.md"
-tutorial: "https://imjoy-notebook.netlify.app/lab/index.html?load=https://raw.githubusercontent.com/aicell-lab/bioengine-worker/refs/heads/main/bioengine_apps/model-runner/tutorial_model_runner.ipynb&open=1"
+tutorial: "https://imjoy-notebook.netlify.app/lab/index.html?load=https://raw.githubusercontent.com/aicell-lab/bioengine-worker/refs/heads/main/apps/model-runner/tutorial_model_runner.ipynb&open=1"
 format_version: 0.5.0
 git_repo: ""
 id: model-runner

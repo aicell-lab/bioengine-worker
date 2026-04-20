@@ -46,7 +46,7 @@ Create custom AI-powered analysis services:
 - **Data Exploration Tools**: Build interactive analysis and visualization services
 - **Custom Workflows**: Design specialized processing pipelines
 
-**👉 Learn more**: [BioEngine Applications Guide](bioengine_apps/README.md)
+**👉 Learn more**: [BioEngine Applications Guide](docs/apps-guide.md)
 
 ### Share Scientific Datasets
 
@@ -104,7 +104,7 @@ UID=$(id -u) GID=$(id -g) docker compose up
 
 ### Core Guides
 
-- **[🚀 BioEngine Applications](bioengine_apps/README.md)** - Deploy AI models and create custom services
+- **[🚀 BioEngine Applications](docs/apps-guide.md)** - Deploy AI models and create custom services
 - **[📊 BioEngine Datasets](bioengine/datasets/README.md)** - Share and stream large scientific datasets
 - **[🎮 BioEngine Dashboard](https://bioimage.io/#/bioengine)** - Web-based configuration and management
 
@@ -175,7 +175,7 @@ The BioEngine worker service provides comprehensive functionality:
 - `execute_python_code(code, ...)` - Execute Python code remotely
 - `check_access()` - Verify user permissions
 
-See the [Applications Guide](bioengine_apps/README.md) for detailed usage examples.
+See the [Applications Guide](docs/apps-guide.md) for detailed usage examples.
 
 ## 🏗️ Architecture
 

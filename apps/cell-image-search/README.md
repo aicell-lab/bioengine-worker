@@ -171,7 +171,7 @@ pip install "bioengine-cli[worker]"
 bioengine save-application \
     --workspace bioimage-io \
     --artifact-id cell-image-search \
-    --source bioengine_apps/cell-image-search/
+    --source apps/cell-image-search/
 
 bioengine run-application \
     --workspace bioimage-io \
@@ -236,6 +236,18 @@ umap = await svc.get_umap_preview(n_samples=10000, color_by="moa_class")
 
 **Key insight**: A laptop would take ~35 days to embed 58M cells; BioEngine
 does it in 4 hours using 32 GPU workers scheduled automatically via Ray.
+
+---
+
+## Files
+
+## Known Limitations
+
+- **Compound names**: Control compounds (DMSO, dexamethasone, AMG900, etc.) have human-readable names. Non-control compounds show JCP2022 IDs (e.g. `JCP2022_040345`). MOA class is always `unknown` — requires additional annotation not available in public JUMP metadata.
+- **Ingestion time**: ~18–20 cells/s on one A40 GPU. 10 plates (~130K cells) ≈ 2 hours. S3 download is the bottleneck, not DINOv2 inference.
+- **UMAP cache**: `get_umap_preview()` caches the result at `umap_cache.npz`. Call with `force_recompute=True` to regenerate after new ingestion. `enrich_metadata_with_compounds()` invalidates the cache automatically.
+- **Multiple ingestion sessions**: Starting a second ingestion session while one is running will share GPU resources and slow both down. Use `get_active_sessions()` to check before starting.
+- **Index type thresholds**: <100K cells → `FlatIP` (exact). 100K–5M cells → `IVFFlat`. >5M cells → `IVFPQ`. The threshold is checked against the actual embedded cell count.
 
 ---
 

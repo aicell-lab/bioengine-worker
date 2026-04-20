@@ -173,6 +173,7 @@ Run inference on images.
 - `niter` (int, optional): Number of iterations for dynamics (None for auto)
 - `return_flows` (bool): If True, include flow fields in the output (default: False)
 - `json_safe` (bool): If True, returns JSON-safe nested arrays (recommended for browser/UI clients)
+- `enable_clahe` (bool): Apply CLAHE preprocessing before inference (default: False). Must match the setting used during training.
 
 **Returns:** List of dicts with `"output"` key containing segmentation masks (and `"flows"` if `return_flows=True`)
 
@@ -198,6 +199,8 @@ Start asynchronous model fine-tuning.
 - `weight_decay` (float): Weight decay (default: 0.0001)
 - `min_train_masks` (int): Minimum number of masks per training batch (default: 5). Lower values speed up training.
 - `validation_interval` (int, optional): Epochs between validation evaluations. Always validates on the first epoch. Default (None) validates every 10 epochs. Set to 1 for every epoch. Requires `test_images` and `test_annotations`.
+- `enable_clahe` (bool): Apply CLAHE preprocessing to images before training (default: False). **Required for brightfield/phase-contrast images** — see [Brightfield images](#brightfield--phase-contrast-images) section below.
+- `rescale` (bool): Rescale images during training (default: False).
 
 **Returns:** Dict with `"session_id"` and initial `"status_type"`
 
@@ -243,6 +246,7 @@ Monitor training progress and retrieve training metrics with real-time updates.
 - `elapsed_seconds` (float, optional): Elapsed time since training started
 - `current_batch` (int, optional): Current batch number within epoch (0-indexed)
 - `total_batches` (int, optional): Total number of batches per epoch
+- `current_loss` (float, optional): Most recent training loss value (convenience alias for `train_losses[-1]`)
 - `exported_artifact_id` (str, optional): Artifact ID if model has been exported
 - `model_modified` (bool, optional): Whether model was modified since last export
 
@@ -378,6 +382,81 @@ Notes:
 
 Validation metrics are only produced when both `test_images` and `test_annotations` are provided.
 
+## Brightfield / Phase-Contrast Images
+
+For non-fluorescence modalities (brightfield, phase-contrast, DIC), pass `enable_clahe=True` in both `start_training()` and `infer()`.
+
+**Why CLAHE is required**: Brightfield images typically have pixel values spanning only 10–60 out of 255. Cellpose-SAM (pre-trained on fluorescence) cannot detect cells in such low-contrast images — CLAHE expands the dynamic range. Without it, the baseline model detects 0 cells.
+
+```python
+session = await svc.start_training(
+    artifact="workspace/dataset",
+    train_images="train_images/*.png",
+    train_annotations="masks/*.png",
+    n_epochs=30,
+    learning_rate=1e-5,
+    enable_clahe=True,
+    min_train_masks=1,
+)
+result = await svc.infer(model=session_id, input_arrays=[img], enable_clahe=True, cellprob_threshold=-1.0)
+```
+
+**Optimal training duration for brightfield**: Fine-tuning peaks around **20–50 epochs** with `learning_rate=1e-5`. Longer runs (500+ epochs) overfit on small datasets (< 50 images).
+
+**Note on pixel IoU for brightfield**: The per-epoch `test_metrics.iou` will read `0.000` throughout training — this is expected. Cellpose's binary pixel metric is near-zero for brightfield regardless of fine-tuning. Use `instance_metrics` (AP@0.5/0.75/0.9) for meaningful evaluation.
+
+## Image Size Limit for Inference
+
+`infer()` times out silently on large images. **Always resize so the longest side is ≤ 320 pixels** before calling `infer()`.
+
+```python
+from skimage.transform import resize as sk_resize
+import numpy as np
+
+def resize_for_inference(img, max_side=320):
+    h, w = img.shape[:2]
+    if max(h, w) <= max_side:
+        return img
+    scale = max_side / max(h, w)
+    return sk_resize(img.astype(np.float32), (int(h * scale), int(w * scale)),
+                     anti_aliasing=True, preserve_range=True).astype(img.dtype)
+
+img_small = resize_for_inference(img)
+result = await svc.infer(model=model_id, input_arrays=[img_small])
+pred = result[0]["output"]  # shape matches img_small, not the original
+```
+
+When computing IoU against ground-truth masks, resize the GT mask with `order=0` (nearest-neighbour) to preserve integer labels:
+
+```python
+gt_resized = sk_resize(gt.astype(np.float32), pred.shape,
+                       order=0, anti_aliasing=False, preserve_range=True).astype(np.int32)
+```
+
+## Experimental Results
+
+### Fluorescence (72 train / 19 test images, OME-TIFF)
+LR=1e-5, 100 epochs, `min_train_masks=1`, `validation_interval=10`
+
+| Epoch | Pixel IoU | F1 | Precision | Recall |
+|---|---|---|---|---|
+| 1 (baseline) | 0.397 | 0.569 | 0.398 | 0.997 |
+| 41 | 0.430 | 0.602 | 0.437 | 0.964 |
+| 100 | **0.434** | **0.605** | 0.440 | 0.970 |
+
+Instance AP@0.5: **0.477**, AP@0.75: **0.347**. Pixel IoU improves +9.3% relative from baseline; plateau visible after ~50 epochs.
+
+### Brightfield (13 train / 2 test images, palette PNG)
+LR=1e-5, `enable_clahe=True`
+
+| Model | GT cells | Detected | Instance F1 |
+|---|---|---|---|
+| Baseline (cpsam, no CLAHE) | 18 | 0 | 0.000 |
+| Baseline (cpsam, CLAHE) | 18 | 15 | **0.848** |
+| Fine-tuned 30 epochs | 18 | 13 | 0.774 |
+
+Fine-tuning degraded on held-out tiles with only 13 training images — this is a data coverage issue, not a bug.
+
 ## Inference Parameters Guide
 
 ### `flow_threshold` (default: 0.4)
@@ -417,7 +496,7 @@ export HYPHA_TOKEN=$(grep HYPHA_TOKEN .env | cut -d '=' -f2)
 
 # Upload the folder content
 python scripts/save_application.py \
-    --directory "bioengine_apps/cellpose_finetuning" \
+    --directory "apps/cellpose-finetuning" \
     --server-url "https://hypha.aicell.io" \
     --token "$HYPHA_TOKEN"
 ```

@@ -113,3 +113,43 @@ Notes:
   * Cellpose-based workflows
   * CAREamics-based workflows
 * All versions are **strictly pinned** to ensure reproducibility and avoid runtime incompatibilities.
+
+## Using the Service
+
+**Service ID**: `bioimage-io/model-runner` · **Server**: `https://hypha.aicell.io`
+
+```python
+from hypha_rpc import connect_to_server
+
+server = await connect_to_server({"server_url": "https://hypha.aicell.io", "token": token})
+svc = await server.get_service("bioimage-io/model-runner")
+
+# Search for models
+models = await svc.search_models(keywords=["nuclei", "segmentation"], limit=10)
+
+# Get model metadata
+rdf = await svc.get_model_rdf(model_id="affable-shark")
+
+# Run BioImage.IO compliance tests
+result = await svc.test(model_id="affable-shark")
+
+# Get model documentation (README) to verify domain compatibility
+doc = await svc.get_model_documentation(model_id="affable-shark")
+```
+
+For inference, use the `scripts/utils.py` helpers — they handle upload, RPC, and download automatically:
+
+```python
+# From skills/bioengine/apps/model-runner/scripts/utils.py
+from scripts.utils import infer_http, normalize_image, prepare_image_for_model
+
+image = normalize_image(raw_image)                   # percentile normalization (p1–p99.8)
+tensor = prepare_image_for_model(image, axes="bcyx") # reshape to model input axes
+pred = infer_http(model_id, tensor)                  # upload → infer → download
+```
+
+### Key pitfalls
+
+- **Output key varies by model**: Read `outputs[0].id` from the RDF — do not assume `"output0"`.
+- **Domain mismatch**: Always call `get_model_documentation()` before running inference — many models are domain-specific (e.g. trained on histology, not fluorescence microscopy).
+- **Search keywords are AND-matched**: If `"denoising"` returns few results, try synonyms: `"restoration"`, `"noise"`.

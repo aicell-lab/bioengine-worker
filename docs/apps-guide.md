@@ -81,7 +81,7 @@ my_bioengine_app/
 Explore these examples in the repository:
 - **`tests/demo_app/`**: Simple single-deployment application
 - **`tests/composition_app/`**: Multi-deployment composition example
-- **`bioengine_apps/model-runner/`**: Production model inference service
+- **`apps/model-runner/`**: Production model inference service
 
 ## Manifest Configuration
 
@@ -314,7 +314,7 @@ if __name__ == "__main__":
 
 **Example from model-runner application:**
 
-See [`bioengine_apps/model-runner/runtime_deployment.py`](model-runner/runtime_deployment.py) for a complete example:
+See [`apps/model-runner/runtime_deployment.py`](model-runner/runtime_deployment.py) for a complete example:
 
 ```python
 if __name__ == "__main__":
@@ -763,7 +763,7 @@ In addition to authentication, you can specify the Hypha server URL and workspac
 **Full Example:**
 ```bash
 python scripts/save_application.py \
-    --directory "bioengine_apps/model-runner" \
+    --directory "apps/model-runner" \
     --server-url "https://hypha.aicell.io" \
     --workspace "bioimage-io" \
     --token "$HYPHA_TOKEN"
@@ -772,7 +772,7 @@ python scripts/save_application.py \
 **Example with BioEngine Worker:**
 ```bash
 python scripts/save_application.py \
-    --directory "bioengine_apps/model-runner" \
+    --directory "apps/model-runner" \
     --server-url "https://hypha.aicell.io" \
     --worker-service-id "bioimage-io/bioengine-worker"
 ```

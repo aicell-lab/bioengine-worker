@@ -81,7 +81,7 @@ def tests_dir(workspace_folder: Path) -> Path:
 @pytest.fixture(scope="session")
 def bioengine_apps_dir(workspace_folder: Path) -> Path:
     """Return bioengine_apps directory."""
-    return workspace_folder / "bioengine_apps"
+    return workspace_folder / "apps"
 
 
 @pytest.fixture(scope="session", autouse=True)

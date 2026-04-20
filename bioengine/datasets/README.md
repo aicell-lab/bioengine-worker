@@ -133,7 +133,7 @@ bioengine_datasets = BioEngineDatasets(
 )
 ```
 
-> **Note**: In BioEngine applications, `self.bioengine_datasets` is automatically available and pre-configured. See the [BioEngine Applications User Guide](../../bioengine_apps/README.md#selfbioengine_datasets) for details.
+> **Note**: In BioEngine applications, `self.bioengine_datasets` is automatically available and pre-configured. See the [BioEngine Applications User Guide](../../docs/apps-guide.md#selfbioengine_datasets) for details.
 
 ### List Available Datasets
 

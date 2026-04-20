@@ -228,6 +228,7 @@ The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install
 
 | Skill | URL | Purpose |
 |-------|-----|---------|
+| **BioEngine** | https://bioimage.io/skills/bioengine/SKILL.md | Deploy apps, call services, use the CLI — load this first when working with BioEngine |
 | Hypha | https://hypha.aicell.io/ws/agent-skills/SKILL.md | Connect to the Hypha distributed computing platform — obtain tokens, discover workspaces, call services via RPC or HTTP, manage artifacts, deploy apps |
 
 ---

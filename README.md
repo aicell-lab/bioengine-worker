@@ -20,6 +20,8 @@ Foundation models and curated repositories have transformed bioimage AI, yet mos
 
 BioEngine exposes its capabilities through a **SKILL.md contract** — a plain-text file designed for general-purpose AI agents to acquire domain knowledge and invoke GPU services directly. A scientist describes their imaging goal in plain language to any AI agent. The agent parses the contract, selects the appropriate service, and dispatches the GPU workflow. Results return as segmented images, ranked comparison tables, or a live web application, with no command-line access, software installation, or IT ticket required.
 
+> **AI agent?** Load the BioEngine skill: [`https://bioimage.io/skills/bioengine/SKILL.md`](https://bioimage.io/skills/bioengine/SKILL.md)
+
 ## Capabilities
 
 | Capability | Description |
@@ -162,6 +164,7 @@ See [Applications Guide](docs/apps-guide.md) for full documentation.
 - [Datasets Guide](docs/datasets-guide.md) — share and stream large scientific datasets
 - [Deployment Guide](docs/deployment-guide.md) — single-machine, Kubernetes, and SLURM setup
 - [BioEngine Dashboard](https://bioimage.io/#/bioengine) — web-based configuration and management
+- [BioEngine Skill](https://bioimage.io/skills/bioengine/SKILL.md) — agent-readable interface (load this to use BioEngine from any AI agent)
 
 ## Development Setup
 

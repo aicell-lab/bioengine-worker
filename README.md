@@ -56,7 +56,7 @@ Serve large datasets with streaming and access control:
 - **Efficient streaming**: Partial data access for Zarr datasets
 - **Easy sharing**: HTTP-based access through Hypha
 
-**👉 Learn more**: [BioEngine Datasets Guide](bioengine/datasets/README.md)
+**👉 Learn more**: [BioEngine Datasets Guide](docs/datasets-guide.md)
 
 ## 🚀 Quick Start
 
@@ -105,7 +105,7 @@ UID=$(id -u) GID=$(id -g) docker compose up
 ### Core Guides
 
 - **[🚀 BioEngine Applications](docs/apps-guide.md)** - Deploy AI models and create custom services
-- **[📊 BioEngine Datasets](bioengine/datasets/README.md)** - Share and stream large scientific datasets
+- **[📊 BioEngine Datasets](docs/datasets-guide.md)** - Share and stream large scientific datasets
 - **[🎮 BioEngine Dashboard](https://bioimage.io/#/bioengine)** - Web-based configuration and management
 
 ### Deployment Modes

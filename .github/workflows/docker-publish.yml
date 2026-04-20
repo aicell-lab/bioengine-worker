@@ -100,10 +100,8 @@ jobs:
           ghcr.io/aicell-lab/bioengine-worker:${{ env.VERSION }}
         labels: |
           org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-        cache-from: |
-          type=registry,ref=ghcr.io/aicell-lab/bioengine-worker:latest
-          type=gha
-        cache-to: type=gha,mode=max
+        cache-from: type=gha,scope=worker
+        cache-to: type=gha,mode=max,scope=worker
 
     - name: Build and push datasets image
       uses: docker/build-push-action@v5
@@ -117,7 +115,5 @@ jobs:
           ghcr.io/aicell-lab/bioengine-datasets:${{ env.VERSION }}
         labels: |
           org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-        cache-from: |
-          type=registry,ref=ghcr.io/aicell-lab/bioengine-datasets:latest
-          type=gha
-        cache-to: type=gha,mode=max
+        cache-from: type=gha,scope=datasets
+        cache-to: type=gha,mode=max,scope=datasets

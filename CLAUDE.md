@@ -175,6 +175,7 @@ pytest tests/end_to_end/ -v
 - `apps/model-runner/` — Production model-runner app
 - `apps/cellpose-finetuning/` — Cellpose fine-tuning app
 - `pyproject.toml` — Package version and dependencies
+- `../bioimage.io/public/skills/bioengine/` — Agent skills for working with BioEngine (separate repo)
 
 ---
 

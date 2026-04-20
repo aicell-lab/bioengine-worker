@@ -5,6 +5,7 @@
   
   **Cloud-powered AI for simplified bioimage analysis**
   
+  [![GitHub](https://img.shields.io/badge/github-aicell--lab%2Fbioengine--worker-black?logo=github)](https://github.com/aicell-lab/bioengine-worker)
   [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue)](https://github.com/orgs/aicell-lab/packages/container/package/bioengine-worker)
   [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -106,17 +107,18 @@ UID=$(id -u) GID=$(id -g) docker compose up
 
 - **[🚀 BioEngine Applications](docs/apps-guide.md)** - Deploy AI models and create custom services
 - **[📊 BioEngine Datasets](docs/datasets-guide.md)** - Share and stream large scientific datasets
+- **[🖥️ Deployment Guide](docs/deployment-guide.md)** - Step-by-step setup for all deployment modes
 - **[🎮 BioEngine Dashboard](https://bioimage.io/#/bioengine)** - Web-based configuration and management
 
 ### Deployment Modes
 
 BioEngine supports three deployment modes to fit your infrastructure:
 
-| Mode | Description | Best For |
-|------|-------------|----------|
-| **single-machine** | Local Ray cluster on one machine | Workstations, development, small-scale analysis |
-| **external-cluster** | Connect to existing Ray cluster | Kubernetes, pre-configured HPC environments |
-| **slurm** | Auto-scaling via SLURM jobs | HPC clusters with SLURM scheduler |
+| Mode | Description | Best For | Guide |
+|------|-------------|----------|-------|
+| **single-machine** | Local Ray cluster on one machine | Workstations, development, small-scale analysis | [→](docs/deployment-guide.md#mode-1-single-machine) |
+| **external-cluster** | Connect to existing Ray cluster | Kubernetes, pre-configured HPC environments | [→](docs/deployment-guide.md#mode-2-external-cluster-kubernetes--kuberay) |
+| **slurm** | Auto-scaling via SLURM jobs | HPC clusters with SLURM scheduler | [→](docs/deployment-guide.md#mode-3-slurm--hpc) |
 
 ## 🔧 Advanced Usage
 

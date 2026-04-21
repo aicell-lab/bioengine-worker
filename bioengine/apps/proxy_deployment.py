@@ -857,7 +857,7 @@ class ProxyDeployment:
                     "id": self.application_id,
                     "name": self.application_name,
                     "description": self.application_description,
-                    "type": "bioengine-apps",
+                    "type": "bioengine-app",
                     "config": {"visibility": "public", "require_context": True},
                     **service_functions,
                 }

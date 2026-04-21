@@ -150,6 +150,14 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         help="Base URL of the BioEngine dashboard for worker management interfaces.",
     )
     core_group.add_argument(
+        "--worker-name",
+        type=str,
+        metavar="NAME",
+        help="Display name for the Hypha service registration. "
+        "Defaults to 'BioEngine Worker'. Use this to distinguish multiple workers "
+        "in the same workspace.",
+    )
+    core_group.add_argument(
         "--log-file",
         type=str,
         metavar="PATH",

@@ -155,6 +155,8 @@ class BioEngineWorker:
         ray_cluster_config: Optional[Dict[str, Any]] = None,
         # BioEngine dashboard URL
         dashboard_url: str = "https://bioimage.io/#/bioengine",
+        # Hypha service name
+        worker_name: str = "BioEngine Worker",
         # Logger configuration
         log_file: Optional[Union[str, Path]] = None,
         debug: bool = False,
@@ -212,6 +214,9 @@ class BioEngineWorker:
                               SLURM job parameters, resource limits, and autoscaling settings.
             dashboard_url: Base URL of the BioEngine dashboard for worker management and
                           monitoring interfaces.
+            worker_name: Display name for the Hypha service registration. Defaults to
+                        "BioEngine Worker". Use this to distinguish multiple workers in
+                        the same workspace.
             log_file: File path for structured logging output. Auto-generated timestamp-based
                      filename if not specified.
             debug: Enable debug-level logging for detailed troubleshooting and development.
@@ -264,6 +269,7 @@ class BioEngineWorker:
         self._token_expires_at = 0
         self.client_id = client_id
         self.service_id = "bioengine-worker"
+        self.worker_name = worker_name
 
         # Worker state management
         self.start_time = None
@@ -640,7 +646,7 @@ class BioEngineWorker:
         service_info = await self.server.register_service(
             {
                 "id": self.service_id,
-                "name": "BioEngine Worker",
+                "name": self.worker_name,
                 "type": "bioengine-worker",
                 "description": description,
                 "config": {

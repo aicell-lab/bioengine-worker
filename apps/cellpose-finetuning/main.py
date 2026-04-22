@@ -3533,12 +3533,15 @@ def _predict_and_encode(
 
         # model.eval returns (masks, flows, styles)
         # flows = [HSV flow, XY flows, cellprob, final pixel locations]
+        # channel_axis=0 is required because ensure_3_channels returns (3, H, W) CHW format
         masks, flows, _styles = model.eval(
             [image_3ch],
             diameter=diameter,
             flow_threshold=flow_threshold,
             cellprob_threshold=cellprob_threshold,
             niter=niter,
+            channel_axis=0,
+            channels=[0, 0],
         )
 
         # Process masks

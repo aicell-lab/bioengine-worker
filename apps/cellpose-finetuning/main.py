@@ -267,6 +267,7 @@ class TrainingParams(TypedDict):
     validation_interval: int | None
     enable_clahe: bool
     rescale: bool
+    label: str | None
 
 
 def _apply_clahe(img_array: npt.NDArray[Any]) -> npt.NDArray[Any]:
@@ -366,10 +367,19 @@ def _normalize_label_files(
         # Palette PNGs (mode "P") give a 2-D uint8 array with the correct integer
         # label indices — no further conversion needed.
         if lbl_arr.ndim == 3:
-            # For RGB/RGBA label images: take the first channel (red = label index
-            # for standard annotation tool exports) or convert to grayscale.
+            # For RGB/RGBA label images: detect colab mask format (R=high byte,
+            # G=low byte, B=0) and decode accordingly. Standard annotation exports
+            # use R=label index. The discriminator: if all B values are 0, treat as
+            # colab format (instance IDs encoded across R and G channels).
             if lbl_arr.shape[2] in (3, 4):
-                lbl_arr = lbl_arr[:, :, 0]
+                r = lbl_arr[:, :, 0].astype(np.uint16)
+                g = lbl_arr[:, :, 1].astype(np.uint16)
+                b = lbl_arr[:, :, 2]
+                if np.all(b == 0):
+                    # Colab format: 16-bit instance ID split across R (high) and G (low)
+                    lbl_arr = (r << 8) | g
+                else:
+                    lbl_arr = lbl_arr[:, :, 0]
         out_path = out_dir / (fp.stem + "_labels.tif")
         tifffile.imwrite(str(out_path), lbl_arr.astype(np.uint16))
         new_paths.append(out_path)
@@ -393,7 +403,14 @@ def _load_label_array(label_path: Path) -> npt.NDArray[Any]:
     pil_img = PILImage.open(label_path)
     lbl_arr = np.array(pil_img)
     if lbl_arr.ndim == 3 and lbl_arr.shape[2] in (3, 4):
-        lbl_arr = lbl_arr[:, :, 0]
+        r = lbl_arr[:, :, 0].astype(np.uint16)
+        g = lbl_arr[:, :, 1].astype(np.uint16)
+        b = lbl_arr[:, :, 2]
+        if np.all(b == 0):
+            # Colab format: 16-bit instance ID split across R (high) and G (low)
+            lbl_arr = (r << 8) | g
+        else:
+            lbl_arr = lbl_arr[:, :, 0]
     return lbl_arr
 
 
@@ -843,6 +860,7 @@ class SessionStatus(TypedDict, total=False):
     min_train_masks: int
     validation_interval: int | None
     user_id: str | None  # Hypha user ID of the session owner
+    label: str | None  # Annotation label (e.g. "cells") used for this training session
 
 
 class SessionStatusWithId(TypedDict, total=False):
@@ -880,6 +898,7 @@ class SessionStatusWithId(TypedDict, total=False):
     min_train_masks: int
     validation_interval: int | None
     user_id: str | None
+    label: str | None
 
 
 async def make_artifact_client(
@@ -1062,6 +1081,7 @@ def update_status(
     min_train_masks: int | None = None,
     validation_interval: int | None = None,
     user_id: str | None = None,
+    label: str | None = None,
 ) -> None:
     """Update the status of a training session."""
     stop_requested = get_stop_request_path(session_id).exists()
@@ -1129,6 +1149,8 @@ def update_status(
         status_dict["validation_interval"] = validation_interval
     if user_id is not None:
         status_dict["user_id"] = user_id
+    if label is not None:
+        status_dict["label"] = label
 
     status_json = json.dumps(status_dict)
     tmp_path = status_path.with_suffix(".json.tmp")
@@ -3783,6 +3805,15 @@ class CellposeFinetune:
                 "parameter in infer() to control rescaling at inference time."
             ),
         ),
+        label: str | None = Field(
+            None,
+            description=(
+                "Annotation label to use for training (e.g. 'cells'). "
+                "Saved in session metadata and used to filter sessions. "
+                "Should match the mask folder name: masks_{label}/ in the artifact."
+            ),
+            examples=["cells", "nucleus"],
+        ),
         context: dict[str, Any] | None = Field(
             None,
             description="Authentication context, automatically provided by Hypha.",
@@ -3818,6 +3849,7 @@ class CellposeFinetune:
             )
             enable_clahe = bool(wrapped.get("enable_clahe", enable_clahe))
             rescale = bool(wrapped.get("rescale", rescale))
+            label = wrapped.get("label", label)
             context = wrapped.get("context", context)
 
         artifact = normalize_optional_param(artifact)
@@ -3866,6 +3898,9 @@ class CellposeFinetune:
             n_samples = int(n_samples)
         if validation_interval is not None:
             validation_interval = int(validation_interval)
+        label = normalize_optional_param(label)
+        if label is not None:
+            label = str(label).strip() or None
 
         n_epochs = int(n_epochs)
         learning_rate = float(learning_rate)
@@ -3896,6 +3931,7 @@ class CellposeFinetune:
             min_train_masks=min_train_masks,
             validation_interval=validation_interval,
             user_id=user_id,
+            label=label,
         )
 
         training_params = TrainingParams(
@@ -3916,6 +3952,7 @@ class CellposeFinetune:
             validation_interval=validation_interval,
             enable_clahe=bool(enable_clahe),
             rescale=bool(rescale),
+            label=label,
         )
 
         # Save training parameters for later export
@@ -4176,16 +4213,21 @@ class CellposeFinetune:
         status_types: list[str] | None,
         limit: int,
         dataset_artifact_ids: list[str] | None = None,
+        labels: list[str] | None = None,
     ) -> dict[str, SessionStatus]:
         """Synchronous implementation of list_sessions."""
         filt: set[str] | None = None
         if status_types is not None:
             allowed = {s.value for s in StatusType}
             filt = {s for s in status_types if s in allowed}
-        
+
         artifact_filt: set[str] | None = None
         if dataset_artifact_ids is not None:
             artifact_filt = set(dataset_artifact_ids)
+
+        label_filt: set[str] | None = None
+        if labels is not None:
+            label_filt = set(labels)
 
         sessions: dict[str, SessionStatus] = {}
         # Ensure session path exists (might not if no sessions yet)
@@ -4230,6 +4272,9 @@ class CellposeFinetune:
             if artifact_filt is not None and session_data.get("dataset_artifact_id") not in artifact_filt:
                 continue
 
+            if label_filt is not None and session_data.get("label") not in label_filt:
+                continue
+
             # Cast to SessionStatus to satisfy type checker
             sessions[session_id] = SessionStatus(
                 status_type=session_data.get("status_type"),
@@ -4258,6 +4303,7 @@ class CellposeFinetune:
                 min_train_masks=session_data.get("min_train_masks"),
                 validation_interval=session_data.get("validation_interval"),
                 user_id=session_data.get("user_id"),
+                label=session_data.get("label"),
             )
 
         return sessions
@@ -4278,6 +4324,11 @@ class CellposeFinetune:
             description="Optional list of dataset artifact IDs to filter sessions.",
             examples=[["ri-scale/zarr-demo", "ri-scale/another-dataset"]],
         ),
+        labels: list[str] | None = Field(
+            None,
+            description="Optional list of annotation labels to filter sessions (e.g. ['cells']).",
+            examples=[["cells"], ["nucleus", "cells"]],
+        ),
         limit: int = Field(
             50, description="Maximum number of sessions to return (most recent first)"
         ),
@@ -4288,7 +4339,13 @@ class CellposeFinetune:
         the session history. For completed sessions, the saved model path is included
         if available.
         """
-        return await asyncio.to_thread(self._list_sessions_sync, status_types, limit, dataset_artifact_ids)
+        if isinstance(status_types, dict):
+            wrapped = status_types
+            status_types = wrapped.get("status_types", None)
+            dataset_artifact_ids = wrapped.get("dataset_artifact_ids", dataset_artifact_ids)
+            labels = wrapped.get("labels", labels)
+            limit = wrapped.get("limit", limit)
+        return await asyncio.to_thread(self._list_sessions_sync, status_types, limit, dataset_artifact_ids, labels)
 
     @schema_method(arbitrary_types_allowed=True)  # type: ignore
     async def delete_training_session(

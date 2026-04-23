@@ -228,7 +228,7 @@ The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install
 
 | Skill | URL | Purpose |
 |-------|-----|---------|
-| **BioEngine** | https://bioimage.io/skills/bioengine/SKILL.md | Deploy apps, call services, use the CLI — load this first when working with BioEngine |
+| **BioEngine** | `../bioimage.io/public/skills/bioengine/SKILL.md` (fallback: https://bioimage.io/skills/bioengine/SKILL.md) | Deploy apps, call services, use the CLI — load this first when working with BioEngine |
 | Hypha | https://hypha.aicell.io/ws/agent-skills/SKILL.md | Connect to the Hypha distributed computing platform — obtain tokens, discover workspaces, call services via RPC or HTTP, manage artifacts, deploy apps |
 
 ---
@@ -249,6 +249,19 @@ The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install
   )
   svc = await client.get_service(f'bioimage-io/{app_id}')
   ```
+- **CRITICAL — artifact ID ≠ app ID, omitting `application_id` always creates a NEW instance**: One artifact can be deployed multiple times with different `application_id`s. `deploy_app(artifact_id)` without `application_id` **always spawns a brand-new instance with a random ID** — it never updates an existing one. To update a running app, you MUST pass its `application_id` AND the new `version` explicitly:
+  ```python
+  # WRONG — creates a new random instance, does NOT update cellpose-finetuning:
+  await worker.deploy_app('bioimage-io/cellpose-finetuning')
+  
+  # CORRECT — updates the running 'cellpose-finetuning' instance to the new version:
+  await worker.deploy_app(
+      'bioimage-io/cellpose-finetuning',
+      application_id='cellpose-finetuning',
+      version='0.0.28',
+  )
+  ```
+  Before deploying, always check `list_apps()` or `get_app_status(None)` to find the correct running `application_id`.
 - **Commit after live deploy**: Once an app in `apps/` is verified working on the live worker, commit the source to git so the deployed version is always reproducible:
   ```bash
   git add apps/my-app/

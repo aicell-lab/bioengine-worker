@@ -1323,6 +1323,17 @@ class AppsManager:
             None,
             description="Set to true to enable debug logging for the whole application with all its deployments. If not specified, uses False for a new application, or preserves the previous setting if updating an existing application (only when application_id is specified).",
         ),
+        ice_servers: Optional[List[Dict[str, Any]]] = Field(
+            None,
+            description="Custom ICE server configurations for WebRTC connections. If provided, these are used instead of fetching from the default Hypha TURN server endpoint. Each entry should have a 'urls' key and optionally 'username' and 'credential' for TURN servers. Example: [{\"urls\": \"stun:stun.example.com:19302\"}, {\"urls\": \"turn:turn.example.com:3478\", \"username\": \"user\", \"credential\": \"pass\"}]. If not specified, ICE servers are fetched automatically.",
+            examples=[
+                [{"urls": "stun:stun.example.com:19302"}],
+                [
+                    {"urls": "stun:stun.example.com:19302"},
+                    {"urls": "turn:turn.example.com:3478", "username": "user", "credential": "pass"},
+                ],
+            ],
+        ),
         context: Dict[str, Any] = Field(
             ...,
             description="Authentication context containing user information, automatically provided by Hypha during service calls.",
@@ -1417,6 +1428,8 @@ class AppsManager:
                     auto_redeploy = existing_app["auto_redeploy"]
                 if debug is None:
                     debug = existing_app.get("debug", False)
+                if ice_servers is None:
+                    ice_servers = existing_app.get("ice_servers", None)
             else:
                 # For new applications, set creation time and default values
                 started_at = time.time()
@@ -1435,6 +1448,7 @@ class AppsManager:
                     auto_redeploy = False
                 if debug is None:
                     debug = False
+                # ice_servers defaults to None (fetch from URL)
 
             # Validate application_kwargs
             if not isinstance(application_kwargs, dict):
@@ -1525,6 +1539,7 @@ class AppsManager:
                 last_updated_at=last_updated_at,
                 last_updated_by=user_id,
                 auto_redeploy=auto_redeploy,
+                ice_servers=ice_servers,
             )
 
             # Check resources before creating deployment task
@@ -1562,6 +1577,7 @@ class AppsManager:
                 "last_updated_by": user_id,
                 "built_app": app,
                 "auto_redeploy": auto_redeploy,
+                "ice_servers": ice_servers,
                 "deployment_task": None,  # Control task for app deployment
                 "is_deployed": asyncio.Event(),  # Track the deployment process
                 "undeployment_task": None,  # Control task for app undeployment

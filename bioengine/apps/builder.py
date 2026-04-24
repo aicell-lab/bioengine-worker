@@ -1208,6 +1208,7 @@ class AppBuilder:
         last_updated_at: Optional[float] = None,
         last_updated_by: Optional[str] = None,
         auto_redeploy: bool = False,
+        ice_servers: Optional[List[Dict[str, Any]]] = None,
     ) -> serve.Application:
         """
         Transform a deployment artifact into a fully functional BioEngine application.
@@ -1460,6 +1461,7 @@ class AppBuilder:
                 serve_http_url=self.serve_http_url,
                 proxy_actor_name=self.proxy_actor_name,
                 debug=debug,
+                ice_servers=ice_servers,
             )
 
             # Create application metadata

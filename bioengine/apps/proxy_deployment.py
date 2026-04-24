@@ -98,6 +98,7 @@ class ProxyDeployment:
         serve_http_url: str,
         proxy_actor_name: str,
         debug: bool,
+        ice_servers: Optional[List[Dict[str, Any]]] = None,
     ):
         """
         Initialize the BioEngine proxy deployment.
@@ -140,6 +141,11 @@ class ProxyDeployment:
             serve_http_url: URL for Ray Serve HTTP endpoint used for autoscaling coordination.
             proxy_actor_name: Actor name of the BioEngineProxyActor for replica registration.
             debug: Set to true to enable debug logging.
+            ice_servers: Optional list of ICE server configurations to use for WebRTC
+                        connections. If provided, these are used instead of fetching from
+                        the default URL. Example:
+                        [{"urls": "stun:stun.example.com:19302"},
+                         {"urls": "turn:turn.example.com:3478", "username": "u", "credential": "p"}]
         """
         logger.setLevel("DEBUG" if debug else "INFO")
         logger.info(
@@ -229,6 +235,9 @@ class ProxyDeployment:
 
         # Store entry deployment readiness
         self.entry_deployment_ready = False
+
+        # Custom ICE servers for WebRTC (None means fetch from default URL)
+        self.ice_servers = ice_servers
 
         # Service state
         self.server: RemoteService = None
@@ -643,21 +652,21 @@ class ProxyDeployment:
                 f"❌ Failed to initialize WebRTC connection for '{self.application_id}': {e}"
             )
 
+    ICE_SERVERS_URL = (
+        "https://hypha.aicell.io/turn-server/services/coturn/get_rtc_ice_servers"
+    )
+
     async def _fetch_ice_servers(self) -> Optional[List[Dict[str, Any]]]:
         """
-        Fetch custom ICE servers for WebRTC connections.
+        Resolve ICE servers for WebRTC connections.
 
         ICE (Interactive Connectivity Establishment) servers help establish
-        WebRTC connections through NAT and firewall traversal. This method
-        attempts to fetch custom ICE servers from the Hypha infrastructure.
+        WebRTC connections through NAT and firewall traversal.
 
-        ICE servers provide:
-        1. STUN servers: Discover public IP addresses
-        2. TURN servers: Relay traffic when direct connection fails
-        3. Support for various network configurations
-
-        The method gracefully falls back to None if custom servers are unavailable,
-        allowing hypha-rpc to use its built-in default servers.
+        Resolution order:
+        1. If custom ICE servers were provided at deploy time, use them directly.
+        2. Otherwise, fetch from the Hypha TURN server endpoint.
+        3. If the fetch fails, fall back to None (hypha-rpc uses built-in defaults).
 
         Returns:
             List of ICE server configurations, or None to use defaults.
@@ -666,11 +675,15 @@ class ProxyDeployment:
             [{"urls": "stun:stun.server.com:19302"},
              {"urls": "turn:turn.server.com:3478", "username": "...", "credential": "..."}]
         """
+        if self.ice_servers is not None:
+            logger.info(
+                f"✅ Using custom ICE servers provided at deploy time for {self.application_id}"
+            )
+            return self.ice_servers
+
         try:
             async with AsyncClient(timeout=30) as client:
-                response = await client.get(
-                    "https://ai.imjoy.io/public/services/coturn/get_rtc_ice_servers"
-                )
+                response = await client.get(self.ICE_SERVERS_URL)
                 response.raise_for_status()
                 ice_servers = response.json()
                 logger.info(

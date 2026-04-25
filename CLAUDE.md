@@ -177,8 +177,8 @@ pytest tests/end_to_end/ -v
 - `bioengine/utils/artifact_utils.py` — All Hypha artifact CRUD helpers
 - `bioengine/apps/manager.py` — `deploy_app`, `upload_app`, lifecycle
 - `bioengine/apps/builder.py` — `build()` constructs Ray Serve app from artifact
-- `apps/demo-app/` — Reference BioEngine app (single deployment + frontend; ping, ascii_art, list_datasets, reverse_text)
-- `apps/composition-demo/` — Multi-deployment composition app (entry + 3 runtimes, reference for composition pattern)
+- `apps/demo-app/` — Reference BioEngine app (single deployment + frontend; ping, ascii_art, list_datasets, reverse_text); **always keep version at 1.0.0**
+- `apps/composition-demo/` — Multi-deployment composition app (entry + 3 runtimes, reference for composition pattern); **always keep version at 1.0.0**
 - `apps/model-runner/` — Production model-runner app
 - `apps/cellpose-finetuning/` — Cellpose fine-tuning app
 - `pyproject.toml` — Package version and dependencies; install with `pip install -e ".[cli]"` for CLI use

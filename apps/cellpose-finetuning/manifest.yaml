@@ -15,9 +15,10 @@ maintainers: []
 name: Cellpose Fine-Tuning
 tags: [cell-segmentation, deep-learning, biomedical-imaging, fine-tuning]
 type: ray-serve
-version: 0.0.28
+version: 0.0.29
 deployments:
   - main:CellposeFinetune
 authorized_users:
-  - "*" # Allow all users to access the application
+  "*":
+    - "*" # Allow all users to access the application
 frontend_entry: "frontend/index.html"

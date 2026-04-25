@@ -14,9 +14,10 @@ git_repo: https://github.com/aicell-lab/bioengine-worker
 links: []
 tags: [test, bioengine]
 type: ray-serve
-version: 0.1.0
+version: 0.1.1
 deployments:
   - demo_deployment:DemoDeployment
 authorized_users:
-  - "*" # Allow all users to access the application
+  "*":
+    - "*" # Allow all users to access the application
 frontend_entry: "frontend/index.html"

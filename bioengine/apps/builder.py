@@ -1418,12 +1418,15 @@ class AppBuilder:
                 }
             )
 
-            # Resolve authorized_users: deploy-time override > manifest (converted to dict).
+            # Resolve authorized_users: deploy-time override > manifest.
             if authorized_users is not None:
                 effective_authorized_users = authorized_users
             else:
-                manifest_list = manifest.get("authorized_users", ["*"])
-                effective_authorized_users = {"*": manifest_list}
+                manifest_users = manifest.get("authorized_users", ["*"])
+                if isinstance(manifest_users, dict):
+                    effective_authorized_users = manifest_users
+                else:
+                    effective_authorized_users = {"*": manifest_users}
 
             # Always ensure the deploying user has access to all methods.
             if deploying_user:

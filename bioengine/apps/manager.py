@@ -1334,6 +1334,15 @@ class AppsManager:
                 ],
             ],
         ),
+        authorized_users: Optional[Dict[str, List[str]]] = Field(
+            None,
+            description="Per-method access control for the deployed application. Keys are method names or '*' (wildcard for all methods). Values are lists of allowed user IDs or email addresses; use ['*'] for public access. Method-specific entries take precedence over the wildcard. The user calling deploy_app is always granted access to all methods. If not specified, the manifest's authorized_users field is used as a wildcard rule for all methods, or the previous value is preserved when updating an existing application.",
+            examples=[
+                {"*": ["*"]},
+                {"*": ["user@lab.edu"], "run_inference": ["*"]},
+                {"train": ["admin@lab.edu"], "infer": ["*"]},
+            ],
+        ),
         context: Dict[str, Any] = Field(
             ...,
             description="Authentication context containing user information, automatically provided by Hypha during service calls.",
@@ -1430,6 +1439,8 @@ class AppsManager:
                     debug = existing_app.get("debug", False)
                 if ice_servers is None:
                     ice_servers = existing_app.get("ice_servers", None)
+                if authorized_users is None:
+                    authorized_users = existing_app.get("authorized_users", None)
             else:
                 # For new applications, set creation time and default values
                 started_at = time.time()
@@ -1449,6 +1460,10 @@ class AppsManager:
                 if debug is None:
                     debug = False
                 # ice_servers defaults to None (fetch from URL)
+                # authorized_users defaults to None (use manifest value)
+
+            # Caller identity for injection into authorized_users by the builder
+            user_email = context["user"].get("email", "")
 
             # Validate application_kwargs
             if not isinstance(application_kwargs, dict):
@@ -1540,6 +1555,8 @@ class AppsManager:
                 last_updated_by=user_id,
                 auto_redeploy=auto_redeploy,
                 ice_servers=ice_servers,
+                authorized_users=authorized_users,
+                deploying_user=(user_id, user_email),
             )
 
             # Check resources before creating deployment task

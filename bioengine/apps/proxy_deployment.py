@@ -94,7 +94,7 @@ class ProxyDeployment:
         workspace: str,
         proxy_service_token: str,
         worker_client_id: str,
-        authorized_users: List[str],
+        authorized_users: Dict[str, List[str]],
         serve_http_url: str,
         proxy_actor_name: str,
         debug: bool,
@@ -134,9 +134,11 @@ class ProxyDeployment:
 
             worker_client_id: Client ID of the worker that created this deployment.
 
-            authorized_users: List of user identifiers (IDs or emails) allowed to access
-                            this application. Use ["*"] for public access or empty list
-                            to deny all access.
+            authorized_users: Per-method access control dictionary. Keys are method names
+                            or "*" (applies to all methods). Values are lists of user IDs
+                            or emails allowed to call that method; use ["*"] for public
+                            access. Method-specific entries take precedence over "*".
+                            Example: {"*": ["admin@lab.edu"], "run": ["*"]}
 
             serve_http_url: URL for Ray Serve HTTP endpoint used for autoscaling coordination.
             proxy_actor_name: Actor name of the BioEngineProxyActor for replica registration.
@@ -326,32 +328,28 @@ class ProxyDeployment:
     # ===== Hypha Service Registration =====
     # Handles registration of WebSocket and WebRTC services with Hypha.
 
-    async def _check_permissions(self, context: Dict[str, Any]) -> None:
+    async def _check_permissions(
+        self, context: Dict[str, Any], method_name: str = "*"
+    ) -> None:
         """
-        Verify that a user is authorized to access this deployment.
+        Verify that a user is authorized to call a specific method on this deployment.
 
-        This method is called by proxy functions during service registration to
-        enforce access control based on the authorized_users list configured
-        during deployment initialization.
-
-        Permission Checking Process:
-        1. Validates that context contains user information
-        2. Extracts user ID and email from the context
-        3. Checks against the authorized_users list
-        4. Supports wildcard access ("*") for public deployments
-
-        Authorization Methods:
-        - Wildcard "*" in authorized_users allows all users
-        - User ID match against authorized_users list
-        - Email address match against authorized_users list
+        Resolves the effective authorized-users list for the given method:
+        1. Method-specific entry in authorized_users takes precedence.
+        2. Falls back to the wildcard "*" entry if no method-specific entry exists.
+        3. If neither exists, access is denied.
 
         Args:
-            context: Request context containing user information from Hypha
+            context: Request context containing user information from Hypha.
+            method_name: Name of the method being called. Defaults to "*" for
+                        app-level checks (e.g. health check).
 
         Raises:
-            PermissionError: If user is not authorized or context is invalid
+            PermissionError: If user is not authorized or context is invalid.
         """
-        logger.debug(f"🔒 Checking permissions for application: {self.application_id}")
+        logger.debug(
+            f"🔒 Checking permissions for '{method_name}' on application: {self.application_id}"
+        )
 
         if not isinstance(context, dict) or "user" not in context:
             logger.error(f"❌ Invalid context without user information")
@@ -362,21 +360,32 @@ class ProxyDeployment:
             logger.error(f"❌ Invalid user information in context")
             raise PermissionError("Invalid user information in context")
 
-        # Check authorization
-        user_id = user["id"]
-        user_email = user["email"]
+        user_id = user.get("id", "")
+        user_email = user.get("email", "")
 
-        if "*" in self.authorized_users:
-            logger.debug(f"✅ Wildcard access granted for user: {user_id}")
+        # Resolve the effective authorized list: method-specific > wildcard > deny
+        allowed = self.authorized_users.get(method_name) or self.authorized_users.get("*")
+        if not allowed:
+            logger.error(
+                f"❌ No authorization rule for method '{method_name}' and no wildcard '*' rule"
+            )
+            raise PermissionError(
+                f"User '{user_id}' ({user_email}) is not authorized to call "
+                f"'{method_name}' on application '{self.application_id}'"
+            )
+
+        if "*" in allowed:
+            logger.debug(f"✅ Public access granted for '{method_name}' to user: {user_id}")
             return
 
-        if user_id in self.authorized_users or user_email in self.authorized_users:
-            logger.debug(f"✅ User authorized: {user_id} ({user_email})")
+        if user_id in allowed or user_email in allowed:
+            logger.debug(f"✅ User authorized for '{method_name}': {user_id} ({user_email})")
             return
 
-        logger.error(f"❌ User not authorized: {user_id} ({user_email})")
+        logger.error(f"❌ User not authorized for '{method_name}': {user_id} ({user_email})")
         raise PermissionError(
-            f"User '{user_id}' ({user_email}) is not authorized to access application '{self.application_id}'"
+            f"User '{user_id}' ({user_email}) is not authorized to call "
+            f"'{method_name}' on application '{self.application_id}'"
         )
 
     async def _mimic_request(self, request_id: str) -> None:
@@ -486,7 +495,7 @@ class ProxyDeployment:
                 event_created = False
                 try:
                     # Check user permissions
-                    await self._check_permissions(context)
+                    await self._check_permissions(context, method_name=method_name)
 
                     # Log the method call
                     user_info = context.get("user", {}) if context else {}

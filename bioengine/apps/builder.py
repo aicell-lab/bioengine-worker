@@ -1209,6 +1209,8 @@ class AppBuilder:
         last_updated_by: Optional[str] = None,
         auto_redeploy: bool = False,
         ice_servers: Optional[List[Dict[str, Any]]] = None,
+        authorized_users: Optional[Dict[str, List[str]]] = None,
+        deploying_user: Optional[tuple] = None,
     ) -> serve.Application:
         """
         Transform a deployment artifact into a fully functional BioEngine application.
@@ -1416,6 +1418,28 @@ class AppBuilder:
                 }
             )
 
+            # Resolve authorized_users: deploy-time override > manifest (converted to dict).
+            if authorized_users is not None:
+                effective_authorized_users = authorized_users
+            else:
+                manifest_list = manifest.get("authorized_users", ["*"])
+                effective_authorized_users = {"*": manifest_list}
+
+            # Always ensure the deploying user has access to all methods.
+            if deploying_user:
+                dep_id, dep_email = deploying_user
+                for key in list(effective_authorized_users):
+                    rule = list(effective_authorized_users[key])
+                    if dep_id and dep_id not in rule:
+                        rule.append(dep_id)
+                    if dep_email and dep_email not in rule:
+                        rule.append(dep_email)
+                    effective_authorized_users[key] = rule
+                if "*" not in effective_authorized_users:
+                    effective_authorized_users["*"] = [
+                        v for v in [dep_id, dep_email] if v
+                    ]
+
             # Create the application
             sanitized_env_vars = self._sanitize_recovery_env_vars(application_env_vars)
             app_data = {
@@ -1428,7 +1452,7 @@ class AppBuilder:
                 "disable_gpu": disable_gpu,
                 "max_ongoing_requests": max_ongoing_requests,
                 "application_resources": required_resources,
-                "authorized_users": manifest["authorized_users"],
+                "authorized_users": effective_authorized_users,
                 "available_methods": [
                     method_schema["name"] for method_schema in method_schemas
                 ],
@@ -1457,7 +1481,7 @@ class AppBuilder:
                 workspace=self.server.config.workspace,
                 worker_client_id=self.server.config.client_id,
                 proxy_service_token=proxy_service_token,
-                authorized_users=manifest["authorized_users"],
+                authorized_users=effective_authorized_users,
                 serve_http_url=self.serve_http_url,
                 proxy_actor_name=self.proxy_actor_name,
                 debug=debug,
@@ -1470,7 +1494,7 @@ class AppBuilder:
                 "description": manifest["description"],
                 "version": version,
                 "resources": required_resources,
-                "authorized_users": manifest["authorized_users"],
+                "authorized_users": effective_authorized_users,
                 "available_methods": [
                     method_schema["name"] for method_schema in method_schemas
                 ],

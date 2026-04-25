@@ -38,8 +38,6 @@ class AppManifest(TypedDict, total=False):
     • description: What this application does (help text for users)
     • type: Deployment type (must be "ray-serve" for Ray Serve apps)
     • deployments: List of Python files to deploy (format: "file:ClassName")
-    • authorized_users: Who can access this app (user IDs or ["*"] for public)
-
     Optional Fields:
     • frontend_entry: Entry HTML file for the static frontend (e.g. "frontend/index.html").
                       When set, static site hosting is configured automatically.
@@ -52,7 +50,6 @@ class AppManifest(TypedDict, total=False):
     description: "Classifies images using a pre-trained CNN model"
     type: "ray-serve"
     deployments: ["classifier:ImageClassifier"]
-    authorized_users: ["user123", "*"]
     frontend_entry: "frontend/index.html"
     ```
     """
@@ -63,7 +60,6 @@ class AppManifest(TypedDict, total=False):
     description: str
     type: str
     deployments: List[str]
-    authorized_users: List[str]
     frontend_entry: str
 
 
@@ -1209,6 +1205,9 @@ class AppBuilder:
         last_updated_by: Optional[str] = None,
         auto_redeploy: bool = False,
         ice_servers: Optional[List[Dict[str, Any]]] = None,
+        authorized_users: Optional[Dict[str, List[str]]] = None,
+        deploying_user: Optional[tuple] = None,
+        admin_users: Optional[List[str]] = None,
     ) -> serve.Application:
         """
         Transform a deployment artifact into a fully functional BioEngine application.
@@ -1416,6 +1415,34 @@ class AppBuilder:
                 }
             )
 
+            # Resolve authorized_users: deploy-time override > manifest.
+            if authorized_users is not None:
+                effective_authorized_users = authorized_users
+            else:
+                manifest_users = manifest.get("authorized_users", ["*"])
+                if isinstance(manifest_users, dict):
+                    effective_authorized_users = manifest_users
+                else:
+                    effective_authorized_users = {"*": manifest_users}
+
+            # Always ensure the deploying user and all admin users have access to all methods.
+            users_to_inject = []
+            if deploying_user:
+                dep_id, dep_email = deploying_user
+                users_to_inject.extend([v for v in [dep_id, dep_email] if v])
+            if admin_users:
+                users_to_inject.extend(admin_users)
+
+            if users_to_inject:
+                for key in list(effective_authorized_users):
+                    rule = list(effective_authorized_users[key])
+                    for user in users_to_inject:
+                        if user not in rule:
+                            rule.append(user)
+                    effective_authorized_users[key] = rule
+                if "*" not in effective_authorized_users:
+                    effective_authorized_users["*"] = list(users_to_inject)
+
             # Create the application
             sanitized_env_vars = self._sanitize_recovery_env_vars(application_env_vars)
             app_data = {
@@ -1428,7 +1455,7 @@ class AppBuilder:
                 "disable_gpu": disable_gpu,
                 "max_ongoing_requests": max_ongoing_requests,
                 "application_resources": required_resources,
-                "authorized_users": manifest["authorized_users"],
+                "authorized_users": effective_authorized_users,
                 "available_methods": [
                     method_schema["name"] for method_schema in method_schemas
                 ],
@@ -1457,7 +1484,7 @@ class AppBuilder:
                 workspace=self.server.config.workspace,
                 worker_client_id=self.server.config.client_id,
                 proxy_service_token=proxy_service_token,
-                authorized_users=manifest["authorized_users"],
+                authorized_users=effective_authorized_users,
                 serve_http_url=self.serve_http_url,
                 proxy_actor_name=self.proxy_actor_name,
                 debug=debug,
@@ -1470,7 +1497,7 @@ class AppBuilder:
                 "description": manifest["description"],
                 "version": version,
                 "resources": required_resources,
-                "authorized_users": manifest["authorized_users"],
+                "authorized_users": effective_authorized_users,
                 "available_methods": [
                     method_schema["name"] for method_schema in method_schemas
                 ],

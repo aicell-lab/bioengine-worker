@@ -239,7 +239,6 @@ def validate_manifest(manifest: Dict[str, Any]) -> None:
         "description",
         "type",
         "deployments",
-        "authorized_users",
     ]
     for field in required_fields:
         if field not in manifest:
@@ -259,13 +258,6 @@ def validate_manifest(manifest: Dict[str, Any]) -> None:
             "Expected a non-empty list of deployment descriptions in the format 'python_file:class_name'."
         )
 
-    # Validate authorized_users format
-    authorized_users = manifest["authorized_users"]
-    if not isinstance(authorized_users, list) or len(authorized_users) == 0:
-        raise ValueError(
-            "Invalid authorized_users format in manifest. "
-            "Expected a non-empty list of user IDs or '*' for all users."
-        )
 
 
 def validate_artifact_id(

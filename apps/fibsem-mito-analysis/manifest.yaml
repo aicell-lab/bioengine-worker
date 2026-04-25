@@ -4,7 +4,7 @@ id_emoji: "🔬"
 description: "Automated mitochondria instance segmentation and morphological profiling for 2D electron microscopy images. Delegates GPU inference to the BioEngine model-runner service (poisonous-spider Attention U-Net), handles arbitrary image sizes via tiled inference with Gaussian blending."
 type: ray-serve
 format_version: 0.5.0
-version: 0.1.0
+version: 0.1.1
 authors:
   - {name: "BioEngine Team", affiliation: "KTH Royal Institute of Technology", github_user: "oeway"}
 maintainers: [oeway]
@@ -13,6 +13,4 @@ git_repo: https://github.com/aicell-lab/bioengine-worker
 tags: [mitochondria, electron-microscopy, fibsem, segmentation, morphology, scalable, bioimage-model-zoo]
 deployments:
   - analysis_deployment:MitoAnalysisDeployment
-authorized_users:
-  - "*"
 frontend_entry: "frontend/index.html"

@@ -1462,7 +1462,7 @@ class AppsManager:
                 # ice_servers defaults to None (fetch from URL)
                 # authorized_users defaults to None (use manifest value)
 
-            # Caller identity for injection into authorized_users by the builder
+            # Caller identity and admin users for injection into authorized_users by the builder
             user_email = context["user"].get("email", "")
 
             # Validate application_kwargs
@@ -1557,6 +1557,7 @@ class AppsManager:
                 ice_servers=ice_servers,
                 authorized_users=authorized_users,
                 deploying_user=(user_id, user_email),
+                admin_users=self.admin_users,
             )
 
             # Check resources before creating deployment task

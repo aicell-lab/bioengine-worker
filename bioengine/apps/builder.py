@@ -1207,6 +1207,7 @@ class AppBuilder:
         ice_servers: Optional[List[Dict[str, Any]]] = None,
         authorized_users: Optional[Dict[str, List[str]]] = None,
         deploying_user: Optional[tuple] = None,
+        admin_users: Optional[List[str]] = None,
     ) -> serve.Application:
         """
         Transform a deployment artifact into a fully functional BioEngine application.
@@ -1424,20 +1425,23 @@ class AppBuilder:
                 else:
                     effective_authorized_users = {"*": manifest_users}
 
-            # Always ensure the deploying user has access to all methods.
+            # Always ensure the deploying user and all admin users have access to all methods.
+            users_to_inject = []
             if deploying_user:
                 dep_id, dep_email = deploying_user
+                users_to_inject.extend([v for v in [dep_id, dep_email] if v])
+            if admin_users:
+                users_to_inject.extend(admin_users)
+
+            if users_to_inject:
                 for key in list(effective_authorized_users):
                     rule = list(effective_authorized_users[key])
-                    if dep_id and dep_id not in rule:
-                        rule.append(dep_id)
-                    if dep_email and dep_email not in rule:
-                        rule.append(dep_email)
+                    for user in users_to_inject:
+                        if user not in rule:
+                            rule.append(user)
                     effective_authorized_users[key] = rule
                 if "*" not in effective_authorized_users:
-                    effective_authorized_users["*"] = [
-                        v for v in [dep_id, dep_email] if v
-                    ]
+                    effective_authorized_users["*"] = list(users_to_inject)
 
             # Create the application
             sanitized_env_vars = self._sanitize_recovery_env_vars(application_env_vars)

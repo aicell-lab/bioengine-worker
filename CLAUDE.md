@@ -166,6 +166,7 @@ pytest tests/end_to_end/ -v
 ## Code Conventions
 
 - **Git author**: Always commit as `nilsmechtel` (`nils.mech@gmail.com`) unless explicitly told otherwise.
+- **App authorized_users**: When deploying an app, the worker's `admin_users` and the deploying user are always injected into every key of `authorized_users` (including `"*"`). This guarantees admins can always call any app method regardless of the app's access rules.
 - **Permissions**: Use `check_permissions(context, authorized_users, resource_name)` from `bioengine.utils`
 - **Schema methods**: Decorate public API methods with `@schema_method` and use `pydantic.Field` for parameter descriptions
 - **Logging**: Use `create_logger("ComponentName", ...)` from `bioengine.utils`

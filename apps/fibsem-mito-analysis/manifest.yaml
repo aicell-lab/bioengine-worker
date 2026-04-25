@@ -13,7 +13,4 @@ git_repo: https://github.com/aicell-lab/bioengine-worker
 tags: [mitochondria, electron-microscopy, fibsem, segmentation, morphology, scalable, bioimage-model-zoo]
 deployments:
   - analysis_deployment:MitoAnalysisDeployment
-authorized_users:
-  "*":
-    - "*"
 frontend_entry: "frontend/index.html"

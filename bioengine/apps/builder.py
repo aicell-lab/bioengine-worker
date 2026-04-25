@@ -38,8 +38,6 @@ class AppManifest(TypedDict, total=False):
     • description: What this application does (help text for users)
     • type: Deployment type (must be "ray-serve" for Ray Serve apps)
     • deployments: List of Python files to deploy (format: "file:ClassName")
-    • authorized_users: Who can access this app (user IDs or ["*"] for public)
-
     Optional Fields:
     • frontend_entry: Entry HTML file for the static frontend (e.g. "frontend/index.html").
                       When set, static site hosting is configured automatically.
@@ -52,7 +50,6 @@ class AppManifest(TypedDict, total=False):
     description: "Classifies images using a pre-trained CNN model"
     type: "ray-serve"
     deployments: ["classifier:ImageClassifier"]
-    authorized_users: ["user123", "*"]
     frontend_entry: "frontend/index.html"
     ```
     """
@@ -63,7 +60,6 @@ class AppManifest(TypedDict, total=False):
     description: str
     type: str
     deployments: List[str]
-    authorized_users: List[str]
     frontend_entry: str
 
 

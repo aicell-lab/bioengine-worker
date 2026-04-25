@@ -26,7 +26,4 @@ tags:
   - drug-discovery
 deployments:
   - main:CellImageSearch
-authorized_users:
-  "*":
-    - "*"
 frontend_entry: "frontend/index.html"

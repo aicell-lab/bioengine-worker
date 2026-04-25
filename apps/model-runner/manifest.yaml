@@ -18,6 +18,3 @@ version: 1.0.1
 deployments:
   - entry_deployment:EntryDeployment
   - runtime_deployment:RuntimeDeployment
-authorized_users:
-  "*":
-    - "*" # Allow all users to access the application

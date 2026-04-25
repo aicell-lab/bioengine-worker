@@ -165,6 +165,7 @@ pytest tests/end_to_end/ -v
 
 ## Code Conventions
 
+- **Git author**: Always commit as `nilsmechtel` (`nils.mech@gmail.com`) unless explicitly told otherwise.
 - **Permissions**: Use `check_permissions(context, authorized_users, resource_name)` from `bioengine.utils`
 - **Schema methods**: Decorate public API methods with `@schema_method` and use `pydantic.Field` for parameter descriptions
 - **Logging**: Use `create_logger("ComponentName", ...)` from `bioengine.utils`

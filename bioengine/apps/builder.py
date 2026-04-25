@@ -1416,8 +1416,12 @@ class AppBuilder:
             )
 
             # Resolve authorized_users: deploy-time override > manifest.
+            # Handle both dict (new format) and list (legacy recovered state).
             if authorized_users is not None:
-                effective_authorized_users = authorized_users
+                if isinstance(authorized_users, dict):
+                    effective_authorized_users = authorized_users
+                else:
+                    effective_authorized_users = {"*": authorized_users}
             else:
                 manifest_users = manifest.get("authorized_users", ["*"])
                 if isinstance(manifest_users, dict):

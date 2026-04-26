@@ -948,7 +948,10 @@ class AppsManager:
                 if "hypha_token" not in app_config:
                     app_config["hypha_token"] = startup_applications_token
 
-                admin_context = create_context(self.admin_users[0])
+                admin_context = create_context(
+                    self.admin_users[0] if len(self.admin_users) > 0 else None,
+                    self.admin_users[1] if len(self.admin_users) > 1 else None,
+                )
 
                 deploy_app_kwargs = {
                     key: value

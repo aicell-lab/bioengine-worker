@@ -1441,12 +1441,13 @@ class AppBuilder:
             for key in list(effective_authorized_users):
                 rule = list(effective_authorized_users[key])
                 is_public = "*" in rule
-                to_add = list(deploying_user_entries)
-                if not is_public and admin_users:
-                    to_add.extend(admin_users)
-                for user in to_add:
-                    if user not in rule:
-                        rule.append(user)
+                if not is_public:
+                    to_add = list(deploying_user_entries)
+                    if admin_users:
+                        to_add.extend(admin_users)
+                    for user in to_add:
+                        if user not in rule:
+                            rule.append(user)
                 # Deduplicate while preserving order
                 seen = set()
                 effective_authorized_users[key] = [

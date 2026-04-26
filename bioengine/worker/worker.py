@@ -309,7 +309,6 @@ class BioEngineWorker:
                 "region": None,
                 "country_name": None,
                 "country_code": None,
-                "continent_code": None,
                 "latitude": None,
                 "longitude": None,
                 "timezone": None,
@@ -394,23 +393,22 @@ class BioEngineWorker:
                 kwargs[key] = value
 
     async def _fetch_geo_location(self) -> None:
-        """Fetch geographical location and coordinates, each only until successfully obtained.
+        """Fetch geographical location and coordinates until successfully obtained.
 
-        Called from the monitoring loop.
-        - Geo location (region, country, etc.) is fetched as long as all fields are still None.
-        - Coordinates (latitude/longitude) are fetched separately as long as both are None
-          and a country name is available.
+        Called from the monitoring loop. Retries on every monitoring tick until
+        country_name is populated. Coordinates are fetched via Nominatim as a
+        fallback only when a provider returned country but no lat/lon.
         Failures are logged but never propagated.
         """
-        # Fetch geo location if all fields are still unknown
-        if all(v is None for v in self.geo_location.values()):
+        # Retry as long as country_name is still unknown
+        if self.geo_location.get("country_name") is None:
             try:
                 geo_info = await fetch_geolocation(logger=self.logger)
                 self.geo_location.update(geo_info)
             except Exception as e:
                 self.logger.warning(f"Failed to fetch geo location: {e}")
 
-        # Fetch coordinates if country is known but coordinates are still missing
+        # Fallback: fetch coordinates via Nominatim if country known but lat/lon missing
         if (
             self.geo_location.get("country_name")
             and self.geo_location.get("latitude") is None

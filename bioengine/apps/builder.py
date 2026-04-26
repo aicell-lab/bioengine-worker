@@ -1429,23 +1429,39 @@ class AppBuilder:
                 else:
                     effective_authorized_users = {"*": manifest_users}
 
-            # Always ensure the deploying user and all admin users have access to all methods.
-            users_to_inject = []
+            # Collect deploying user identifiers — always injected into all method rules.
+            deploying_user_entries = []
             if deploying_user:
                 dep_id, dep_email = deploying_user
-                users_to_inject.extend([v for v in [dep_id, dep_email] if v])
-            if admin_users:
-                users_to_inject.extend(admin_users)
+                deploying_user_entries = [v for v in [dep_id, dep_email] if v]
 
-            if users_to_inject:
-                for key in list(effective_authorized_users):
-                    rule = list(effective_authorized_users[key])
-                    for user in users_to_inject:
-                        if user not in rule:
-                            rule.append(user)
-                    effective_authorized_users[key] = rule
-                if "*" not in effective_authorized_users:
-                    effective_authorized_users["*"] = list(users_to_inject)
+            # Inject users and deduplicate each rule list.
+            # Admin users are only injected when the rule is not already public (i.e. "*" not in rule),
+            # since public access already covers everyone.
+            for key in list(effective_authorized_users):
+                rule = list(effective_authorized_users[key])
+                is_public = "*" in rule
+                to_add = list(deploying_user_entries)
+                if not is_public and admin_users:
+                    to_add.extend(admin_users)
+                for user in to_add:
+                    if user not in rule:
+                        rule.append(user)
+                # Deduplicate while preserving order
+                seen = set()
+                effective_authorized_users[key] = [
+                    u for u in rule if not (u in seen or seen.add(u))
+                ]
+
+            # If there is no wildcard key, ensure deploying user + admins can still call all methods.
+            if "*" not in effective_authorized_users:
+                fallback = list(deploying_user_entries)
+                if admin_users:
+                    fallback.extend(admin_users)
+                seen = set()
+                effective_authorized_users["*"] = [
+                    u for u in fallback if not (u in seen or seen.add(u))
+                ]
 
             # Create the application
             sanitized_env_vars = self._sanitize_recovery_env_vars(application_env_vars)

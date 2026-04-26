@@ -265,6 +265,20 @@ class ProxyDeployment:
         """Return non-secret application metadata used for worker recovery."""
         return self.app_data
 
+    async def update_authorized_users(
+        self, authorized_users: Dict[str, List[str]]
+    ) -> None:
+        """Update authorized_users in place on the live deployment.
+
+        Internal method — called via Ray actor handle from the manager only,
+        never exposed as a Hypha service method.
+        """
+        self.authorized_users = authorized_users
+        self.app_data["authorized_users"] = authorized_users
+        logger.info(
+            f"✅ Updated authorized_users for '{self.application_id}': {authorized_users}"
+        )
+
     async def __call__(self, request: Request) -> Dict[str, Any]:
         """
         Handle HTTP requests for Ray Serve autoscaling coordination.

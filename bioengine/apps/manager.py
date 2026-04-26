@@ -591,6 +591,30 @@ class AppsManager:
 
         return deployments_info
 
+    def _inject_admin_users(
+        self, authorized_users: Dict[str, List[str]]
+    ) -> Dict[str, List[str]]:
+        """Inject admin users into non-public authorized_users rules and deduplicate.
+
+        Mirrors the logic in AppBuilder.build(). Public rules ("*" in list) are
+        left unchanged. Called during recovery to update live deployments.
+        """
+        result = {}
+        for key, rule in authorized_users.items():
+            rule = list(rule)
+            if "*" not in rule and self.admin_users:
+                for user in self.admin_users:
+                    if user not in rule:
+                        rule.append(user)
+            seen: set = set()
+            result[key] = [u for u in rule if not (u in seen or seen.add(u))]
+        if "*" not in result and self.admin_users:
+            seen = set()
+            result["*"] = [
+                u for u in self.admin_users if not (u in seen or seen.add(u))
+            ]
+        return result
+
     def _filter_secret_env_vars(
         self, application_env_vars: Dict[str, Dict[str, str]]
     ) -> Dict[str, Dict[str, str]]:
@@ -860,6 +884,15 @@ class AppsManager:
                 is_deployed = asyncio.Event()
                 is_deployed.set()
 
+                # Inject current admin users into the recovered authorized_users
+                # and update the live ProxyDeployment actor in place.
+                updated_authorized_users = self._inject_admin_users(
+                    app_data["authorized_users"]
+                )
+                await app_handle.update_authorized_users.remote(
+                    updated_authorized_users
+                )
+
                 self._deployed_applications[application_id] = {
                     "display_name": app_data["display_name"],
                     "description": app_data["description"],
@@ -871,7 +904,7 @@ class AppsManager:
                     "disable_gpu": app_data["disable_gpu"],
                     "max_ongoing_requests": app_data["max_ongoing_requests"],
                     "application_resources": app_data["application_resources"],
-                    "authorized_users": app_data["authorized_users"],
+                    "authorized_users": updated_authorized_users,
                     "available_methods": app_data["available_methods"],
                     "started_at": app_data["started_at"],
                     "last_updated_at": app_data["last_updated_at"],

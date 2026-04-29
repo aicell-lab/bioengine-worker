@@ -1,24 +1,25 @@
 """
 BioEngine Datasets Proxy Server - Privacy-preserved dataset management service.
 
-Serves zarr datasets in-place from a local directory. Registers a service to
-the remote central Hypha server for RPC-based dataset discovery and access
-control, while a local FastAPI app handles the actual file byte serving.
+Serves zarr datasets in-place from a local directory. A FastAPI app handles
+all client-facing endpoints (dataset listing, file listing, presigned URL
+generation, and zarr chunk serving) with no Hypha service registration needed.
+
+Token authentication is delegated to the remote Hypha server on demand and
+cached locally — the server itself requires no credentials at startup.
 
 Architecture:
 - Dataset directories are scanned for manifest.yaml at startup
 - Access control is defined per-dataset in manifest.yaml (authorized_users field)
 - Token authentication is delegated to the remote Hypha server (cached locally)
-- RPC service (list_datasets, list_files, get_presigned_url) registered to remote Hypha
-- Local FastAPI app serves zarr chunks directly with Range request support
+- FastAPI exposes all endpoints under /public/services/bioengine-datasets/
+- File bytes are served directly at /data/{dataset_id}/{path} with Range support
 """
 
 import asyncio
 import logging
 import os
 import time
-from contextlib import asynccontextmanager
-from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -27,7 +28,6 @@ import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from hypha_rpc import connect_to_server
-from hypha_rpc.rpc import RemoteService
 
 from bioengine import __version__
 from bioengine.utils import (
@@ -38,9 +38,6 @@ from bioengine.utils import (
 from bioengine.utils.permissions import check_permissions
 
 AUTHENTICATION_SERVER_URL: str = "https://hypha.aicell.io"
-_datasets: Dict[str, dict] = {}  # dataset_id -> {manifest, path, authorized_users}
-_cached_user_info: Dict[str, dict] = {}
-_local_http_url: str = ""
 
 logger = logging.getLogger("ProxyServer")
 
@@ -51,7 +48,6 @@ logger = logging.getLogger("ProxyServer")
 
 
 def get_log_config(log_file: Optional[Path] = None) -> Dict[str, Any]:
-    # Set logging level and config (based on uvicorn default config with asctime added)
     log_config = {
         "version": 1,
         "disable_existing_loggers": False,
@@ -144,17 +140,16 @@ def load_datasets(data_dir: Path) -> Dict[str, dict]:
 
 
 async def parse_token(
-    token: Union[str, None],
+    token: Optional[str],
     cached_user_info: Dict[str, dict],
 ) -> Dict[str, str]:
+    """Validate a user token against the remote Hypha server (cached)."""
     global AUTHENTICATION_SERVER_URL
 
     if token is not None:
-        if (
-            token in cached_user_info
-            and cached_user_info[token].get("expires_at", 0) > time.time()
-        ):
-            return cached_user_info[token]
+        cached = cached_user_info.get(token)
+        if cached and cached.get("expires_at", 0) > time.time():
+            return cached
 
         async with connect_to_server(
             {"server_url": AUTHENTICATION_SERVER_URL, "token": token}
@@ -162,6 +157,7 @@ async def parse_token(
             user_info = user_client.config.user
 
         cached_user_info[token] = user_info
+        # Evict oldest entry when cache exceeds 1000 tokens
         if len(cached_user_info) > 1000:
             cached_user_info.pop(next(iter(cached_user_info)))
     else:
@@ -171,182 +167,114 @@ async def parse_token(
 
 
 # ---------------------------------------------------------------------------
-# RPC service functions (registered to remote Hypha)
-# ---------------------------------------------------------------------------
-
-
-async def list_datasets(datasets: Dict[str, dict]) -> Dict[str, dict]:
-    """Return manifest metadata for all datasets. No auth required for listing."""
-    return {dataset_id: info["manifest"] for dataset_id, info in datasets.items()}
-
-
-async def list_files(
-    dataset_id: str,
-    datasets: Dict[str, dict],
-    cached_user_info: Dict[str, dict],
-    dir_path: Optional[str] = None,
-    token: Optional[str] = None,
-) -> List[str]:
-    """List files in a dataset directory after checking access permissions."""
-    if dataset_id not in datasets:
-        raise ValueError(f"Dataset '{dataset_id}' does not exist")
-
-    user_info = await parse_token(token=token, cached_user_info=cached_user_info)
-    check_permissions(
-        context={"user": user_info},
-        authorized_users=datasets[dataset_id]["authorized_users"],
-        resource_name=f"list files in dataset '{dataset_id}'",
-    )
-
-    base_path = datasets[dataset_id]["path"]
-    scan_path = base_path / dir_path if dir_path else base_path
-
-    if not scan_path.exists():
-        raise ValueError(f"Path '{dir_path}' does not exist in dataset '{dataset_id}'")
-
-    files = []
-    for root, dirs, filenames in os.walk(scan_path):
-        dirs.sort()
-        for fname in sorted(filenames):
-            full = Path(root) / fname
-            files.append(str(full.relative_to(base_path)))
-
-    return files
-
-
-async def get_presigned_url(
-    dataset_id: str,
-    file_path: str,
-    datasets: Dict[str, dict],
-    cached_user_info: Dict[str, dict],
-    local_http_url: str,
-    token: Optional[str] = None,
-) -> str:
-    """Return a URL to fetch the file from the local HTTP server."""
-    if dataset_id not in datasets:
-        raise ValueError(f"Dataset '{dataset_id}' does not exist")
-
-    user_info = await parse_token(token=token, cached_user_info=cached_user_info)
-    check_permissions(
-        context={"user": user_info},
-        authorized_users=datasets[dataset_id]["authorized_users"],
-        resource_name=f"access file '{file_path}' in dataset '{dataset_id}'",
-    )
-
-    # Verify the file exists before returning a URL
-    full_path = datasets[dataset_id]["path"] / file_path
-    if not full_path.exists():
-        raise FileNotFoundError(
-            f"File '{file_path}' not found in dataset '{dataset_id}'"
-        )
-
-    url = f"{local_http_url}/data/{dataset_id}/{file_path}"
-    if token:
-        url += f"?token={token}"
-    return url
-
-
-# ---------------------------------------------------------------------------
-# Service registration (runs as background task)
-# ---------------------------------------------------------------------------
-
-
-async def _run_service_forever(
-    remote_url: str,
-    workspace: str,
-    service_token: str,
-    datasets: Dict[str, dict],
-    cached_user_info: Dict[str, dict],
-    local_http_url: str,
-) -> None:
-    """Connect to remote Hypha and keep the service registered until cancelled."""
-    while True:
-        try:
-            logger.info(
-                f"Registering bioengine-datasets service to {remote_url} "
-                f"(workspace: {workspace})"
-            )
-            async with connect_to_server(
-                {
-                    "server_url": remote_url,
-                    "token": service_token,
-                    "workspace": workspace,
-                }
-            ) as server:
-                await server.register_service(
-                    {
-                        "id": "bioengine-datasets",
-                        "name": "BioEngine Datasets",
-                        "description": f"BioEngine Datasets proxy server v{__version__}",
-                        "config": {"visibility": "public"},
-                        "ping": lambda: "pong",
-                        "list_datasets": partial(list_datasets, datasets=datasets),
-                        "list_files": partial(
-                            list_files,
-                            datasets=datasets,
-                            cached_user_info=cached_user_info,
-                        ),
-                        "get_presigned_url": partial(
-                            get_presigned_url,
-                            datasets=datasets,
-                            cached_user_info=cached_user_info,
-                            local_http_url=local_http_url,
-                        ),
-                    }
-                )
-                logger.info("bioengine-datasets service registered successfully")
-                # keep the connection open indefinitely
-                await asyncio.get_event_loop().create_future()
-        except asyncio.CancelledError:
-            logger.info("Service registration task cancelled")
-            return
-        except Exception as e:
-            logger.warning(f"Service connection lost ({e}), reconnecting in 5 s...")
-            await asyncio.sleep(5)
-
-
-# ---------------------------------------------------------------------------
-# FastAPI app (file byte serving)
+# FastAPI app
 # ---------------------------------------------------------------------------
 
 
 def _build_app(
     datasets: Dict[str, dict],
     cached_user_info: Dict[str, dict],
-    remote_url: str,
-    workspace: str,
-    service_token: str,
     local_http_url: str,
 ) -> FastAPI:
-    service_task: Optional[asyncio.Task] = None
-
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        nonlocal service_task
-        service_task = asyncio.create_task(
-            _run_service_forever(
-                remote_url=remote_url,
-                workspace=workspace,
-                service_token=service_token,
-                datasets=datasets,
-                cached_user_info=cached_user_info,
-                local_http_url=local_http_url,
-            )
-        )
-        yield
-        if service_task and not service_task.done():
-            service_task.cancel()
-            try:
-                await service_task
-            except asyncio.CancelledError:
-                pass
-
     app = FastAPI(
         title="BioEngine Datasets",
-        description="Local file server for BioEngine dataset zarr chunks",
+        description="Zarr dataset server with manifest-based access control",
         version=__version__,
-        lifespan=lifespan,
     )
+
+    # ------------------------------------------------------------------
+    # Service endpoints — mounted at the same prefix the client expects
+    # so that BioEngineDatasets(data_server_url=local_http_url) works
+    # without any client-side changes.
+    # ------------------------------------------------------------------
+
+    @app.get("/public/services/bioengine-datasets/ping")
+    async def ping():
+        return "pong"
+
+    @app.get("/public/services/bioengine-datasets/list_datasets")
+    async def list_datasets_route():
+        return {
+            dataset_id: info["manifest"]
+            for dataset_id, info in datasets.items()
+        }
+
+    @app.get("/public/services/bioengine-datasets/list_files")
+    async def list_files_route(
+        dataset_id: str,
+        dir_path: Optional[str] = None,
+        token: Optional[str] = None,
+    ):
+        if dataset_id not in datasets:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ValueError: Dataset '{dataset_id}' does not exist",
+            )
+
+        try:
+            user_info = await parse_token(token, cached_user_info)
+            check_permissions(
+                context={"user": user_info},
+                authorized_users=datasets[dataset_id]["authorized_users"],
+                resource_name=f"list files in dataset '{dataset_id}'",
+            )
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+
+        base_path = datasets[dataset_id]["path"]
+        scan_path = base_path / dir_path if dir_path else base_path
+
+        if not scan_path.exists():
+            raise HTTPException(
+                status_code=400,
+                detail=f"ValueError: Path '{dir_path}' does not exist in dataset '{dataset_id}'",
+            )
+
+        files = []
+        for root, dirs, filenames in os.walk(scan_path):
+            dirs.sort()
+            for fname in sorted(filenames):
+                full = Path(root) / fname
+                files.append(str(full.relative_to(base_path)))
+        return files
+
+    @app.get("/public/services/bioengine-datasets/get_presigned_url")
+    async def get_presigned_url_route(
+        dataset_id: str,
+        file_path: str,
+        token: Optional[str] = None,
+    ):
+        if dataset_id not in datasets:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ValueError: Dataset '{dataset_id}' does not exist",
+            )
+
+        try:
+            user_info = await parse_token(token, cached_user_info)
+            check_permissions(
+                context={"user": user_info},
+                authorized_users=datasets[dataset_id]["authorized_users"],
+                resource_name=f"access '{file_path}' in dataset '{dataset_id}'",
+            )
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+
+        full_path = datasets[dataset_id]["path"] / file_path
+        if not full_path.exists() or not full_path.is_file():
+            raise HTTPException(
+                status_code=400,
+                detail=f"FileNotFoundError: '{file_path}' not found in dataset '{dataset_id}'",
+            )
+
+        url = f"{local_http_url}/data/{dataset_id}/{file_path}"
+        if token:
+            url += f"?token={token}"
+        return url
+
+    # ------------------------------------------------------------------
+    # File byte serving — Range requests handled natively by FileResponse
+    # ------------------------------------------------------------------
 
     @app.get("/data/{dataset_id}/{path:path}")
     async def serve_file(
@@ -359,22 +287,19 @@ def _build_app(
             raise HTTPException(status_code=404, detail=f"Dataset '{dataset_id}' not found")
 
         try:
-            user_info = await parse_token(
-                token=token, cached_user_info=cached_user_info
-            )
+            user_info = await parse_token(token, cached_user_info)
             check_permissions(
                 context={"user": user_info},
                 authorized_users=datasets[dataset_id]["authorized_users"],
-                resource_name=f"access file '{path}' in dataset '{dataset_id}'",
+                resource_name=f"access '{path}' in dataset '{dataset_id}'",
             )
         except PermissionError as e:
             raise HTTPException(status_code=403, detail=str(e))
 
         full_path = datasets[dataset_id]["path"] / path
         if not full_path.exists() or not full_path.is_file():
-            raise HTTPException(status_code=404, detail=f"File '{path}' not found")
+            raise HTTPException(status_code=404, detail=f"'{path}' not found")
 
-        # FileResponse handles Range requests (206 Partial Content) natively
         return FileResponse(full_path)
 
     return app
@@ -388,9 +313,7 @@ def _build_app(
 def start_proxy_server(
     data_dir: Union[str, Path],
     server_ip: Optional[str] = None,
-    server_port: int = 9527,
-    workspace: str = "bioimage-io",
-    service_token: Optional[str] = None,
+    server_port: Optional[int] = None,
     authentication_server_url: str = "https://hypha.aicell.io",
     log_file: Optional[Union[str, Path]] = None,
 ) -> None:
@@ -398,42 +321,36 @@ def start_proxy_server(
     Start the BioEngine Datasets proxy server.
 
     Scans data_dir for dataset subdirectories (each must contain a manifest.yaml),
-    registers a service on the remote Hypha server for dataset discovery and access
-    control, and starts a local FastAPI server that streams zarr chunk files directly
-    to clients.
+    then starts a FastAPI server that:
+    - Lists datasets and their manifests
+    - Lists files within a dataset (access-controlled)
+    - Issues presigned URLs (direct links to the local file server)
+    - Streams zarr chunk files with HTTP Range request support
 
     No data is copied — datasets are served in-place from data_dir.
+    No Hypha service registration is performed — clients connect directly
+    to this server. The local server URL is written to
+    ~/.bioengine/datasets/bioengine_current_server for client auto-discovery.
 
     Args:
-        data_dir: Directory containing dataset subdirectories. Each subdirectory
-                  must have a manifest.yaml with at minimum an "id" and
-                  "authorized_users" field.
-        server_ip: IP address for the local file-serving HTTP server. Defaults to
-                   the machine's internal IP.
-        server_port: Port for the local HTTP server (default: 9527).
-        workspace: Hypha workspace to register the service in (default: "bioimage-io").
-        service_token: Hypha token used to register the service. Falls back to the
-                       HYPHA_TOKEN environment variable if not provided.
-        authentication_server_url: URL of the central Hypha server used for token
-                                   validation (default: "https://hypha.aicell.io").
-        log_file: Path to log file. Pass "off" to disable file logging. Defaults to
-                  a timestamped file in <data_dir>/../logs/.
+        data_dir: Directory containing dataset subdirectories. Each must have a
+                  manifest.yaml with at minimum an "id" and "authorized_users" field.
+        server_ip: IP address for the HTTP server. Defaults to the machine's
+                   internal IP.
+        server_port: Port for the HTTP server. If None (default), scans for a
+                     free port starting from 39527.
+        authentication_server_url: URL of the central Hypha server used for
+                                   per-request token validation
+                                   (default: https://hypha.aicell.io).
+        log_file: Path to log file. Pass "off" for console-only logging.
+                  Defaults to a timestamped file in <data_dir>/../logs/.
     """
     global AUTHENTICATION_SERVER_URL
 
     data_dir = Path(data_dir).resolve()
     AUTHENTICATION_SERVER_URL = authentication_server_url
 
-    # Resolve service token
-    if service_token is None:
-        service_token = os.environ.get("HYPHA_TOKEN")
-    if not service_token:
-        raise ValueError(
-            "A service token is required to register with the remote Hypha server. "
-            "Pass --service-token or set the HYPHA_TOKEN environment variable."
-        )
-
-    # Initialize logging
+    # Logging setup
     if log_file != "off":
         if log_file is None:
             log_dir = data_dir.parent / "logs"
@@ -448,57 +365,50 @@ def start_proxy_server(
     global logger
     logger = create_logger("ProxyServer", log_file=log_file)
 
-    # File used by BioEngineDatasets("auto") client discovery
-    current_server_file = data_dir.parent / "bioengine_current_server"
+    # Client auto-discovery file — fixed location read by BioEngineDatasets("auto")
+    current_server_file = Path.home() / ".bioengine" / "datasets" / "bioengine_current_server"
+    current_server_file.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         logger.info(f"Starting BioEngine Datasets proxy server v{__version__}")
         logger.info(f"Serving datasets from: {data_dir}")
 
-        # Load dataset manifests
         datasets = load_datasets(data_dir)
         logger.info(f"Found {len(datasets)} dataset(s): {list(datasets.keys())}")
 
-        # Determine local HTTP server address
         server_ip = server_ip or get_internal_ip()
+        # Default port range: 39527–39999 (avoids Hypha's 9527 and Ray's ports)
+        start_port = server_port if server_port is not None else 39527
         free_server_port, server_s = acquire_free_port(
-            port=server_port, step=1, ip=server_ip, keep_open=True
+            port=start_port, step=1, ip=server_ip, keep_open=True
         )
         server_s.close()
-        if free_server_port != server_port:
+        if server_port is not None and free_server_port != server_port:
             logger.warning(
-                f"Port {server_port} is not available. Using {free_server_port} instead."
+                f"Port {server_port} unavailable, using {free_server_port} instead."
             )
 
         local_http_url = f"http://{server_ip}:{free_server_port}"
 
-        # Write remote service base URL for BioEngineDatasets("auto") discovery
-        remote_base_url = f"{authentication_server_url}/{workspace}"
-        current_server_file.write_text(remote_base_url)
+        # Write local URL for BioEngineDatasets("auto") discovery
+        current_server_file.write_text(local_http_url)
         logger.info(
-            f"Service will be available at "
-            f"{remote_base_url}/public/services/bioengine-datasets"
+            f"Server URL: {local_http_url}/public/services/bioengine-datasets"
         )
-        logger.info(f"Local file server: {local_http_url}")
 
         cached_user_info: Dict[str, dict] = {}
 
         app = _build_app(
             datasets=datasets,
             cached_user_info=cached_user_info,
-            remote_url=authentication_server_url,
-            workspace=workspace,
-            service_token=service_token,
             local_http_url=local_http_url,
         )
-
-        log_config = get_log_config(log_file=log_file)
 
         uvicorn.run(
             app,
             host="0.0.0.0",
             port=free_server_port,
-            log_config=log_config,
+            log_config=get_log_config(log_file=log_file),
             log_level="info",
         )
 

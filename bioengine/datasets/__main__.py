@@ -3,15 +3,15 @@
 BioEngine Datasets - Privacy-preserved scientific data management system.
 
 Serves zarr datasets in-place from a local directory with per-user access
-control. Registers an RPC service to the remote central Hypha server for
-dataset discovery, and runs a local FastAPI server for efficient zarr chunk
-streaming directly to clients.
+control. Runs a local FastAPI server for dataset discovery, access control,
+and efficient zarr chunk streaming directly to clients.
 
 No data copy is performed — datasets are served from their original location.
+Token authentication is validated against the remote Hypha server on demand.
 
 Usage:
-    python -m bioengine.datasets --data-dir /path/to/datasets --service-token $TOKEN
-    python -m bioengine.datasets --data-dir /path/to/datasets --workspace my-workspace
+    python -m bioengine.datasets --data-dir /path/to/datasets
+    python -m bioengine.datasets --data-dir /path/to/datasets --server-port 39527
 """
 
 import argparse
@@ -26,14 +26,14 @@ def create_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Start datasets service (token from HYPHA_TOKEN env var)
+  # Start datasets service (scans for a free port starting from 39527)
   %(prog)s --data-dir /shared/data
 
-  # Explicit token and workspace
-  %(prog)s --data-dir /shared/data --service-token $TOKEN --workspace bioimage-io
+  # Explicit port
+  %(prog)s --data-dir /shared/data --server-port 39527
 
-  # Custom server port
-  %(prog)s --data-dir /shared/data --server-port 8080
+  # Custom authentication server
+  %(prog)s --data-dir /shared/data --authentication-server-url https://hypha.aicell.io
 
 For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worker
 """,
@@ -58,22 +58,8 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         "--server-port",
         type=int,
         metavar="PORT",
-        default=9527,
-        help="Port for the local HTTP server (default: 9527).",
-    )
-    parser.add_argument(
-        "--workspace",
-        type=str,
-        metavar="WORKSPACE",
-        default="bioimage-io",
-        help="Hypha workspace to register the service in (default: bioimage-io).",
-    )
-    parser.add_argument(
-        "--service-token",
-        type=str,
-        metavar="TOKEN",
-        help="Hypha token for registering the service. Falls back to the "
-        "HYPHA_TOKEN environment variable if not provided.",
+        help="Port for the local HTTP server. If not provided, scans for a free "
+        "port starting from 39527.",
     )
     parser.add_argument(
         "--authentication-server-url",

@@ -2,8 +2,8 @@
 BioEngine Datasets Proxy Server - Privacy-preserved dataset management service.
 
 Serves zarr datasets in-place from a local directory. A FastAPI app handles
-all client-facing endpoints (dataset listing, file listing, presigned URL
-generation, and zarr chunk serving) with no Hypha service registration needed.
+all client-facing endpoints (dataset listing, file listing, and zarr chunk
+serving) with no Hypha service registration needed.
 
 Token authentication is delegated to the remote Hypha server on demand and
 cached locally — the server itself requires no credentials at startup.
@@ -149,7 +149,7 @@ async def parse_token(
 
     if token is not None:
         cached = cached_user_info.get(token)
-        if cached and cached.get("expires_at", 0) > time.time():
+        if cached is not None:
             return cached
 
         async with connect_to_server(

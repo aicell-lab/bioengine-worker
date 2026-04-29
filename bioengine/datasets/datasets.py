@@ -92,7 +92,7 @@ class BioEngineDatasets:
                 )
 
         if data_server_url is not None:
-            self.service_url = f"{data_server_url}/public/services/bioengine-datasets"
+            self.service_url = data_server_url.rstrip("/")
             self.http_client = httpx.AsyncClient(timeout=20)  # seconds
         else:
             self.service_url = None
@@ -112,7 +112,6 @@ class BioEngineDatasets:
         """
         if self.service_url is not None:
             try:
-                # Try to ping dataset service
                 await self.http_client.get(f"{self.service_url}/ping")
             except Exception as e:
                 logger.error(f"⚠️ Connection to data server failed: {e}")
@@ -137,7 +136,7 @@ class BioEngineDatasets:
             return {}
 
         start_time = asyncio.get_event_loop().time()
-        query_url = f"{self.service_url}/list_datasets"
+        query_url = f"{self.service_url}/datasets"
         response = await self.http_client.get(query_url)
         response.raise_for_status()
         datasets = response.json()
@@ -187,7 +186,8 @@ class BioEngineDatasets:
         if token is not None:
             params["token"] = token
 
-        query_url = f"{self.service_url}/list_files"
+        query_url = f"{self.service_url}/datasets/{dataset_id}/files"
+        params.pop("dataset_id", None)
         response = await self.http_client.get(query_url, params=params)
         response.raise_for_status()
         files = response.json()

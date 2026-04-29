@@ -182,24 +182,18 @@ def _build_app(
         version=__version__,
     )
 
-    # ------------------------------------------------------------------
-    # Service endpoints — mounted at the same prefix the client expects
-    # so that BioEngineDatasets(data_server_url=local_http_url) works
-    # without any client-side changes.
-    # ------------------------------------------------------------------
-
-    @app.get("/public/services/bioengine-datasets/ping")
+    @app.get("/ping")
     async def ping():
         return "pong"
 
-    @app.get("/public/services/bioengine-datasets/list_datasets")
+    @app.get("/datasets")
     async def list_datasets_route():
         return {
             dataset_id: info["manifest"]
             for dataset_id, info in datasets.items()
         }
 
-    @app.get("/public/services/bioengine-datasets/list_files")
+    @app.get("/datasets/{dataset_id}/files")
     async def list_files_route(
         dataset_id: str,
         dir_path: Optional[str] = None,
@@ -238,7 +232,7 @@ def _build_app(
                 files.append(str(full.relative_to(base_path)))
         return files
 
-    @app.get("/public/services/bioengine-datasets/get_presigned_url")
+    @app.get("/datasets/{dataset_id}/presigned-url")
     async def get_presigned_url_route(
         dataset_id: str,
         file_path: str,
@@ -271,10 +265,6 @@ def _build_app(
         if token:
             url += f"?token={token}"
         return url
-
-    # ------------------------------------------------------------------
-    # File byte serving — Range requests handled natively by FileResponse
-    # ------------------------------------------------------------------
 
     @app.get("/data/{dataset_id}/{path:path}")
     async def serve_file(

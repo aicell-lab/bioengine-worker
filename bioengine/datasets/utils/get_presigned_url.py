@@ -30,14 +30,11 @@ async def get_presigned_url(
         httpx.HTTPStatusError: If the request fails for reasons other than file not found
     """
     # Build query parameters, excluding None values
-    params = {
-        "dataset_id": dataset_id,
-        "file_path": file_path,
-    }
+    params = {"file_path": file_path}
     if token is not None:
         params["token"] = token
 
-    query_url = f"{data_service_url}/get_presigned_url"
+    query_url = f"{data_service_url}/datasets/{dataset_id}/presigned-url"
 
     if http_client is None:
         http_client = httpx.AsyncClient(timeout=120)  # seconds

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>BioEngine Composition Demo</title>
+  <style>
+    body { font-family: system-ui; background: #0f172a; color: #e2e8f0;
+           min-height: 100vh; display: flex; flex-direction: column;
+           align-items: center; padding: 2rem 1rem; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: .75rem;
+            padding: 1.5rem; width: 100%; max-width: 700px; margin-bottom: 1rem; }
+    h1 { color: #38bdf8; margin-top: 0; }
+    h3 { color: #7dd3fc; margin-top: 0; }
+    button { background: #0284c7; color: #fff; border: none; border-radius: .5rem;
+             padding: .5rem 1.25rem; cursor: pointer; font-weight: 600; margin: .25rem; }
+    button:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
+    input { background: #0f172a; color: #e2e8f0; border: 1px solid #334155;
+            border-radius: .5rem; padding: .5rem; width: 100%; box-sizing: border-box;
+            margin-bottom: .5rem; }
+    pre { background: #0f172a; border-radius: .5rem; padding: 1rem;
+          font-size: .8rem; white-space: pre-wrap; min-height: 2rem;
+          color: #94a3b8; overflow-y: auto; max-height: 12rem; }
+    #statusBadge { display: inline-block; padding: .25rem .75rem; border-radius: 1rem;
+                   font-size: .85rem; font-weight: 600; }
+    .connected { background: #14532d; color: #86efac; }
+    .disconnected { background: #450a0a; color: #fca5a5; }
+    .runtime-badge { display: inline-block; padding: .15rem .6rem; border-radius: .5rem;
+                     font-size: .75rem; font-weight: 600; margin-right: .4rem; }
+    .ra { background: #1e3a5f; color: #7dd3fc; }
+    .rb { background: #2d1b69; color: #c4b5fd; }
+    .rc { background: #1a3a1a; color: #86efac; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h1>🔬 BioEngine Composition Demo</h1>
+  <p>Entry + 3 runtime deployments running in parallel.</p>
+  <button id="connectBtn" onclick="connect()">Connect to Service</button>
+  <span id="statusBadge" class="disconnected">Not connected</span>
+</div>
+
+<div class="card">
+  <h3>Service Status</h3>
+  <button id="statusBtn" onclick="callStatus()" disabled>Get Status</button>
+  <pre id="statusResult">—</pre>
+</div>
+
+<div class="card">
+  <h3><span class="runtime-badge ra">RuntimeA</span> Text Processing</h3>
+  <input id="textInput" type="text" placeholder="Enter text..." value="Hello BioEngine World!" />
+  <button id="textBtn" onclick="callText()" disabled>Process Text</button>
+  <pre id="textResult">—</pre>
+</div>
+
+<div class="card">
+  <h3><span class="runtime-badge rb">RuntimeB</span> Number Analysis (numpy)</h3>
+  <input id="numbersInput" type="text" placeholder="Comma-separated numbers..." value="1, 4, 9, 16, 25" />
+  <button id="numbersBtn" onclick="callNumbers()" disabled>Analyze Numbers</button>
+  <pre id="numbersResult">—</pre>
+</div>
+
+<div class="card">
+  <h3><span class="runtime-badge rc">RuntimeC</span> Time Operations</h3>
+  <input id="countInput" type="number" placeholder="Count" value="4" min="1" max="20" />
+  <button id="timeBtn" onclick="callTime()" disabled>Get Timestamps</button>
+  <pre id="timeResult">—</pre>
+</div>
+
+<div class="card">
+  <h3>Run All in Parallel</h3>
+  <button id="allBtn" onclick="callAll()" disabled>Run All Runtimes</button>
+  <pre id="allResult">—</pre>
+</div>
+
+<script type="module">
+import { connectToServer }
+  from "https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.mjs";
+
+const p          = new URLSearchParams(window.location.search);
+const SERVER_URL = p.get("server")        || "https://hypha.aicell.io";
+const SERVICE_ID = p.get("ws_service_id") || "";
+
+let svc = null;
+const actionBtns = ["statusBtn","textBtn","numbersBtn","timeBtn","allBtn"];
+
+window.connect = async () => {
+  const badge = document.getElementById("statusBadge");
+  badge.textContent = "Connecting…";
+  badge.className = "disconnected";
+  try {
+    const server = await connectToServer({ server_url: SERVER_URL });
+    svc = await server.getService(SERVICE_ID, { _rkwargs: true });
+    badge.textContent = "Connected ✓";
+    badge.className = "connected";
+    actionBtns.forEach(id => document.getElementById(id).disabled = false);
+  } catch (e) {
+    badge.textContent = "Error: " + e.message;
+  }
+};
+
+window.callStatus = async () => {
+  document.getElementById("statusResult").textContent = "Loading…";
+  try {
+    const r = await svc.status({ _rkwargs: true });
+    document.getElementById("statusResult").textContent = JSON.stringify(r, null, 2);
+  } catch (e) {
+    document.getElementById("statusResult").textContent = "Error: " + e.message;
+  }
+};
+
+window.callText = async () => {
+  const text = document.getElementById("textInput").value;
+  document.getElementById("textResult").textContent = "Loading…";
+  try {
+    const r = await svc.process_text({ text, _rkwargs: true });
+    document.getElementById("textResult").textContent = JSON.stringify(r, null, 2);
+  } catch (e) {
+    document.getElementById("textResult").textContent = "Error: " + e.message;
+  }
+};
+
+window.callNumbers = async () => {
+  const raw = document.getElementById("numbersInput").value;
+  const values = raw.split(",").map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
+  document.getElementById("numbersResult").textContent = "Loading…";
+  try {
+    const r = await svc.analyze_numbers({ values, _rkwargs: true });
+    document.getElementById("numbersResult").textContent = JSON.stringify(r, null, 2);
+  } catch (e) {
+    document.getElementById("numbersResult").textContent = "Error: " + e.message;
+  }
+};
+
+window.callTime = async () => {
+  const count = parseInt(document.getElementById("countInput").value) || 4;
+  document.getElementById("timeResult").textContent = "Loading…";
+  try {
+    const r = await svc.time_operations({ count, _rkwargs: true });
+    document.getElementById("timeResult").textContent = JSON.stringify(r, null, 2);
+  } catch (e) {
+    document.getElementById("timeResult").textContent = "Error: " + e.message;
+  }
+};
+
+window.callAll = async () => {
+  const text = document.getElementById("textInput").value;
+  const raw = document.getElementById("numbersInput").value;
+  const values = raw.split(",").map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
+  const count = parseInt(document.getElementById("countInput").value) || 3;
+  document.getElementById("allResult").textContent = "Loading…";
+  try {
+    const r = await svc.run_all({ text, values, count, _rkwargs: true });
+    document.getElementById("allResult").textContent = JSON.stringify(r, null, 2);
+  } catch (e) {
+    document.getElementById("allResult").textContent = "Error: " + e.message;
+  }
+};
+</script>
+</body>
+</html>

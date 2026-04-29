@@ -163,13 +163,9 @@ async def test_get_status(
     # Required cluster resource fields
     expected_cluster_fields = [
         "total_cpu",
-        "available_cpu",
+        "used_cpu",
         "total_gpu",
-        "available_gpu",
-        "total_memory",
-        "available_memory",
-        "total_object_store_memory",
-        "available_object_store_memory",
+        "used_gpu",
     ]
 
     for field in expected_cluster_fields:
@@ -195,14 +191,17 @@ async def test_get_status(
         # Expected node fields (some may be optional depending on configuration)
         expected_node_fields = [
             "node_ip",
+            "head",
             "total_cpu",
-            "available_cpu",
+            "used_cpu",
             "total_gpu",
-            "available_gpu",
+            "used_gpu",
+            "total_gpu_memory",
+            "used_gpu_memory",
             "total_memory",
-            "available_memory",
+            "used_memory",
             "total_object_store_memory",
-            "available_object_store_memory",
+            "used_object_store_memory",
         ]
 
         for field in expected_node_fields:
@@ -211,6 +210,22 @@ async def test_get_status(
                     assert isinstance(
                         node_info[field], (str, type(None))
                     ), f"node.{field} should be a string or None"
+                elif field == "head":
+                    assert isinstance(
+                        node_info[field], bool
+                    ), f"node.{field} should be a boolean"
+                elif field in {"total_gpu_memory", "used_gpu_memory"}:
+                    assert isinstance(
+                        node_info[field], (int, float, str)
+                    ), f"node.{field} should be a number or 'NA'"
+                    if isinstance(node_info[field], str):
+                        assert (
+                            node_info[field] == "NA"
+                        ), f"node.{field} string value should be 'NA'"
+                    else:
+                        assert (
+                            node_info[field] >= 0
+                        ), f"node.{field} should be non-negative"
                 else:
                     assert isinstance(
                         node_info[field], (int, float)

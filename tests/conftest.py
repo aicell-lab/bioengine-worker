@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 from hypha_rpc import connect_to_server
 from hypha_rpc.rpc import ObjectProxy, RemoteService
 
-from bioengine.ray import RayCluster
+from bioengine.cluster import RayCluster
 
 # Load environment variables from .env file
 load_dotenv()
@@ -76,6 +76,12 @@ def workspace_folder() -> Path:
 def tests_dir(workspace_folder: Path) -> Path:
     """Return test directory."""
     return workspace_folder / "tests"
+
+
+@pytest.fixture(scope="session")
+def bioengine_apps_dir(workspace_folder: Path) -> Path:
+    """Return bioengine_apps directory."""
+    return workspace_folder / "apps"
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -14,7 +14,7 @@ import pytest
 
 @pytest.mark.end_to_end
 @pytest.mark.asyncio
-async def test_execute_python_code_simple_operations(bioengine_worker_service):
+async def test_run_code_simple_operations(bioengine_worker_service):
     """
     Test executing simple Python operations without external imports.
 
@@ -86,7 +86,7 @@ def process_data(numbers=None, texts=None, threshold=10, multiplier=1):
 """
 
     # Test 1: Args only - passing positional arguments
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=code,
         function_name="process_data",
         args=[[1, 5, 10, 15, 20], ["hello world", "python test"], 8, 2],
@@ -118,7 +118,7 @@ def process_data(numbers=None, texts=None, threshold=10, multiplier=1):
     assert "error" not in result or result["error"] is None
 
     # Test 2: Kwargs only - passing keyword arguments
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=code,
         function_name="process_data",
         kwargs={
@@ -155,7 +155,7 @@ def process_data(numbers=None, texts=None, threshold=10, multiplier=1):
     assert "error" not in result or result["error"] is None
 
     # Test 3: Args and kwargs combined
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=code,
         function_name="process_data",
         args=[[3, 6, 9, 12, 15, 18], ["combined test"]],
@@ -183,7 +183,7 @@ def process_data(numbers=None, texts=None, threshold=10, multiplier=1):
     assert "error" not in result or result["error"] is None
 
     # Test 4: No args or kwargs (using defaults)
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=code, function_name="process_data"
     )
 
@@ -210,7 +210,7 @@ def process_data(numbers=None, texts=None, threshold=10, multiplier=1):
 
 @pytest.mark.end_to_end
 @pytest.mark.asyncio
-async def test_execute_python_code_with_standard_libraries(bioengine_worker_service):
+async def test_run_code_with_standard_libraries(bioengine_worker_service):
     """
     Test executing functions that use standard Python library imports.
 
@@ -300,7 +300,7 @@ def analyze_with_libraries(numbers, texts, seed=42):
 """
 
     # Test the comprehensive function with standard libraries
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=code,
         function_name="analyze_with_libraries",
         args=[[4, 9, 16, 25], ["hello world", "python programming", "test data"], 42],
@@ -340,7 +340,7 @@ def analyze_with_libraries(numbers, texts, seed=42):
 
 @pytest.mark.end_to_end
 @pytest.mark.asyncio
-async def test_execute_python_code_with_runtime_env_packages(bioengine_worker_service):
+async def test_run_code_with_runtime_env_packages(bioengine_worker_service):
     """
     Test executing functions that use runtime environment packages.
 
@@ -482,7 +482,7 @@ def test_runtime_packages():
     }
 
     # Execute with runtime environment - all packages must be available
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=code,
         function_name="test_runtime_packages",
         args=[],
@@ -572,7 +572,7 @@ def test_runtime_packages():
 
 @pytest.mark.end_to_end
 @pytest.mark.asyncio
-async def test_execute_python_code_error_handling(bioengine_worker_service):
+async def test_run_code_error_handling(bioengine_worker_service):
     """
     Test error handling in Python code execution.
 
@@ -641,35 +641,35 @@ def cause_specific_error(error_type):
 """
 
     # Test safe division - success case
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=code, function_name="safe_division", args=[10, 2]
     )
     assert result["result"]["success"] == True
     assert result["result"]["result"] == 5.0
 
     # Test safe division - zero division (handled gracefully)
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=code, function_name="safe_division", args=[10, 0]
     )
     assert result["result"]["success"] == False
     assert "divide by zero" in result["result"]["error"].lower()
 
     # Test safe list access - success case
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=code, function_name="safe_list_access", args=[[1, 2, 3, 4, 5], 2]
     )
     assert result["result"]["success"] == True
     assert result["result"]["value"] == 3
 
     # Test safe list access - index error (handled gracefully)
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=code, function_name="safe_list_access", args=[[1, 2, 3], 10]
     )
     assert result["result"]["success"] == False
     assert "out of range" in result["result"]["error"]
 
     # Test error recovery
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=code, function_name="error_recovery_test", args=[]
     )
 
@@ -684,7 +684,7 @@ def cause_specific_error(error_type):
     assert len(failures) >= 2  # At least the error cases should fail
 
     # Test that worker is still functional after mixed success/failure
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=code, function_name="safe_division", args=[20, 4]
     )
     assert result["result"]["success"] == True
@@ -694,14 +694,14 @@ def cause_specific_error(error_type):
     error_cases = ["zero_division", "type_error", "index_error", "key_error"]
 
     for error_type in error_cases:
-        result = await bioengine_worker_service.execute_python_code(
+        result = await bioengine_worker_service.run_code(
             code=code, function_name="cause_specific_error", args=[error_type]
         )
         # These should fail and return error information
         assert "error" in result and result["error"] is not None
 
     # Test successful case to ensure worker is still working
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=code, function_name="cause_specific_error", args=["success"]
     )
     assert result["result"] == "no_error"
@@ -710,7 +710,7 @@ def cause_specific_error(error_type):
 
 @pytest.mark.end_to_end
 @pytest.mark.asyncio
-async def test_execute_python_code_with_pickle_mode(bioengine_worker_service):
+async def test_run_code_with_pickle_mode(bioengine_worker_service):
     """
     Test executing pre-serialized Python functions using pickle mode.
 
@@ -751,7 +751,7 @@ async def test_execute_python_code_with_pickle_mode(bioengine_worker_service):
     func_bytes = cloudpickle.dumps(simple_calculation)
 
     # Test with addition
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         mode="pickle",
         func_bytes=func_bytes,
         function_name="simple_calculation",
@@ -767,7 +767,7 @@ async def test_execute_python_code_with_pickle_mode(bioengine_worker_service):
     assert result["result"]["type"] == "int"
 
     # Test with multiplication
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         mode="pickle",
         func_bytes=func_bytes,
         function_name="simple_calculation",
@@ -779,7 +779,7 @@ async def test_execute_python_code_with_pickle_mode(bioengine_worker_service):
     assert result["result"]["result"] == 21
 
     # Test with power operation
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         mode="pickle",
         func_bytes=func_bytes,
         function_name="simple_calculation",
@@ -826,7 +826,7 @@ async def test_execute_python_code_with_pickle_mode(bioengine_worker_service):
 
     # Test the complex function with closure
     test_data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         mode="pickle",
         func_bytes=processor_bytes,
         function_name="data_processor",
@@ -860,7 +860,7 @@ async def test_execute_python_code_with_pickle_mode(bioengine_worker_service):
     numpy_func_bytes = cloudpickle.dumps(numpy_computation)
 
     # Execute with runtime environment for numpy
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         mode="pickle",
         func_bytes=numpy_func_bytes,
         function_name="numpy_computation",
@@ -879,7 +879,7 @@ async def test_execute_python_code_with_pickle_mode(bioengine_worker_service):
 
 @pytest.mark.end_to_end
 @pytest.mark.asyncio
-async def test_execute_python_code_with_stdout_stderr_callbacks(
+async def test_run_code_with_stdout_stderr_callbacks(
     bioengine_worker_service,
 ):
     """
@@ -944,7 +944,7 @@ def produce_output():
     captured_stderr.clear()
 
     # Execute with stdout/stderr callbacks
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=code,
         function_name="produce_output",
         args=[],
@@ -992,7 +992,7 @@ def simple_output():
     captured_stdout.clear()
     captured_stderr.clear()
 
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=simple_code,
         function_name="simple_output",
         args=[],
@@ -1034,7 +1034,7 @@ def output_with_warnings():
     captured_stdout.clear()
     captured_stderr.clear()
 
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=error_code,
         function_name="output_with_warnings",
         args=[],
@@ -1063,7 +1063,7 @@ def output_with_warnings():
     captured_stdout.clear()
     captured_stderr.clear()
 
-    result = await bioengine_worker_service.execute_python_code(
+    result = await bioengine_worker_service.run_code(
         code=simple_code,
         function_name="simple_output",
         args=[],

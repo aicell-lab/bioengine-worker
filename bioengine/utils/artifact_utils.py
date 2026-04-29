@@ -1,6 +1,6 @@
 import base64
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Union
 
 import httpx
@@ -106,8 +106,7 @@ async def ensure_applications_collection(
     Ensure the 'applications' collection exists in the Hypha artifact manager.
 
     Creates the applications collection if it doesn't exist, providing organized
-    storage for BioEngine application artifacts within the current workspace.
-    The collection acts as a container for grouping related applications.
+    storage for BioEngine application artifacts. Ensures public read access.
 
     Args:
         artifact_manager: Hypha artifact manager service instance
@@ -116,16 +115,6 @@ async def ensure_applications_collection(
 
     Returns:
         The collection ID in format 'workspace/applications'
-
-    Raises:
-        RuntimeError: If the collection cannot be created or accessed
-
-    Example:
-        collection_id = await ensure_applications_collection(
-            artifact_manager=am,
-            workspace="my-workspace"
-        )
-        # Returns "my-workspace/applications"
     """
     if logger is None:
         logger = create_logger("ArtifactUtils")
@@ -133,8 +122,21 @@ async def ensure_applications_collection(
     collection_id = f"{workspace}/applications"
 
     try:
-        await artifact_manager.read(collection_id)
+        collection = await artifact_manager.read(collection_id)
         logger.info(f"Collection '{collection_id}' already exists")
+
+        # Check and fix permissions if needed
+        # We want permissions to be public read: {"*": "r"}
+        collection_config = collection.config or {}
+        permissions = collection_config.get("permissions", {})
+        if permissions.get("*") != "r":
+            logger.info("Updating collection permissions for public access")
+            permissions["*"] = "r"
+            collection_config["permissions"] = permissions
+            await artifact_manager.edit(
+                artifact_id=collection_id, config=collection_config
+            )
+
     except Exception as collection_error:
         expected_error = (
             f"KeyError: \"Artifact with ID '{collection_id}' does not exist."
@@ -150,6 +152,9 @@ async def ensure_applications_collection(
                     type="collection",
                     alias="applications",
                     manifest=collection_manifest,
+                    config={
+                        "permissions": {"*": "r"}
+                    },  # Set public permission on create
                 )
                 logger.info(f"Applications collection created with ID: {collection.id}")
             except Exception as e:
@@ -234,7 +239,6 @@ def validate_manifest(manifest: Dict[str, Any]) -> None:
         "description",
         "type",
         "deployments",
-        "authorized_users",
     ]
     for field in required_fields:
         if field not in manifest:
@@ -254,13 +258,6 @@ def validate_manifest(manifest: Dict[str, Any]) -> None:
             "Expected a non-empty list of deployment descriptions in the format 'python_file:class_name'."
         )
 
-    # Validate authorized_users format
-    authorized_users = manifest["authorized_users"]
-    if not isinstance(authorized_users, list) or len(authorized_users) == 0:
-        raise ValueError(
-            "Invalid authorized_users format in manifest. "
-            "Expected a non-empty list of user IDs or '*' for all users."
-        )
 
 
 def validate_artifact_id(
@@ -325,18 +322,29 @@ async def stage_artifact(
     workspace: str,
     manifest: Dict[str, Any],
     logger: Optional[logging.Logger] = None,
-) -> ObjectProxy:
+    permissions: Optional[Dict[str, Any]] = None,
+) -> tuple:
     """
     Put an artifact into stage mode. Creates a new artifact if it doesn't exist.
+
+    Versioning behaviour:
+    - New artifact or version tag not yet present → branches a new version snapshot
+      (``edit(version='new')``); the caller should commit with the version tag.
+    - Version tag already exists → stages on top of the current head without
+      branching (``edit(version=None)``); the caller should commit *without* a tag
+      so the existing named version is updated in place and other versions are
+      left untouched.
 
     Args:
         artifact_manager: Hypha artifact manager service instance
         workspace: Hypha workspace identifier
         manifest: The updated artifact manifest
         logger: Optional logger instance for debugging
+        permissions: Optional permissions to set on the artifact
 
     Returns:
-        The artifact object
+        Tuple of (artifact, version_is_new) where version_is_new is True when the
+        manifest version did not previously exist and should be tagged on commit.
 
     Raises:
         RuntimeError: If artifact creation fails
@@ -350,8 +358,24 @@ async def stage_artifact(
     # Define collection_id early so it's available for artifact creation
     collection_id = f"{workspace}/applications"
 
+    # Build view_config from frontend_entry if present
+    view_config = None
+    frontend_entry = manifest.get("frontend_entry")
+    if frontend_entry:
+        entry_path = PurePosixPath(frontend_entry)
+        parent = str(entry_path.parent)
+        view_config = {
+            "branch": "main",
+            "root_directory": "" if parent == "." else parent,
+            "headers": {},
+            "index": entry_path.name,
+        }
+
     # Check if artifact exists and handle collection placement
     artifact = None
+    version_is_new = True  # new artifact always gets a version tag on commit
+    manifest_version = manifest.get("version")
+
     try:
         # Check if artifact already exists
         existing_artifact = await artifact_manager.read(artifact_id)
@@ -364,20 +388,64 @@ async def stage_artifact(
                 f"(current: {current_parent_id}, expected: {collection_id}). "
                 "Deleting and recreating..."
             )
-            # Delete the existing artifact
             await artifact_manager.delete(artifact_id=artifact_id)
-            # Will create new one below
             existing_artifact = None
 
         if existing_artifact:
-            # Edit existing artifact
-            artifact = await artifact_manager.edit(
-                artifact_id=artifact_id,
-                manifest=manifest,
-                type="application",
-                stage=True,
+            # Edit existing artifact — preserve existing config, then apply overrides
+            artifact_config = dict(existing_artifact.config or {})
+            if permissions:
+                artifact_config["permissions"] = permissions
+            if view_config is not None:
+                artifact_config["view_config"] = view_config
+
+            # Decide how to stage based on whether the manifest version is new:
+            #
+            # - New version tag: edit(version='new') branches a fresh snapshot so
+            #   all previous versions stay intact; caller commits with the tag.
+            # - Same version as the LATEST: edit(version=None) stages on the
+            #   current head; caller commits without a tag — updates in place.
+            # - Same version as an OLDER (non-latest) tag: not supported by Hypha
+            #   (edit always targets the latest head), so raise a clear error.
+            existing_versions = [
+                v["version"] for v in (existing_artifact.versions or [])
+            ]
+            version_is_new = bool(
+                manifest_version and manifest_version not in existing_versions
             )
-            logger.info(f"Editing existing artifact '{artifact_id}'")
+
+            if not version_is_new and existing_versions:
+                latest_version = existing_versions[-1]
+                if manifest_version and manifest_version != latest_version:
+                    raise ValueError(
+                        f"Cannot re-save artifact '{artifact_id}' at version "
+                        f"'{manifest_version}': a newer version '{latest_version}' "
+                        f"already exists. Bump the version in manifest.yaml to save "
+                        f"changes (existing versions: {existing_versions})."
+                    )
+
+            edit_kwargs = {
+                "artifact_id": artifact_id,
+                "manifest": manifest,
+                "type": "application",
+                "stage": True,
+                "version": "new" if version_is_new else None,
+            }
+            if artifact_config:
+                edit_kwargs["config"] = artifact_config
+
+            artifact = await artifact_manager.edit(**edit_kwargs)
+            if version_is_new:
+                logger.info(
+                    f"Editing existing artifact '{artifact_id}' "
+                    f"(new version: {manifest_version})"
+                )
+            else:
+                logger.info(
+                    f"Editing existing artifact '{artifact_id}' "
+                    f"(updating existing version: {manifest_version or 'latest'})"
+                )
+
     except Exception as e:
         expected_error = f"KeyError: \"Artifact with ID '{artifact_id}' does not exist."
         if expected_error not in str(e).strip():
@@ -386,18 +454,28 @@ async def stage_artifact(
     # Create new artifact if it doesn't exist or was deleted
     if artifact is None:
         try:
-            artifact = await artifact_manager.create(
-                parent_id=collection_id,
-                type="application",
-                alias=artifact_id.split("/")[1],
-                manifest=manifest,
-                stage=True,
-            )
+            initial_config = {}
+            if permissions:
+                initial_config["permissions"] = permissions
+            if view_config is not None:
+                initial_config["view_config"] = view_config
+
+            create_kwargs = {
+                "parent_id": collection_id,
+                "type": "application",
+                "alias": artifact_id.split("/")[1],
+                "manifest": manifest,
+                "stage": True,
+            }
+            if initial_config:
+                create_kwargs["config"] = initial_config
+
+            artifact = await artifact_manager.create(**create_kwargs)
             logger.info(f"Created new artifact '{artifact.id}'")
         except Exception as e:
             raise RuntimeError(f"Failed to create artifact '{artifact_id}': {e}")
 
-    return artifact
+    return artifact, version_is_new
 
 
 async def upload_file_to_artifact(
@@ -502,6 +580,7 @@ async def remove_file_from_artifact(
 async def commit_artifact(
     artifact_manager: ObjectProxy,
     artifact_id: str,
+    version: Optional[str] = None,
     logger: Optional[logging.Logger] = None,
 ) -> None:
     """
@@ -510,6 +589,7 @@ async def commit_artifact(
     Args:
         artifact_manager: Hypha artifact manager service instance
         artifact_id: The artifact ID
+        version: Optional version tag (e.g. "1.0.0"). If None, Hypha assigns "v0" for the first commit, then increments (v1, v2, …) for subsequent unversioned commits.
         logger: Optional logger instance for debugging
 
     Raises:
@@ -519,11 +599,34 @@ async def commit_artifact(
         logger = create_logger("ArtifactUtils")
 
     try:
-        await artifact_manager.commit(artifact_id=artifact_id)
+        kwargs = {"artifact_id": artifact_id}
+        if version is not None:
+            kwargs["version"] = version
+        await artifact_manager.commit(**kwargs)
     except Exception as e:
         raise RuntimeError(f"Failed to commit artifact '{artifact_id}': {e}")
 
-    logger.info(f"Successfully committed artifact '{artifact_id}'")
+    logger.info(f"Successfully committed artifact '{artifact_id}' (version={version or 'latest'})")
+
+
+def get_static_site_url(artifact_id: str, server_url: str) -> str:
+    """
+    Return the static site URL for a BioEngine artifact.
+
+    The URL follows the Hypha convention::
+
+        {server_url}/{workspace}/view/{alias}/
+
+    Args:
+        artifact_id: Fully-qualified artifact ID (``workspace/alias``).
+        server_url: Public base URL of the Hypha server.
+
+    Returns:
+        The public static site URL.
+    """
+    workspace, alias = artifact_id.split("/", 1)
+    return f"{server_url}/{workspace}/view/{alias}/"
+
 
 
 async def create_application_from_files(
@@ -532,6 +635,7 @@ async def create_application_from_files(
     workspace: str,
     user_id: str,
     logger: Optional[logging.Logger] = None,
+    permissions: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Create or update a Hypha artifact from a list of files.
@@ -560,6 +664,7 @@ async def create_application_from_files(
         workspace: Hypha workspace identifier
         user_id: User ID to set as the 'created_by' field in the manifest
         logger: Optional logger instance for debugging
+        permissions: Optional permissions to set on the artifact
 
     Returns:
         The artifact ID of the created or updated artifact
@@ -599,12 +704,14 @@ async def create_application_from_files(
     # Add created_by field to the manifest
     application_manifest["created_by"] = user_id
 
-    # Edit or create artifact, put in stage mode
-    artifact = await stage_artifact(
+    # Edit or create artifact, put in stage mode.
+    # version_is_new tells us whether to tag the commit with the manifest version.
+    artifact, version_is_new = await stage_artifact(
         artifact_manager=artifact_manager,
         workspace=workspace,
         manifest=application_manifest,
         logger=logger,
+        permissions=permissions,
     )
 
     # Get existing files if artifact already exists (to remove old files later)
@@ -668,10 +775,15 @@ async def create_application_from_files(
                     f"Failed to remove old file '{file_name}': {e}. Continuing anyway..."
                 )
 
-    # Commit the artifact
+    # Commit the artifact.
+    # Only tag with the manifest version when it is genuinely new; if the version
+    # tag already existed we commit without a tag (updates the artifact in place
+    # without creating a duplicate version entry).
+    commit_version = application_manifest.get("version") if version_is_new else None
     await commit_artifact(
         artifact_manager=artifact_manager,
         artifact_id=artifact.id,
+        version=commit_version,
         logger=logger,
     )
 

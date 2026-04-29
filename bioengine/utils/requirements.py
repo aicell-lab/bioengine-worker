@@ -4,6 +4,28 @@ from typing import List, Optional
 
 split_re = re.compile(r"(==|>=|<=|~=|>|<)")
 
+# TODO: Use lock files instead of modified version ranges
+
+
+def normalize_requirement(requirement: str) -> str:
+    """
+    Normalize a requirement by replacing >= and <= with == for better reproducibility.
+
+    Args:
+        requirement: A pip requirement string (e.g., "numpy>=1.21.0")
+
+    Returns:
+        Normalized requirement with == instead of >= or <= (e.g., "numpy==1.21.0")
+    """
+    if not requirement:
+        return requirement
+
+    # Replace >= and <= with == for reproducibility
+    requirement = requirement.replace(">=", "==")
+    requirement = requirement.replace("<=", "==")
+
+    return requirement
+
 
 def get_pip_requirements(
     select: Optional[List[str]] = None, extras: Optional[List[str]] = None
@@ -39,14 +61,14 @@ def get_pip_requirements(
     if select is None:
         # If select is None, return all requirements except those starting with "ray"
         filtered_requirements = [
-            requirement
+            normalize_requirement(requirement)
             for requirement in requirements
             if requirement and not requirement.startswith("ray")
         ]
     else:
         # Otherwise, filter based on the select list
         filtered_requirements = [
-            requirement
+            normalize_requirement(requirement)
             for requirement in requirements
             if requirement
             and not requirement.startswith("ray")
@@ -88,7 +110,7 @@ def update_requirements(
                 break
 
         if not exists:
-            requirements.append(bioengine_requirement)
+            requirements.append(normalize_requirement(bioengine_requirement))
 
     return requirements
 
@@ -97,8 +119,18 @@ if __name__ == "__main__":
     # Example usage
     print(get_pip_requirements())
 
-    print(get_pip_requirements(select=["aiortc", "httpx", "hypha-rpc", "pydantic"]))
+    print(
+        get_pip_requirements(
+            select=["aiortc", "httpx", "hypha-rpc", "pydantic"], extras=["worker"]
+        )
+    )
 
     print(get_pip_requirements(select=["zarr"], extras=["datasets"]))
 
-    print(update_requirements(["numpy==1.21.0"]))
+    print(
+        update_requirements(
+            ["numpy==1.21.0"],
+            select=["httpx", "hypha-rpc", "pydantic"],
+            extras=["worker"],
+        )
+    )

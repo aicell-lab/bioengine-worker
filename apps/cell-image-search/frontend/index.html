@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cell Morphology Search Engine 🔬</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b0d14; --surface: #131621; --surface2: #1c1f2e; --surface3: #242840;
+      --border: #2a2e45; --accent: #6366f1; --accent2: #a855f7;
+      --text: #e2e8f0; --muted: #64748b; --muted2: #475569;
+      --green: #22c55e; --red: #ef4444; --yellow: #f59e0b; --blue: #3b82f6;
+    }
+    * { box-sizing: border-box; }
+    body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; margin: 0; }
+    .gradient-text { background: linear-gradient(135deg,#6366f1,#a855f7,#ec4899); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+    .card2 { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; }
+
+    /* Buttons */
+    .btn { padding: 7px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: all .15s; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .btn-primary { background: linear-gradient(135deg,#6366f1,#a855f7); color: #fff; }
+    .btn-primary:hover:not(:disabled) { opacity:.88; transform: translateY(-1px); }
+    .btn-primary:disabled { opacity:.35; cursor:not-allowed; }
+    .btn-sm { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
+    .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    .btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .btn-danger { background: rgba(239,68,68,.15); border: 1px solid rgba(239,68,68,.3); color: #fca5a5; }
+    .btn-danger:hover { background: rgba(239,68,68,.25); }
+
+    /* Status dots */
+    .dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0; }
+    .dot-green { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .dot-yellow { background: var(--yellow); box-shadow: 0 0 8px var(--yellow); animation: blink 1.2s infinite; }
+    .dot-red { background: var(--red); }
+    .dot-gray { background: var(--muted); }
+    .dot-blue { background: var(--blue); box-shadow: 0 0 8px var(--blue); animation: blink 1.2s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+    /* Progress */
+    .progress-track { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+    .progress-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg,#6366f1,#a855f7); transition: width .6s ease; position: relative; overflow: hidden; }
+    .progress-fill::after { content:''; position:absolute; inset:0; background:linear-gradient(90deg,transparent,rgba(255,255,255,.15),transparent); animation: shimmer 1.5s infinite; }
+    @keyframes shimmer { 0%{transform:translateX(-100%)} 100%{transform:translateX(200%)} }
+
+    /* Drop zone */
+    #dropzone { border: 2px dashed var(--border); border-radius: 12px; transition: all .2s; cursor: pointer; }
+    #dropzone.drag-over, #dropzone:hover { border-color: var(--accent); background: rgba(99,102,241,.04); }
+
+    /* Result cards */
+    .result-card { background: var(--surface3); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; transition: all .15s; cursor: pointer; position: relative; }
+    .result-card:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 4px 20px rgba(99,102,241,.2); }
+    .badge { position: absolute; border-radius: 5px; padding: 1px 7px; font-size: 11px; font-weight: 700; }
+
+    /* Tags */
+    .tag { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
+    .tag-green { background:rgba(34,197,94,.15); color:#86efac; }
+    .tag-yellow { background:rgba(245,158,11,.15); color:#fcd34d; }
+    .tag-red { background:rgba(239,68,68,.15); color:#fca5a5; }
+    .tag-blue { background:rgba(59,130,246,.15); color:#93c5fd; }
+    .tag-gray { background:rgba(100,116,139,.15); color:#94a3b8; }
+
+    /* Tabs */
+    .tab { padding: 6px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--muted); transition: all .15s; }
+    .tab.active { background: var(--surface2); color: var(--text); }
+    .tab:hover:not(.active) { color: var(--text); }
+
+    /* Log terminal */
+    .log-panel { background: #0a0c12; border: 1px solid var(--border); border-radius: 8px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 11.5px; color: #94a3b8; overflow-y: auto; padding: 10px 12px; }
+    .log-panel .log-ok { color: #86efac; }
+    .log-panel .log-info { color: #93c5fd; }
+    .log-panel .log-warn { color: #fcd34d; }
+    .log-panel .log-err { color: #fca5a5; }
+
+    /* Global ingestion banner */
+    #ingest-banner { display: none; border-bottom: 1px solid var(--border); background: linear-gradient(135deg, rgba(99,102,241,.08), rgba(168,85,247,.05)); }
+
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* Modal */
+    .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; z-index:50; backdrop-filter:blur(4px); }
+    .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 24px; width: 520px; max-width: 95vw; }
+    input, select, textarea {
+      background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+      border-radius: 8px; padding: 8px 12px; font-size: 13px; outline: none; width: 100%;
+      transition: border-color .15s;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+    label { font-size: 12px; color: var(--muted); font-weight: 500; display: block; margin-bottom: 5px; }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+<!-- Global ingestion progress banner -->
+<div id="ingest-banner" class="px-6 py-2.5">
+  <div class="max-w-screen-xl mx-auto flex items-center gap-4">
+    <span class="dot dot-blue flex-shrink-0"></span>
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center justify-between mb-1">
+        <span id="banner-name" class="text-sm font-semibold truncate"></span>
+        <span id="banner-pct" class="text-sm font-mono font-bold" style="color:var(--accent)">0%</span>
+      </div>
+      <div class="progress-track"><div id="banner-bar" class="progress-fill" style="width:0%"></div></div>
+      <div class="flex justify-between mt-1 text-xs" style="color:var(--muted)">
+        <span id="banner-msg"></span>
+        <span id="banner-stats"></span>
+      </div>
+    </div>
+    <button class="btn btn-ghost btn-sm" onclick="stopActiveBannerSession()">■ Stop</button>
+  </div>
+</div>
+
+<!-- Header -->
+<header style="border-bottom:1px solid var(--border); background:var(--surface);">
+  <div class="max-w-screen-xl mx-auto px-6 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <span class="text-xl">🔬</span>
+      <div>
+        <h1 class="text-lg font-bold gradient-text leading-tight">Cell Morphology Search</h1>
+        <p class="text-xs" style="color:var(--muted)">BioEngine · DINOv2 ViT-B/14 · FAISS · TB-scale</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-4">
+      <div id="index-pill" class="hidden flex items-center gap-2 text-sm px-3 py-1.5 rounded-full" style="background:var(--surface2);border:1px solid var(--border)">
+        <span class="dot dot-green"></span>
+        <span id="index-cells" class="font-mono font-bold"></span>
+        <span style="color:var(--muted)">cells indexed</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span id="conn-dot" class="dot dot-gray"></span>
+        <span id="conn-text" class="text-xs" style="color:var(--muted)">Connecting…</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- Tab bar -->
+<div style="border-bottom:1px solid var(--border); background:var(--surface);">
+  <div class="max-w-screen-xl mx-auto px-6 flex gap-1 py-2">
+    <div class="tab active" onclick="switchTab('search', this)">🔍 Search</div>
+    <div class="tab" onclick="switchTab('datasets', this)">🗄 Datasets</div>
+    <div class="tab" onclick="switchTab('umap', this)">🗺 UMAP</div>
+  </div>
+</div>
+
+<div class="max-w-screen-xl mx-auto w-full px-6 py-5 flex-1">
+
+  <!-- ══════════════════ SEARCH TAB ══════════════════ -->
+  <div id="tab-search" class="flex gap-5">
+
+    <!-- Left: drop zone -->
+    <div class="w-72 flex-shrink-0 flex flex-col gap-4">
+      <div class="card p-4">
+        <h3 class="text-xs font-semibold mb-3" style="color:var(--muted)">QUERY IMAGE</h3>
+        <div id="dropzone" class="flex flex-col items-center justify-content:center min-h-[170px] p-4"
+          onclick="document.getElementById('file-input').click()"
+          ondragover="handleDragOver(event)" ondrop="handleDrop(event)"
+          ondragleave="this.classList.remove('drag-over')">
+          <div id="drop-placeholder" class="flex flex-col items-center gap-2 text-center w-full py-4">
+            <div class="text-4xl opacity-20">🔬</div>
+            <p class="text-sm font-medium">Drop cell image here</p>
+            <p class="text-xs" style="color:var(--muted)">PNG · JPG · TIFF<br>uint8 / uint16 · any channels</p>
+            <button class="btn btn-ghost btn-sm mt-1">Browse files</button>
+          </div>
+          <img id="query-preview" class="hidden max-h-36 rounded-lg object-contain" />
+        </div>
+        <input type="file" id="file-input" class="hidden" accept=".png,.jpg,.jpeg,.tiff,.tif" onchange="handleFileSelect(event)">
+
+        <div class="mt-3 space-y-2">
+          <div class="flex gap-2">
+            <div class="flex-1">
+              <label>Normalisation</label>
+              <select id="norm-preset" onchange="updateNormPreset()">
+                <option value="auto">Auto  p1–p99</option>
+                <option value="wide">Wide  p0.1–p99.9</option>
+                <option value="tight">Tight  p5–p95</option>
+              </select>
+            </div>
+            <div class="w-20">
+              <label>Top-K</label>
+              <select id="topk">
+                <option value="10">10</option>
+                <option value="20" selected>20</option>
+                <option value="50">50</option>
+              </select>
+            </div>
+          </div>
+          <button id="search-btn" class="btn btn-primary w-full" onclick="runSearch()" disabled>
+            🔍 Find Similar Cells
+          </button>
+          <div class="flex justify-between">
+            <button class="btn btn-ghost btn-sm" onclick="clearQuery()">✕ Clear</button>
+            <span id="search-timing" class="text-xs self-center" style="color:var(--muted)"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Query stats -->
+      <div id="query-info" class="hidden card p-4">
+        <h3 class="text-xs font-semibold mb-2" style="color:var(--muted)">IMAGE INFO</h3>
+        <div class="space-y-1 text-xs" style="color:var(--muted)">
+          <div class="flex justify-between"><span>Size</span><span id="qi-dims" class="font-mono"></span></div>
+          <div class="flex justify-between"><span>Channels</span><span id="qi-channels" class="font-mono"></span></div>
+        </div>
+      </div>
+
+      <!-- Top match -->
+      <div id="top1-card" class="hidden card p-3">
+        <h3 class="text-xs font-semibold mb-2" style="color:var(--muted)">TOP MATCH</h3>
+        <div class="result-card">
+          <img id="top1-img" class="w-full aspect-square object-cover" />
+          <div class="p-2 text-xs">
+            <div class="font-semibold truncate" id="top1-compound"></div>
+            <div style="color:var(--muted)" id="top1-moa" class="truncate mt-0.5"></div>
+            <div class="font-mono mt-1" id="top1-score" style="color:var(--accent)"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: results -->
+    <div class="flex-1 min-w-0">
+      <div id="results-empty" class="flex flex-col items-center justify-center h-64 text-center" style="color:var(--muted)">
+        <div class="text-5xl opacity-20 mb-3">🔬</div>
+        <p class="text-base font-medium">Upload an image to search</p>
+        <p class="text-sm mt-1">Drag and drop any fluorescence microscopy image to find<br>the most morphologically similar cells in the database.</p>
+      </div>
+
+      <div id="results-section" class="hidden">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <span class="font-semibold">Top <span id="results-topk"></span> matches</span>
+            <span class="text-sm ml-2" style="color:var(--muted)" id="results-meta"></span>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="sortResults('score')" class="btn btn-ghost btn-sm">↓ Score</button>
+            <button onclick="sortResults('compound')" class="btn btn-ghost btn-sm">A-Z Compound</button>
+          </div>
+        </div>
+
+        <div id="results-grid" class="grid gap-3" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))"></div>
+
+        <!-- MOA distribution -->
+        <div id="moa-box" class="card p-4 mt-4 hidden">
+          <h3 class="text-xs font-semibold mb-3" style="color:var(--muted)">MECHANISM OF ACTION IN TOP RESULTS</h3>
+          <div id="moa-bars" class="space-y-2"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════ DATASETS TAB ══════════════════ -->
+  <div id="tab-datasets" class="hidden">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-base font-semibold">Indexed Datasets</h2>
+      <div class="flex gap-2">
+        <button class="btn btn-ghost btn-sm" onclick="refreshDatasets()">⟳ Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="openAddModal('zarr')">+ Add Zarr Dataset</button>
+        <button class="btn btn-ghost btn-sm" onclick="openAddModal('jump-cp')">+ Add JUMP CP</button>
+      </div>
+    </div>
+
+    <!-- Active ingestion panel (shown when any session is running) -->
+    <div id="active-ingest-panel" class="hidden card p-5 mb-4" style="border-color:rgba(99,102,241,.3);background:rgba(99,102,241,.04)">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <span class="dot dot-blue"></span>
+          <span class="font-semibold text-sm" id="ai-name">Indexing…</span>
+          <span class="tag tag-blue text-xs" id="ai-status-tag">running</span>
+        </div>
+        <button class="btn btn-danger btn-sm" onclick="stopActivePanelSession()">■ Stop</button>
+      </div>
+
+      <!-- Big progress -->
+      <div class="mb-3">
+        <div class="flex justify-between text-sm mb-1.5">
+          <span id="ai-msg" style="color:var(--muted)">Preparing…</span>
+          <span id="ai-pct" class="font-mono font-bold" style="color:var(--accent)">0%</span>
+        </div>
+        <div class="progress-track" style="height:10px"><div id="ai-bar" class="progress-fill" style="width:0%"></div></div>
+      </div>
+
+      <!-- Stats row -->
+      <div class="grid grid-cols-4 gap-3 text-center mb-4">
+        <div class="card2 p-2">
+          <div id="ai-cells" class="font-mono font-bold text-lg" style="color:var(--accent)">0</div>
+          <div class="text-xs" style="color:var(--muted)">cells indexed</div>
+        </div>
+        <div class="card2 p-2">
+          <div id="ai-speed" class="font-mono font-bold text-lg" style="color:var(--green)">—</div>
+          <div class="text-xs" style="color:var(--muted)">cells/sec</div>
+        </div>
+        <div class="card2 p-2">
+          <div id="ai-elapsed" class="font-mono font-bold text-lg">—</div>
+          <div class="text-xs" style="color:var(--muted)">elapsed</div>
+        </div>
+        <div class="card2 p-2">
+          <div id="ai-eta" class="font-mono font-bold text-lg" style="color:var(--yellow)">—</div>
+          <div class="text-xs" style="color:var(--muted)">ETA</div>
+        </div>
+      </div>
+
+      <!-- Log terminal -->
+      <div>
+        <div class="text-xs font-semibold mb-1.5" style="color:var(--muted)">PIPELINE LOG</div>
+        <div id="ai-log" class="log-panel" style="height:140px"></div>
+      </div>
+    </div>
+
+    <!-- Dataset list -->
+    <div id="datasets-list" class="space-y-3">
+      <div id="datasets-empty" class="flex flex-col items-center py-12 text-center" style="color:var(--muted)">
+        <div class="text-4xl opacity-20 mb-3">🗄</div>
+        <p class="font-medium">No datasets indexed yet</p>
+        <p class="text-sm mt-1">Click "Add Zarr Dataset" or "Add JUMP CP" to get started.<br>The app automatically indexes <b style="color:var(--text)">JUMP Cell Painting (10 plates)</b> on first launch.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════ UMAP TAB ══════════════════ -->
+  <div id="tab-umap" class="hidden">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-base font-semibold">Morphological Landscape</h2>
+      <div class="flex items-center gap-3">
+        <div class="flex items-center gap-2">
+          <label class="mb-0 text-xs">Samples</label>
+          <input id="umap-samples" type="number" value="10000" min="100" max="100000" style="width:90px">
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="mb-0 text-xs">Color by</label>
+          <select id="umap-colorby" style="width:160px">
+            <option value="moa_class">Mechanism of Action</option>
+            <option value="compound">Compound</option>
+            <option value="source">Source</option>
+          </select>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="loadUmap()">⟳ Compute UMAP</button>
+        <span id="umap-status" class="text-xs" style="color:var(--muted)"></span>
+      </div>
+    </div>
+    <div id="umap-empty" class="flex flex-col items-center py-16 text-center" style="color:var(--muted)">
+      <div class="text-5xl opacity-20 mb-3">🗺</div>
+      <p class="font-medium">No UMAP yet</p>
+      <p class="text-sm mt-1">Index a dataset first, then click "Compute UMAP".<br>Each point is one cell; colours indicate mechanism of action.</p>
+    </div>
+    <div id="umap-plot" style="height:560px;display:none"></div>
+    <p id="umap-caption" class="hidden text-xs mt-2" style="color:var(--muted)">
+      Each dot = one cell. Colours = mechanism of action. Morphologically similar cells cluster together.
+      <b style="color:var(--yellow)">★</b> marks your last search query.
+    </p>
+  </div>
+
+</div>
+
+<!-- ══ ADD DATASET MODAL ══ -->
+<div id="add-modal" class="modal-overlay hidden" onclick="if(event.target===this)closeAddModal()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="flex items-center justify-between mb-5">
+      <h2 class="font-bold text-base" id="modal-title">Add Zarr Dataset</h2>
+      <button onclick="closeAddModal()" class="btn btn-ghost btn-sm">✕</button>
+    </div>
+
+    <!-- Zarr form -->
+    <div id="zarr-form">
+      <div class="space-y-4">
+        <div>
+          <label>Dataset Name *</label>
+          <input id="modal-name" type="text" placeholder="e.g. HeLa FIB-SEM (OpenOrganelle)">
+        </div>
+        <div>
+          <label>Zarr URL *</label>
+          <input id="modal-url" type="text" placeholder="s3://janelia-cosem-datasets/jrc_hela-3/jrc_hela-3.n5">
+          <p class="text-xs mt-1" style="color:var(--muted)">Supports s3://, https://, or any publicly accessible Zarr store.</p>
+        </div>
+        <div>
+          <label>Description</label>
+          <textarea id="modal-desc" rows="2" placeholder="Optional description"></textarea>
+        </div>
+        <div class="grid grid-cols-3 gap-3">
+          <div>
+            <label>Slices / volume</label>
+            <input id="modal-slices" type="number" value="200" min="10" max="5000">
+          </div>
+          <div>
+            <label>Crops / slice</label>
+            <input id="modal-crops" type="number" value="50" min="1" max="500">
+          </div>
+          <div>
+            <label>GPU workers</label>
+            <input id="modal-gpus" type="number" value="4" min="1" max="64">
+          </div>
+        </div>
+        <div class="card2 p-3 text-xs" style="color:var(--muted)">
+          <b style="color:var(--text)">Supported formats:</b> OME-Zarr, N5/Zarr, any multidimensional array with ≥2 dimensions.
+          3D volumes are automatically sliced along the Z axis.
+        </div>
+      </div>
+    </div>
+
+    <!-- JUMP CP form -->
+    <div id="jump-form" class="hidden space-y-4">
+      <div>
+        <label>Dataset Name</label>
+        <input id="jump-name" type="text" value="JUMP Cell Painting">
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label>Number of plates</label>
+          <input id="jump-plates" type="number" value="10" min="1" max="500">
+          <p class="text-xs mt-1" style="color:var(--muted)">~5K cells/plate · 10 plates ≈ 3 min on 4 GPUs</p>
+        </div>
+        <div>
+          <label>GPU workers</label>
+          <input id="jump-gpus" type="number" value="4" min="1" max="64">
+        </div>
+      </div>
+      <div class="card2 p-3 text-xs" style="color:var(--muted)">
+        <b style="color:var(--text)">JUMP Cell Painting (cpg0016):</b> 116K wells, 5-channel fluorescence,
+        ~47 TB. Public: s3://cellpainting-gallery/cpg0016-jump/. No credentials required.
+      </div>
+    </div>
+
+    <div class="flex justify-end gap-3 mt-5">
+      <button onclick="closeAddModal()" class="btn btn-ghost">Cancel</button>
+      <button id="modal-submit" onclick="submitAddDataset()" class="btn btn-primary">▶ Start Indexing</button>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { connectToServer } from "https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.mjs";
+
+const params = new URLSearchParams(window.location.search);
+const SERVER_URL = params.get("server") || "https://hypha.aicell.io";
+const SERVICE_ID = params.get("ws_service_id") || "";
+
+let svc = null;
+let queryImageB64 = null;
+let currentResults = [];
+let umapData = null;
+let queryUmapPoint = null;
+let normPlow = 1.0, normPhigh = 99.0;
+let activeBannerSessionId = null;   // currently shown in banner
+let activePanelSessionId = null;    // currently shown in datasets panel
+let pollIntervalId = null;
+let currentModalType = "zarr";
+
+// ──────────────────────────────────────────────
+// Connection
+// ──────────────────────────────────────────────
+async function connect() {
+  if (!SERVICE_ID) { setConn("red", "No ws_service_id in URL params"); return; }
+  setConn("yellow", "Connecting…");
+  try {
+    const server = await connectToServer({ server_url: SERVER_URL });
+    svc = await server.getService(SERVICE_ID, { _rkwargs: true });
+    setConn("green", "Connected");
+    await initPage();
+  } catch (e) {
+    setConn("red", "Failed: " + e.message);
+  }
+}
+
+async function initPage() {
+  // Load stats for header pill
+  await refreshIndexStats();
+  // Check for any active sessions from previous launch
+  await resumeActiveSessions();
+  // Load dataset list if on datasets tab
+  if (!document.getElementById("tab-datasets").classList.contains("hidden")) {
+    await refreshDatasets();
+  }
+}
+
+function setConn(state, text) {
+  document.getElementById("conn-dot").className = `dot dot-${state === "green" ? "green" : state === "yellow" ? "yellow" : "red"}`;
+  document.getElementById("conn-text").textContent = text;
+}
+
+// ──────────────────────────────────────────────
+// Index stats header pill
+// ──────────────────────────────────────────────
+async function refreshIndexStats() {
+  if (!svc) return;
+  try {
+    const s = await svc.get_index_stats({ _rkwargs: true });
+    const pill = document.getElementById("index-pill");
+    if (s.indexed && s.n_cells > 0) {
+      document.getElementById("index-cells").textContent = s.n_cells.toLocaleString();
+      pill.classList.remove("hidden");
+      pill.style.display = "flex";
+    }
+  } catch (e) {}
+}
+
+// ──────────────────────────────────────────────
+// Resume active sessions on page load
+// ──────────────────────────────────────────────
+async function resumeActiveSessions() {
+  if (!svc) return;
+  try {
+    const r = await svc.get_active_sessions({ _rkwargs: true });
+    const running = (r.sessions || []).filter(s => s.is_running);
+    if (running.length > 0) {
+      const sid = running[0].session_id;
+      attachBannerSession(sid, running[0].dataset_name || "Ingestion in progress");
+      attachPanelSession(sid, running[0].dataset_name || "Ingestion in progress");
+      startPollLoop();
+    }
+  } catch (e) {}
+}
+
+// ──────────────────────────────────────────────
+// Progress banner (always visible at top)
+// ──────────────────────────────────────────────
+function attachBannerSession(sid, name) {
+  activeBannerSessionId = sid;
+  document.getElementById("ingest-banner").style.display = "block";
+  document.getElementById("banner-name").textContent = name;
+}
+
+function detachBannerSession() {
+  activeBannerSessionId = null;
+  document.getElementById("ingest-banner").style.display = "none";
+}
+
+window.stopActiveBannerSession = async function() {
+  if (!svc || !activeBannerSessionId) return;
+  await svc.stop_ingestion({ session_id: activeBannerSessionId, _rkwargs: true });
+};
+
+// ──────────────────────────────────────────────
+// Active ingestion panel (datasets tab)
+// ──────────────────────────────────────────────
+function attachPanelSession(sid, name) {
+  activePanelSessionId = sid;
+  document.getElementById("active-ingest-panel").classList.remove("hidden");
+  document.getElementById("ai-name").textContent = name;
+}
+
+function detachPanelSession() {
+  activePanelSessionId = null;
+  document.getElementById("active-ingest-panel").classList.add("hidden");
+}
+
+window.stopActivePanelSession = async function() {
+  if (!svc || !activePanelSessionId) return;
+  await svc.stop_ingestion({ session_id: activePanelSessionId, _rkwargs: true });
+};
+
+// ──────────────────────────────────────────────
+// Poll loop — 1 second while active
+// ──────────────────────────────────────────────
+function startPollLoop() {
+  if (pollIntervalId) return; // already running
+  pollIntervalId = setInterval(async () => {
+    const sid = activeBannerSessionId || activePanelSessionId;
+    if (!sid || !svc) return;
+    try {
+      const s = await svc.get_ingestion_status({ session_id: sid, _rkwargs: true });
+      updateProgressUI(s, sid);
+
+      if (["completed", "stopped", "failed"].includes(s.status)) {
+        clearInterval(pollIntervalId);
+        pollIntervalId = null;
+        detachBannerSession();
+        detachPanelSession();
+        await refreshIndexStats();
+        await refreshDatasets();
+      }
+    } catch (e) {}
+  }, 1000);
+}
+
+function updateProgressUI(s, sid) {
+  const pct = s.progress_pct || 0;
+  const n = (s.n_embedded || 0).toLocaleString();
+  const spd = s.throughput_per_sec ? s.throughput_per_sec.toLocaleString(undefined,{maximumFractionDigits:0}) : "—";
+  const elapsed = fmtDuration(s.elapsed_seconds || 0);
+  const eta = s.eta_seconds ? fmtDuration(s.eta_seconds) : "—";
+  const msg = s.message || "";
+
+  // Banner
+  document.getElementById("banner-pct").textContent = pct.toFixed(0) + "%";
+  document.getElementById("banner-bar").style.width = pct + "%";
+  document.getElementById("banner-msg").textContent = msg;
+  document.getElementById("banner-stats").textContent = `${n} cells · ${spd}/s`;
+
+  // Panel
+  document.getElementById("ai-msg").textContent = msg;
+  document.getElementById("ai-pct").textContent = pct.toFixed(0) + "%";
+  document.getElementById("ai-bar").style.width = pct + "%";
+  document.getElementById("ai-cells").textContent = n;
+  document.getElementById("ai-speed").textContent = spd;
+  document.getElementById("ai-elapsed").textContent = elapsed;
+  document.getElementById("ai-eta").textContent = eta;
+
+  // Status tag colour
+  const tag = document.getElementById("ai-status-tag");
+  const stmap = { running:"tag-blue", preparing:"tag-yellow", building_index:"tag-yellow", completed:"tag-green", stopped:"tag-gray", failed:"tag-red", waiting:"tag-gray" };
+  tag.textContent = s.status || "running";
+  tag.className = "tag text-xs " + (stmap[s.status] || "tag-gray");
+
+  // Log terminal
+  const logEl = document.getElementById("ai-log");
+  const lines = s.log_tail || [];
+  if (lines.length) {
+    logEl.innerHTML = lines.map(l => {
+      const cls = l.includes("Error") || l.includes("failed") ? "log-err"
+                : l.includes("Done") || l.includes("completed") ? "log-ok"
+                : l.includes("Building") || l.includes("UMAP") ? "log-info"
+                : "";
+      return `<div class="${cls}">${escHtml(l)}</div>`;
+    }).join("");
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+}
+
+function fmtDuration(s) {
+  if (!s || s < 0) return "—";
+  if (s < 60) return s.toFixed(0) + "s";
+  if (s < 3600) return (s/60).toFixed(0) + "m " + (s%60).toFixed(0) + "s";
+  return (s/3600).toFixed(1) + "h";
+}
+
+function escHtml(str) {
+  return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+// ──────────────────────────────────────────────
+// Tabs
+// ──────────────────────────────────────────────
+window.switchTab = function(name, el) {
+  ["search","datasets","umap"].forEach(t => {
+    document.getElementById("tab-"+t).classList.add("hidden");
+  });
+  document.getElementById("tab-"+name).classList.remove("hidden");
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  el.classList.add("active");
+  if (name === "datasets") refreshDatasets();
+};
+
+// ──────────────────────────────────────────────
+// Datasets list
+// ──────────────────────────────────────────────
+window.refreshDatasets = async function() {
+  if (!svc) return;
+  try {
+    const r = await svc.list_datasets({ _rkwargs: true });
+    renderDatasetsList(r.datasets || []);
+  } catch (e) {}
+};
+
+function renderDatasetsList(datasets) {
+  const el = document.getElementById("datasets-list");
+  const empty = document.getElementById("datasets-empty");
+  if (!datasets.length) { empty.classList.remove("hidden"); el.innerHTML = ""; el.appendChild(empty); return; }
+  empty.classList.add("hidden");
+
+  const statusCls = { indexed:"tag-green", indexing:"tag-blue", failed:"tag-red", stopped:"tag-gray", unknown:"tag-gray" };
+  const statusLabel = { indexing:"🔄 Indexing", indexed:"✓ Indexed", failed:"✗ Failed", stopped:"◼ Stopped", unknown:"?" };
+
+  el.innerHTML = datasets.map((d,i) => `
+    <div class="card p-4 flex items-start gap-4">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="font-semibold text-sm">${escHtml(d.name || "Unnamed")}</span>
+          <span class="tag ${statusCls[d.status] || "tag-gray"}">${statusLabel[d.status] || d.status}</span>
+          ${d.type === "jump-cp" ? '<span class="tag tag-blue">JUMP-CP</span>' : '<span class="tag tag-gray">Zarr</span>'}
+        </div>
+        ${d.description ? `<p class="text-xs mb-2" style="color:var(--muted)">${escHtml(d.description)}</p>` : ""}
+        <div class="flex flex-wrap gap-4 text-xs" style="color:var(--muted)">
+          ${d.n_cells ? `<span>🔬 ${Number(d.n_cells).toLocaleString()} cells</span>` : ""}
+          ${d.zarr_url ? `<span title="${escHtml(d.zarr_url)}" class="truncate max-w-xs">📦 ${escHtml(d.zarr_url.slice(0,60))}${d.zarr_url.length>60?"…":""}</span>` : ""}
+          ${d.date_indexed ? `<span>✓ ${new Date(d.date_indexed).toLocaleString()}</span>` : ""}
+          ${d.date_added && !d.date_indexed ? `<span>Added ${new Date(d.date_added).toLocaleString()}</span>` : ""}
+        </div>
+        ${d.status === "indexing" && d.session_id ? `
+          <div class="mt-2">
+            <div class="progress-track mt-1"><div class="progress-fill" style="width:0%" id="ds-bar-${i}"></div></div>
+          </div>` : ""}
+      </div>
+      <button onclick="removeDataset('${escHtml(d.name||"").replace(/'/g,"\\'")}', this)" class="btn btn-danger btn-sm flex-shrink-0">Remove</button>
+    </div>`).join("");
+}
+
+window.removeDataset = async function(name, btn) {
+  if (!svc) return;
+  if (!confirm(`Remove "${name}" from registry?`)) return;
+  btn.disabled = true;
+  try {
+    await svc.remove_dataset({ name, _rkwargs: true });
+    await refreshDatasets();
+  } catch(e) { btn.disabled = false; }
+};
+
+// ──────────────────────────────────────────────
+// Add dataset modal
+// ──────────────────────────────────────────────
+window.openAddModal = function(type) {
+  currentModalType = type;
+  document.getElementById("add-modal").classList.remove("hidden");
+  document.getElementById("zarr-form").classList.toggle("hidden", type !== "zarr");
+  document.getElementById("jump-form").classList.toggle("hidden", type !== "jump-cp");
+  document.getElementById("modal-title").textContent = type === "zarr" ? "Add Zarr Dataset" : "Add JUMP Cell Painting";
+};
+window.closeAddModal = function() {
+  document.getElementById("add-modal").classList.add("hidden");
+};
+
+window.submitAddDataset = async function() {
+  if (!svc) return;
+  const btn = document.getElementById("modal-submit");
+  btn.disabled = true; btn.textContent = "Starting…";
+  try {
+    let result;
+    if (currentModalType === "zarr") {
+      const name = document.getElementById("modal-name").value.trim();
+      const zarr_url = document.getElementById("modal-url").value.trim();
+      if (!name || !zarr_url) { alert("Name and URL are required."); return; }
+      result = await svc.add_dataset({
+        name, zarr_url,
+        description: document.getElementById("modal-desc").value,
+        n_slices_per_volume: parseInt(document.getElementById("modal-slices").value) || 200,
+        n_crops_per_slice: parseInt(document.getElementById("modal-crops").value) || 50,
+        n_gpu_workers: parseInt(document.getElementById("modal-gpus").value) || 4,
+        _rkwargs: true,
+      });
+    } else {
+      result = await svc.add_jump_cp_dataset({
+        name: document.getElementById("jump-name").value || "JUMP Cell Painting",
+        n_plates: parseInt(document.getElementById("jump-plates").value) || 10,
+        n_gpu_workers: parseInt(document.getElementById("jump-gpus").value) || 4,
+        _rkwargs: true,
+      });
+    }
+    closeAddModal();
+    attachBannerSession(result.session_id, result.name);
+    attachPanelSession(result.session_id, result.name);
+    startPollLoop();
+    switchTab("datasets", document.querySelectorAll(".tab")[1]);
+    await refreshDatasets();
+  } catch (e) {
+    alert("Error: " + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = "▶ Start Indexing";
+  }
+};
+
+// ──────────────────────────────────────────────
+// Image upload
+// ──────────────────────────────────────────────
+window.updateNormPreset = function() {
+  const v = document.getElementById("norm-preset").value;
+  if (v === "auto")  { normPlow = 1.0;  normPhigh = 99.0;  }
+  if (v === "wide")  { normPlow = 0.1;  normPhigh = 99.9;  }
+  if (v === "tight") { normPlow = 5.0;  normPhigh = 95.0;  }
+};
+window.handleDragOver = function(e) { e.preventDefault(); document.getElementById("dropzone").classList.add("drag-over"); };
+window.handleDrop = function(e) { e.preventDefault(); document.getElementById("dropzone").classList.remove("drag-over"); if (e.dataTransfer.files[0]) loadImageFile(e.dataTransfer.files[0]); };
+window.handleFileSelect = function(e) { if (e.target.files[0]) loadImageFile(e.target.files[0]); };
+
+function loadImageFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    const b64 = btoa(String.fromCharCode(...new Uint8Array(e.target.result)));
+    queryImageB64 = b64;
+    const url = URL.createObjectURL(file);
+    const img = document.getElementById("query-preview");
+    img.src = url; img.classList.remove("hidden");
+    document.getElementById("drop-placeholder").classList.add("hidden");
+    document.getElementById("search-btn").disabled = false;
+    document.getElementById("query-info").classList.remove("hidden");
+    const iEl = new Image();
+    iEl.onload = () => {
+      document.getElementById("qi-dims").textContent = iEl.naturalWidth + "×" + iEl.naturalHeight;
+      document.getElementById("qi-channels").textContent = (file.name.endsWith(".tif")||file.name.endsWith(".tiff")) ? "multi-channel TIFF" : "RGB/Grayscale";
+    };
+    iEl.src = url;
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+window.clearQuery = function() {
+  queryImageB64 = null;
+  document.getElementById("query-preview").classList.add("hidden");
+  document.getElementById("drop-placeholder").classList.remove("hidden");
+  document.getElementById("query-info").classList.add("hidden");
+  document.getElementById("search-btn").disabled = true;
+  document.getElementById("results-section").classList.add("hidden");
+  document.getElementById("results-empty").classList.remove("hidden");
+  document.getElementById("top1-card").classList.add("hidden");
+  document.getElementById("search-timing").textContent = "";
+};
+
+// ──────────────────────────────────────────────
+// Search
+// ──────────────────────────────────────────────
+window.runSearch = async function() {
+  if (!svc || !queryImageB64) return;
+  const btn = document.getElementById("search-btn");
+  btn.disabled = true; btn.textContent = "⏳ Searching…";
+  try {
+    const res = await svc.search({
+      image_b64: queryImageB64,
+      top_k: parseInt(document.getElementById("topk").value) || 20,
+      plow: normPlow, phigh: normPhigh,
+      _rkwargs: true,
+    });
+    currentResults = res.results || [];
+    renderResults(currentResults, res);
+    document.getElementById("search-timing").textContent =
+      `${res.elapsed_ms}ms · ${(res.n_cells_searched||0).toLocaleString()} cells`;
+    // Project onto UMAP
+    try {
+      queryUmapPoint = await svc.project_query_onto_umap({ image_b64: queryImageB64, _rkwargs: true });
+      if (umapData) renderUmap(umapData, queryUmapPoint);
+    } catch(e) {}
+  } catch(e) { alert("Search error: " + e.message); }
+  finally { btn.disabled = false; btn.textContent = "🔍 Find Similar Cells"; }
+};
+
+function renderResults(results, res) {
+  document.getElementById("results-empty").classList.add("hidden");
+  document.getElementById("results-section").classList.remove("hidden");
+  document.getElementById("results-topk").textContent = results.length;
+  document.getElementById("results-meta").textContent =
+    `from ${(res.n_cells_searched||0).toLocaleString()} indexed cells · ${res.elapsed_ms}ms`;
+
+  const grid = document.getElementById("results-grid");
+  grid.innerHTML = results.map(r => {
+    const sc = r.score > 0.9 ? "#22c55e" : r.score > 0.7 ? "#f59e0b" : "#94a3b8";
+    return `<div class="result-card" title="${escHtml((r.compound||"")+" · "+(r.moa_class||""))}">
+      <div class="relative">
+        ${r.thumbnail_b64 ? `<img src="data:image/png;base64,${r.thumbnail_b64}" class="w-full aspect-square object-cover">` :
+          `<div class="w-full aspect-square flex items-center justify-center text-2xl" style="background:var(--surface3)">🔬</div>`}
+        <div class="badge top-1.5 left-1.5" style="background:rgba(0,0,0,.65);color:#fff">#${r.rank}</div>
+        <div class="badge top-1.5 right-1.5" style="background:rgba(0,0,0,.65);color:${sc}">${(r.score*100).toFixed(1)}%</div>
+      </div>
+      <div class="p-2 text-xs">
+        <div class="font-semibold truncate" title="${escHtml(r.compound||"")}">${escHtml(r.compound||"unknown")}</div>
+        <div class="truncate mt-0.5" style="color:var(--muted)">${escHtml(r.moa_class||"")}</div>
+        <div class="font-mono text-xs mt-0.5" style="color:var(--muted2)">${escHtml((r.plate||"")+" "+(r.well||""))}</div>
+      </div></div>`;
+  }).join("");
+
+  // Top-1
+  if (results[0]) {
+    const t = results[0];
+    document.getElementById("top1-card").classList.remove("hidden");
+    if (t.thumbnail_b64) document.getElementById("top1-img").src = `data:image/png;base64,${t.thumbnail_b64}`;
+    document.getElementById("top1-compound").textContent = t.compound || "unknown";
+    document.getElementById("top1-moa").textContent = t.moa_class || "";
+    document.getElementById("top1-score").textContent = `Similarity: ${(t.score*100).toFixed(1)}%`;
+  }
+
+  // MOA distribution
+  const moaCounts = {};
+  results.forEach(r => { const m = r.moa_class || "unknown"; moaCounts[m] = (moaCounts[m]||0)+1; });
+  const sorted = Object.entries(moaCounts).sort((a,b)=>b[1]-a[1]);
+  const max = sorted[0]?.[1]||1;
+  const mbox = document.getElementById("moa-box");
+  if (sorted.length > 1) {
+    mbox.classList.remove("hidden");
+    document.getElementById("moa-bars").innerHTML = sorted.map(([moa,cnt]) =>
+      `<div class="flex items-center gap-2 text-xs">
+        <div class="w-36 truncate" style="color:var(--muted)" title="${escHtml(moa)}">${escHtml(moa)}</div>
+        <div class="flex-1 h-3 rounded" style="background:var(--border)">
+          <div class="h-3 rounded" style="width:${(cnt/max*100).toFixed(0)}%;background:linear-gradient(90deg,#6366f1,#a855f7)"></div>
+        </div>
+        <span class="w-5 text-right font-mono">${cnt}</span>
+      </div>`).join("");
+  } else { mbox.classList.add("hidden"); }
+}
+
+window.sortResults = function(by) {
+  if (!currentResults.length) return;
+  const s = [...currentResults].sort((a,b) => by==="score" ? b.score-a.score : (a[by]||"").localeCompare(b[by]||""));
+  renderResults(s, { n_cells_searched: 0, elapsed_ms: 0 });
+};
+
+// ──────────────────────────────────────────────
+// UMAP
+// ──────────────────────────────────────────────
+window.loadUmap = async function() {
+  if (!svc) return;
+  document.getElementById("umap-status").textContent = "Computing…";
+  try {
+    umapData = await svc.get_umap_preview({
+      n_samples: parseInt(document.getElementById("umap-samples").value)||10000,
+      color_by: document.getElementById("umap-colorby").value,
+      _rkwargs: true,
+    });
+    renderUmap(umapData, queryUmapPoint);
+    document.getElementById("umap-status").textContent =
+      `${(umapData.x||[]).length.toLocaleString()} cells shown of ${(umapData.n_total||0).toLocaleString()} total`;
+  } catch(e) { document.getElementById("umap-status").textContent = "Error: "+e.message; }
+};
+
+function renderUmap(data, qp) {
+  const plot = document.getElementById("umap-plot");
+  const empty = document.getElementById("umap-empty");
+  if (!data?.x?.length) { plot.style.display="none"; empty.classList.remove("hidden"); return; }
+  plot.style.display = "block"; empty.classList.add("hidden");
+  document.getElementById("umap-caption").classList.remove("hidden");
+
+  const groups = {};
+  data.x.forEach((x, i) => {
+    const lbl = (data.labels||[])[i] || "unknown";
+    if (!groups[lbl]) groups[lbl] = { x:[], y:[], color:(data.colors||[])[i]||"#888" };
+    groups[lbl].x.push(x); groups[lbl].y.push(data.y[i]);
+  });
+  const traces = Object.entries(groups).map(([lbl,g]) => ({
+    type:"scattergl", mode:"markers", name:lbl,
+    x:g.x, y:g.y,
+    marker:{ size:3, color:g.color, opacity:0.65 },
+    hovertemplate:`<b>${escHtml(lbl)}</b><extra></extra>`,
+  }));
+  if (qp?.umap_x != null) {
+    traces.push({
+      type:"scattergl", mode:"markers", name:"★ Your query",
+      x:[qp.umap_x], y:[qp.umap_y],
+      marker:{ size:18, color:"#f59e0b", symbol:"star", opacity:1, line:{width:2,color:"white"} },
+      hovertemplate:`<b>Your query</b><br>Nearest: ${escHtml(qp.nearest_compound||"?")}<br>${(qp.nearest_score||0)*100|0}% similarity<extra></extra>`,
+    });
+  }
+  Plotly.react(plot, traces, {
+    paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
+    font:{ color:"#64748b", size:11 },
+    xaxis:{ showgrid:false, zeroline:false, showticklabels:false, title:"UMAP-1" },
+    yaxis:{ showgrid:false, zeroline:false, showticklabels:false, title:"UMAP-2", scaleanchor:"x" },
+    legend:{ x:1.01, y:1, bgcolor:"rgba(0,0,0,0)", font:{size:10}, itemsizing:"constant" },
+    margin:{ l:30, r:20, t:10, b:30 },
+    hovermode:"closest",
+  }, { responsive:true, scrollZoom:true });
+}
+
+// Boot
+connect();
+</script>
+</body>
+</html>

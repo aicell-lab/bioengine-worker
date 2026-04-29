@@ -8,8 +8,7 @@ on:
       - 'bioengine/**'
       - 'requirements*.txt'
       - 'pyproject.toml'
-      - 'Dockerfile'
-      - 'Dockerfile.datasets'
+      - 'docker/**'
       - '.dockerignore'
   workflow_dispatch:
 
@@ -93,22 +92,22 @@ jobs:
       uses: docker/build-push-action@v5
       with:
         context: .
-        file: Dockerfile
+        file: docker/worker.Dockerfile
         platforms: linux/amd64,linux/arm64
         push: true
         tags: |
-          ghcr.io/${{ github.repository }}:latest
-          ghcr.io/${{ github.repository }}:${{ env.VERSION }}
+          ghcr.io/aicell-lab/bioengine-worker:latest
+          ghcr.io/aicell-lab/bioengine-worker:${{ env.VERSION }}
         labels: |
           org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        cache-from: type=gha,scope=worker
+        cache-to: type=gha,mode=max,scope=worker
 
     - name: Build and push datasets image
       uses: docker/build-push-action@v5
       with:
         context: .
-        file: Dockerfile.datasets
+        file: docker/datasets.Dockerfile
         platforms: linux/amd64,linux/arm64
         push: true
         tags: |
@@ -116,5 +115,5 @@ jobs:
           ghcr.io/aicell-lab/bioengine-datasets:${{ env.VERSION }}
         labels: |
           org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        cache-from: type=gha,scope=datasets
+        cache-to: type=gha,mode=max,scope=datasets

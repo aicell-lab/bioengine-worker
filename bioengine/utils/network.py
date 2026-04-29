@@ -63,5 +63,5 @@ def acquire_free_port(
 
 if __name__ == "__main__":
     print("Internal IP:", get_internal_ip())
-    ip, port, s = acquire_free_port(8000)
+    port, s = acquire_free_port(8000)
     print("Free port:", port)

@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   data-server:
-    image: ghcr.io/aicell-lab/bioengine-worker:${BIOENGINE_VERSION:-latest}
+    image: ghcr.io/aicell-lab/bioengine-datasets:${BIOENGINE_VERSION:-latest}
     container_name: bioengine-data-server
     user: "${UID}:${GID}"
     volumes:
@@ -13,11 +13,9 @@ services:
     command: >
       python -m bioengine.datasets
       --data-dir /data
-      --cache-dir /home/.bioengine
-      --server-port 9527
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9527/health/liveness"]
+      test: ["CMD", "curl", "-f", "http://localhost:39527/health/liveness"]
       start_period: 60s
       start_interval: 5s
       interval: 30s

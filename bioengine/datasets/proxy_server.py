@@ -19,6 +19,7 @@ Architecture:
 import asyncio
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -26,7 +27,7 @@ from typing import Any, Dict, List, Optional, Union
 import uvicorn
 import yaml
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from hypha_rpc import connect_to_server
 
 from bioengine import __version__
@@ -182,6 +183,10 @@ def _build_app(
         version=__version__,
     )
 
+    @app.get("/health/liveness")
+    async def liveness():
+        return {"status": "ok"}
+
     @app.get("/ping")
     async def ping():
         return "pong"
@@ -290,7 +295,35 @@ def _build_app(
         if not full_path.exists() or not full_path.is_file():
             raise HTTPException(status_code=404, detail=f"'{path}' not found")
 
-        return FileResponse(full_path)
+        file_size = full_path.stat().st_size
+        range_header = request.headers.get("Range") if request else None
+
+        if range_header:
+            m = re.match(r"bytes=(\d*)-(\d*)", range_header)
+            if m:
+                start = int(m.group(1)) if m.group(1) else 0
+                end = int(m.group(2)) if m.group(2) else file_size - 1
+                end = min(end, file_size - 1)
+                length = end - start + 1
+
+                def read_range():
+                    with open(full_path, "rb") as f:
+                        f.seek(start)
+                        return f.read(length)
+
+                data = await asyncio.to_thread(read_range)
+                return Response(
+                    content=data,
+                    status_code=206,
+                    media_type="application/octet-stream",
+                    headers={
+                        "Content-Range": f"bytes {start}-{end}/{file_size}",
+                        "Accept-Ranges": "bytes",
+                        "Content-Length": str(length),
+                    },
+                )
+
+        return FileResponse(full_path, headers={"Accept-Ranges": "bytes"})
 
     return app
 
@@ -357,7 +390,11 @@ def start_proxy_server(
 
     # Client auto-discovery file — fixed location read by BioEngineDatasets("auto")
     current_server_file = Path.home() / ".bioengine" / "datasets" / "bioengine_current_server"
-    current_server_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        current_server_file.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.warning(f"Could not create auto-discovery directory: {e}")
+        current_server_file = None
 
     try:
         logger.info(f"Starting BioEngine Datasets proxy server v{__version__}")
@@ -381,10 +418,9 @@ def start_proxy_server(
         local_http_url = f"http://{server_ip}:{free_server_port}"
 
         # Write local URL for BioEngineDatasets("auto") discovery
-        current_server_file.write_text(local_http_url)
-        logger.info(
-            f"Server URL: {local_http_url}/public/services/bioengine-datasets"
-        )
+        if current_server_file is not None:
+            current_server_file.write_text(local_http_url)
+        logger.info(f"Server URL: {local_http_url}")
 
         cached_user_info: Dict[str, dict] = {}
 
@@ -407,7 +443,7 @@ def start_proxy_server(
         raise
 
     finally:
-        if current_server_file.exists():
+        if current_server_file is not None and current_server_file.exists():
             try:
                 current_server_file.unlink()
             except Exception as e:

@@ -1,4 +1,4 @@
-name: Build and Publish Docker Image
+name: Build and Publish Docker Images
 
 on:
   push:
@@ -9,6 +9,7 @@ on:
       - 'requirements*.txt'
       - 'pyproject.toml'
       - 'Dockerfile'
+      - 'Dockerfile.datasets'
       - '.dockerignore'
   workflow_dispatch:
 
@@ -52,22 +53,22 @@ jobs:
 
         IMAGE="docker://ghcr.io/${{ github.repository }}"
         echo "🔍 Fetching tags for $IMAGE..."
-        
+
         if ! skopeo list-tags "$IMAGE" > /dev/null 2>&1; then
            echo "❌ Image not found or no tags. Cannot determine previous version."
            exit 1
         fi
 
         TAGS=$(skopeo list-tags "$IMAGE" | jq -r '.Tags[]')
-        
+
         # Filter out 'latest' and sort by version
         LATEST_VERSION=$(echo "$TAGS" | grep -v "latest" | sort -V | tail -n1)
-        
+
         if [ -z "$LATEST_VERSION" ]; then
            echo "❌ No valid version tags found."
            exit 1
         fi
-        
+
         echo "📦 Latest registry version: $LATEST_VERSION"
         echo "PREVIOUS_VERSION=$LATEST_VERSION" >> $GITHUB_ENV
 
@@ -88,7 +89,7 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: Build and push Docker image
+    - name: Build and push worker image
       uses: docker/build-push-action@v5
       with:
         context: .
@@ -98,6 +99,21 @@ jobs:
         tags: |
           ghcr.io/${{ github.repository }}:latest
           ghcr.io/${{ github.repository }}:${{ env.VERSION }}
+        labels: |
+          org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Build and push datasets image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: Dockerfile.datasets
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: |
+          ghcr.io/aicell-lab/bioengine-datasets:latest
+          ghcr.io/aicell-lab/bioengine-datasets:${{ env.VERSION }}
         labels: |
           org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
         cache-from: type=gha

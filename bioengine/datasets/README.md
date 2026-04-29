@@ -1,226 +1,353 @@
-# BioEngine Datasets
+# BioEngine Datasets Server
 
-Privacy-preserved scientific data management system for streaming large datasets with fine-grained access control.
+A lightweight server for streaming scientific datasets with per-user access control. Datasets are served in-place from a local directory — no data copying is required. Token authentication is delegated to the central Hypha server on each request.
 
 ## Overview
 
-BioEngine Datasets provides a secure, efficient way to serve and access large scientific datasets. It implements a manifest-driven architecture with HTTP-based streaming, enabling partial data access to Zarr-formatted datasets while maintaining per-user access control.
+The datasets server exposes a simple HTTP API for:
+- Listing available datasets and their metadata
+- Listing files within a dataset
+- Generating direct download URLs for individual files
+- Streaming zarr chunk files with HTTP Range request support
 
-## Data Preparation
+Clients connect directly to the datasets server using the `BioEngineDatasets` Python client. Authentication tokens are validated against `https://hypha.aicell.io` on demand and cached locally.
 
-### Directory Structure
+---
 
-The data directory can contain multiple datasets, each in a separate folder. A dataset is recognized by the presence of a `manifest.yaml` file. Each dataset folder can contain an arbitrary number of files.
+## Dataset Directory Structure
+
+Your data directory contains one subdirectory per dataset. Each subdirectory must contain a `manifest.yaml` file. All other files in the directory (zarr stores, text files, etc.) are served as-is.
 
 ```
-/path/to/data/
-└── my_dataset/
-    ├── data.zarr/               # Optional: Zarr dataset
-    ├── example.txt              # Optional: Text file
-    ├── manifest.yaml            # Required: Dataset configuration
-    └── subdirectory/            # Optional: Subdirectory with more files
-        └── file.txt
+/path/to/datasets/
+├── blood_atlas/
+│   ├── manifest.yaml        ← required
+│   ├── data.zarr/           ← zarr store (directory)
+│   │   ├── zarr.json
+│   │   └── cells/
+│   │       ├── zarr.json
+│   │       └── c/
+│   │           └── 0/
+│   │               └── 0    ← binary chunk file
+│   └── README.md            ← optional documentation
+│
+└── spatial_txn/
+    ├── manifest.yaml
+    └── data.zarr/
 ```
 
-> **Note**: The folder name does not determine the dataset ID. The `id` field in `manifest.yaml` specifies the dataset identifier.
+> The directory name does not determine the dataset ID — the `id` field in `manifest.yaml` is used.
 
-### Manifest Configuration
+---
 
-Each dataset requires a `manifest.yaml` file with the following required fields:
+## manifest.yaml
+
+Every dataset directory must contain a `manifest.yaml`. The following fields are recognised:
+
+### Required fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | `str` | Unique identifier for accessing the dataset |
-| `name` | `str` | Human-readable name for the dataset |
-| `description` | `str` | Brief description of the dataset |
-| `authorized_users` | `List[str]` | Hypha user IDs or email addresses with access |
+| `id` | `str` | Unique identifier used in API calls and client code |
+| `name` | `str` | Human-readable display name |
+| `description` | `str` | Short description of the dataset |
+| `authorized_users` | `list` | Who can access files — see [Access Control](#access-control) |
 
-#### Minimal Example
+### Optional fields
 
-```yaml
-id: my-dataset
-name: My Dataset
-description: Description of the dataset contents.
-authorized_users:
-  - user@example.com
-  - another.user@domain.org
-```
+| Field | Type | Description |
+|-------|------|-------------|
+| `version` | `str` | Dataset version string |
+| `license` | `str` | License identifier (e.g. `CC-BY-4.0`) |
+| `authors` | `list` | List of `{name, affiliation}` entries |
+| `tags` | `list` | Keywords for discovery |
+| `documentation` | `str` | URL to external documentation |
+| `git_repo` | `str` | URL to associated repository |
 
-#### Full Example
-
-```yaml
-id: blood_perturb_rna_001
-name: Blood-Perturb-RNA
-description: CRISPR perturbation screen of 19 transcription factors in human HSPCs with scRNA-seq.
-
-# Access control
-authorized_users:
-  - user@example.com
-
-# Optional metadata
-authors:
-  - name: Author Name
-    affiliation: Institution Name
-license: CC-BY-4.0
-documentation: https://example.com/docs
-git_repo: https://github.com/org/repo
-tags:
-  - perturbation
-  - scRNA-seq
-```
-
-### Access Control
-
-The `authorized_users` field controls who can list and retrieve files from the dataset:
-
-- **Specific users**: List email addresses or Hypha user IDs
-- **Public access**: Use `["*"]` to allow unrestricted access
+### Minimal example
 
 ```yaml
-# Restricted access
-authorized_users:
-  - user1@example.com
-  - user2@example.com
-
-# Public access (no authentication required)
+id: blood-atlas
+name: Blood Cell Atlas
+description: Single-cell RNA-seq data from 50,000 human blood cells.
 authorized_users:
   - "*"
 ```
 
-> **Note**: Listing available datasets does not require authentication. Access control only applies to listing files within a dataset and retrieving file contents.
+### Full example
 
-## Running the Data Server
-
-### From Python
-
-```bash
-python -m bioengine.datasets --data-dir /path/to/data --workspace-dir $HOME/.bioengine
+```yaml
+id: blood-atlas
+name: Blood Cell Atlas
+description: Single-cell RNA-seq data from 50,000 human blood cells collected
+  across 10 healthy donors. Includes raw counts and normalised expression layers.
+version: "1.2"
+license: CC-BY-4.0
+authors:
+  - name: Jane Smith
+    affiliation: KTH Royal Institute of Technology
+  - name: Erik Andersson
+    affiliation: Karolinska Institutet
+tags:
+  - single-cell
+  - RNA-seq
+  - blood
+documentation: https://example.com/blood-atlas-docs
+git_repo: https://github.com/aicell-lab/blood-atlas
+authorized_users:
+  - researcher@university.edu
+  - collaborator@institute.org
 ```
 
-### From Docker
+---
+
+## Access Control
+
+The `authorized_users` field in `manifest.yaml` controls who can list files and download data.
+
+| Value | Effect |
+|-------|--------|
+| `["*"]` | Any authenticated user can access the dataset |
+| `["user@example.com"]` | Only the user whose Hypha email matches |
+| `["user:abc123"]` | Only the user whose Hypha user ID matches |
+| `[]` or absent | No access granted to anyone |
+
+Listing available datasets (`GET /datasets`) never requires authentication — anyone can see what datasets exist and read their manifests. Access control applies only to file listing and file downloads.
+
+---
+
+## Starting the Server
+
+### Command line
 
 ```bash
-docker run -it --rm \
-    --user $(id -u):$(id -g) \
-    -v $HOME/.bioengine:/.bioengine \
-    -v /path/to/data:/data \
-    ghcr.io/aicell-lab/bioengine-worker:latest \
-    python -m bioengine.datasets --data-dir /data --workspace-dir /.bioengine --server-port 9527
+python -m bioengine.datasets --data-dir /path/to/datasets
 ```
 
-### Command-Line Options
+The server scans `--data-dir` at startup, registers the found datasets, and begins serving requests. No credentials are required at startup.
 
-| Option | Description |
-|--------|-------------|
-| `--data-dir PATH` | **Required.** Root directory containing datasets |
-| `--workspace-dir PATH` | Directory for workspace and temporary files |
-| `--server-ip IP` | IP address for the proxy server (default: localhost) |
-| `--server-port PORT` | Port for the proxy server |
-| `--minio-port PORT` | Port for the MinIO S3 backend |
-| `--log-file PATH` | Log file path (use `off` for console-only logging) |
+### Options
 
-## Accessing Datasets
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--data-dir PATH` | *(required)* | Directory containing dataset subdirectories |
+| `--server-ip IP` | auto-detected | IP address for the HTTP server |
+| `--server-port PORT` | auto (39527+) | Port. Scans upward from 39527 if not set |
+| `--authentication-server-url URL` | `https://hypha.aicell.io` | Hypha server used for token validation |
+| `--log-file PATH` | auto-timestamped | Log file. Pass `off` for console-only logging |
 
-### Initializing BioEngineDatasets
+### Docker
+
+```bash
+docker run --rm \
+  -v /path/to/datasets:/data \
+  -v ~/.bioengine:/home/.bioengine \
+  -e HOME=/home \
+  -p 39527:39527 \
+  ghcr.io/aicell-lab/bioengine-datasets:latest \
+  python -m bioengine.datasets --data-dir /data --server-port 39527
+```
+
+### Docker Compose
+
+Set environment variables and start the `data-server` service from the repository root:
+
+```bash
+export DATA_DIR=/path/to/datasets
+export UID=$(id -u)
+export GID=$(id -g)
+docker compose up data-server
+```
+
+---
+
+## HTTP API
+
+All endpoints are at `http://<server-ip>:<port>`.
+
+### `GET /health/liveness`
+
+Returns `{"status": "ok"}`. Used by Docker health checks.
+
+### `GET /ping`
+
+Returns `"pong"`. Simple connectivity check.
+
+### `GET /datasets`
+
+Returns metadata for all datasets. No authentication required.
+
+```bash
+curl http://localhost:39527/datasets
+```
+
+```json
+{
+  "blood-atlas": {
+    "id": "blood-atlas",
+    "name": "Blood Cell Atlas",
+    "description": "...",
+    "authorized_users": ["*"]
+  }
+}
+```
+
+### `GET /datasets/{id}/files`
+
+Lists all files in a dataset. Requires a valid token for non-public datasets.
+
+| Parameter | In | Description |
+|-----------|----|-------------|
+| `token` | query | Hypha authentication token (required if not public) |
+| `dir_path` | query | Subdirectory to list (e.g. `data.zarr`) |
+
+```bash
+curl "http://localhost:39527/datasets/blood-atlas/files?token=your_token"
+```
+
+Returns paths relative to the dataset root:
+
+```json
+["README.md", "manifest.yaml", "data.zarr/zarr.json", "data.zarr/cells/c/0/0"]
+```
+
+### `GET /datasets/{id}/presigned-url`
+
+Returns a direct download URL for a file. Access is validated before the URL is issued.
+
+| Parameter | In | Description |
+|-----------|----|-------------|
+| `file_path` | query | Path to file within the dataset |
+| `token` | query | Hypha authentication token (required if not public) |
+
+```bash
+curl "http://localhost:39527/datasets/blood-atlas/presigned-url?file_path=README.md&token=your_token"
+# "http://192.168.1.10:39527/data/blood-atlas/README.md?token=your_token"
+```
+
+### `GET /data/{dataset_id}/{path}`
+
+Serves raw file bytes. Supports HTTP Range requests for partial content, which zarr clients use to fetch individual chunks efficiently.
+
+```bash
+# Full file
+curl "http://localhost:39527/data/blood-atlas/data.zarr/cells/c/0/0?token=your_token"
+
+# Partial content
+curl -H "Range: bytes=0-1023" \
+  "http://localhost:39527/data/blood-atlas/data.zarr/cells/c/0/0?token=your_token"
+# → HTTP 206 Partial Content
+```
+
+---
+
+## Python Client
+
+### Installation
+
+```bash
+pip install "bioengine[datasets]"
+```
+
+### Initialisation
 
 ```python
-import os
 from bioengine.datasets import BioEngineDatasets
+import os
 
-bioengine_datasets = BioEngineDatasets(
+# Auto-discovers server URL from ~/.bioengine/datasets/bioengine_current_server
+client = BioEngineDatasets(
     data_server_url="auto",
+    hypha_token=os.getenv("HYPHA_TOKEN"),
+)
+
+# Or connect to an explicit URL
+client = BioEngineDatasets(
+    data_server_url="http://192.168.1.10:39527",
     hypha_token=os.getenv("HYPHA_TOKEN"),
 )
 ```
 
-> **Note**: In BioEngine applications, `self.bioengine_datasets` is automatically available and pre-configured. See the [BioEngine Applications User Guide](../../bioengine_apps/README.md#selfbioengine_datasets) for details.
+> In BioEngine applications, `self.bioengine_datasets` is pre-configured automatically.
 
-### List Available Datasets
-
-```python
-datasets = await bioengine_datasets.list_datasets()
-```
-
-### List Files in a Dataset
+### List datasets
 
 ```python
-files = await bioengine_datasets.list_files(
-    dataset_id="my-dataset",
-    dir_path=None,  # Root directory
-    token=None,     # Use default token from initialization
-)
-# Output: ["data.zarr", "example.txt", "subdirectory"]
+datasets = await client.list_datasets()
+# {'blood-atlas': {'id': 'blood-atlas', 'name': 'Blood Cell Atlas', ...}}
 ```
 
-> **Note**: The manifest file (`manifest.yaml`) is not included in the file listing.
-
-
-### Get File Contents
+### List files
 
 ```python
-content = await bioengine_datasets.get_file(
-    dataset_id="my-dataset",
-    file_path="example.txt",
-    token=None,
-)
-file_text = content.decode("utf-8")
+# All files in a dataset
+files = await client.list_files("blood-atlas")
+
+# Only files inside data.zarr/
+files = await client.list_files("blood-atlas", dir_path="data.zarr")
 ```
 
-### Stream Zarr Data
+### Get a zarr store
+
+Returns an `HttpZarrStore` compatible with `zarr` and `anndata`. Only the chunks you access are downloaded.
 
 ```python
 import zarr
 
-# Get Zarr store with HTTP streaming
-zarr_store = await bioengine_datasets.get_file(
-    dataset_id="my-dataset",
-    file_path="data.zarr",
-    token=None,
-)
-
-# Open as Zarr group
-zarr_group = zarr.open_group(store=zarr_store, mode="r")
-arrays = list(zarr_group.array_keys())
+store = await client.get_file("blood-atlas", file_name="data.zarr")
+group = zarr.open_group(store=store, mode="r")
+print(list(group.array_keys()))
 ```
 
-### Access Subdirectories
+### Get a non-zarr file
+
+Returns raw bytes.
 
 ```python
-# List files in a subdirectory
-files = await bioengine_datasets.list_files(
-    dataset_id="my-dataset",
-    dir_path="subdirectory",
-    token=None,
-)
-
-# Get a file from a subdirectory
-content = await bioengine_datasets.get_file(
-    dataset_id="my-dataset",
-    file_path="subdirectory/file.txt",
-    token=None,
-)
+readme = await client.get_file("blood-atlas", file_name="README.md")
+print(readme.decode("utf-8"))
 ```
 
-### Authentication
-
-For datasets with restricted access, provide a user token:
+### Read with AnnData
 
 ```python
-content = await bioengine_datasets.get_file(
-    dataset_id="restricted-dataset",
-    file_path="data.zarr",
-    token="user-authentication-token",
+import asyncio
+import anndata
+
+store = await client.get_file("blood-atlas", file_name="data.zarr")
+
+# Lazy load — metadata only, no data transferred yet
+adata = await asyncio.to_thread(
+    anndata.experimental.read_lazy, store, load_annotation_index=True
 )
+print(adata)           # AnnData object summary
+
+# Access a slice — fetches only the required zarr chunks
+counts = adata.layers["X_binned"][0:10, :].compute()
 ```
 
-If no token is provided, `BioEngineDatasets` uses the token passed during initialization.
+### Client auto-discovery
+
+When the server starts it writes its URL to `~/.bioengine/datasets/bioengine_current_server`. Passing `data_server_url="auto"` (the default) makes the client read this file automatically, so no URL needs to be configured when server and client run on the same machine.
+
+---
 
 ## Architecture
 
-The BioEngine Datasets system consists of:
+```
+Client (BioEngineDatasets)
+       │
+       │  HTTP (direct connection)
+       ▼
+BioEngine Datasets Server (FastAPI)
+  ├─ /datasets            manifest metadata from manifest.yaml
+  ├─ /datasets/{id}/files filesystem scan of dataset directory
+  ├─ /datasets/{id}/presigned-url  generates /data/... URL
+  └─ /data/{id}/{path}    serves file bytes (Range-aware)
+       │
+       │  per-request token validation (cached)
+       ▼
+https://hypha.aicell.io  (central auth server)
+```
 
-- **Proxy Server**: HTTP server with Hypha integration and MinIO S3 backend
-- **BioEngineDatasets Client**: Async interface for dataset access from applications
-- **HttpZarrStore**: Efficient streaming store for partial Zarr data access
-
-This architecture enables efficient streaming of large datasets without requiring full downloads, with privacy-preserved access control managed through Hypha authentication.
+The server reads dataset directories and `manifest.yaml` files at startup. No database, no object store, and no separate services are required.

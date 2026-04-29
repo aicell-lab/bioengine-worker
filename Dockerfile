@@ -13,16 +13,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install minio and minio-client
-RUN curl -Lo /bin/minio.20240716T234641Z https://dl.min.io/server/minio/release/linux-amd64/archive/minio.RELEASE.2024-07-16T23-46-41Z && \
-    chmod +x /bin/minio.20240716T234641Z
-
-RUN curl -Lo /bin/mc.20250408T153949Z https://dl.min.io/client/mc/release/linux-amd64/archive/mc.RELEASE.2025-04-08T15-39-49Z && \
-    chmod +x /bin/mc.20250408T153949Z
-
-# Set environment variables for Hypha
-ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
-    MINIO_EXECUTABLE_PATH=/bin
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 # Set up working directory
 WORKDIR /app
@@ -39,6 +30,6 @@ COPY bioengine/ /app/bioengine/
 COPY pyproject.toml README.md LICENSE /app/
 
 # Install the bioengine package
-RUN pip install --no-cache-dir .[datasets]
+RUN pip install --no-cache-dir .
 
 CMD [ "/bin/bash" ]

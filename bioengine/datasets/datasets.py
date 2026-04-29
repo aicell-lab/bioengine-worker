@@ -258,17 +258,29 @@ class BioEngineDatasets:
             raise ValueError(f"Dataset '{dataset_id}' does not exist")
 
         _file_path = Path(file_path)
-        lookup_dir = (
-            _file_path.parent.as_posix() if _file_path.parent != Path(".") else None
-        )
-        available_files = await self.list_files(
-            dataset_id=dataset_id, dir_path=lookup_dir, token=token
-        )
+        zarr_prefix = _file_path.as_posix() + "/"
 
-        if _file_path.name not in available_files:
-            raise ValueError(
-                f"File '{_file_path.as_posix()}' not found in dataset '{dataset_id}'"
+        if _file_path.suffix == ".zarr":
+            # zarr stores are directories — check that at least one file exists under them
+            lookup_dir = _file_path.as_posix()
+            available_files = await self.list_files(
+                dataset_id=dataset_id, dir_path=lookup_dir, token=token
             )
+            if not available_files:
+                raise ValueError(
+                    f"Zarr store '{_file_path.as_posix()}' not found in dataset '{dataset_id}'"
+                )
+        else:
+            lookup_dir = (
+                _file_path.parent.as_posix() if _file_path.parent != Path(".") else None
+            )
+            available_files = await self.list_files(
+                dataset_id=dataset_id, dir_path=lookup_dir, token=token
+            )
+            if _file_path.as_posix() not in available_files and _file_path.name not in available_files:
+                raise ValueError(
+                    f"File '{_file_path.as_posix()}' not found in dataset '{dataset_id}'"
+                )
 
         if _file_path.suffix == ".zarr":
             try:

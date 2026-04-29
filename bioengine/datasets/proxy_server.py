@@ -175,7 +175,6 @@ async def parse_token(
 def _build_app(
     datasets: Dict[str, dict],
     cached_user_info: Dict[str, dict],
-    local_http_url: str,
 ) -> FastAPI:
     app = FastAPI(
         title="BioEngine Datasets",
@@ -236,40 +235,6 @@ def _build_app(
                 full = Path(root) / fname
                 files.append(str(full.relative_to(base_path)))
         return files
-
-    @app.get("/datasets/{dataset_id}/presigned-url")
-    async def get_presigned_url_route(
-        dataset_id: str,
-        file_path: str,
-        token: Optional[str] = None,
-    ):
-        if dataset_id not in datasets:
-            raise HTTPException(
-                status_code=400,
-                detail=f"ValueError: Dataset '{dataset_id}' does not exist",
-            )
-
-        try:
-            user_info = await parse_token(token, cached_user_info)
-            check_permissions(
-                context={"user": user_info},
-                authorized_users=datasets[dataset_id]["authorized_users"],
-                resource_name=f"access '{file_path}' in dataset '{dataset_id}'",
-            )
-        except PermissionError as e:
-            raise HTTPException(status_code=403, detail=str(e))
-
-        full_path = datasets[dataset_id]["path"] / file_path
-        if not full_path.exists() or not full_path.is_file():
-            raise HTTPException(
-                status_code=400,
-                detail=f"FileNotFoundError: '{file_path}' not found in dataset '{dataset_id}'",
-            )
-
-        url = f"{local_http_url}/data/{dataset_id}/{file_path}"
-        if token:
-            url += f"?token={token}"
-        return url
 
     @app.get("/data/{dataset_id}/{path:path}")
     async def serve_file(
@@ -347,7 +312,6 @@ def start_proxy_server(
     then starts a FastAPI server that:
     - Lists datasets and their manifests
     - Lists files within a dataset (access-controlled)
-    - Issues presigned URLs (direct links to the local file server)
     - Streams zarr chunk files with HTTP Range request support
 
     No data is copied — datasets are served in-place from data_dir.
@@ -427,7 +391,6 @@ def start_proxy_server(
         app = _build_app(
             datasets=datasets,
             cached_user_info=cached_user_info,
-            local_http_url=local_http_url,
         )
 
         uvicorn.run(

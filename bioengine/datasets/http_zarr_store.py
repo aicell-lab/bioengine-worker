@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import time
 from asyncio import Semaphore
 from dataclasses import dataclass
 from typing import AsyncIterator, Iterable, Optional
@@ -25,7 +24,7 @@ from zarr.abc.store import (
 )
 from zarr.core.buffer import Buffer, BufferPrototype
 
-from bioengine.datasets.utils import get_presigned_url, get_url_with_retry
+from bioengine.datasets.utils import get_url_with_retry
 
 
 @dataclass
@@ -45,20 +44,16 @@ class HttpZarrStore(Store):
 
     Key Features:
     - Efficient partial data access through HTTP range requests
-    - Authentication via token-based access control
-    - Presigned URL management with 59-minute caching for performance optimization
+    - Authentication via token passed on each request
     - Size-limited chunk data caching (1GB default) with LRU eviction for optimal performance
     - Compatible with standard Zarr API for seamless integration
     - Read-only access with clear error handling for write operations
 
     Implementation Details:
-    The store uses presigned URLs for efficient and secure access to dataset chunks,
-    supporting HTTP range requests to minimize data transfer when accessing large arrays.
-    It implements a two-tier caching system: presigned URLs are cached for 59 minutes,
-    while actual chunk data is cached with a size limit (1GB default) using LRU eviction.
-    It is optimized for read-only access to scientific datasets in Zarr format. The store
-    uses HTTP range requests to optimize bandwidth usage and supports parallel chunk
-    retrieval for improved performance with array-based data access patterns.
+    The store constructs direct URLs of the form
+    ``{service_url}/data/{dataset_id}/{zarr_path}/{key}?token={token}``
+    and uses HTTP range requests to minimise data transfer. Chunk data is cached
+    locally with a size limit (1GB default) using LRU eviction.
 
     Attributes:
         dataset_id (str): Name of the dataset being accessed
@@ -133,11 +128,6 @@ class HttpZarrStore(Store):
             http2=True,  # Enable HTTP/2 for better multiplexing
         )
 
-        # Presigned URL cache (expires just under 1 hour for safety)
-        # Cache expiry is set to 59 minutes to be safe with 60 minute URL expiry
-        self._presigned_url_cache = {}  # {cache_key: (url, timestamp)}
-        self._cache_expiry_seconds = 59 * 60
-
         # Chunk data cache (size-limited LRU cache)
         self._chunk_cache = {}  # {cache_key: (buffer, size)}
         self._chunk_cache_order = (
@@ -153,70 +143,11 @@ class HttpZarrStore(Store):
         if not self.zarr_path.endswith(".zarr"):
             raise ValueError("zarr_path must end with .zarr")
 
-    def _get_url_cache_key(self, file_path: str) -> str:
-        """Generate a cache key for the presigned URL based on file path."""
-        return f"{self.dataset_id}:{file_path}"
-
-    def _is_cache_expired(self, timestamp: float) -> bool:
-        """Check if a cached URL has expired."""
-        return (time.time() - timestamp) >= self._cache_expiry_seconds
-
-    async def _get_cached_url(self, file_path: str) -> str | None:
-        """
-        Get a cached presigned URL if available and not expired.
-
-        Args:
-            file_path: File path to get the cached URL for
-
-        Returns:
-            Cached URL if available and not expired, None otherwise
-        """
-        cache_key = self._get_url_cache_key(file_path)
-
-        if cache_key in self._presigned_url_cache:
-            url, timestamp = self._presigned_url_cache[cache_key]
-            if not self._is_cache_expired(timestamp):
-                self.logger.debug(f"Presigned URL cache hit for {cache_key}")
-                return url
-            else:
-                # Remove expired entry
-                self.logger.debug(f"Presigned URL cache expired for {cache_key}")
-                del self._presigned_url_cache[cache_key]
-
-        return None
-
-    async def _get_and_cache_url(self, file_path: str) -> str | None:
-        """
-        Get a presigned URL, using cache if available, otherwise fetching and caching.
-
-        Args:
-            file_path: File path to get the presigned URL for
-
-        Returns:
-            Presigned URL or None if file doesn't exist
-        """
-        # Try cache first
-        cached_url = await self._get_cached_url(file_path)
-        if cached_url is not None:
-            return cached_url
-
-        # Not in cache or expired, fetch new URL
-        self.logger.debug(f"Fetching presigned URL for {self.dataset_id}/{file_path}")
-        url = await get_presigned_url(
-            data_service_url=self.service_url,
-            dataset_id=self.dataset_id,
-            file_path=file_path,
-            token=self.token,
-            http_client=self.http_client,
-            logger=self.logger,
-        )
-
-        # Cache the URL if we got one
-        if url is not None:
-            cache_key = self._get_url_cache_key(file_path)
-            self._presigned_url_cache[cache_key] = (url, time.time())
-            self.logger.debug(f"Cached presigned URL for {cache_key}")
-
+    def _build_url(self, file_path: str) -> str:
+        """Build the direct data URL for a file path, appending the token if present."""
+        url = f"{self.service_url}/data/{self.dataset_id}/{file_path}"
+        if self.token:
+            url += f"?token={self.token}"
         return url
 
     def _get_chunk_cache_key(self, key: str, byte_range: ByteRequest | None) -> str:
@@ -330,11 +261,10 @@ class HttpZarrStore(Store):
 
         Data Access Process:
         1. Checks chunk cache for previously downloaded data
-        2. If not cached, obtains a presigned URL for secure access to the chunk
-        3. Constructs appropriate HTTP range headers based on byte_range type
-        4. Retrieves the requested data chunk with proper error handling
-        5. Caches the chunk data for future access
-        6. Returns data in the format specified by the prototype buffer
+        2. If not cached, builds the direct data URL and adds range headers
+        3. Retrieves the requested data chunk with proper error handling
+        4. Caches the chunk data for future access
+        5. Returns data in the format specified by the prototype buffer
 
         Args:
             key: Path to the chunk within the dataset
@@ -356,11 +286,7 @@ class HttpZarrStore(Store):
 
         # Use semaphore to limit concurrent requests
         async with self._request_semaphore:
-            # Not in cache, fetch from remote
-            url = await self._get_and_cache_url(f"{self.zarr_path}/{key}")
-            if url is None:
-                return None
-
+            url = self._build_url(f"{self.zarr_path}/{key}")
             headers = {}
             if byte_range:
                 if isinstance(byte_range, RangeByteRequest):
@@ -374,13 +300,16 @@ class HttpZarrStore(Store):
                 response = await get_url_with_retry(
                     url=url,
                     headers=headers,
-                    raise_for_status=True,
+                    raise_for_status=False,
                     http_client=self.http_client,
                     logger=self.logger,
                 )
+                if response.status_code == 404:
+                    return None
+                response.raise_for_status()
                 content = response.content
                 self.logger.debug(
-                    f"Fetched {len(content)} bytes for {key} (range={headers.get('Range')}) from {url}"
+                    f"Fetched {len(content)} bytes for {key} (range={headers.get('Range')})"
                 )
                 buffer = prototype.buffer.from_bytes(content)
 
@@ -430,8 +359,9 @@ class HttpZarrStore(Store):
         Returns:
             True if the key exists, False otherwise
         """
-        url = await self._get_and_cache_url(f"{self.zarr_path}/{key}")
-        return url is not None
+        url = self._build_url(f"{self.zarr_path}/{key}")
+        response = await self.http_client.get(url, headers={"Range": "bytes=0-0"})
+        return response.status_code in (200, 206)
 
     async def set(self, key: str, value: Buffer) -> None:
         raise NotImplementedError("Write not supported")
@@ -454,8 +384,6 @@ class HttpZarrStore(Store):
         raise NotImplementedError("Dir listing not supported")
 
     def close(self):
-        # Clear both presigned URL cache and chunk cache when closing
-        self._presigned_url_cache.clear()
         self._chunk_cache.clear()
         self._chunk_cache_order.clear()
         self._chunk_cache_size = 0

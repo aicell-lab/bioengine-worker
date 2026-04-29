@@ -211,20 +211,6 @@ Returns paths relative to the dataset root:
 ["README.md", "manifest.yaml", "data.zarr/zarr.json", "data.zarr/cells/c/0/0"]
 ```
 
-### `GET /datasets/{id}/presigned-url`
-
-Returns a direct download URL for a file. Access is validated before the URL is issued.
-
-| Parameter | In | Description |
-|-----------|----|-------------|
-| `file_path` | query | Path to file within the dataset |
-| `token` | query | Hypha authentication token (required if not public) |
-
-```bash
-curl "http://localhost:39527/datasets/blood-atlas/presigned-url?file_path=README.md&token=your_token"
-# "http://192.168.1.10:39527/data/blood-atlas/README.md?token=your_token"
-```
-
 ### `GET /data/{dataset_id}/{path}`
 
 Serves raw file bytes. Supports HTTP Range requests for partial content, which zarr clients use to fetch individual chunks efficiently.
@@ -342,7 +328,6 @@ Client (BioEngineDatasets)
 BioEngine Datasets Server (FastAPI)
   ├─ /datasets            manifest metadata from manifest.yaml
   ├─ /datasets/{id}/files filesystem scan of dataset directory
-  ├─ /datasets/{id}/presigned-url  generates /data/... URL
   └─ /data/{id}/{path}    serves file bytes (Range-aware)
        │
        │  per-request token validation (cached)

@@ -295,22 +295,12 @@ class BioEngineDatasets:
                 logger=self.logger,
             )
         else:
-            from bioengine.datasets.utils import get_presigned_url, get_url_with_retry
+            from bioengine.datasets.utils import get_url_with_retry
 
-            presigned_url = await get_presigned_url(
-                data_service_url=self.service_url,
-                dataset_id=dataset_id,
-                file_path=_file_path.as_posix(),
-                token=token,
-                http_client=self.http_client,
-            )
-            if presigned_url is None:
-                raise ValueError(
-                    f"File '{_file_path.as_posix()}' not found in dataset '{dataset_id}'"
-                )
-
+            params = {"token": token} if token else {}
             response = await get_url_with_retry(
-                url=presigned_url,
+                url=f"{self.service_url}/data/{dataset_id}/{_file_path.as_posix()}",
+                params=params,
                 raise_for_status=True,
                 http_client=self.http_client,
                 logger=self.logger,

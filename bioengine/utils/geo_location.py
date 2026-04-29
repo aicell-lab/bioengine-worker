@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import os
 from typing import Dict, Optional
 
 import httpx
@@ -126,20 +128,18 @@ async def fetch_geolocation(
     All values are None if all providers fail.
     """
     # --- demo override ---
-    import os as _os
-    import json as _json
-    _geo_override = _os.environ.get("BIOENGINE_GEO_LOCATION")
-    if _geo_override:
-        _data = _json.loads(_geo_override)
+    geo_override = os.environ.get("BIOENGINE_GEO_LOCATION")
+    if geo_override:
+        data = json.loads(geo_override)
         if logger:
-            logger.info(f"Using BIOENGINE_GEO_LOCATION override: {_data}")
+            logger.info(f"Using BIOENGINE_GEO_LOCATION override: {data}")
         return {
-            "region":       _data.get("region"),
-            "country_name": _data.get("country_name"),
-            "country_code": _data.get("country_code"),
-            "latitude":     _data.get("latitude"),
-            "longitude":    _data.get("longitude"),
-            "timezone":     _data.get("timezone"),
+            "region": data.get("region"),
+            "country_name": data.get("country_name"),
+            "country_code": data.get("country_code"),
+            "latitude": data.get("latitude"),
+            "longitude": data.get("longitude"),
+            "timezone": data.get("timezone"),
         }
     # --- end demo override ---
 

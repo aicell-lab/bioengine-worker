@@ -25,7 +25,6 @@ dependencies = [
 
 [project.optional-dependencies]
 datasets = [
-    "hypha[s3]>=0.21.23",
     "zarr>=3.0.8",
 ]
 rtc = [

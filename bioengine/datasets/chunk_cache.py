@@ -73,6 +73,22 @@ class ChunkCache:
                 f"total {self._total_size / self.max_size_bytes * 100:.1f}% full"
             )
 
+    async def resize(self, max_size_gb: int) -> None:
+        """Change the cache size limit, evicting LRU entries immediately if needed."""
+        new_max = max_size_gb * 1024 * 1024 * 1024
+        async with self._lock:
+            self.max_size_bytes = new_max
+            while self._total_size > self.max_size_bytes and self._order:
+                oldest = self._order.pop(0)
+                if oldest in self._cache:
+                    _, evicted_size = self._cache.pop(oldest)
+                    self._total_size -= evicted_size
+                    self.logger.debug(f"Evicted on resize: {oldest} ({evicted_size} bytes)")
+        self.logger.info(
+            f"Cache resized to {max_size_gb} GB "
+            f"({self._total_size / max(new_max, 1) * 100:.1f}% full)"
+        )
+
     def clear(self) -> None:
         self._cache.clear()
         self._order.clear()

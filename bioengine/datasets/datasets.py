@@ -5,6 +5,8 @@ from typing import Dict, List, Optional, Union
 
 import httpx
 
+from bioengine.datasets.chunk_cache import ChunkCache, _DEFAULT_CACHE_SIZE_GB
+
 
 class BioEngineDatasets:
     """
@@ -56,6 +58,7 @@ class BioEngineDatasets:
         self,
         data_server_url: Optional[str] = "auto",  # set to None for no data server
         hypha_token: Optional[str] = None,
+        chunk_cache_size_gb: int = _DEFAULT_CACHE_SIZE_GB,
         logger: logging.Logger = logging.getLogger("BioEngineDatasets"),
     ):
         """
@@ -68,6 +71,8 @@ class BioEngineDatasets:
         Args:
             data_server_url: URL of the datasets server, or None to disable remote access
             hypha_token: Optional default authentication token for accessing protected datasets
+            chunk_cache_size_gb: Size of the in-memory LRU chunk cache for zarr data in GB.
+                All zarr stores opened by this client share one cache. Pass 0 to disable.
 
         Note:
             When data_server_url is None, only local dataset access will be available.
@@ -75,6 +80,7 @@ class BioEngineDatasets:
         """
         self.logger = logger
         self.logger.info(f"Initializing {self.__class__.__name__}")
+        self.chunk_cache = ChunkCache(max_size_gb=chunk_cache_size_gb, logger=logger)
 
         if data_server_url == "auto":
             bioengine_dir = Path.home() / ".bioengine"
@@ -98,6 +104,18 @@ class BioEngineDatasets:
             self.logger.info(f"Data server URL: {data_server_url}")
 
         self.default_token = hypha_token
+
+    async def set_chunk_cache_size_gb(self, gb: int) -> None:
+        """
+        Change the chunk cache size limit at runtime.
+
+        Immediately evicts the least-recently-used chunks if the current cache
+        usage exceeds the new limit.
+
+        Args:
+            gb: New cache size in GB. Pass 0 to effectively disable caching.
+        """
+        await self.chunk_cache.resize(gb)
 
     async def ping_data_server(self):
         """
@@ -292,6 +310,7 @@ class BioEngineDatasets:
                 dataset_id=dataset_id,
                 zarr_path=_file_path.as_posix(),
                 token=token,
+                chunk_cache=self.chunk_cache,
                 logger=self.logger,
             )
         else:

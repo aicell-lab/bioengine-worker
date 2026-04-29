@@ -14,7 +14,36 @@ from hypha_rpc import connect_to_server
 from hypha_rpc.rpc import RemoteService
 from hypha_rpc.utils import ObjectProxy
 from ray import serve
-from ray._private.runtime_env.packaging import get_uri_for_directory
+import inspect as _inspect
+from ray._private.runtime_env.packaging import (
+    get_uri_for_directory as _get_uri_for_directory,
+    upload_package_if_needed as _upload_package_if_needed,
+)
+
+# Ray 2.39+ added a required `include_gitignore` parameter to both functions
+# and renamed `directory` to `module_path` in upload_package_if_needed.
+# Wrap them so the call site works with both Ray 2.33 and Ray 2.39+.
+_GET_URI_HAS_GITIGNORE = "include_gitignore" in _inspect.signature(_get_uri_for_directory).parameters
+
+
+def get_uri_for_directory(directory: str) -> str:
+    if _GET_URI_HAS_GITIGNORE:
+        return _get_uri_for_directory(directory, include_gitignore=True)
+    return _get_uri_for_directory(directory)
+
+
+def upload_package_if_needed(pkg_uri: str, base_directory: str, module_path: str) -> bool:
+    sig = _inspect.signature(_upload_package_if_needed)
+    params = sig.parameters
+    if "include_gitignore" in params:
+        return _upload_package_if_needed(
+            pkg_uri=pkg_uri, base_directory=base_directory,
+            module_path=module_path, include_gitignore=True,
+        )
+    # Ray <2.39: parameter was named `directory`
+    return _upload_package_if_needed(
+        pkg_uri=pkg_uri, base_directory=base_directory, directory=module_path,
+    )
 from ray.serve.handle import DeploymentHandle
 
 import bioengine
@@ -364,9 +393,16 @@ class AppBuilder:
         )
         runtime_env["pip"] = pip_requirements
 
-        # Add bioengine as module (does not install dependencies)
-        bioengine_remote_uri = get_uri_for_directory(
-            os.path.dirname(bioengine.__file__)
+        # Add bioengine as module (does not install dependencies).
+        # Ray 2.39+ requires explicit upload before passing a GCS URI to py_modules
+        # at the actor level; upload_package_if_needed is a no-op when the
+        # content-addressed package is already in GCS.
+        bioengine_dir = os.path.dirname(bioengine.__file__)
+        bioengine_remote_uri = get_uri_for_directory(bioengine_dir)
+        upload_package_if_needed(
+            pkg_uri=bioengine_remote_uri,
+            base_directory=str(self.apps_workdir),
+            module_path=bioengine_dir,
         )
         py_modules.append(bioengine_remote_uri)
         runtime_env["py_modules"] = py_modules

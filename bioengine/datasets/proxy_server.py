@@ -149,7 +149,7 @@ async def parse_token(
 
     if token is not None:
         cached = cached_user_info.get(token)
-        if cached is not None:
+        if cached is not None and cached.get("expires_at", 0) > time.time():
             return cached
 
         async with connect_to_server(

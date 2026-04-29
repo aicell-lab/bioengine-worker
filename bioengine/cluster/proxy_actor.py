@@ -61,8 +61,8 @@ class BioEngineProxyActor:
             exclude_head_node: Skip head node in resource calculations (useful for worker-only metrics)
             check_pending_resources: Include pending jobs/actors/tasks in cluster state reports
         """
-        # Get the GCS address using ray._private.worker
-        self.gcs_address = ray._private.worker.global_worker.gcs_client.address
+        # Get the GCS address via public API
+        self.gcs_address = ray.get_runtime_context().gcs_address
 
         # Create GCS client options
         gcs_options = GcsClientOptions.create(

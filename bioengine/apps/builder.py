@@ -14,7 +14,10 @@ from hypha_rpc import connect_to_server
 from hypha_rpc.rpc import RemoteService
 from hypha_rpc.utils import ObjectProxy
 from ray import serve
-from ray._private.runtime_env.packaging import get_uri_for_directory
+from ray._private.runtime_env.packaging import (
+    get_uri_for_directory,
+    upload_package_if_needed,
+)
 from ray.serve.handle import DeploymentHandle
 
 import bioengine
@@ -364,9 +367,20 @@ class AppBuilder:
         )
         runtime_env["pip"] = pip_requirements
 
-        # Add bioengine as module (does not install dependencies)
+        # Add bioengine as module (does not install dependencies).
+        # Ray 2.39+ requires explicit upload before using a URI in py_modules at
+        # the actor level (local-path auto-upload was removed). upload_package_if_needed
+        # is a no-op when the content-addressed package is already in GCS.
+        bioengine_dir = os.path.dirname(bioengine.__file__)
         bioengine_remote_uri = get_uri_for_directory(
-            os.path.dirname(bioengine.__file__)
+            bioengine_dir,
+            include_gitignore=True,
+        )
+        upload_package_if_needed(
+            pkg_uri=bioengine_remote_uri,
+            base_directory=str(self.apps_workdir),
+            module_path=bioengine_dir,
+            include_gitignore=True,
         )
         py_modules.append(bioengine_remote_uri)
         runtime_env["py_modules"] = py_modules

@@ -125,6 +125,24 @@ async def fetch_geolocation(
     Returns a dict with: region, country_name, country_code, latitude, longitude, timezone.
     All values are None if all providers fail.
     """
+    # --- demo override ---
+    import os as _os
+    import json as _json
+    _geo_override = _os.environ.get("BIOENGINE_GEO_LOCATION")
+    if _geo_override:
+        _data = _json.loads(_geo_override)
+        if logger:
+            logger.info(f"Using BIOENGINE_GEO_LOCATION override: {_data}")
+        return {
+            "region":       _data.get("region"),
+            "country_name": _data.get("country_name"),
+            "country_code": _data.get("country_code"),
+            "latitude":     _data.get("latitude"),
+            "longitude":    _data.get("longitude"),
+            "timezone":     _data.get("timezone"),
+        }
+    # --- end demo override ---
+
     if logger is None:
         logger = logging.getLogger(__name__)
 

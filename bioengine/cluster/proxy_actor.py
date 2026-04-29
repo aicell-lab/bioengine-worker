@@ -76,8 +76,8 @@ class BioEngineProxyActor:
         self.global_state = GlobalState()
         self.global_state._initialize_global_state(gcs_options)
 
-        # Force initialization of the global state accessor
-        self.global_state._check_connected()
+        # Force GCS connection eagerly (_check_connected() was removed in Ray 2.39+)
+        self.global_state.node_table()
 
         # Initialize the state API client for querying states
         self.state_api_client = StateApiClient(self.gcs_address)

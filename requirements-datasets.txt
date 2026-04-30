@@ -1,5 +1,5 @@
 fastapi==0.115.12
-httpx==0.28.1
+httpx[http2]==0.28.1
 hypha-rpc==0.21.11
 numpy==1.26.4
 pyyaml==6.0.2

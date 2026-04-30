@@ -74,7 +74,7 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worke
         type=str,
         metavar="PATH",
         help="Path to the log file. Pass 'off' to log to console only. "
-        "Defaults to a timestamped file in <data_dir>/../logs/.",
+        "Defaults to a timestamped file in ~/.bioengine/logs/.",
     )
 
     return parser

@@ -133,7 +133,7 @@ The server scans `--data-dir` at startup, registers the found datasets, and begi
 | `--server-ip IP` | auto-detected | IP address written into the auto-discovery file and used in URLs |
 | `--server-port PORT` | auto (39527+) | Port. Scans upward from 39527 if not set |
 | `--authentication-server-url URL` | `https://hypha.aicell.io` | Hypha server used for token validation |
-| `--log-file PATH` | auto-timestamped | Log file. Pass `off` for console-only logging |
+| `--log-file PATH` | `~/.bioengine/logs/` | Log file. Pass `off` for console-only logging |
 
 ### Environment variables
 

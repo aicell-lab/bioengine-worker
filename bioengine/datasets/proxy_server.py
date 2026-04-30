@@ -330,7 +330,7 @@ def start_proxy_server(
                                    per-request token validation
                                    (default: https://hypha.aicell.io).
         log_file: Path to log file. Pass "off" for console-only logging.
-                  Defaults to a timestamped file in <data_dir>/../logs/.
+                  Defaults to a timestamped file in ~/.bioengine/logs/.
     """
     global AUTHENTICATION_SERVER_URL
 
@@ -340,7 +340,7 @@ def start_proxy_server(
     # Logging setup
     if log_file != "off":
         if log_file is None:
-            log_dir = data_dir.parent / "logs"
+            log_dir = Path.home() / ".bioengine" / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_file = log_dir / f"bioengine_datasets_{time.strftime('%Y%m%d_%H%M%S')}.log"
         else:

@@ -7,8 +7,7 @@ A lightweight server for streaming scientific datasets with per-user access cont
 The datasets server exposes a simple HTTP API for:
 - Listing available datasets and their metadata
 - Listing files within a dataset
-- Generating direct download URLs for individual files
-- Streaming zarr chunk files with HTTP Range request support
+- Streaming file bytes directly, including zarr chunks with HTTP Range request support
 
 Clients connect directly to the datasets server using the `BioEngineDatasets` Python client. Authentication tokens are validated against `https://hypha.aicell.io` on demand and cached locally.
 
@@ -131,10 +130,16 @@ The server scans `--data-dir` at startup, registers the found datasets, and begi
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--data-dir PATH` | *(required)* | Directory containing dataset subdirectories |
-| `--server-ip IP` | auto-detected | IP address for the HTTP server |
+| `--server-ip IP` | auto-detected | IP address written into the auto-discovery file and used in URLs |
 | `--server-port PORT` | auto (39527+) | Port. Scans upward from 39527 if not set |
 | `--authentication-server-url URL` | `https://hypha.aicell.io` | Hypha server used for token validation |
 | `--log-file PATH` | auto-timestamped | Log file. Pass `off` for console-only logging |
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BIOENGINE_DATASETS_ZARR_STORE_CACHE_SIZE` | `1` | Default in-memory chunk cache size in GB for zarr access. Applied to both the Python client and standalone `HttpZarrStore` instances |
 
 ### Docker
 
@@ -158,6 +163,8 @@ export UID=$(id -u)
 export GID=$(id -g)
 docker compose up data-server
 ```
+
+The compose file does not publish any ports. On Linux, the Docker bridge network is reachable from the host, so local clients (same machine) can connect via the URL written to `~/.bioengine/datasets/bioengine_current_server`. For access from other machines, either add a `ports:` mapping to the service or pass `--server-ip <public-ip>` so the auto-discovery file contains the correct external address.
 
 ---
 
@@ -243,8 +250,9 @@ import os
 
 # Auto-discovers server URL from ~/.bioengine/datasets/bioengine_current_server
 client = BioEngineDatasets(
-    data_server_url="auto",
+    data_server_url="auto",          # default
     hypha_token=os.getenv("HYPHA_TOKEN"),
+    chunk_cache_size_gb=1,           # optional, see Chunk Cache below
 )
 
 # Or connect to an explicit URL
@@ -310,6 +318,27 @@ print(adata)           # AnnData object summary
 
 # Access a slice — fetches only the required zarr chunks
 counts = adata.layers["X_binned"][0:10, :].compute()
+```
+
+### Chunk cache
+
+The client keeps a per-client LRU cache of zarr chunks in memory. All zarr stores opened by the same `BioEngineDatasets` instance share one cache budget.
+
+```python
+# Set cache size at construction (default: 1 GB, or BIOENGINE_DATASETS_ZARR_STORE_CACHE_SIZE env var)
+client = BioEngineDatasets(chunk_cache_size_gb=4)
+
+# Resize at runtime — evicts LRU entries immediately if needed
+await client.set_chunk_cache_size_gb(2)
+
+# Disable caching entirely
+await client.set_chunk_cache_size_gb(0)
+```
+
+The default can also be set process-wide via the environment variable:
+
+```bash
+export BIOENGINE_DATASETS_ZARR_STORE_CACHE_SIZE=4
 ```
 
 ### Client auto-discovery

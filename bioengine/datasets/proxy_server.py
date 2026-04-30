@@ -10,6 +10,9 @@ cached locally — the server itself requires no credentials at startup.
 
 Architecture:
 - Dataset directories are scanned for manifest.yaml at startup
+- A background asyncio task polls data_dir every 30 s and hot-reloads the
+  in-memory registry when datasets are added, removed, or their manifest
+  changes — no server restart needed
 - Access control is defined per-dataset in manifest.yaml (authorized_users field)
 - Token authentication is delegated to the remote Hypha server (cached locally)
 - FastAPI exposes all endpoints under /public/services/bioengine-datasets/
@@ -21,6 +24,7 @@ import logging
 import os
 import re
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -130,9 +134,48 @@ def load_datasets(data_dir: Path) -> Dict[str, dict]:
             "path": subdir,
             "authorized_users": authorized_users,
         }
-        logger.info(f"Loaded dataset '{dataset_id}' from {subdir}")
+        logger.debug(f"Loaded dataset '{dataset_id}' from {subdir}")
 
     return datasets
+
+
+async def _watch_data_dir(
+    data_dir: Path,
+    datasets: Dict[str, dict],
+    poll_interval: int = 30,
+) -> None:
+    """Poll data_dir every poll_interval seconds and hot-reload the datasets registry.
+
+    Updates the shared ``datasets`` dict in-place so all running route handlers
+    see changes immediately without a server restart.
+    """
+    while True:
+        await asyncio.sleep(poll_interval)
+        try:
+            fresh = load_datasets(data_dir)
+
+            added = set(fresh) - set(datasets)
+            removed = set(datasets) - set(fresh)
+            changed = {
+                ds_id
+                for ds_id in set(fresh) & set(datasets)
+                if fresh[ds_id]["manifest"] != datasets[ds_id]["manifest"]
+            }
+
+            for ds_id in added:
+                datasets[ds_id] = fresh[ds_id]
+                logger.info(f"Dataset added: '{ds_id}' ({fresh[ds_id]['path']})")
+
+            for ds_id in removed:
+                del datasets[ds_id]
+                logger.info(f"Dataset removed: '{ds_id}'")
+
+            for ds_id in changed:
+                datasets[ds_id] = fresh[ds_id]
+                logger.info(f"Dataset reloaded (manifest changed): '{ds_id}'")
+
+        except Exception as e:
+            logger.warning(f"Data directory watch error: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -173,13 +216,28 @@ async def parse_token(
 
 
 def _build_app(
+    data_dir: Path,
     datasets: Dict[str, dict],
     cached_user_info: Dict[str, dict],
+    watch_interval: int = 30,
 ) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        task = asyncio.create_task(
+            _watch_data_dir(data_dir, datasets, poll_interval=watch_interval)
+        )
+        yield
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
     app = FastAPI(
         title="BioEngine Datasets",
         description="Zarr dataset server with manifest-based access control",
         version=__version__,
+        lifespan=lifespan,
     )
 
     @app.get("/health/liveness")
@@ -365,7 +423,10 @@ def start_proxy_server(
         logger.info(f"Serving datasets from: {data_dir}")
 
         datasets = load_datasets(data_dir)
-        logger.info(f"Found {len(datasets)} dataset(s): {list(datasets.keys())}")
+        logger.info(
+            f"Found {len(datasets)} dataset(s): {list(datasets.keys())} "
+            f"(watching for changes every 30 s)"
+        )
 
         server_ip = server_ip or get_internal_ip()
         # Default port range: 39527–39999 (avoids Hypha's 9527 and Ray's ports)
@@ -389,6 +450,7 @@ def start_proxy_server(
         cached_user_info: Dict[str, dict] = {}
 
         app = _build_app(
+            data_dir=data_dir,
             datasets=datasets,
             cached_user_info=cached_user_info,
         )

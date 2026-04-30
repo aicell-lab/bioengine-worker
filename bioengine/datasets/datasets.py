@@ -5,6 +5,8 @@ from typing import Dict, List, Optional, Union
 
 import httpx
 
+from bioengine.datasets.chunk_cache import ChunkCache, _DEFAULT_CACHE_SIZE_GB
+
 
 class BioEngineDatasets:
     """
@@ -56,6 +58,7 @@ class BioEngineDatasets:
         self,
         data_server_url: Optional[str] = "auto",  # set to None for no data server
         hypha_token: Optional[str] = None,
+        chunk_cache_size_gb: int = _DEFAULT_CACHE_SIZE_GB,
         logger: logging.Logger = logging.getLogger("BioEngineDatasets"),
     ):
         """
@@ -68,6 +71,8 @@ class BioEngineDatasets:
         Args:
             data_server_url: URL of the datasets server, or None to disable remote access
             hypha_token: Optional default authentication token for accessing protected datasets
+            chunk_cache_size_gb: Size of the in-memory LRU chunk cache for zarr data in GB.
+                All zarr stores opened by this client share one cache. Pass 0 to disable.
 
         Note:
             When data_server_url is None, only local dataset access will be available.
@@ -75,6 +80,7 @@ class BioEngineDatasets:
         """
         self.logger = logger
         self.logger.info(f"Initializing {self.__class__.__name__}")
+        self.chunk_cache = ChunkCache(max_size_gb=chunk_cache_size_gb, logger=logger)
 
         if data_server_url == "auto":
             bioengine_dir = Path.home() / ".bioengine"
@@ -93,11 +99,23 @@ class BioEngineDatasets:
         self.service_url: Optional[str] = None
         self.http_client: Optional[httpx.AsyncClient] = None
         if data_server_url is not None:
-            self.service_url = f"{data_server_url}/public/services/bioengine-datasets"
+            self.service_url = data_server_url.rstrip("/")
             self.http_client = httpx.AsyncClient(timeout=20)  # seconds
             self.logger.info(f"Data server URL: {data_server_url}")
 
         self.default_token = hypha_token
+
+    async def set_chunk_cache_size_gb(self, gb: int) -> None:
+        """
+        Change the chunk cache size limit at runtime.
+
+        Immediately evicts the least-recently-used chunks if the current cache
+        usage exceeds the new limit.
+
+        Args:
+            gb: New cache size in GB. Pass 0 to effectively disable caching.
+        """
+        await self.chunk_cache.resize(gb)
 
     async def ping_data_server(self):
         """
@@ -116,7 +134,6 @@ class BioEngineDatasets:
         from bioengine.datasets.utils import get_url_with_retry
 
         try:
-            # Try to ping dataset service
             await get_url_with_retry(
                 url=f"{self.service_url}/ping",
                 raise_for_status=True,
@@ -149,7 +166,7 @@ class BioEngineDatasets:
 
         start_time = asyncio.get_event_loop().time()
         response = await get_url_with_retry(
-            url=f"{self.service_url}/list_datasets",
+            url=f"{self.service_url}/datasets",
             raise_for_status=True,
             http_client=self.http_client,
             logger=self.logger,
@@ -198,15 +215,14 @@ class BioEngineDatasets:
         start_time = asyncio.get_event_loop().time()
         token = token or self.default_token
 
-        # Build query URL, excluding None parameters
-        params = {"dataset_id": dataset_id}
+        params = {}
         if dir_path is not None:
             params["dir_path"] = dir_path
         if token is not None:
             params["token"] = token
 
         response = await get_url_with_retry(
-            url=f"{self.service_url}/list_files",
+            url=f"{self.service_url}/datasets/{dataset_id}/files",
             params=params,
             raise_for_status=True,
             http_client=self.http_client,
@@ -260,17 +276,28 @@ class BioEngineDatasets:
             raise ValueError(f"Dataset '{dataset_id}' does not exist")
 
         _file_path = Path(file_path)
-        lookup_dir = (
-            _file_path.parent.as_posix() if _file_path.parent != Path(".") else None
-        )
-        available_files = await self.list_files(
-            dataset_id=dataset_id, dir_path=lookup_dir, token=token
-        )
 
-        if _file_path.name not in available_files:
-            raise ValueError(
-                f"File '{_file_path.as_posix()}' not found in dataset '{dataset_id}'"
+        if _file_path.suffix == ".zarr":
+            # zarr stores are directories — check that at least one file exists under them
+            lookup_dir = _file_path.as_posix()
+            available_files = await self.list_files(
+                dataset_id=dataset_id, dir_path=lookup_dir, token=token
             )
+            if not available_files:
+                raise ValueError(
+                    f"Zarr store '{_file_path.as_posix()}' not found in dataset '{dataset_id}'"
+                )
+        else:
+            lookup_dir = (
+                _file_path.parent.as_posix() if _file_path.parent != Path(".") else None
+            )
+            available_files = await self.list_files(
+                dataset_id=dataset_id, dir_path=lookup_dir, token=token
+            )
+            if _file_path.as_posix() not in available_files and _file_path.name not in available_files:
+                raise ValueError(
+                    f"File '{_file_path.as_posix()}' not found in dataset '{dataset_id}'"
+                )
 
         if _file_path.suffix == ".zarr":
             try:
@@ -283,25 +310,16 @@ class BioEngineDatasets:
                 dataset_id=dataset_id,
                 zarr_path=_file_path.as_posix(),
                 token=token,
+                chunk_cache=self.chunk_cache,
                 logger=self.logger,
             )
         else:
-            from bioengine.datasets.utils import get_presigned_url, get_url_with_retry
+            from bioengine.datasets.utils import get_url_with_retry
 
-            presigned_url = await get_presigned_url(
-                data_service_url=self.service_url,
-                dataset_id=dataset_id,
-                file_path=_file_path.as_posix(),
-                token=token,
-                http_client=self.http_client,
-            )
-            if presigned_url is None:
-                raise ValueError(
-                    f"File '{_file_path.as_posix()}' not found in dataset '{dataset_id}'"
-                )
-
+            params = {"token": token} if token else {}
             response = await get_url_with_retry(
-                url=presigned_url,
+                url=f"{self.service_url}/data/{dataset_id}/{_file_path.as_posix()}",
+                params=params,
                 raise_for_status=True,
                 http_client=self.http_client,
                 logger=self.logger,

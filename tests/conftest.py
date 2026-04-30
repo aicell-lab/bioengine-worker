@@ -86,7 +86,7 @@ def bioengine_apps_dir(workspace_folder: Path) -> Path:
 
 @pytest.fixture(scope="session", autouse=True)
 def validate_environment(workspace_folder) -> str:
-    requirements_file = workspace_folder / "requirements.txt"
+    requirements_file = workspace_folder / "requirements-worker.txt"
     with open(requirements_file, "r") as file:
         for req in file:
             req = req.strip()

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bioengine"
-version = "0.8.5"
+version = "0.8.6"
 description = "BioEngine — CLI and SDK for deploying and calling AI model services on BioEngine workers"
 requires-python = ">=3.11"
 authors = [
@@ -36,7 +36,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Processing",
 ]
 dependencies = [
-    "httpx>=0.28.1",
+    "httpx[http2]>=0.28.1",
     "hypha-rpc>=0.21.11",
     "numpy==1.26.4",
     "pyyaml>=6.0.2",
@@ -53,9 +53,8 @@ cli = [
     "Pillow>=10.0",
 ]
 datasets = [
-    "httpx[http2]>=0.28.1",
-    "hypha[s3]>=0.21.39",
-    "psutil",  # Missing requirement in hypha
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
     "zarr>=3.0.8",
 ]
 worker = [

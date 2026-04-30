@@ -1,4 +1,4 @@
-name: Build and Publish Docker Image
+name: Build and Publish Docker Images
 
 on:
   push:
@@ -52,22 +52,22 @@ jobs:
 
         IMAGE="docker://ghcr.io/${{ github.repository }}"
         echo "🔍 Fetching tags for $IMAGE..."
-        
+
         if ! skopeo list-tags "$IMAGE" > /dev/null 2>&1; then
            echo "❌ Image not found or no tags. Cannot determine previous version."
            exit 1
         fi
 
         TAGS=$(skopeo list-tags "$IMAGE" | jq -r '.Tags[]')
-        
+
         # Filter out 'latest' and sort by version
         LATEST_VERSION=$(echo "$TAGS" | grep -v "latest" | sort -V | tail -n1)
-        
+
         if [ -z "$LATEST_VERSION" ]; then
            echo "❌ No valid version tags found."
            exit 1
         fi
-        
+
         echo "📦 Latest registry version: $LATEST_VERSION"
         echo "PREVIOUS_VERSION=$LATEST_VERSION" >> $GITHUB_ENV
 

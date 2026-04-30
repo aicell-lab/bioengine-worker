@@ -13,13 +13,11 @@ services:
       - TZ=UTC
     command: >
       python -m bioengine.datasets
-      --data-import-dir /data
-      --workspace-dir /home/.bioengine
-      --server-port 9527
+      --data-dir /data
     restart: unless-stopped
     stop_grace_period: 30s
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9527/health/liveness"]
+      test: ["CMD", "curl", "-f", "http://localhost:39527/health/liveness"]
       start_period: 60s
       start_interval: 5s
       interval: 30s

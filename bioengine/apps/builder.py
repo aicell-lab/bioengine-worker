@@ -14,7 +14,6 @@ from hypha_rpc import connect_to_server
 from hypha_rpc.rpc import RemoteService
 from hypha_rpc.utils import ObjectProxy
 from ray import serve
-from ray._private.runtime_env.packaging import get_uri_for_directory
 from ray.serve.handle import DeploymentHandle
 
 import bioengine
@@ -351,7 +350,6 @@ class AppBuilder:
         # Update runtime environment with BioEngine requirements
         runtime_env = ray_actor_options.setdefault("runtime_env", {})
         pip_requirements = runtime_env.setdefault("pip", [])
-        py_modules = runtime_env.setdefault("py_modules", [])
         env_vars = runtime_env.setdefault("env_vars", {})
 
         # Update pip requirements
@@ -364,12 +362,8 @@ class AppBuilder:
         )
         runtime_env["pip"] = pip_requirements
 
-        # Add bioengine as module (does not install dependencies)
-        bioengine_remote_uri = get_uri_for_directory(
-            os.path.dirname(bioengine.__file__)
-        )
-        py_modules.append(bioengine_remote_uri)
-        runtime_env["py_modules"] = py_modules
+        # bioengine is available to all deployments via the job-level py_modules set
+        # in ray.init() — no need to re-upload it per deployment.
 
         # Add user defined environment variables
         env_vars.update(non_secret_env_vars)

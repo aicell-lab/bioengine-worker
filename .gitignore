@@ -168,6 +168,9 @@ resources
 
 # BioEngine
 .bioengine*
+
+# Svamp
+.svamp/
 data/
 model-screening*/
 

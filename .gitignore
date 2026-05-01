@@ -166,13 +166,15 @@ cython_debug/
 resources
 # Ray (https://github.com/ray-project/ray/archive/refs/tags/ray-2.33.0.zip)
 
-# BioEngine
+# BioEngine workspace
 .bioengine*
 
 # Svamp
 .svamp/
-data/
-model-screening*/
 
 # MacOS
 .DS_STORE
+
+# Data
+data/
+data

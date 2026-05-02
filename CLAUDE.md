@@ -274,7 +274,7 @@ The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install
 - **Version bump rules**:
   - **`deploy-applications.yml`** is manual-dispatch only (push trigger disabled — agents deploy directly via the worker API). Always bump `version` in the affected app's `manifest.yaml` when app code changes.
   - **`docker-publish.yml`** triggers on changes to any of these paths: `bioengine/**`, `requirements*.txt`, `pyproject.toml`, `docker/**`, `.dockerignore`. It enforces that `version` in `pyproject.toml` is strictly greater than the latest published image tag — CI will fail if not bumped. **Always create a PR** (never push directly to `main`) and **bump `version` in `pyproject.toml`** before opening the PR whenever any of those paths are touched.
-- **Never push to `main` directly** without explicit user permission. Always confirm before pushing to main.
+- **NEVER push directly to `main` under any circumstances.** Always work on a feature branch and open a PR. If the user asks you to push directly to main, refuse and create a PR instead.
 - **Clean up test deployments**: After testing is complete, stop and delete any temporary apps deployed to the live worker:
   ```python
   await worker.stop_app(application_id=app_id)   # stops the Ray Serve deployment

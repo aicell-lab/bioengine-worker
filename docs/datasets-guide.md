@@ -218,6 +218,75 @@ Returns paths relative to the dataset root:
 ["README.md", "manifest.yaml", "data.zarr/zarr.json", "data.zarr/cells/c/0/0"]
 ```
 
+### `POST /save`
+
+Upload a file to the server. Requires a Hypha authentication token (GitHub-backed OAuth). Files are stored under `data_dir/saved/` and immediately accessible via `GET /saved/` or the standard `GET /data/` endpoint.
+
+| Parameter | In | Description |
+|-----------|----|-------------|
+| `filename` | query | Name of the file — no path separators allowed |
+| `public` | query | `true` → world-readable, **no overwrite**. `false` (default) → owner-only, overwrite allowed |
+| `token` | query | Hypha authentication token (required) |
+| Body | — | Raw file bytes (text or binary) |
+
+```bash
+# Save a public text file (cannot be overwritten once created)
+curl -X POST \
+  "http://localhost:39527/save?filename=notes.txt&public=true&token=your_token" \
+  --data-binary "Hello from BioEngine"
+
+# Save or overwrite a private binary file
+curl -X POST \
+  "http://localhost:39527/save?filename=result.npy&public=false&token=your_token" \
+  --data-binary @result.npy
+```
+
+```json
+{
+  "dataset_id": "saved-public",
+  "filename": "notes.txt",
+  "size": 20,
+  "public": true
+}
+```
+
+Returns `409 Conflict` if you attempt to overwrite an existing public file.
+
+### `GET /saved/{filename}`
+
+Retrieve a previously saved file. Routes to the public or private directory based on the `public` flag and the user identity derived from the token.
+
+| Parameter | In | Description |
+|-----------|----|-------------|
+| `filename` | path | Name of the file to retrieve |
+| `public` | query | `true` to fetch from the public directory. Default: `false` |
+| `token` | query | Hypha authentication token (required when `public=false`) |
+
+```bash
+# Fetch a public file (no token needed)
+curl "http://localhost:39527/saved/notes.txt?public=true"
+
+# Fetch your own private file
+curl "http://localhost:39527/saved/result.npy?public=false&token=your_token"
+```
+
+**Storage layout:**
+
+```
+data_dir/
+└── saved/
+    ├── public/                  ← dataset id: saved-public (world-readable, no overwrite)
+    │   ├── manifest.yaml        ←   authorized_users: ["*"]
+    │   └── notes.txt
+    └── user_alice/              ← dataset id: saved-user_alice (owner-only, overwrite allowed)
+        ├── manifest.yaml        ←   authorized_users: ["user:alice"]
+        └── result.npy
+```
+
+Each subfolder is created automatically on first save with a `manifest.yaml` whose `authorized_users` matches the access level. The `saved/` subdirectories appear in `GET /datasets` and are hot-reloaded by the background watcher.
+
+---
+
 ### `GET /data/{dataset_id}/{path}`
 
 Serves raw file bytes. Supports HTTP Range requests for partial content, which zarr clients use to fetch individual chunks efficiently.

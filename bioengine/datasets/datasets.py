@@ -334,6 +334,133 @@ class BioEngineDatasets:
 
         return file_output
 
+    async def save_file(
+        self,
+        filename: str,
+        content: Union[bytes, str],
+        public: bool = False,
+        token: Optional[str] = None,
+    ) -> dict:
+        """
+        Save a file to the datasets server.
+
+        Public files go to saved/public/ and cannot be overwritten once created.
+        Private files go to saved/{user_id}/ and allow overwriting. The user
+        identity is derived from the Hypha token (GitHub-backed OAuth).
+
+        Args:
+            filename: Name of the file (no path separators).
+            content: File content as bytes or str (str is encoded to UTF-8).
+            public: True → world-readable, no overwrite. False (default) → owner-only, overwrite allowed.
+            token: Hypha authentication token. Falls back to the default token.
+
+        Returns:
+            Dict with dataset_id, filename, size, and public flag.
+        """
+        if self.service_url is None:
+            raise ValueError("No connection to data server.")
+
+        token = token or self.default_token
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+
+        params = {"filename": filename, "public": str(public).lower()}
+        if token:
+            params["token"] = token
+
+        response = await self.http_client.post(
+            url=f"{self.service_url}/save",
+            params=params,
+            content=content,
+        )
+        response.raise_for_status()
+        result = response.json()
+        self.logger.debug(
+            f"Saved '{filename}' to '{result['dataset_id']}' ({result['size']} bytes)"
+        )
+        return result
+
+    async def list_saved_files(
+        self,
+        public: bool = False,
+        dir_path: Optional[str] = None,
+        token: Optional[str] = None,
+    ) -> List[str]:
+        """
+        List files in the public or private saved directory.
+
+        Args:
+            public: True to list the public directory. False (default) lists the
+                caller's private directory.
+            dir_path: Optional subdirectory within the save directory to list.
+            token: Hypha authentication token. Falls back to the default token.
+                Required when public=False.
+
+        Returns:
+            List of file paths relative to the save directory root.
+        """
+        if self.service_url is None:
+            raise ValueError("No connection to data server.")
+
+        from bioengine.datasets.utils import get_url_with_retry
+
+        token = token or self.default_token
+        params: dict = {"public": str(public).lower()}
+        if dir_path is not None:
+            params["dir_path"] = dir_path
+        if token:
+            params["token"] = token
+
+        response = await get_url_with_retry(
+            url=f"{self.service_url}/saved",
+            params=params,
+            raise_for_status=True,
+            http_client=self.http_client,
+            logger=self.logger,
+        )
+        return response.json()
+
+    async def get_saved_file(
+        self,
+        filename: str,
+        public: bool = False,
+        token: Optional[str] = None,
+    ) -> bytes:
+        """
+        Retrieve a previously saved file.
+
+        Routes to the public or private directory based on the public flag and
+        the user identity derived from the token.
+
+        Args:
+            filename: Name of the file (may contain slashes for subdirectories).
+            public: True to fetch from the public directory. False (default) fetches
+                from the caller's private directory.
+            token: Hypha authentication token. Falls back to the default token.
+                Required when public=False.
+
+        Returns:
+            Raw file content as bytes.
+        """
+        if self.service_url is None:
+            raise ValueError("No connection to data server.")
+
+        from bioengine.datasets.utils import get_url_with_retry
+
+        token = token or self.default_token
+        params: dict = {"public": str(public).lower()}
+        if token:
+            params["token"] = token
+
+        response = await get_url_with_retry(
+            url=f"{self.service_url}/saved/{filename}",
+            params=params,
+            raise_for_status=True,
+            http_client=self.http_client,
+            logger=self.logger,
+        )
+        return response.content
+
 
 if __name__ == "__main__":
     """

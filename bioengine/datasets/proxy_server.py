@@ -397,11 +397,16 @@ def _build_app(
     def _validate_path(path: str, base_dir: Path) -> Path:
         """Validate a relative path (slashes allowed) and return the resolved absolute path.
 
-        Blocks empty paths and any path whose resolved location escapes base_dir
-        (i.e. directory traversal via '..').
+        Two-layer traversal protection:
+        1. Explicit rejection of any '..' component in the raw path string.
+        2. resolve() + relative_to() check so that symlinks, absolute path
+           components, and any other trickery that slips past layer 1 are
+           caught by the filesystem itself.
         """
         if not path:
             raise HTTPException(status_code=400, detail="path must not be empty")
+        if any(part == ".." for part in Path(path).parts):
+            raise HTTPException(status_code=400, detail="path traversal is not allowed")
         full_path = (base_dir / path).resolve()
         try:
             full_path.relative_to(base_dir.resolve())

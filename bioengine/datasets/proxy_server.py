@@ -131,9 +131,8 @@ def _scan_dir_for_datasets(scan_dir: Path, datasets: Dict[str, dict]) -> None:
 
 
 def load_datasets(data_dir: Path) -> Dict[str, dict]:
-    """Scan data_dir for datasets.
+    """Scan data_dir for datasets (excludes data_dir/saved/ — user-saved files).
 
-    Scans data_dir/ directly and also data_dir/saved/ (user-saved files).
     Returns a dict keyed by dataset_id. Each value has: manifest (dict),
     path (Path), authorized_users (list).
     """
@@ -142,11 +141,9 @@ def load_datasets(data_dir: Path) -> Dict[str, dict]:
 
     datasets = {}
     _scan_dir_for_datasets(data_dir, datasets)
-
-    saved_dir = data_dir / "saved"
-    if saved_dir.is_dir():
-        _scan_dir_for_datasets(saved_dir, datasets)
-
+    # Remove saved/ entries — they are managed via POST /save and GET /saved/,
+    # not through the datasets catalog.
+    datasets.pop("saved", None)
     return datasets
 
 
@@ -391,18 +388,34 @@ def _build_app(
         return await _serve_file_response(full_path, request)
 
     def _validate_filename(filename: str) -> None:
+        """Validate a flat filename (no path separators — used by POST /save)."""
         if not filename:
             raise HTTPException(status_code=400, detail="filename must not be empty")
         if "/" in filename or "\\" in filename or filename in (".", ".."):
             raise HTTPException(status_code=400, detail="filename must not contain path separators")
 
-    def _ensure_save_dataset(
-        dataset_id: str,
+    def _validate_path(path: str, base_dir: Path) -> Path:
+        """Validate a relative path (slashes allowed) and return the resolved absolute path.
+
+        Blocks empty paths and any path whose resolved location escapes base_dir
+        (i.e. directory traversal via '..').
+        """
+        if not path:
+            raise HTTPException(status_code=400, detail="path must not be empty")
+        full_path = (base_dir / path).resolve()
+        try:
+            full_path.relative_to(base_dir.resolve())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="path traversal is not allowed")
+        return full_path
+
+    def _ensure_save_dir(
         save_dir: Path,
+        dataset_id: str,
         authorized_users: List[str],
         display_name: str,
     ) -> None:
-        """Create the save directory and manifest.yaml on first use, and register in datasets."""
+        """Create the save directory and manifest.yaml on first use."""
         save_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = save_dir / "manifest.yaml"
         if not manifest_path.exists():
@@ -413,12 +426,7 @@ def _build_app(
                 "authorized_users": authorized_users,
             }
             manifest_path.write_text(yaml.dump(manifest, default_flow_style=False))
-            datasets[dataset_id] = {
-                "manifest": manifest,
-                "path": save_dir,
-                "authorized_users": authorized_users,
-            }
-            logger.info(f"Created save dataset '{dataset_id}' at {save_dir}")
+            logger.info(f"Created save directory '{dataset_id}' at {save_dir}")
 
     @app.post("/save")
     async def save_file_route(
@@ -452,7 +460,7 @@ def _build_app(
             authorized_users = [user_id]
             display_name = f"Private files for {user_id}"
 
-        _ensure_save_dataset(dataset_id, save_dir, authorized_users, display_name)
+        _ensure_save_dir(save_dir, dataset_id, authorized_users, display_name)
 
         file_path = save_dir / filename
         if public and file_path.exists():
@@ -472,33 +480,68 @@ def _build_app(
             "public": public,
         }
 
-    @app.get("/saved/{filename}")
-    async def get_saved_file(
-        filename: str,
+    @app.get("/saved")
+    async def list_saved_files(
         public: bool = False,
+        dir_path: Optional[str] = None,
         token: Optional[str] = None,
-        request: Request = None,
     ):
-        """Retrieve a previously saved file.
-
-        Routes to data_dir/saved/public/{filename} when public=True (no token needed),
-        or data_dir/saved/{user_id}/{filename} when public=False (token required).
-        The user identity is derived from the Hypha token (GitHub-backed OAuth).
+        """List files in the public or private saved directory.
 
         Args:
-            filename: Name of the file to retrieve.
-            public: True to fetch from the public directory. Default: False.
+            public: True to list the public directory. Default: False.
+            dir_path: Optional subdirectory to list within the save directory.
             token: Hypha authentication token (required when public=False).
         """
-        _validate_filename(filename)
-
         if public:
             save_dir = data_dir / "saved" / "public"
         else:
             _, safe_uid = await _authenticate_user(token, cached_user_info)
             save_dir = data_dir / "saved" / safe_uid
 
-        full_path = save_dir / filename
+        if not save_dir.exists():
+            return []
+
+        scan_dir = _validate_path(dir_path, save_dir) if dir_path else save_dir
+        if not scan_dir.exists() or not scan_dir.is_dir():
+            raise HTTPException(status_code=404, detail=f"Directory '{dir_path}' not found")
+
+        files = []
+        for root, dirs, filenames in os.walk(scan_dir):
+            dirs.sort()
+            for fname in sorted(filenames):
+                if fname == "manifest.yaml":
+                    continue
+                full = Path(root) / fname
+                files.append(str(full.relative_to(save_dir)))
+        return files
+
+    @app.get("/saved/{filename:path}")
+    async def get_saved_file(
+        filename: str,
+        public: bool = False,
+        token: Optional[str] = None,
+        request: Request = None,
+    ):
+        """Retrieve a previously saved file or file inside a subdirectory.
+
+        Routes to data_dir/saved/public/{filename} when public=True (no token needed),
+        or data_dir/saved/{user_id}/{filename} when public=False (token required).
+        filename may contain slashes to address files in subdirectories.
+        The user identity is derived from the Hypha token (GitHub-backed OAuth).
+
+        Args:
+            filename: Relative path to the file (slashes allowed, traversal blocked).
+            public: True to fetch from the public directory. Default: False.
+            token: Hypha authentication token (required when public=False).
+        """
+        if public:
+            save_dir = data_dir / "saved" / "public"
+        else:
+            _, safe_uid = await _authenticate_user(token, cached_user_info)
+            save_dir = data_dir / "saved" / safe_uid
+
+        full_path = _validate_path(filename, save_dir)
         if not full_path.exists() or not full_path.is_file():
             raise HTTPException(status_code=404, detail=f"'{filename}' not found")
 

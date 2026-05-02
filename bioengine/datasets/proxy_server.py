@@ -17,6 +17,7 @@ Architecture:
 - Token authentication is delegated to the remote Hypha server (cached locally)
 - FastAPI exposes all endpoints under /public/services/bioengine-datasets/
 - File bytes are served directly at /data/{dataset_id}/{path} with Range support
+- Files can be uploaded via POST /save (public or private per-user)
 """
 
 import asyncio
@@ -102,17 +103,9 @@ def get_log_config(log_file: Optional[Path] = None) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def load_datasets(data_dir: Path) -> Dict[str, dict]:
-    """Scan data_dir for subdirectories containing manifest.yaml.
-
-    Returns a dict keyed by dataset_id (manifest["id"] or directory name).
-    Each value has: manifest (dict), path (Path), authorized_users (list).
-    """
-    datasets = {}
-    if not data_dir.is_dir():
-        raise ValueError(f"data_dir does not exist or is not a directory: {data_dir}")
-
-    for subdir in sorted(data_dir.iterdir()):
+def _scan_dir_for_datasets(scan_dir: Path, datasets: Dict[str, dict]) -> None:
+    """Scan one directory level for dataset subdirectories (must have manifest.yaml)."""
+    for subdir in sorted(scan_dir.iterdir()):
         if not subdir.is_dir():
             continue
         manifest_file = subdir / "manifest.yaml"
@@ -135,6 +128,24 @@ def load_datasets(data_dir: Path) -> Dict[str, dict]:
             "authorized_users": authorized_users,
         }
         logger.debug(f"Loaded dataset '{dataset_id}' from {subdir}")
+
+
+def load_datasets(data_dir: Path) -> Dict[str, dict]:
+    """Scan data_dir for datasets.
+
+    Scans data_dir/ directly and also data_dir/saved/ (user-saved files).
+    Returns a dict keyed by dataset_id. Each value has: manifest (dict),
+    path (Path), authorized_users (list).
+    """
+    if not data_dir.is_dir():
+        raise ValueError(f"data_dir does not exist or is not a directory: {data_dir}")
+
+    datasets = {}
+    _scan_dir_for_datasets(data_dir, datasets)
+
+    saved_dir = data_dir / "saved"
+    if saved_dir.is_dir():
+        _scan_dir_for_datasets(saved_dir, datasets)
 
     return datasets
 
@@ -347,6 +358,85 @@ def _build_app(
                 )
 
         return FileResponse(full_path, headers={"Accept-Ranges": "bytes"})
+
+    @app.post("/save")
+    async def save_file_route(
+        request: Request,
+        filename: str,
+        public: bool = False,
+        token: Optional[str] = None,
+    ):
+        """Save a file to the datasets server.
+
+        Files are stored under data_dir/saved/public/ (public=True) or
+        data_dir/saved/{user_id}/ (public=False). Each folder is a dataset
+        with a manifest.yaml that controls read access. The owning user always
+        has write access (authenticated by token).
+
+        Args:
+            filename: Name of the file to save (no path separators allowed).
+            public: If True, file is readable by anyone. Default: False.
+            token: Hypha authentication token (required).
+        """
+        if token is None:
+            raise HTTPException(status_code=401, detail="Authentication token required to save files")
+
+        # Reject filenames with path components
+        if "/" in filename or "\\" in filename or filename in (".", ".."):
+            raise HTTPException(status_code=400, detail="filename must not contain path separators")
+        if not filename:
+            raise HTTPException(status_code=400, detail="filename must not be empty")
+
+        user_info = await parse_token(token, cached_user_info)
+        user_id = user_info.get("id", "")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Could not determine user identity from token")
+
+        if public:
+            dataset_id = "saved-public"
+            save_dir = data_dir / "saved" / "public"
+            authorized_users = ["*"]
+            display_name = "Public Saved Files"
+        else:
+            # Sanitize user_id for use as a directory name
+            safe_uid = re.sub(r"[^a-zA-Z0-9_-]", "_", user_id)
+            dataset_id = f"saved-{safe_uid}"
+            save_dir = data_dir / "saved" / safe_uid
+            authorized_users = [user_id]
+            display_name = f"Private files for {user_id}"
+
+        # Create directory + manifest on first use
+        save_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = save_dir / "manifest.yaml"
+        if not manifest_path.exists():
+            manifest = {
+                "id": dataset_id,
+                "name": display_name,
+                "description": "Files saved via the BioEngine Datasets save API.",
+                "authorized_users": authorized_users,
+            }
+            await asyncio.to_thread(
+                manifest_path.write_text, yaml.dump(manifest, default_flow_style=False)
+            )
+            datasets[dataset_id] = {
+                "manifest": manifest,
+                "path": save_dir,
+                "authorized_users": authorized_users,
+            }
+            logger.info(f"Created save dataset '{dataset_id}' at {save_dir}")
+
+        # Write file content
+        content = await request.body()
+        file_path = save_dir / filename
+        await asyncio.to_thread(file_path.write_bytes, content)
+        logger.info(f"Saved '{filename}' to dataset '{dataset_id}' ({len(content)} bytes) by user '{user_id}'")
+
+        return {
+            "dataset_id": dataset_id,
+            "filename": filename,
+            "size": len(content),
+            "public": public,
+        }
 
     return app
 

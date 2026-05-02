@@ -218,6 +218,57 @@ Returns paths relative to the dataset root:
 ["README.md", "manifest.yaml", "data.zarr/zarr.json", "data.zarr/cells/c/0/0"]
 ```
 
+### `POST /save`
+
+Upload a file to the server. Requires a valid authentication token. Files are stored under `data_dir/saved/` and immediately accessible via `GET /data/`.
+
+| Parameter | In | Description |
+|-----------|----|-------------|
+| `filename` | query | Name of the file to save — no path separators allowed |
+| `public` | query | `true` to make the file world-readable, `false` (default) for private |
+| `token` | query | Hypha authentication token (required) |
+| Body | — | Raw file bytes (text or binary) |
+
+```bash
+# Save a public text file
+curl -X POST \
+  "http://localhost:39527/save?filename=notes.txt&public=true&token=your_token" \
+  --data-binary "Hello from BioEngine"
+
+# Save a private binary file
+curl -X POST \
+  "http://localhost:39527/save?filename=result.npy&public=false&token=your_token" \
+  --data-binary @result.npy
+```
+
+```json
+{
+  "dataset_id": "saved-public",
+  "filename": "notes.txt",
+  "size": 20,
+  "public": true
+}
+```
+
+**Storage layout:**
+
+```
+data_dir/
+└── saved/
+    ├── public/                  ← dataset id: saved-public (any authenticated user can read)
+    │   ├── manifest.yaml
+    │   └── notes.txt
+    └── user_alice/              ← dataset id: saved-user_alice (owner-only)
+        ├── manifest.yaml
+        └── result.npy
+```
+
+Each subfolder is a dataset with a `manifest.yaml` created automatically on first save. Public subfolders set `authorized_users: ["*"]`; private subfolders set `authorized_users: ["{user_id}"]`.
+
+The `saved/` subdirectories are included in `GET /datasets` and are picked up by the background watcher like any other dataset.
+
+---
+
 ### `GET /data/{dataset_id}/{path}`
 
 Serves raw file bytes. Supports HTTP Range requests for partial content, which zarr clients use to fetch individual chunks efficiently.

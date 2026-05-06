@@ -821,6 +821,36 @@ class ProxyDeployment:
         """
         return self.rtc_service_id
 
+    async def _deregister_services(self) -> None:
+        """Unregister all Hypha services and reset connection state.
+
+        Called when the entry deployment is detected as unhealthy so the service
+        disappears from Hypha immediately rather than staying registered but broken.
+        """
+        if self.server:
+            for svc_id, svc_name in [
+                (self.websocket_service_id, "WebSocket"),
+                (self.rtc_service_id, "WebRTC"),
+                (self.mcp_service_id, "MCP"),
+            ]:
+                if svc_id:
+                    try:
+                        await self.server.unregister_service(svc_id)
+                        logger.info(
+                            f"🔌 Unregistered {svc_name} service '{svc_id}' "
+                            f"for '{self.application_id}'"
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"⚠️ Failed to unregister {svc_name} service '{svc_id}': {e}"
+                        )
+
+        self.websocket_service_id = None
+        self.rtc_service_id = None
+        self.mcp_service_id = None
+        # Reset so the next successful entry health check triggers re-registration
+        self.entry_deployment_ready = False
+
     async def _register_services(self) -> None:
         """
         Register WebSocket, WebRTC, and MCP services with the Hypha server.
@@ -981,7 +1011,10 @@ class ProxyDeployment:
         Raises:
             RuntimeError: If any health check fails, indicating the deployment is unhealthy
         """
-        # Wait for the entry deployment to be ready and healthy
+        # Check entry deployment health.
+        # First call: wait without timeout (entry may be slow to initialise).
+        # Subsequent calls: short timeout so a stuck entry is detected quickly,
+        # the service is deregistered, and the health check fails fast.
         if not self.entry_deployment_ready:
             logger.info(
                 f"⏳ Waiting for entry deployment (app '{self.application_id}') to complete initial health check."
@@ -991,6 +1024,19 @@ class ProxyDeployment:
             logger.info(
                 f"✅ Entry deployment (app '{self.application_id}') passed health check."
             )
+        else:
+            try:
+                await asyncio.wait_for(
+                    self.entry_deployment_handle.check_health.remote(),
+                    timeout=3.0,
+                )
+            except Exception as e:
+                logger.error(
+                    f"❌ Entry deployment unhealthy for '{self.application_id}': {e}. "
+                    f"Deregistering Hypha service."
+                )
+                await self._deregister_services()
+                raise RuntimeError(f"Entry deployment is unhealthy: {e}") from e
 
         # Register services if not already done (with lock to prevent concurrent registration)
         if not self.server or not self.websocket_service_id:

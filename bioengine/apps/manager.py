@@ -851,7 +851,9 @@ class AppsManager:
 
             try:
                 app_handle = await asyncio.to_thread(serve.get_app_handle, application_id)
-                app_data = await app_handle.get_app_data.remote()
+                app_data = await asyncio.wait_for(
+                    app_handle.get_app_data.remote(), timeout=10.0
+                )
 
                 if not isinstance(app_data, dict):
                     raise ValueError("get_app_data() did not return a dictionary")
@@ -889,8 +891,9 @@ class AppsManager:
                 updated_authorized_users = self._inject_admin_users(
                     app_data["authorized_users"]
                 )
-                await app_handle.update_authorized_users.remote(
-                    updated_authorized_users
+                await asyncio.wait_for(
+                    app_handle.update_authorized_users.remote(updated_authorized_users),
+                    timeout=10.0,
                 )
 
                 self._deployed_applications[application_id] = {

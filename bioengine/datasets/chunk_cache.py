@@ -5,12 +5,15 @@ A single ChunkCache can be shared across multiple HttpZarrStore instances so
 that the memory budget applies to the whole process rather than per-store.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from zarr.core.buffer import Buffer
+if TYPE_CHECKING:
+    from zarr.core.buffer import Buffer
 
 _DEFAULT_CACHE_SIZE_GB = int(os.getenv("BIOENGINE_DATASETS_ZARR_STORE_CACHE_SIZE", 1))
 

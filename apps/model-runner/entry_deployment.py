@@ -1098,82 +1098,6 @@ class EntryDeployment:
         self.s3_controller = await self.hypha_client.get_service("public/s3-storage")
         logger.info(f"Connected to Hypha Server at {self.server_url}")
 
-    async def test_deployment(
-        self,
-        model_id: str = "ambitious-ant",
-    ) -> None:
-        """Comprehensive test of all public endpoints using a known working model (that should pass all checks)."""
-        logger.info(f"🧪 Starting deployment test with model: {model_id}")
-
-        # Test 1: Get model RDF for validation
-        logger.info(f"🔍 Test 1/5: Getting model RDF...")
-        rdf_start = time.time()
-        model_rdf = await self.get_model_rdf(model_id=model_id, stage=False)
-        rdf_duration = time.time() - rdf_start
-        logger.info(f"✅ RDF retrieval successful ({rdf_duration:.2f}s)")
-
-        # Test 2: Validate the RDF
-        logger.info(f"🔬 Test 2/5: Validating RDF...")
-        val_start = time.time()
-        validation_result = await self.validate(rdf_dict=model_rdf)
-        val_duration = time.time() - val_start
-        logger.info(
-            f"✅ Validation {'passed' if validation_result['success'] else 'failed'} ({val_duration:.2f}s)"
-        )
-
-        # Tests 3-5 require the GPU runtime — skip gracefully if it's not yet available
-        _runtime_error_msg = "GPU runtime deployment is not available"
-
-        # Test 3: Test the model
-        logger.info(f"🧩 Test 3/5: Testing model...")
-        try:
-            test1_start = time.time()
-            _ = await self.test(model_id=model_id, stage=False)
-            test1_duration = time.time() - test1_start
-            logger.info(f"✅ Model test completed ({test1_duration:.2f}s)")
-        except RuntimeError as e:
-            if _runtime_error_msg in str(e):
-                logger.warning(f"⚠️ Skipping test 3/5 — GPU runtime not yet available")
-                return
-            raise
-
-        # Test 4: Test with skip_cache=True
-        logger.info(f"🔄 Test 4/5: Testing with cache skip...")
-        try:
-            test2_start = time.time()
-            _ = await self.test(model_id=model_id, stage=False, skip_cache=True)
-            test2_duration = time.time() - test2_start
-            logger.info(f"✅ Skip cache test completed ({test2_duration:.2f}s)")
-        except RuntimeError as e:
-            if _runtime_error_msg in str(e):
-                logger.warning(f"⚠️ Skipping test 4/5 — GPU runtime not yet available")
-                return
-            raise
-
-        # Test 5: Test inference (published)
-        logger.info(f"🤖 Test 5/5: Running inference...")
-
-        # Get the model package to load test image
-        local_package = await self.model_cache.get_model_package(
-            model_id=model_id, stage=False, allow_unpublished=False, skip_cache=False
-        )
-        async with local_package:
-            test_input_source = model_rdf["test_inputs"][0]
-            test_image_path = local_package.package_path / test_input_source
-            test_image = np.load(test_image_path).astype("float32")
-
-        # Run inference test
-        try:
-            infer_start = time.time()
-            _ = await self.infer(model_id=model_id, inputs=test_image)
-            infer_duration = time.time() - infer_start
-            logger.info(f"✅ Inference completed ({infer_duration:.2f}s)")
-        except RuntimeError as e:
-            if _runtime_error_msg in str(e):
-                logger.warning(f"⚠️ Skipping test 5/5 — GPU runtime not yet available")
-                return
-            raise
-
     # === Ray Serve Health Check Method - will be called periodically to check the health of the deployment ===
 
     async def _check_runtime_available(self) -> None:
@@ -2127,8 +2051,42 @@ if __name__ == "__main__":
             )
             logger.info(f"Search results: {search_results}")
 
-            # Test all methods of the deployment
-            await model_runner.test_deployment(model_id="ambitious-ant")  # ~18 MB
+            # Test all methods of the deployment (ambitious-ant ~18 MB)
+            model_id = "ambitious-ant"
+
+            logger.info(f"🔍 Test 1/5: Getting model RDF...")
+            t0 = time.time()
+            model_rdf = await model_runner.get_model_rdf(model_id=model_id, stage=False)
+            logger.info(f"✅ RDF retrieval successful ({time.time()-t0:.2f}s)")
+
+            logger.info(f"🔬 Test 2/5: Validating RDF...")
+            t0 = time.time()
+            validation_result = await model_runner.validate(rdf_dict=model_rdf)
+            logger.info(
+                f"✅ Validation {'passed' if validation_result['success'] else 'failed'} ({time.time()-t0:.2f}s)"
+            )
+
+            logger.info(f"🧩 Test 3/5: Testing model...")
+            t0 = time.time()
+            _ = await model_runner.test(model_id=model_id, stage=False)
+            logger.info(f"✅ Model test completed ({time.time()-t0:.2f}s)")
+
+            logger.info(f"🔄 Test 4/5: Testing with cache skip...")
+            t0 = time.time()
+            _ = await model_runner.test(model_id=model_id, stage=False, skip_cache=True)
+            logger.info(f"✅ Skip cache test completed ({time.time()-t0:.2f}s)")
+
+            logger.info(f"🤖 Test 5/5: Running inference...")
+            local_package = await model_runner.model_cache.get_model_package(
+                model_id=model_id, stage=False, allow_unpublished=False, skip_cache=False
+            )
+            async with local_package:
+                test_input_source = model_rdf["test_inputs"][0]
+                test_image_path = local_package.package_path / test_input_source
+                test_image = np.load(test_image_path).astype("float32")
+            t0 = time.time()
+            _ = await model_runner.infer(model_id=model_id, inputs=test_image)
+            logger.info(f"✅ Inference completed ({time.time()-t0:.2f}s)")
 
             # Simulate newer remote files for testing updates
             file_metadata_path = (

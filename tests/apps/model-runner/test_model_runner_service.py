@@ -16,7 +16,7 @@ import httpx
 import numpy as np
 import pytest
 
-from .conftest import TEST_MODEL_ID
+TEST_MODEL_ID = "ambitious-ant"
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -262,10 +262,14 @@ async def test_infer_return_download_url(model_runner, test_image_array):
 
 
 @pytest.mark.asyncio
-async def test_infer_gpu_unavailable_raises_clear_error(model_runner, test_image_array):
-    """When GPU runtime is down, infer() raises a clear RuntimeError (not a timeout)."""
+async def test_infer_gpu_unavailable_raises_clear_error(model_runner):
+    """When GPU runtime is down, infer() raises a clear RuntimeError (not a timeout).
+
+    Uses a dummy array — the GPU error fires before the input is touched.
+    """
+    dummy = np.zeros((1, 1, 64, 64), dtype=np.float32)
     try:
-        await model_runner.infer(model_id=TEST_MODEL_ID, inputs=test_image_array)
+        await model_runner.infer(model_id=TEST_MODEL_ID, inputs=dummy)
     except Exception as e:
         if _is_gpu_error(e):
             assert GPU_UNAVAILABLE_MSG in str(e)

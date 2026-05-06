@@ -276,6 +276,7 @@ The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install
   - **`docker-publish.yml`** triggers on changes to any of these paths: `bioengine/**`, `requirements*.txt`, `pyproject.toml`, `docker/**`, `.dockerignore`. It enforces that `version` in `pyproject.toml` is strictly greater than the latest published image tag — CI will fail if not bumped. **Always create a PR** (never push directly to `main`) and **bump `version` in `pyproject.toml`** before opening the PR whenever any of those paths are touched.
 - **PRs are only required for changes that trigger `docker-publish.yml`** (i.e. changes under `bioengine/**`, `requirements*.txt`, `pyproject.toml`, `docker/**`, `.dockerignore`). Changes to `apps/**` only — push directly to `main`, no PR needed.
 - **NEVER push directly to `main` for worker/package code.** Always use a feature branch and open a PR for any change that touches the paths above. If the user asks you to push directly to main for those paths, refuse and create a PR instead.
+- **Always open the PR immediately after pushing the branch** using the GitHub PAT from `.env` so the user can see and review it without having to navigate to GitHub manually. Never merge a PR — that is always left to the user.
 - **Clean up test deployments**: After testing is complete, stop and delete any temporary apps deployed to the live worker:
   ```python
   await worker.stop_app(application_id=app_id)   # stops the Ray Serve deployment

@@ -1155,8 +1155,27 @@ class EntryDeployment:
 
     # === Ray Serve Health Check Method - will be called periodically to check the health of the deployment ===
 
+    async def _check_runtime_available(self) -> None:
+        """Ping the runtime deployment and raise immediately if it is not responding.
+
+        Called at the top of every GPU method so callers get a fast, clear error
+        instead of a 30 s+ Ray timeout when the GPU runtime is not running.
+        """
+        try:
+            await asyncio.wait_for(
+                self.runtime_deployment.check_health.remote(),
+                timeout=2.0,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                "GPU runtime deployment is not available. "
+                "Inference, test, and validate are unavailable until the runtime starts."
+            ) from e
+
     async def check_health(self) -> None:
-        # Test connection to the Hypha server
+        # Test connection to the Hypha server only — runtime availability is
+        # checked per-call in GPU methods so partial registration is preserved
+        # (service stays registered for CPU-only methods when GPU is down).
         await self.hypha_client.echo("ping")
 
     # === Internal Helper Methods ===
@@ -1590,6 +1609,7 @@ class EntryDeployment:
         """
         import aiofiles
 
+        await self._check_runtime_available()
         logger.info(
             f"🧪 Testing model '{model_id}' (stage={stage}, skip_cache={skip_cache}, publish_test_report={publish_test_report})."
         )
@@ -1969,6 +1989,7 @@ class EntryDeployment:
             through BioEngine S3 storage. To upload large inputs, first call ``get_upload_url``
             to obtain a presigned URL, upload the file, then pass the returned ``file_path`` as ``inputs``.
         """
+        await self._check_runtime_available()
         logger.info(f"🤖 Running inference for model '{model_id}'...")
 
         # Resolve any URL or temporary file path strings to numpy arrays

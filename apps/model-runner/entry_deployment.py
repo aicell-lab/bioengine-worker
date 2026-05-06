@@ -1121,19 +1121,34 @@ class EntryDeployment:
             f"✅ Validation {'passed' if validation_result['success'] else 'failed'} ({val_duration:.2f}s)"
         )
 
+        # Tests 3-5 require the GPU runtime — skip gracefully if it's not yet available
+        _runtime_error_msg = "GPU runtime deployment is not available"
+
         # Test 3: Test the model
         logger.info(f"🧩 Test 3/5: Testing model...")
-        test1_start = time.time()
-        _ = await self.test(model_id=model_id, stage=False)
-        test1_duration = time.time() - test1_start
-        logger.info(f"✅ Model test completed ({test1_duration:.2f}s)")
+        try:
+            test1_start = time.time()
+            _ = await self.test(model_id=model_id, stage=False)
+            test1_duration = time.time() - test1_start
+            logger.info(f"✅ Model test completed ({test1_duration:.2f}s)")
+        except RuntimeError as e:
+            if _runtime_error_msg in str(e):
+                logger.warning(f"⚠️ Skipping test 3/5 — GPU runtime not yet available")
+                return
+            raise
 
         # Test 4: Test with skip_cache=True
         logger.info(f"🔄 Test 4/5: Testing with cache skip...")
-        test2_start = time.time()
-        _ = await self.test(model_id=model_id, stage=False, skip_cache=True)
-        test2_duration = time.time() - test2_start
-        logger.info(f"✅ Skip cache test completed ({test2_duration:.2f}s)")
+        try:
+            test2_start = time.time()
+            _ = await self.test(model_id=model_id, stage=False, skip_cache=True)
+            test2_duration = time.time() - test2_start
+            logger.info(f"✅ Skip cache test completed ({test2_duration:.2f}s)")
+        except RuntimeError as e:
+            if _runtime_error_msg in str(e):
+                logger.warning(f"⚠️ Skipping test 4/5 — GPU runtime not yet available")
+                return
+            raise
 
         # Test 5: Test inference (published)
         logger.info(f"🤖 Test 5/5: Running inference...")
@@ -1148,10 +1163,16 @@ class EntryDeployment:
             test_image = np.load(test_image_path).astype("float32")
 
         # Run inference test
-        infer_start = time.time()
-        _ = await self.infer(model_id=model_id, inputs=test_image)
-        infer_duration = time.time() - infer_start
-        logger.info(f"✅ Inference completed ({infer_duration:.2f}s)")
+        try:
+            infer_start = time.time()
+            _ = await self.infer(model_id=model_id, inputs=test_image)
+            infer_duration = time.time() - infer_start
+            logger.info(f"✅ Inference completed ({infer_duration:.2f}s)")
+        except RuntimeError as e:
+            if _runtime_error_msg in str(e):
+                logger.warning(f"⚠️ Skipping test 5/5 — GPU runtime not yet available")
+                return
+            raise
 
     # === Ray Serve Health Check Method - will be called periodically to check the health of the deployment ===
 

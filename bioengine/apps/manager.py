@@ -1241,9 +1241,9 @@ class AppsManager:
     @schema_method
     async def clear_app_directory(
         self,
-        directory_name: str = Field(
+        application_id: str = Field(
             ...,
-            description="Name of the app working directory to delete (must be a direct subdirectory of the apps workspace, not a path).",
+            description="Application ID whose working directory should be deleted. Must match a subdirectory of the apps workspace (e.g. 'model-runner').",
         ),
         context: Dict[str, Any] = Field(
             ...,
@@ -1253,45 +1253,45 @@ class AppsManager:
         """
         Deletes an application working directory from the BioEngine apps workspace.
 
-        The directory is identified by name (as returned by list_app_directories).
-        Raises an error if the directory belongs to a currently running application —
-        stop the app first with stop_app() before clearing its directory.
+        The directory is identified by application_id (as returned in the 'name' field
+        of list_app_directories). Raises an error if the application is currently running —
+        stop it first with stop_app() before clearing its directory.
 
         Args:
-            directory_name: Name of the subdirectory to delete (e.g. "model-runner").
+            application_id: ID of the application whose directory should be deleted (e.g. "model-runner").
 
         Raises:
             PermissionError: If the caller is not a worker admin
-            RuntimeError: If the worker is not initialized, the directory belongs to a
-                         running app, or deletion fails
-            ValueError: If the directory does not exist or the name contains path separators
+            RuntimeError: If the worker is not initialized, the app is currently running,
+                         or deletion fails
+            ValueError: If the directory does not exist or application_id contains path separators
         """
         self._check_initialized()
         check_permissions(
             context=context,
             authorized_users=self.admin_users,
-            resource_name=f"clearing app directory '{directory_name}'",
+            resource_name=f"clearing app directory '{application_id}'",
         )
 
-        if "/" in directory_name or "\\" in directory_name or directory_name in (".", ".."):
+        if "/" in application_id or "\\" in application_id or application_id in (".", ".."):
             raise ValueError(
-                f"directory_name must be a plain directory name, not a path: '{directory_name}'"
+                f"application_id must be a plain name, not a path: '{application_id}'"
             )
 
-        target = self.app_builder.apps_workdir / directory_name
+        target = self.app_builder.apps_workdir / application_id
         if not target.exists():
             raise ValueError(
-                f"Directory '{directory_name}' does not exist under the apps workspace."
+                f"No directory found for application '{application_id}' in the apps workspace."
             )
         if not target.is_dir():
-            raise ValueError(f"'{directory_name}' is not a directory.")
+            raise ValueError(f"'{application_id}' is not a directory.")
 
-        # Refuse if a running app owns this directory
-        if directory_name in self._deployed_applications:
-            info = self._deployed_applications[directory_name]
+        # Refuse if the app is currently running
+        if application_id in self._deployed_applications:
+            info = self._deployed_applications[application_id]
             if info["is_deployed"].is_set():
                 raise RuntimeError(
-                    f"Cannot clear directory '{directory_name}': application is currently running. "
+                    f"Cannot clear directory for '{application_id}': application is currently running. "
                     "Stop it first with stop_app()."
                 )
 
@@ -1299,7 +1299,7 @@ class AppsManager:
         try:
             shutil.rmtree(target)
         except Exception as e:
-            raise RuntimeError(f"Failed to delete directory '{directory_name}': {e}")
+            raise RuntimeError(f"Failed to delete directory for '{application_id}': {e}")
 
         self.logger.info(f"Cleared app directory: {target}")
 

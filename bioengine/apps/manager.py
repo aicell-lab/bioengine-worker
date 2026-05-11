@@ -1146,7 +1146,7 @@ class AppsManager:
             target_workspace = self.server.config.workspace
         else:
             # User mode: connect with provided credentials, no admin check
-            server_url = self.server.config.server_url
+            server_url = self.server.config.public_base_url
             remote_server = await connect_to_server(
                 {"server_url": server_url, "token": hypha_token, "workspace": workspace}
             )

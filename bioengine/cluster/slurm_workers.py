@@ -50,6 +50,8 @@ class SlurmWorkers:
         default_mem_in_gb_per_cpu: int = 16,
         default_time_limit: str = "4:00:00",
         further_slurm_args: Optional[List[str]] = None,
+        gpu_slurm_flag: str = "--gpus={n}",
+        further_apptainer_args: Optional[List[str]] = None,
         # Autoscaling configuration parameters
         min_workers: int = 0,
         max_workers: int = 4,
@@ -73,6 +75,17 @@ class SlurmWorkers:
             default_mem_in_gb_per_cpu: Default memory (GB) to allocate per CPU
             default_time_limit: Default SLURM job time limit (HH:MM:SS format)
             further_slurm_args: Additional SLURM arguments to include in job submissions
+                (e.g. ["--account=my-acct", "--partition=gpu", "-C", "thin"]).
+            gpu_slurm_flag: Template for the SLURM GPU directive. The literal token
+                "{n}" is replaced with the requested GPU count. Common values:
+                "--gpus={n}" (default; Berzelius, generic clusters) or
+                "--gres=gpu:{n}" (clusters that require the gres syntax). Set to an
+                empty string to omit the directive (e.g. when GPUs are requested via
+                ``further_slurm_args``).
+            further_apptainer_args: Additional CLI flags passed to ``apptainer exec``
+                between the built-in flags and the container image. Use for extra
+                bind mounts (e.g. ["--bind", "/proj/aicell:/proj/aicell"]) or to
+                forward host env vars.
             min_workers: Minimum number of workers to maintain
             max_workers: Maximum number of workers allowed
             scale_up_cooldown_seconds: Cooldown period in seconds between scale-ups
@@ -83,7 +96,8 @@ class SlurmWorkers:
             debug: Enable debug logging
 
         Raises:
-            ValueError: If worker_workspace_dir is None
+            ValueError: If worker_workspace_dir is None, or if gpu_slurm_flag is
+                non-empty but does not contain the "{n}" placeholder.
         """
         # Set up logging
         self.logger = create_logger(
@@ -112,6 +126,15 @@ class SlurmWorkers:
         self.default_mem_in_gb_per_cpu = default_mem_in_gb_per_cpu
         self.default_time_limit = default_time_limit
         self.further_slurm_args = further_slurm_args if further_slurm_args else []
+        if gpu_slurm_flag and "{n}" not in gpu_slurm_flag:
+            raise ValueError(
+                "gpu_slurm_flag must be empty or contain the '{n}' placeholder "
+                f"(got: {gpu_slurm_flag!r})"
+            )
+        self.gpu_slurm_flag = gpu_slurm_flag
+        self.further_apptainer_args = (
+            further_apptainer_args if further_apptainer_args else []
+        )
 
         # Autoscaling configuration parameters
         self.min_workers = min_workers
@@ -135,6 +158,10 @@ class SlurmWorkers:
         time_limit: str,
         further_slurm_args: List[str],
     ) -> str:
+        # Ray reports resources as floats; sbatch directives need integers.
+        num_gpus = int(num_gpus)
+        num_cpus = int(num_cpus)
+        mem_in_gb_per_cpu = max(1, int(mem_in_gb_per_cpu))
         """
         Create a SLURM batch script for launching a Ray worker in a container.
 
@@ -156,17 +183,23 @@ class SlurmWorkers:
         """
         try:
             # Define the apptainer command with the Ray worker command
-            apptainer_cmd = (
-                "apptainer exec "
-                "--nv "
-                "--cleanenv "
-                "--env=SLURM_JOB_ID='${SLURM_JOB_ID}' "
-                "--pwd /app "
-                f"--bind {self.worker_workspace_dir}:${{HOME}}/.bioengine"
-            )
+            apptainer_args = [
+                "apptainer exec",
+                "--nv",
+                "--cleanenv",
+                "--env=SLURM_JOB_ID='${SLURM_JOB_ID}'",
+                "--pwd /app",
+                f"--bind {self.worker_workspace_dir}:${{HOME}}/.bioengine",
+            ]
+            apptainer_args.extend(arg for arg in self.further_apptainer_args if arg)
+            apptainer_cmd = " ".join(apptainer_args)
             self.logger.info(
                 f"Binding workspace directory '{self.worker_workspace_dir}' to container directory '{os.environ['HOME']}/.bioengine'"
             )
+            if self.further_apptainer_args:
+                self.logger.info(
+                    f"Additional apptainer args: {self.further_apptainer_args}"
+                )
 
             # Define the Ray worker command that will run inside the container and add it to the command
             ray_worker_cmd = (
@@ -189,12 +222,19 @@ class SlurmWorkers:
                 else ""
             )
 
+            # Optional GPU directive — some clusters use "--gres=gpu:N" instead of "--gpus=N"
+            gpu_directive = (
+                f"#SBATCH {self.gpu_slurm_flag.format(n=num_gpus)}"
+                if self.gpu_slurm_flag and num_gpus > 0
+                else ""
+            )
+
             # Define content of batch script with SLURM directives
             batch_script = f"""#!/bin/bash
             #SBATCH --job-name={self.job_name}
             #SBATCH --ntasks=1
             #SBATCH --nodes=1
-            #SBATCH --gpus={num_gpus}
+            {gpu_directive}
             #SBATCH --cpus-per-task={num_cpus}
             #SBATCH --mem-per-cpu={mem_in_gb_per_cpu}G
             #SBATCH --time={time_limit}
@@ -286,6 +326,9 @@ class SlurmWorkers:
 
             if proc.returncode != 0:
                 error_msg = stderr.decode() if stderr else "Unknown error"
+                self.logger.error(
+                    f"sbatch returned exit {proc.returncode}: {error_msg.strip()}"
+                )
                 raise subprocess.CalledProcessError(
                     proc.returncode, "sbatch", stderr=error_msg
                 )
@@ -551,10 +594,12 @@ class SlurmWorkers:
 
                 # Check if the worker node has already been added to the Ray cluster
                 cluster_state = (
-                    await self.ray_cluster.cluster_state_handle.get_state.remote()
+                    await self.ray_cluster.proxy_actor_handle.get_cluster_state.remote()
                 )
-                for node_id, node_resources in cluster_state["nodes"].items():
+                node_id = None
+                for candidate_id, node_resources in cluster_state["nodes"].items():
                     if node_resources["slurm_job_id"] == submitted_job_id:
+                        node_id = candidate_id
                         self.logger.info(
                             f"Worker node with ID '{node_id}' is now running in the Ray cluster"
                         )
@@ -566,11 +611,11 @@ class SlurmWorkers:
         except asyncio.CancelledError:
             self.logger.info("Worker creation task was cancelled")
             if submitted_job_id:
-                self._cancel_jobs([submitted_job_id])
+                await self._cancel_jobs([submitted_job_id])
         except Exception as e:
             self.logger.error(f"Error starting worker: {e}")
             if submitted_job_id:
-                self._cancel_jobs([submitted_job_id])
+                await self._cancel_jobs([submitted_job_id])
         finally:
             self.worker_creation_task = None
 
@@ -670,22 +715,26 @@ class SlurmWorkers:
         if not can_scale_up:
             return
 
-        # Get the required resources
+        # Get the required resources (some pending items — e.g. jobs — do not
+        # carry a `required_resources` field, so probe each candidate).
         required_resources = None
-        for resource_type, pending_resources in self.ray_cluster.status["cluster"][
-            "pending_resources"
-        ].items():
-            if not pending_resources or resource_type not in [
-                "actors",
-                "jobs",
-                "tasks",
-            ]:
-                continue
-            required_resources = pending_resources[-1]["required_resources"]
-            break
+        for resource_type in ("actors", "tasks", "jobs"):
+            pending_items = self.ray_cluster.status["cluster"][
+                "pending_resources"
+            ].get(resource_type, [])
+            for item in reversed(pending_items):
+                candidate = item.get("required_resources") if item else None
+                if candidate:
+                    required_resources = candidate
+                    break
+            if required_resources:
+                break
         if not required_resources:
-            self.logger.error("No pending resources found, skipping scale up")
-            return
+            self.logger.info(
+                "No pending resources with explicit requirements found; "
+                "scaling up with defaults."
+            )
+            required_resources = {}
 
         num_cpus = required_resources.get("CPU", 1)
         num_gpus = required_resources.get("GPU", 0)
@@ -729,18 +778,15 @@ class SlurmWorkers:
         A node is considered idle if it has no active CPU or GPU usage.
 
         Args:
-            node_resources: Dictionary containing node resource information with keys
-                      'total_cpu', 'available_cpu', 'total_gpu', 'available_gpu'
+            node_resources: Dictionary containing node resource information with
+                keys 'total_cpu', 'used_cpu', 'total_gpu', 'used_gpu'
+                (as produced by ``BioEngineProxyActor.get_cluster_state``).
 
         Returns:
             True if the node is completely idle (no used CPUs or GPUs), False otherwise
         """
-        used_cpus = node_resources["total_cpu"] - node_resources["available_cpu"]
-        # GPU nodes
-        if node_resources["total_gpu"] > 0:
-            used_gpus = node_resources["total_gpu"] - node_resources["available_gpu"]
-        else:
-            used_gpus = 0
+        used_cpus = node_resources["used_cpu"]
+        used_gpus = node_resources["used_gpu"] if node_resources["total_gpu"] > 0 else 0
 
         # Node is idle if no GPUs or CPUs are used
         return used_gpus == 0 and used_cpus == 0

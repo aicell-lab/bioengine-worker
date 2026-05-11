@@ -369,6 +369,24 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine
         help="Additional SLURM sbatch arguments for specialized cluster configurations. "
         'Example: "--partition=gpu" "--qos=high-priority"',
     )
+    slurm_job_group.add_argument(
+        "--gpu-slurm-flag",
+        type=str,
+        metavar="TEMPLATE",
+        help="Template for the GPU sbatch directive. The token '{n}' is replaced "
+        "with the requested GPU count. Default: '--gpus={n}'. Use "
+        "'--gres=gpu:{n}' on clusters that require gres syntax. Pass an empty "
+        "string to omit the directive (e.g. when GPUs are requested via "
+        "--further-slurm-args).",
+    )
+    slurm_job_group.add_argument(
+        "--further-apptainer-args",
+        type=str,
+        nargs="+",
+        metavar="ARG",
+        help="Additional CLI flags forwarded to 'apptainer exec' inside each "
+        'SLURM worker job. Example: "--bind" "/proj/aicell:/proj/aicell".',
+    )
 
     # Ray autoscaling configuration options
     ray_autoscaling_group = parser.add_argument_group(

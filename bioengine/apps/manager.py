@@ -1182,6 +1182,128 @@ class AppsManager:
         return created_artifact_id
 
     @schema_method
+    async def list_app_directories(
+        self,
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
+    ) -> List[Dict[str, Any]]:
+        """
+        Lists all application working directories under the BioEngine apps workspace.
+
+        Returns one entry per subdirectory found under the apps working directory,
+        including whether that directory belongs to a currently running application.
+
+        Returns:
+            List of dictionaries, each with:
+            - name: directory name (matches application_id for deployed apps)
+            - path: absolute path to the directory
+            - is_running: True if the directory belongs to a currently running app
+            - size_bytes: total disk usage of the directory in bytes
+
+        Raises:
+            PermissionError: If the caller is not a worker admin
+            RuntimeError: If the worker is not initialized
+        """
+        self._check_initialized()
+        check_permissions(
+            context=context,
+            authorized_users=self.admin_users,
+            resource_name="listing app directories",
+        )
+
+        apps_workdir = self.app_builder.apps_workdir
+        if not apps_workdir.exists():
+            return []
+
+        running = {
+            app_id
+            for app_id, info in self._deployed_applications.items()
+            if info["is_deployed"].is_set()
+        }
+
+        result = []
+        for entry in sorted(apps_workdir.iterdir()):
+            if not entry.is_dir():
+                continue
+            size = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
+            result.append(
+                {
+                    "name": entry.name,
+                    "path": str(entry),
+                    "is_running": entry.name in running,
+                    "size_bytes": size,
+                }
+            )
+        return result
+
+    @schema_method
+    async def clear_app_directory(
+        self,
+        directory_name: str = Field(
+            ...,
+            description="Name of the app working directory to delete (must be a direct subdirectory of the apps workspace, not a path).",
+        ),
+        context: Dict[str, Any] = Field(
+            ...,
+            description="Authentication context containing user information, automatically provided by Hypha during service calls.",
+        ),
+    ) -> None:
+        """
+        Deletes an application working directory from the BioEngine apps workspace.
+
+        The directory is identified by name (as returned by list_app_directories).
+        Raises an error if the directory belongs to a currently running application —
+        stop the app first with stop_app() before clearing its directory.
+
+        Args:
+            directory_name: Name of the subdirectory to delete (e.g. "model-runner").
+
+        Raises:
+            PermissionError: If the caller is not a worker admin
+            RuntimeError: If the worker is not initialized, the directory belongs to a
+                         running app, or deletion fails
+            ValueError: If the directory does not exist or the name contains path separators
+        """
+        self._check_initialized()
+        check_permissions(
+            context=context,
+            authorized_users=self.admin_users,
+            resource_name=f"clearing app directory '{directory_name}'",
+        )
+
+        if "/" in directory_name or "\\" in directory_name or directory_name in (".", ".."):
+            raise ValueError(
+                f"directory_name must be a plain directory name, not a path: '{directory_name}'"
+            )
+
+        target = self.app_builder.apps_workdir / directory_name
+        if not target.exists():
+            raise ValueError(
+                f"Directory '{directory_name}' does not exist under the apps workspace."
+            )
+        if not target.is_dir():
+            raise ValueError(f"'{directory_name}' is not a directory.")
+
+        # Refuse if a running app owns this directory
+        if directory_name in self._deployed_applications:
+            info = self._deployed_applications[directory_name]
+            if info["is_deployed"].is_set():
+                raise RuntimeError(
+                    f"Cannot clear directory '{directory_name}': application is currently running. "
+                    "Stop it first with stop_app()."
+                )
+
+        import shutil
+        try:
+            shutil.rmtree(target)
+        except Exception as e:
+            raise RuntimeError(f"Failed to delete directory '{directory_name}': {e}")
+
+        self.logger.info(f"Cleared app directory: {target}")
+
+    @schema_method
     async def list_apps(
         self,
         context: Dict[str, Any] = Field(

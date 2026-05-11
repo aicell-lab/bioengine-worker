@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from haikunator import Haikunator
+from hypha_rpc import connect_to_server
 from hypha_rpc.rpc import RemoteService
 from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
@@ -1076,6 +1077,14 @@ class AppsManager:
             ...,
             description="List of application files to upload. Each file must be a dictionary with 'name' (string), 'content' (file content), and 'type' ('text' for text files or 'base64' for binary files). Must include a 'manifest.yaml' file with application configuration.",
         ),
+        workspace: Optional[str] = Field(
+            None,
+            description="Hypha workspace to upload the application to. When provided together with hypha_token, no admin permissions are required and the artifact is created in the specified workspace. If omitted, the worker's own workspace is used and admin access is required.",
+        ),
+        hypha_token: Optional[str] = Field(
+            None,
+            description="Hypha authentication token for the target workspace. Must be provided together with workspace. When both are given the caller does not need to be a worker admin.",
+        ),
         context: Dict[str, Any] = Field(
             ...,
             description="Authentication context containing user information, automatically provided by Hypha during service calls.",
@@ -1084,9 +1093,16 @@ class AppsManager:
         """
         Creates or updates a BioEngine application artifact in the Hypha artifact manager.
 
-        This method allows you to upload a complete BioEngine application package including
-        all necessary files, code, and configuration. The application can then be deployed
-        to Ray Serve using the deploy_app method.
+        Two usage modes:
+
+        Admin mode (workspace and hypha_token omitted):
+            Uploads to the worker's own workspace. Requires the caller to be a worker admin.
+            The worker's existing artifact manager connection is reused.
+
+        User mode (workspace and hypha_token both provided):
+            Uploads to the specified workspace using the provided token. No admin permission
+            is required. A temporary artifact manager connection is created and closed after
+            the upload.
 
         Application Structure:
         - manifest.yaml: Required configuration file defining the application metadata,
@@ -1105,36 +1121,59 @@ class AppsManager:
             The artifact ID of the created or updated application artifact
 
         Raises:
-            ValueError: If manifest is missing, invalid, or artifact ID format is incorrect
-            PermissionError: If user lacks admin permissions to create/modify applications
+            ValueError: If manifest is missing, invalid, artifact ID format is incorrect,
+                       or only one of workspace/hypha_token is provided
+            PermissionError: If user lacks admin permissions (admin mode only)
             RuntimeError: If artifact creation fails or Hypha connection is unavailable
         """
         self._check_initialized()
 
-        check_permissions(
-            context=context,
-            authorized_users=self.admin_users,
-            resource_name=f"creating or modifying an application",
-        )
+        if (workspace is None) != (hypha_token is None):
+            raise ValueError(
+                "workspace and hypha_token must be provided together or both omitted."
+            )
 
-        # Create or update the artifact using the utility function
+        user_mode = workspace is not None
+
+        if not user_mode:
+            # Admin mode: enforce admin permissions, use worker's artifact manager
+            check_permissions(
+                context=context,
+                authorized_users=self.admin_users,
+                resource_name="creating or modifying an application",
+            )
+            artifact_manager = self.artifact_manager
+            target_workspace = self.server.config.workspace
+        else:
+            # User mode: connect with provided credentials, no admin check
+            server_url = self.server.config.server_url
+            remote_server = await connect_to_server(
+                {"server_url": server_url, "token": hypha_token, "workspace": workspace}
+            )
+            artifact_manager = await remote_server.get_service("public/artifact-manager")
+            target_workspace = workspace
+
         try:
             created_artifact_id = await create_application_from_files(
-                artifact_manager=self.artifact_manager,
+                artifact_manager=artifact_manager,
                 files=files,
-                workspace=self.server.config.workspace,
+                workspace=target_workspace,
                 user_id=context["user"]["id"],
                 logger=self.logger,
             )
         except Exception as e:
             raise RuntimeError(f"Failed to create/update artifact: {e}")
+        finally:
+            if user_mode:
+                await remote_server.disconnect()
 
-        # Verify the artifact is in the collection
-        available_artifacts = await self.list_apps(context=context)
-        if created_artifact_id not in available_artifacts:
-            raise ValueError(
-                f"Artifact '{created_artifact_id}' could not be created or is not in the collection."
-            )
+        if not user_mode:
+            # Verify the artifact is in the worker's collection (admin mode only)
+            available_artifacts = await self.list_apps(context=context)
+            if created_artifact_id not in available_artifacts:
+                raise ValueError(
+                    f"Artifact '{created_artifact_id}' could not be created or is not in the collection."
+                )
 
         self.logger.info(
             f"Successfully created/updated application artifact '{created_artifact_id}'."

@@ -631,7 +631,7 @@ class BioEngineWorker:
             # 🧮 Code execution
             "run_code": self.code_executor.run_code,  # Requires admin permissions
             # 🚀 Application management
-            "upload_app": self.apps_manager.upload_app,  # Requires admin permissions
+            "upload_app": self.apps_manager.upload_app,  # Admin required unless workspace+hypha_token provided
             "list_apps": self.apps_manager.list_apps,  # Requires admin permissions
             "get_app_manifest": self.apps_manager.get_app_manifest,  # Requires admin permissions
             "delete_app": self.apps_manager.delete_app,  # Requires admin permissions

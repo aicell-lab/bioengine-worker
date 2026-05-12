@@ -50,37 +50,28 @@ jobs:
             sudo apt-get update && sudo apt-get install -y skopeo
         fi
 
-        # Check both the current image and the legacy bioengine-worker
-        # name (the repo was renamed; old releases live there).
-        IMAGES=(
-          "docker://ghcr.io/${{ github.repository }}"
-          "docker://ghcr.io/aicell-lab/bioengine-worker"
-        )
+        IMAGE="docker://ghcr.io/aicell-lab/bioengine-worker"
+        echo "🔍 Fetching tags for $IMAGE..."
 
-        ALL_TAGS=""
-        for IMAGE in "${IMAGES[@]}"; do
-          echo "🔍 Fetching tags for $IMAGE..."
-          if skopeo list-tags "$IMAGE" > /dev/null 2>&1; then
-            TAGS=$(skopeo list-tags "$IMAGE" | jq -r '.Tags[]')
-            echo "   found $(echo "$TAGS" | wc -l) tag(s)"
-            ALL_TAGS+=$'\n'"$TAGS"
-          else
-            echo "   not found in registry (skipping)"
-          fi
-        done
+        if ! skopeo list-tags "$IMAGE" > /dev/null 2>&1; then
+          echo "❌ Could not list tags for $IMAGE."
+          exit 1
+        fi
 
-        # Filter out 'latest' and any non-version tags, then sort
-        LATEST_VERSION=$(echo "$ALL_TAGS" \
+        TAGS=$(skopeo list-tags "$IMAGE" | jq -r '.Tags[]')
+
+        # Filter to semver-prefix tags only
+        LATEST_VERSION=$(echo "$TAGS" \
           | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' \
           | sort -V \
           | tail -n1)
 
         if [ -z "$LATEST_VERSION" ]; then
-          echo "❌ No version tags found in either registry namespace."
+          echo "❌ No version tags found for $IMAGE."
           exit 1
         fi
 
-        echo "📦 Latest published version (across both image names): $LATEST_VERSION"
+        echo "📦 Latest published version: $LATEST_VERSION"
         echo "PREVIOUS_VERSION=$LATEST_VERSION" >> $GITHUB_ENV
 
     - name: Check that version is updated and newer
@@ -108,8 +99,8 @@ jobs:
         platforms: linux/amd64,linux/arm64
         push: true
         tags: |
-          ghcr.io/aicell-lab/bioengine:latest
-          ghcr.io/aicell-lab/bioengine:${{ env.VERSION }}
+          ghcr.io/aicell-lab/bioengine-worker:latest
+          ghcr.io/aicell-lab/bioengine-worker:${{ env.VERSION }}
         labels: |
           org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
         cache-from: type=gha,scope=worker

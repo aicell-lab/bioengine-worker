@@ -23,7 +23,7 @@ docker run --rm -it \
   --shm-size=8g \
   --gpus=all \
   -v $HOME/.bioengine:/.bioengine \
-  ghcr.io/aicell-lab/bioengine:latest \
+  ghcr.io/aicell-lab/bioengine-worker:latest \
   python -m bioengine.worker \
     --mode single-machine \
     --head-num-cpus 4 \
@@ -41,7 +41,7 @@ docker run --rm -it \
 apptainer exec \
   --nv \
   --bind $HOME/.bioengine:/.bioengine \
-  docker://ghcr.io/aicell-lab/bioengine:latest \
+  docker://ghcr.io/aicell-lab/bioengine-worker:latest \
   python -m bioengine.worker \
     --mode single-machine \
     --head-num-cpus 4 \
@@ -97,7 +97,7 @@ spec:
     spec:
       containers:
         - name: bioengine-worker
-          image: ghcr.io/aicell-lab/bioengine:latest
+          image: ghcr.io/aicell-lab/bioengine-worker:latest
           args:
             - python
             - -m

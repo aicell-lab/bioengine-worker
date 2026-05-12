@@ -43,7 +43,7 @@ else
     echo "✅ Found version $VERSION from local pyproject.toml"
 fi
 
-DEFAULT_IMAGE="ghcr.io/aicell-lab/bioengine:$VERSION"
+DEFAULT_IMAGE="ghcr.io/aicell-lab/bioengine-worker:$VERSION"
 WORKING_DIR=$(pwd)
 
 # Save all arguments

@@ -9,7 +9,7 @@
   [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue)](https://github.com/orgs/aicell-lab/packages/container/package/bioengine)
   [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-  [![Paper](https://img.shields.io/badge/paper-bioRxiv-red)](https://www.biorxiv.org/content/10.1101/2025.TODO)
+  [![Paper](https://img.shields.io/badge/paper-bioRxiv-red)](https://www.biorxiv.org/content/10.64898/2026.04.19.719496v1)
 
 </div>
 
@@ -187,9 +187,7 @@ pytest tests/end_to_end/ -v
 
 > Mechtel N, Dettner Källander H, Cheng S, Zhang H, AI4Life Consortium, Ouyang W.
 > **BioEngine: scalable execution and adaptation of bioimage AI through agent-readable interfaces.**
-> *bioRxiv* (2025). https://www.biorxiv.org/content/10.1101/2025.TODO
-
-<!-- TODO: replace DOI placeholder once the preprint is publicly posted -->
+> *bioRxiv* (2026). https://doi.org/10.64898/2026.04.19.719496
 
 ## License
 

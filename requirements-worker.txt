@@ -1,9 +1,12 @@
 aiortc==1.14.0
 cloudpickle==3.1.1
 haikunator==2.1.0
-httpx==0.28.1
+httpx[http2]==0.28.1
 hypha-rpc==0.21.11
 numpy==1.26.4
 pydantic==2.11.9
 pyyaml==6.0.2
-ray[client,serve]==2.55.1
+uv==0.5.0
+# Ray is intentionally NOT pinned here — the Dockerfile installs it last,
+# driven by the RAY_VERSION build arg, so changing the Ray version does
+# not invalidate the rest of the dependency layer cache.

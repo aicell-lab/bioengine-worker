@@ -50,25 +50,37 @@ jobs:
             sudo apt-get update && sudo apt-get install -y skopeo
         fi
 
-        IMAGE="docker://ghcr.io/${{ github.repository }}"
-        echo "🔍 Fetching tags for $IMAGE..."
+        # Check both the current image and the legacy bioengine-worker
+        # name (the repo was renamed; old releases live there).
+        IMAGES=(
+          "docker://ghcr.io/${{ github.repository }}"
+          "docker://ghcr.io/aicell-lab/bioengine-worker"
+        )
 
-        if ! skopeo list-tags "$IMAGE" > /dev/null 2>&1; then
-           echo "❌ Image not found or no tags. Cannot determine previous version."
-           exit 1
-        fi
+        ALL_TAGS=""
+        for IMAGE in "${IMAGES[@]}"; do
+          echo "🔍 Fetching tags for $IMAGE..."
+          if skopeo list-tags "$IMAGE" > /dev/null 2>&1; then
+            TAGS=$(skopeo list-tags "$IMAGE" | jq -r '.Tags[]')
+            echo "   found $(echo "$TAGS" | wc -l) tag(s)"
+            ALL_TAGS+=$'\n'"$TAGS"
+          else
+            echo "   not found in registry (skipping)"
+          fi
+        done
 
-        TAGS=$(skopeo list-tags "$IMAGE" | jq -r '.Tags[]')
-
-        # Filter out 'latest' and sort by version
-        LATEST_VERSION=$(echo "$TAGS" | grep -v "latest" | sort -V | tail -n1)
+        # Filter out 'latest' and any non-version tags, then sort
+        LATEST_VERSION=$(echo "$ALL_TAGS" \
+          | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' \
+          | sort -V \
+          | tail -n1)
 
         if [ -z "$LATEST_VERSION" ]; then
-           echo "❌ No valid version tags found."
-           exit 1
+          echo "❌ No version tags found in either registry namespace."
+          exit 1
         fi
 
-        echo "📦 Latest registry version: $LATEST_VERSION"
+        echo "📦 Latest published version (across both image names): $LATEST_VERSION"
         echo "PREVIOUS_VERSION=$LATEST_VERSION" >> $GITHUB_ENV
 
     - name: Check that version is updated and newer

@@ -1,3 +1,4 @@
+import os
 import re
 import time
 import json
@@ -241,8 +242,18 @@ class BioEngineProxyActor:
             return {}, False
 
         url = f"{webui_url}/nodes?view=summary"
+        # KubeRay (and some other managed Ray distributions) put the dashboard
+        # behind a Bearer-auth proxy that requires the token even from inside
+        # the head pod. Ray Client auto-propagates RAY_AUTH_TOKEN to actor
+        # envs, so we just forward it if present. Local Ray clusters started
+        # by BioEngine itself have no auth and ignore the header.
+        headers = {}
+        auth_token = os.environ.get("RAY_AUTH_TOKEN")
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        request = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(url, timeout=2.0) as response:
+            with urllib.request.urlopen(request, timeout=2.0) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError):
             logger.debug(

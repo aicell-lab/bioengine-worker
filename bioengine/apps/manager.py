@@ -15,7 +15,7 @@ from ray.serve.schema import ApplicationDetails, ServeStatus
 
 from bioengine import __version__
 from bioengine.apps.builder import AppBuilder
-from bioengine.cluster import RayCluster
+from bioengine.cluster.ray_cluster import RayCluster
 from bioengine.utils import (
     check_permissions,
     create_application_from_files,

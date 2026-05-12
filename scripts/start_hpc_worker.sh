@@ -10,7 +10,7 @@ get_version_from_pyproject() {
 
 # Get version from GitHub API for remote execution
 get_version_from_github() {
-    local github_url="https://raw.githubusercontent.com/aicell-lab/bioengine-worker/main/pyproject.toml"
+    local github_url="https://raw.githubusercontent.com/aicell-lab/bioengine/main/pyproject.toml"
     if command -v curl >/dev/null 2>&1; then
         curl -s "$github_url" | grep -E '^version\s*=' | sed -E 's/version\s*=\s*"(.*)"/\1/' | head -1
     elif command -v wget >/dev/null 2>&1; then
@@ -33,7 +33,7 @@ if [[ -z "$VERSION" ]]; then
     if [[ -z "$VERSION" ]]; then
         echo "❌ Error: Could not determine version from local pyproject.toml or GitHub."
         echo "   This script requires either:"
-        echo "   1. Running from a cloned bioengine-worker repository, or"
+        echo "   1. Running from a cloned bioengine repository, or"
         echo "   2. Internet access to fetch version from GitHub"
         exit 1
     else
@@ -43,7 +43,7 @@ else
     echo "✅ Found version $VERSION from local pyproject.toml"
 fi
 
-DEFAULT_IMAGE="ghcr.io/aicell-lab/bioengine-worker:$VERSION"
+DEFAULT_IMAGE="ghcr.io/aicell-lab/bioengine:$VERSION"
 WORKING_DIR=$(pwd)
 
 # Save all arguments
@@ -141,9 +141,12 @@ add_env() {
 # Check if the mode is set to something else than "slurm"
 MODE=$(get_arg_value "--mode" "slurm")
 if [[ "$MODE" != "slurm" ]]; then
-    echo "Error: Invalid mode '$MODE'. For modes other than 'slurm', please run the 'bioengine-worker' container directly. Check out the configuration wizard at https://bioimage.io/#/bioengine."
+    echo "Error: Invalid mode '$MODE'. For modes other than 'slurm', please run the 'bioengine' container directly. Check out the configuration wizard at https://bioimage.io/#/bioengine."
     exit 1
 fi
+
+# Always pass --mode slurm to the worker (the bioengine CLI requires it)
+set_arg_value "--mode" "$MODE"
 
 # === Load BioEngine image ===
 

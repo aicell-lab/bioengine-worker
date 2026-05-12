@@ -81,7 +81,7 @@ class RayCluster:
         runtime_env_pip_cache_size_gb: int = 30,  # Ray default is 10 GB
         force_clean_up: bool = True,
         # SLURM Worker Configuration parameters
-        image: str = f"ghcr.io/aicell-lab/bioengine:{bioengine.__version__}",
+        image: str = f"ghcr.io/aicell-lab/bioengine-worker:{bioengine.__version__}",
         worker_workspace_dir: Optional[str] = None,
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,

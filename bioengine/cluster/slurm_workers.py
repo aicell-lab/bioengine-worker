@@ -44,7 +44,7 @@ class SlurmWorkers:
         ray_cluster,
         # Slurm job configuration parameters
         worker_workspace_dir: str,
-        image: str = f"ghcr.io/aicell-lab/bioengine:{__version__}",
+        image: str = f"ghcr.io/aicell-lab/bioengine-worker:{__version__}",
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
         default_mem_in_gb_per_cpu: int = 16,

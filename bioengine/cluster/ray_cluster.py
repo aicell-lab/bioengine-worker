@@ -81,13 +81,15 @@ class RayCluster:
         runtime_env_pip_cache_size_gb: int = 30,  # Ray default is 10 GB
         force_clean_up: bool = True,
         # SLURM Worker Configuration parameters
-        image: str = f"ghcr.io/aicell-lab/bioengine:{bioengine.__version__}",
+        image: str = f"ghcr.io/aicell-lab/bioengine-worker:{bioengine.__version__}",
         worker_workspace_dir: Optional[str] = None,
         default_num_gpus: int = 1,
         default_num_cpus: int = 8,
         default_mem_in_gb_per_cpu: int = 16,
         default_time_limit: str = "4:00:00",
         further_slurm_args: Optional[List[str]] = None,
+        gpu_slurm_flag: str = "--gpus={n}",
+        further_apptainer_args: Optional[List[str]] = None,
         # Autoscaling configuration parameters
         min_workers: int = 0,
         max_workers: int = 4,
@@ -127,6 +129,11 @@ class RayCluster:
             default_mem_in_gb_per_cpu: Default memory per CPU in GB. Default 16.
             default_time_limit: Default SLURM job time limit. Default '4:00:00'.
             further_slurm_args: Additional SLURM arguments for job submission.
+            gpu_slurm_flag: Template for the GPU sbatch directive (default
+                "--gpus={n}"). Use "--gres=gpu:{n}" on clusters that require gres,
+                or "" to omit and supply via ``further_slurm_args``.
+            further_apptainer_args: Extra CLI flags forwarded to ``apptainer exec``
+                inside each SLURM worker job (e.g. additional ``--bind`` mounts).
             min_workers: Minimum number of workers for autoscaling. Default 0.
             max_workers: Maximum number of workers for autoscaling. Default 4.
             scale_up_cooldown_seconds: Cooldown between scale-up operations. Default 60.
@@ -249,6 +256,8 @@ class RayCluster:
                         "default_mem_in_gb_per_cpu": int(default_mem_in_gb_per_cpu),
                         "default_time_limit": str(default_time_limit),
                         "further_slurm_args": further_slurm_args or [],
+                        "gpu_slurm_flag": str(gpu_slurm_flag),
+                        "further_apptainer_args": further_apptainer_args or [],
                         "min_workers": int(min_workers),
                         "max_workers": int(max_workers),
                         "scale_up_cooldown_seconds": int(scale_up_cooldown_seconds),

@@ -724,7 +724,16 @@ class BioEngineWorker:
         if hasattr(self, "apps_manager") and self.apps_manager:
             try:
                 admin_context = getattr(self, "_admin_context", None)
-                await self.apps_manager.stop_all_apps(admin_context)
+                if admin_context is None:
+                    self.logger.debug(
+                        "No admin context (shutdown before Hypha login completed); "
+                        "skipping apps manager cleanup."
+                    )
+                else:
+                    # stop_all_apps is a @schema_method whose first positional
+                    # parameter is timeout_seconds; the required context must
+                    # be passed by name.
+                    await self.apps_manager.stop_all_apps(context=admin_context)
             except Exception as e:
                 self.logger.error(f"Error cleaning up apps manager: {e}")
 

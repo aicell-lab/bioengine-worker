@@ -15,6 +15,10 @@
 
 ---
 
+**[Use BioEngine now](#use-bioengine-now--no-setup-required)** · **[What it enables](#what-bioengine-enables)** · **[Deploy your own worker](#deploy-your-own-bioengine-worker)** · **[Developer docs](#developer-documentation)** · **[Paper](#paper)**
+
+---
+
 Foundation models and curated repositories have transformed bioimage AI, yet most biologists cannot readily run, adapt, or extend them on available hardware. **BioEngine fills this gap** — deployable on a laptop, workstation, or cluster. Scientists screen models, fine-tune from the browser, enable real-time smart microscopy, and deploy analysis applications, all by describing their goal to an AI agent.
 
 > *"The user does not need to know how BioEngine works internally. They describe what they want and receive the result. Infrastructure management stays with whoever runs the hardware. Scientific focus returns to the biologist."*
@@ -45,12 +49,12 @@ The skill gives the agent a complete, plain-text description of every available 
 
 ## What BioEngine enables
 
-| | Description | Key result |
-|-|-------------|------------|
-| **Model screening** | Agent queries the BioImage Model Zoo, filters by domain compatibility, runs inference across candidates, and ranks by mAP | 58 candidates screened to 4 ranked in a single agent session |
-| **Real-time inference** | Live images stream from the microscope to BioEngine; per-frame statistics return to the controlling agent for closed-loop smart microscopy | Sub-second GPU inference latency |
-| **Collaborative fine-tuning** | Browser-based annotation against foundation model pre-segmentations; fine-tuning triggered with one click; models published back to the BioImage Model Zoo | F1 rose 0.36 → 0.71 across 1,600 training epochs on PlantSeg data |
-| **Agent-built applications** | Agent generates deployment manifest, GPU workflow, and web UI from a plain-language prompt; the resulting app is immediately callable by other agents | Mean F1 = 0.920 ± 0.037 on Lucchi++ FIB-SEM benchmark |
+| | Description |
+|-|-------------|
+| **Model screening** | Agent queries the BioImage Model Zoo, filters by domain compatibility, runs inference across candidates, and ranks by mAP |
+| **Real-time inference** | Live images stream from the microscope to BioEngine; per-frame statistics return to the controlling agent for closed-loop smart microscopy |
+| **Collaborative fine-tuning** | Browser-based annotation against foundation model pre-segmentations; fine-tuning triggered with one click; models published back to the BioImage Model Zoo |
+| **Agent-built applications** | Agent generates deployment manifest, GPU workflow, and web UI from a plain-language prompt; the resulting app is immediately callable by other agents |
 
 BioEngine exposes all capabilities through a **SKILL.md contract** — a plain-text file designed for general-purpose AI agents to acquire domain knowledge and invoke GPU services directly. Any agent that reads the contract can screen models, trigger fine-tuning, or deploy a custom application, without any BioEngine-specific programming.
 

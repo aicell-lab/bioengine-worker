@@ -48,6 +48,7 @@ License: MIT
 import argparse
 import asyncio
 import json
+import shlex
 import sys
 from typing import Dict
 
@@ -364,10 +365,28 @@ For detailed documentation, visit: https://github.com/aicell-lab/bioengine
     slurm_job_group.add_argument(
         "--further-slurm-args",
         type=str,
-        nargs="+",
-        metavar="ARG",
-        help="Additional SLURM sbatch arguments for specialized cluster configurations. "
-        'Example: "--partition=gpu" "--qos=high-priority"',
+        metavar="ARGS",
+        help="Additional SLURM sbatch arguments for specialized cluster configurations, "
+        "passed as a single quoted, shell-style string. "
+        'Example: --further-slurm-args "--partition=gpu --qos=high-priority"',
+    )
+    slurm_job_group.add_argument(
+        "--gpu-slurm-flag",
+        type=str,
+        metavar="TEMPLATE",
+        help="Template for the GPU sbatch directive. The token '{n}' is replaced "
+        "with the requested GPU count. Default: '--gpus={n}'. Use "
+        "'--gres=gpu:{n}' on clusters that require gres syntax. Pass an empty "
+        "string to omit the directive (e.g. when GPUs are requested via "
+        "--further-slurm-args).",
+    )
+    slurm_job_group.add_argument(
+        "--further-apptainer-args",
+        type=str,
+        metavar="ARGS",
+        help="Additional CLI flags forwarded to 'apptainer exec' inside each "
+        "SLURM worker job, passed as a single quoted, shell-style string. "
+        'Example: --further-apptainer-args "--bind /proj/aicell:/proj/aicell".',
     )
 
     # Ray autoscaling configuration options
@@ -525,6 +544,21 @@ def read_startup_applications(
     return group_configs
 
 
+def split_slurm_string_args(group_configs):
+    """Split shell-style string args into List[str] for SlurmWorkers.
+
+    ``--further-slurm-args`` and ``--further-apptainer-args`` take a single
+    quoted string on the CLI (argparse rejects ``nargs="+"`` values that
+    look like flags). Split here so downstream code keeps its List[str] API.
+    """
+    slurm_options = group_configs.get("SLURM Job Options", {})
+    for key in ("further_slurm_args", "further_apptainer_args"):
+        raw = slurm_options.get(key)
+        if isinstance(raw, str):
+            slurm_options[key] = shlex.split(raw)
+    return group_configs
+
+
 async def main(group_configs):
     """Main function to initialize and register BioEngine worker"""
     # Create BioEngine worker instance
@@ -554,6 +588,9 @@ if __name__ == "__main__":
 
         # Process startup applications if provided
         group_configs = read_startup_applications(group_configs)
+
+        # Split shell-style SLURM args into List[str]
+        group_configs = split_slurm_string_args(group_configs)
 
         # Start the main worker process
         asyncio.run(main(group_configs))

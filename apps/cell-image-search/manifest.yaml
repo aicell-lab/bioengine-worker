@@ -12,7 +12,7 @@ authors:
   - {name: BioEngine Team, affiliation: KTH Royal Institute of Technology, github_user: aicell-lab}
 license: MIT
 format_version: 0.5.0
-git_repo: https://github.com/aicell-lab/bioengine-worker
+git_repo: https://github.com/aicell-lab/bioengine
 type: ray-serve
 version: 0.21.5
 tags:

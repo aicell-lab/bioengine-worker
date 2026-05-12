@@ -23,7 +23,7 @@ docker run --rm -it \
   --shm-size=8g \
   --gpus=all \
   -v $HOME/.bioengine:/.bioengine \
-  ghcr.io/aicell-lab/bioengine-worker:latest \
+  ghcr.io/aicell-lab/bioengine:latest \
   python -m bioengine.worker \
     --mode single-machine \
     --head-num-cpus 4 \
@@ -41,7 +41,7 @@ docker run --rm -it \
 apptainer exec \
   --nv \
   --bind $HOME/.bioengine:/.bioengine \
-  docker://ghcr.io/aicell-lab/bioengine-worker:latest \
+  docker://ghcr.io/aicell-lab/bioengine:latest \
   python -m bioengine.worker \
     --mode single-machine \
     --head-num-cpus 4 \
@@ -97,7 +97,7 @@ spec:
     spec:
       containers:
         - name: bioengine-worker
-          image: ghcr.io/aicell-lab/bioengine-worker:latest
+          image: ghcr.io/aicell-lab/bioengine:latest
           args:
             - python
             - -m
@@ -139,7 +139,7 @@ Runs BioEngine on an HPC cluster managed by SLURM. The worker submits Ray worker
 ### Quick start (from a login node)
 
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/aicell-lab/bioengine-worker/refs/heads/main/scripts/start_hpc_worker.sh)
+bash <(curl -s https://raw.githubusercontent.com/aicell-lab/bioengine/refs/heads/main/scripts/start_hpc_worker.sh)
 ```
 
 The script handles container image download (via Singularity/Apptainer), Ray cluster setup, and SLURM job management automatically.

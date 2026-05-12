@@ -82,9 +82,9 @@ include = [
 "bioengine" = "bioengine"
 
 [project.urls]
-"Repository" = "https://github.com/aicell-lab/bioengine-worker"
-"Documentation" = "https://github.com/aicell-lab/bioengine-worker/README.md"
-"Bug Tracker" = "https://github.com/aicell-lab/bioengine-worker/issues"
+"Repository" = "https://github.com/aicell-lab/bioengine"
+"Documentation" = "https://github.com/aicell-lab/bioengine/README.md"
+"Bug Tracker" = "https://github.com/aicell-lab/bioengine/issues"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

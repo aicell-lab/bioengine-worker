@@ -96,8 +96,8 @@ jobs:
         platforms: linux/amd64,linux/arm64
         push: true
         tags: |
-          ghcr.io/aicell-lab/bioengine-worker:latest
-          ghcr.io/aicell-lab/bioengine-worker:${{ env.VERSION }}
+          ghcr.io/aicell-lab/bioengine:latest
+          ghcr.io/aicell-lab/bioengine:${{ env.VERSION }}
         labels: |
           org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
         cache-from: type=gha,scope=worker

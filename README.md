@@ -5,7 +5,7 @@
 
   **Execution and adaptation layer for bioimage AI — run, screen, fine-tune, and deploy BioImage Model Zoo models through AI agents**
 
-  [![GitHub](https://img.shields.io/badge/github-aicell--lab%2Fbioengine--worker-black?logo=github)](https://github.com/aicell-lab/bioengine-worker)
+  [![GitHub](https://img.shields.io/badge/github-aicell--lab%2Fbioengine--worker-black?logo=github)](https://github.com/aicell-lab/bioengine)
   [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue)](https://github.com/orgs/aicell-lab/packages/container/package/bioengine-worker)
   [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -44,7 +44,7 @@ Test AI models instantly via the community instance:
 ### CLI
 
 ```bash
-pip install "bioengine[cli] @ git+https://github.com/aicell-lab/bioengine-worker.git"
+pip install "bioengine[cli] @ git+https://github.com/aicell-lab/bioengine.git"
 
 # Call any service method
 bioengine call bioimage-io/bioengine-worker get_status
@@ -81,7 +81,7 @@ app_status = await worker.get_app_status(application_ids=[app_id])
 
 ```bash
 # Docker (single machine)
-git clone https://github.com/aicell-lab/bioengine-worker.git
+git clone https://github.com/aicell-lab/bioengine.git
 cd bioengine-worker
 mkdir -p .bioengine data
 UID=$(id -u) GID=$(id -g) docker compose up

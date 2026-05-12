@@ -25,7 +25,7 @@ services:
       retries: 3
 
   worker:
-    image: ghcr.io/aicell-lab/bioengine-worker:${BIOENGINE_VERSION:-latest}
+    image: ghcr.io/aicell-lab/bioengine:${BIOENGINE_VERSION:-latest}
     container_name: bioengine-worker
     user: "${UID}:${GID}"
     shm_size: 8g

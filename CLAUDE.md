@@ -206,7 +206,7 @@ bioimage.io/public/skills/bioengine/
     └── cell-image-search.md        # Cell image search
 ```
 
-The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install "bioengine[cli] @ git+https://github.com/aicell-lab/bioengine-worker.git"` (or `pip install -e ".[cli]"` for development).
+The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install "bioengine[cli] @ git+https://github.com/aicell-lab/bioengine.git"` (or `pip install -e ".[cli]"` for development).
 
 ### How skills are used
 

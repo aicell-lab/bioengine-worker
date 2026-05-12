@@ -691,4 +691,4 @@ For a complete tutorial, see `tutorial_cellpose_finetuning.ipynb` which covers:
 
 ## Support
 
-For issues or questions, please open an issue on the [BioEngine GitHub repository](https://github.com/aicell-lab/bioengine-worker).
+For issues or questions, please open an issue on the [BioEngine GitHub repository](https://github.com/aicell-lab/bioengine).

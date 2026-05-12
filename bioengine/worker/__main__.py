@@ -86,7 +86,7 @@ Examples:
   # Connect to existing Ray cluster
   %(prog)s --mode external-cluster --head-node-address 10.0.0.100
 
-For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worker
+For detailed documentation, visit: https://github.com/aicell-lab/bioengine
 """,
     )
 

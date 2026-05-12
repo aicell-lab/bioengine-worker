@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bioengine"
-version = "0.8.16"
+version = "0.8.17"
 description = "BioEngine — CLI and SDK for deploying and calling AI model services on BioEngine workers"
 requires-python = ">=3.11"
 authors = [
@@ -82,9 +82,9 @@ include = [
 "bioengine" = "bioengine"
 
 [project.urls]
-"Repository" = "https://github.com/aicell-lab/bioengine-worker"
-"Documentation" = "https://github.com/aicell-lab/bioengine-worker/README.md"
-"Bug Tracker" = "https://github.com/aicell-lab/bioengine-worker/issues"
+"Repository" = "https://github.com/aicell-lab/bioengine"
+"Documentation" = "https://github.com/aicell-lab/bioengine/README.md"
+"Bug Tracker" = "https://github.com/aicell-lab/bioengine/issues"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

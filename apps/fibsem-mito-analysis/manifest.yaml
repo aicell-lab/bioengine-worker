@@ -9,7 +9,7 @@ authors:
   - {name: "BioEngine Team", affiliation: "KTH Royal Institute of Technology", github_user: "oeway"}
 maintainers: [oeway]
 license: MIT
-git_repo: https://github.com/aicell-lab/bioengine-worker
+git_repo: https://github.com/aicell-lab/bioengine
 tags: [mitochondria, electron-microscopy, fibsem, segmentation, morphology, scalable, bioimage-model-zoo]
 deployments:
   - analysis_deployment:MitoAnalysisDeployment

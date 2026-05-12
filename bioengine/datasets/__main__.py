@@ -35,7 +35,7 @@ Examples:
   # Custom authentication server
   %(prog)s --data-dir /shared/data --authentication-server-url https://hypha.aicell.io
 
-For detailed documentation, visit: https://github.com/aicell-lab/bioengine-worker
+For detailed documentation, visit: https://github.com/aicell-lab/bioengine
 """,
     )
 

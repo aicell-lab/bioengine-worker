@@ -13,7 +13,7 @@ IMPORT HANDLING:
 - Standard Python libraries and libraries that are part of the BioEngine can be
     imported at the top of this file. Take a look at the requirements.txt file to see
     which libraries are part of the BioEngine:
-    https://github.com/aicell-lab/bioengine-worker/blob/main/requirements.txt
+    https://github.com/aicell-lab/bioengine/blob/main/requirements.txt
 - All libraries that are not part of the standard python library or the BioEngine
     need to be specified in the runtime environment of the deployment and imported
     in each method where they are used (see 'pandas' in the example below).

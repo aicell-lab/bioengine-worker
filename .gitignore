@@ -177,4 +177,5 @@ resources
 
 # Data
 data/
-data
+data.svamp/
+test_cellpose_infer.py

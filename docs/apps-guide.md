@@ -704,7 +704,7 @@ Before using the `upload_app.py` script, you need to clone the BioEngine reposit
 
 ```bash
 # Clone the repository
-git clone https://github.com/aicell-lab/bioengine-worker.git
+git clone https://github.com/aicell-lab/bioengine.git
 cd bioengine-worker
 
 # Install BioEngine

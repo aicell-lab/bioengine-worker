@@ -54,8 +54,9 @@ jobs:
         echo "🔍 Fetching tags for $IMAGE..."
 
         if ! skopeo list-tags "$IMAGE" > /dev/null 2>&1; then
-           echo "❌ Image not found or no tags. Cannot determine previous version."
-           exit 1
+           echo "ℹ️ No image in registry yet — treating as first publish. Skipping version comparison."
+           echo "FIRST_PUBLISH=true" >> $GITHUB_ENV
+           exit 0
         fi
 
         TAGS=$(skopeo list-tags "$IMAGE" | jq -r '.Tags[]')
@@ -64,8 +65,9 @@ jobs:
         LATEST_VERSION=$(echo "$TAGS" | grep -v "latest" | sort -V | tail -n1)
 
         if [ -z "$LATEST_VERSION" ]; then
-           echo "❌ No valid version tags found."
-           exit 1
+           echo "ℹ️ No valid version tags found — treating as first publish. Skipping version comparison."
+           echo "FIRST_PUBLISH=true" >> $GITHUB_ENV
+           exit 0
         fi
 
         echo "📦 Latest registry version: $LATEST_VERSION"
@@ -73,6 +75,10 @@ jobs:
 
     - name: Check that version is updated and newer
       run: |
+        if [ "${FIRST_PUBLISH:-false}" = "true" ]; then
+          echo "ℹ️ First publish for this image — nothing to compare against."
+          exit 0
+        fi
         echo "📦 Previous version: $PREVIOUS_VERSION"
         echo "📦 Current version:  $VERSION"
         if [ "$VERSION" = "$PREVIOUS_VERSION" ]; then

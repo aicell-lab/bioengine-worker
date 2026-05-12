@@ -1,8 +1,66 @@
-# BioEngine Worker — CLAUDE.md
+# BioEngine — CLAUDE.md
+
+## Repository Ecosystem
+
+BioEngine spans three GitHub repositories with distinct roles:
+
+| Repository | GitHub | Role | Status |
+|------------|--------|------|--------|
+| **`aicell-lab/bioengine`** | https://github.com/aicell-lab/bioengine | **This repo** — Python package, worker, CLI, apps, Docker image. The canonical implementation. Previously named `aicell-lab/bioengine-worker`. | Active |
+| **`bioimage-io/bioimage.io`** | https://github.com/bioimage-io/bioimage.io | BioImage.IO website — contains all BioEngine UIs: worker dashboard, deployment configuration wizard, cluster monitor, app manager, interactive setup guide (`BioEngineGuide.tsx`), and agent skills (`public/skills/bioengine/`). | Active |
+| **`bioimage-io/bioengine`** | https://github.com/bioimage-io/bioengine | **Archived/deprecated** — the original Triton-based BioEngine (pre-Ray). Kept for historical reference only; all links there redirect here. | Archived |
+
+### Directory layout convention
+
+The `bioimage-io/bioimage.io` repo is expected to be cloned as a sibling directory named `bioimage-io`:
+
+```
+workspace/
+├── bioengine/          ← this repo (aicell-lab/bioengine)
+└── bioimage-io/        ← bioimage-io/bioimage.io
+```
+
+To set up on a new machine:
+
+```bash
+# Clone this repo
+git clone git@github.com:aicell-lab/bioengine.git
+
+# Clone the BioImage.IO website repo as ../bioimage-io
+git clone git@github.com:bioimage-io/bioimage.io.git bioimage-io
+```
+
+The git remote `bioimage-io` is also added to this repo so agents and developers can reference the website repo without knowing its local path:
+
+```bash
+git remote add bioimage-io git@github.com:bioimage-io/bioimage.io.git
+```
+
+To add it to an existing clone:
+```bash
+git remote add bioimage-io git@github.com:bioimage-io/bioimage.io.git
+```
+
+### What lives where
+
+- **Python package, worker, CLI, apps, Docker image** → `aicell-lab/bioengine` (this repo)
+- **Worker dashboard & app manager UI** → `bioimage-io/bioimage.io/src/components/bioengine/`
+  - `BioEngineHome.tsx` — lists available worker instances
+  - `BioEngineWorker.tsx` — per-worker dashboard (deploy/stop apps, cluster resources)
+  - `BioEngineGuide.tsx` — interactive deployment wizard for all modes (Docker, SLURM, K8s)
+  - `BioEngineAppManager.tsx` — browser-based app file editor
+  - `DeploymentConfigModal.tsx` — deployment configuration form
+- **Agent skills** → `bioimage-io/bioimage.io/public/skills/bioengine/` (published at https://bioimage.io/skills/bioengine/SKILL.md)
+- **BioEngine UI entry points**:
+  - https://bioimage.io/#/bioengine — worker service listing
+  - https://bioimage.io/#/bioengine/worker?service_id=... — worker dashboard
+- **Production Hypha service** → workspace `bioimage-io` on https://hypha.aicell.io
+
+---
 
 ## Project Overview
 
-BioEngine Worker is a **Kubernetes-based compute engine and AI application deployment platform** for life sciences. It enables users to manage and deploy AI models (e.g., image analysis, segmentation) and build full-stack applications on top of those models. The platform runs on [Ray](https://www.ray.io/) and [Ray Serve](https://docs.ray.io/en/latest/serve/index.html) for distributed inference and integrates with [Hypha](https://hypha.aicell.io/) for RPC service discovery, artifact management, and authentication.
+BioEngine is the **execution and adaptation layer between curated bioimage AI and scalable compute**. It enables deployment and serving of AI models and applications at any scale — from a lab workstation to a multi-node GPU cluster. The platform runs on [Ray](https://www.ray.io/) and [Ray Serve](https://docs.ray.io/en/latest/serve/index.html) for distributed inference and integrates with [Hypha](https://hypha.aicell.io/) for RPC service discovery, artifact management, and authentication.
 
 **Top-level goals:**
 - Deploy and serve AI models and applications at scale (single-machine, SLURM HPC, Kubernetes/external Ray clusters)
@@ -184,18 +242,18 @@ pytest tests/end_to_end/ -v
 - `apps/model-runner/` — Production model-runner app
 - `apps/cellpose-finetuning/` — Cellpose fine-tuning app
 - `pyproject.toml` — Package version and dependencies; install with `pip install -e ".[cli]"` for CLI use
-- `../bioimage.io/public/skills/bioengine/` — Agent skills for working with BioEngine (separate repo)
+- `../bioimage-io/public/skills/bioengine/` — Agent skills for working with BioEngine (in `bioimage-io/bioimage.io` repo)
 
 ---
 
 ## BioEngine Skills
 
-Skills live in the **`../bioimage.io/public/skills/bioengine/`** directory (separate repo). They are Markdown documents that describe BioEngine capabilities to an AI agent.
+Skills live in the **`../bioimage-io/public/skills/bioengine/`** directory (in the `bioimage-io/bioimage.io` repo). They are Markdown documents that describe BioEngine capabilities to an AI agent and are published at https://bioimage.io/skills/bioengine/SKILL.md.
 
 ### Skill structure
 
 ```
-bioimage.io/public/skills/bioengine/
+bioimage-io/public/skills/bioengine/
 ├── SKILL.md                        # Main entry-point — load this first
 ├── references/
 │   ├── manifest_reference.md       # Full manifest.yaml field reference
@@ -230,7 +288,7 @@ The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install
 
 | Skill | URL | Purpose |
 |-------|-----|---------|
-| **BioEngine** | `../bioimage.io/public/skills/bioengine/SKILL.md` (fallback: https://bioimage.io/skills/bioengine/SKILL.md) | Deploy apps, call services, use the CLI — load this first when working with BioEngine |
+| **BioEngine** | `../bioimage-io/public/skills/bioengine/SKILL.md` (fallback: https://bioimage.io/skills/bioengine/SKILL.md) | Deploy apps, call services, use the CLI — load this first when working with BioEngine |
 | Hypha | https://hypha.aicell.io/ws/agent-skills/SKILL.md | Connect to the Hypha distributed computing platform — obtain tokens, discover workspaces, call services via RPC or HTTP, manage artifacts, deploy apps |
 
 ---
@@ -242,7 +300,7 @@ The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install
 - **Prove It Works**: Test and verify before marking done.
 - Planning lives in model context — do NOT create planning files in the repo.
 - Lessons go in `.github/copilot-instructions.md` (durable repo-level knowledge).
-- **Test on the live worker**: When working on a BioEngine app, test and debug by deploying to the live `bioimage-io/bioengine-worker` and calling the service directly. Do not write standalone test scripts for app behaviour — use the live service. Deploy with a stable `application_id` matching the artifact alias so the service is consistently addressable:
+- **Test on the live worker**: When working on a BioEngine app, test and debug by deploying to the live `bioimage-io/bioengine-worker` service on https://hypha.aicell.io and calling the service directly. Do not write standalone test scripts for app behaviour — use the live service. Deploy with a stable `application_id` matching the artifact alias so the service is consistently addressable:
   ```python
   app_id = await worker.deploy_app(
       artifact_id='bioimage-io/my-app',
@@ -282,4 +340,4 @@ The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install
   await worker.stop_app(application_id=app_id)   # stops the Ray Serve deployment
   await worker.delete_app(artifact_id=app_id)    # deletes the Hypha artifact
   ```
-  Do not leave test/throwaway deployments running on `bioimage-io/bioengine-worker` — they consume shared cluster resources.
+  Do not leave test/throwaway deployments running on the live `bioimage-io/bioengine-worker` Hypha service — they consume shared cluster resources.

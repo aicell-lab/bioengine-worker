@@ -546,10 +546,12 @@ class SlurmWorkers:
         try:
             submitted_job_id = None
 
-            # Set default values if not provided
-            num_gpus = num_gpus if num_gpus is not None else self.default_num_gpus
-            num_cpus = num_cpus if num_cpus is not None else self.default_num_cpus
-            mem_in_gb_per_cpu = (
+            # Set default values if not provided. Ray reports resources as
+            # floats (e.g. 1.0); coerce here so log lines, the sbatch GPU
+            # directive, and downstream consumers all see plain ints.
+            num_gpus = int(num_gpus if num_gpus is not None else self.default_num_gpus)
+            num_cpus = int(num_cpus if num_cpus is not None else self.default_num_cpus)
+            mem_in_gb_per_cpu = int(
                 mem_in_gb_per_cpu
                 if mem_in_gb_per_cpu is not None
                 else self.default_mem_in_gb_per_cpu

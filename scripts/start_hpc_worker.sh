@@ -275,7 +275,7 @@ fi
 cleanup() {
     # TODO: try to prevent SIGINT and SIGTERM from being sent to the container, then call service.cleanup() using http API
     echo "Making sure the Ray head node is stopped..."
-    $CONTAINER_CMD exec "$IMAGE_PATH" ray stop --force
+    $CONTAINER_CMD exec "$IMAGE" ray stop --force
 
     # If running in SLURM mode, cancel any remaining SLURM jobs
     if [[ "$MODE" == "slurm" ]]; then

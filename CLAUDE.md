@@ -183,12 +183,21 @@ The BioEngine worker registers as a Hypha service. Key methods:
 
 ## Development Setup
 
-Use the existing `bioengine-worker` conda environment:
-
 ```bash
-conda activate bioengine-worker
+conda activate bioengine
 pip install -e ".[worker,cli,dev]"
-source .env   # loads HYPHA_TOKEN
+```
+
+**HYPHA_TOKEN:** Create a `.env` file in the repo root with your Hypha token if not already present, then source it:
+```bash
+echo "HYPHA_TOKEN=<your-token>" > .env   # obtain a token from https://hypha.aicell.io
+source .env
+```
+If `.env` already exists, just `source .env` before running the worker or tests.
+
+**bioimage-io/bioimage.io sibling repo:** Clone the BioImage.IO website repo as a sibling of this repo (required for editing skills and UI components):
+```bash
+git clone git@github.com:bioimage-io/bioimage.io.git ../bioimage-io
 ```
 
 ### Run Locally
@@ -204,7 +213,7 @@ python -m bioengine.worker \
 
 For local artifact development, set:
 ```bash
-export BIOENGINE_LOCAL_ARTIFACT_PATH=/path/to/bioengine-worker/tests
+export BIOENGINE_LOCAL_ARTIFACT_PATH=/path/to/bioengine/tests
 ```
 
 ### Run Tests
@@ -223,7 +232,6 @@ pytest tests/end_to_end/ -v
 
 ## Code Conventions
 
-- **Git author**: Always commit as `nilsmechtel` (`nils.mech@gmail.com`) unless explicitly told otherwise.
 - **App authorized_users**: When deploying an app, the worker's `admin_users` and the deploying user are always injected into every key of `authorized_users` (including `"*"`). This guarantees admins can always call any app method regardless of the app's access rules.
 - **Permissions**: Use `check_permissions(context, authorized_users, resource_name)` from `bioengine.utils`
 - **Schema methods**: Decorate public API methods with `@schema_method` and use `pydantic.Field` for parameter descriptions

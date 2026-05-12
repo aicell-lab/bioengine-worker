@@ -3,81 +3,82 @@
 
   # BioEngine
 
-  **Run, screen, fine-tune, and deploy bioimage AI models — on any GPU hardware, through AI agents or a browser**
+  **The execution and adaptation layer between curated bioimage AI and scalable compute**
 
   [![GitHub](https://img.shields.io/badge/github-aicell--lab%2Fbioengine-black?logo=github)](https://github.com/aicell-lab/bioengine)
   [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue)](https://github.com/orgs/aicell-lab/packages/container/package/bioengine)
   [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
   [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+  [![Paper](https://img.shields.io/badge/paper-bioRxiv-red)](https://www.biorxiv.org/content/10.1101/2025.TODO)
 
 </div>
 
 ---
 
-## Use BioEngine now — no setup needed
+Foundation models and curated repositories have transformed bioimage AI, yet most biologists cannot readily run, adapt, or extend them on available hardware. **BioEngine fills this gap** — deployable on a laptop, workstation, or cluster. Scientists screen models, fine-tune from the browser, enable real-time smart microscopy, and deploy analysis applications, all by describing their goal to an AI agent.
 
-The community BioEngine instance is publicly available. Use it through the web interface or an AI agent — no installation required.
-
-### 🌐 Web interface
-
-| Page | What you can do |
-|------|----------------|
-| [**BioEngine Dashboard**](https://bioimage.io/#/bioengine) | Browse all available BioEngine workers, check their status, and open their management panels |
-| [**Worker Dashboard**](https://bioimage.io/#/bioengine/worker?service_id=bioimage-io/bioengine-worker) | Deploy and manage apps on the public worker — cluster resources, running deployments, available apps |
-| [**Deployment Wizard**](https://bioimage.io/#/bioengine/worker?service_id=bioimage-io/bioengine-worker) | Interactive setup guide for deploying your own BioEngine worker (Docker, SLURM, Kubernetes) — built into the worker dashboard |
-
-### 🤖 AI agent
-
-Load the BioEngine skill in any AI agent (Claude, GPT-4, etc.) by providing this URL:
-
-```
-https://bioimage.io/skills/bioengine/SKILL.md
-```
-
-The skill gives the agent everything it needs to screen models, run inference, fine-tune, and deploy applications — all through natural language. No command-line access or software installation required for end users.
+> *"The user does not need to know how BioEngine works internally. They describe what they want and receive the result. Infrastructure management stays with whoever runs the hardware. Scientific focus returns to the biologist."*
 
 ---
 
-## What is BioEngine?
+## Use BioEngine now — no setup required
 
-Foundation models and curated repositories have transformed bioimage AI, yet most researchers cannot run, adapt, or extend them on available hardware. **BioEngine fills this gap as the execution layer between curated AI and scalable compute**, deployable on a laptop, workstation, or institutional cluster.
+The community BioEngine instance runs at [BioImage.IO](https://bioimage.io). Use it through the web dashboard or any AI agent — no installation, no IT ticket.
 
-| Capability | Description |
-|-----------|-------------|
-| **Model screening** | Query BioImage Model Zoo, filter by compatibility, run inference, rank by mAP |
-| **Real-time inference** | Sub-second latency for live microscopy feedback loops |
-| **Collaborative fine-tuning** | Browser-based annotation + one-click fine-tuning; F1 rose 0.36 → 0.71 on PlantSeg |
-| **Agent-built applications** | Agent generates manifest, GPU workflow, and web UI from a plain-language prompt |
+### 🌐 Web interface
 
-BioEngine exposes its capabilities through a **SKILL.md contract** — a plain-text file that any AI agent can read to discover and invoke GPU services directly.
+| | |
+|--|--|
+| [**BioEngine Dashboard**](https://bioimage.io/#/bioengine) | Browse all available BioEngine workers and open their management panels |
+| [**Worker Dashboard**](https://bioimage.io/#/bioengine/worker?service_id=bioimage-io/bioengine-worker) | Deploy and manage apps on the public worker — cluster resources, running deployments, available apps |
+| [**Deployment Wizard**](https://bioimage.io/#/bioengine/worker?service_id=bioimage-io/bioengine-worker) | Interactive setup guide for deploying your own BioEngine worker (Docker, SLURM, Kubernetes) |
+
+### 🤖 AI agent
+
+Load the BioEngine skill in any AI agent (Claude, GPT-4, etc.) by providing this link:
+
+**[`https://bioimage.io/skills/bioengine/SKILL.md`](https://bioimage.io/skills/bioengine/SKILL.md)**
+
+The skill gives the agent a complete, plain-text description of every available service — inputs, outputs, and usage examples. The agent selects the appropriate workflow and dispatches it to the GPU hardware. No command-line access, software installation, or specialist knowledge required.
+
+---
+
+## What BioEngine enables
+
+| | Description | Key result |
+|-|-------------|------------|
+| **Model screening** | Agent queries the BioImage Model Zoo, filters by domain compatibility, runs inference across candidates, and ranks by mAP | 58 candidates screened to 4 ranked in a single agent session |
+| **Real-time inference** | Live images stream from the microscope to BioEngine; per-frame statistics return to the controlling agent for closed-loop smart microscopy | Sub-second GPU inference latency |
+| **Collaborative fine-tuning** | Browser-based annotation against foundation model pre-segmentations; fine-tuning triggered with one click; models published back to the BioImage Model Zoo | F1 rose 0.36 → 0.71 across 1,600 training epochs on PlantSeg data |
+| **Agent-built applications** | Agent generates deployment manifest, GPU workflow, and web UI from a plain-language prompt; the resulting app is immediately callable by other agents | Mean F1 = 0.920 ± 0.037 on Lucchi++ FIB-SEM benchmark |
+
+BioEngine exposes all capabilities through a **SKILL.md contract** — a plain-text file designed for general-purpose AI agents to acquire domain knowledge and invoke GPU services directly. Any agent that reads the contract can screen models, trigger fine-tuning, or deploy a custom application, without any BioEngine-specific programming.
 
 ---
 
 ## Deploy your own BioEngine worker
 
-Facility managers and system administrators can deploy a private BioEngine worker on any hardware. The [interactive deployment wizard](https://bioimage.io/#/bioengine/worker?service_id=bioimage-io/bioengine-worker) on BioImage.IO walks through the full setup for all supported modes.
+Facility managers and system administrators can deploy a private worker on any hardware. The [interactive deployment wizard](https://bioimage.io/#/bioengine/worker?service_id=bioimage-io/bioengine-worker) on BioImage.IO walks through the full setup for all supported modes.
 
 | Mode | Use case |
 |------|----------|
-| **Single machine** | Workstation, development, small-scale |
-| **SLURM / HPC** | Auto-scaling on institutional HPC clusters |
+| **Single machine** | Workstation, development, small-scale inference |
+| **SLURM / HPC** | Auto-scaling on institutional HPC clusters (Apptainer) |
 | **Kubernetes** | Production deployment with KubeRay |
 
 ```bash
-# Quick start: Docker (single machine)
+# Docker — single machine quickstart
 git clone https://github.com/aicell-lab/bioengine.git
 cd bioengine
 mkdir -p .bioengine data
 UID=$(id -u) GID=$(id -g) docker compose up
 ```
 
-See [Deployment Guide](docs/deployment-guide.md) for full instructions.
+See [Deployment Guide](docs/deployment-guide.md) for full instructions for all modes.
 
 ---
 
 ## Developer documentation
-
-The sections below are for developers building on top of BioEngine or contributing to it.
 
 ### Python SDK
 
@@ -112,7 +113,7 @@ bioengine apps list --worker bioimage-io/bioengine-worker
 | `stop_app(application_id)` | ✓ | Stop a running application |
 | `get_app_status(application_ids)` | | Status of specific applications |
 | `list_apps()` | ✓ | All deployed applications |
-| `upload_app(files, ...)` | | Create/update application artifact |
+| `upload_app(files, workspace, hypha_token)` | | Create/update application artifact |
 | `list_app_directories()` | ✓ | List app working directories on disk |
 | `clear_app_directory(application_id)` | ✓ | Delete a stopped app's working directory |
 | `run_code(code, ...)` | ✓ | Run Python in a Ray task |
@@ -120,7 +121,7 @@ bioengine apps list --worker bioimage-io/bioengine-worker
 
 ### Applications
 
-BioEngine applications are self-contained deployable units: a `manifest.yaml` + Python deployment code + optional web frontend. An AI agent given a SKILL.md contract can generate and deploy a new application from a plain-language description.
+BioEngine applications are self-contained deployable units: a `manifest.yaml` + Python deployment code + optional web frontend. They can compose multiple AI models, wrap models with custom pre/post-processing, and expose arbitrary web UIs. Once deployed, they register as Hypha services immediately discoverable and callable by other AI agents.
 
 **Reference apps:**
 - [`apps/demo-app/`](apps/demo-app/) — minimal single-deployment app
@@ -155,7 +156,7 @@ See [Applications Guide](docs/apps-guide.md).
 └────────────────────────────────────────┘
 ```
 
-**Stack:** [Ray](https://www.ray.io/) + [Ray Serve](https://docs.ray.io/en/latest/serve/index.html) for distributed GPU inference · [Hypha](https://docs.amun.ai/#/) for RPC and artifact management
+**Stack:** [Ray](https://www.ray.io/) + [Ray Serve](https://docs.ray.io/en/latest/serve/index.html) · [Hypha](https://docs.amun.ai/#/) · [BioImage Model Zoo](https://bioimage.io/#/models)
 
 ### Development setup
 
@@ -165,14 +166,12 @@ cd bioengine
 pip install -e ".[worker,cli,dev]"
 source .env   # loads HYPHA_TOKEN
 
-# Run locally
 python -m bioengine.worker \
     --mode single-machine \
     --head-num-gpus 1 \
     --workspace-dir ~/.bioengine \
     --debug
 
-# Run tests
 pytest tests/end_to_end/ -v
 ```
 
@@ -184,11 +183,13 @@ pytest tests/end_to_end/ -v
 
 ---
 
-## Citation
+## Paper
 
 > Mechtel N, Dettner Källander H, Cheng S, Zhang H, AI4Life Consortium, Ouyang W.
 > **BioEngine: scalable execution and adaptation of bioimage AI through agent-readable interfaces.**
-> *bioRxiv* (2025).
+> *bioRxiv* (2025). https://www.biorxiv.org/content/10.1101/2025.TODO
+
+<!-- TODO: replace DOI placeholder once the preprint is publicly posted -->
 
 ## License
 
@@ -197,4 +198,4 @@ MIT — see [LICENSE](LICENSE).
 ## Acknowledgements
 
 BioEngine is built on [Ray](https://www.ray.io/), [Hypha](https://docs.amun.ai/#/), and [Zarr](https://zarr.readthedocs.io/).
-Supported by the SciLifeLab & Wallenberg Data Driven Life Science Program, AI4Life (EU Horizon Europe grant 101057970), and the Berzelius GPU resource.
+Supported by the SciLifeLab & Wallenberg Data Driven Life Science Program (KAW 2020.0239), the Göran Gustafsson Prize (2317), AI4Life (EU Horizon Europe grant 101057970), and RI-SCALE (EU grant 101188168).

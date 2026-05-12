@@ -176,6 +176,5 @@ resources
 .DS_STORE
 
 # Data
-data/
-data.svamp/
+data*
 test_cellpose_infer.py

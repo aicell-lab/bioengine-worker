@@ -179,3 +179,6 @@ resources
 data/
 data.svamp/
 test_cellpose_infer.py
+
+# Machine-specific setup notes (gitignored, lives only on the local machine)
+MACHINE_SETUP.md

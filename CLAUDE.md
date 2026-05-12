@@ -183,10 +183,10 @@ The BioEngine worker registers as a Hypha service. Key methods:
 
 ## Development Setup
 
-Use the existing `bioengine-worker` conda environment:
+Create or activate a conda environment and install the package:
 
 ```bash
-conda activate bioengine-worker
+conda activate <your-env>          # e.g. bioengine-worker on wei's machine
 pip install -e ".[worker,cli,dev]"
 source .env   # loads HYPHA_TOKEN
 ```
@@ -204,7 +204,7 @@ python -m bioengine.worker \
 
 For local artifact development, set:
 ```bash
-export BIOENGINE_LOCAL_ARTIFACT_PATH=/path/to/bioengine-worker/tests
+export BIOENGINE_LOCAL_ARTIFACT_PATH=/path/to/bioengine/tests
 ```
 
 ### Run Tests
@@ -223,7 +223,7 @@ pytest tests/end_to_end/ -v
 
 ## Code Conventions
 
-- **Git author**: Always commit as `nilsmechtel` (`nils.mech@gmail.com`) unless explicitly told otherwise.
+- **Git author**: Always commit as `nilsmechtel` (`nils.mech@gmail.com`) unless explicitly told otherwise. The server-level git config on shared machines may default to a different user — on a fresh clone or sibling repo, set the local config before the first commit: `git config user.name "nilsmechtel" && git config user.email "nils.mech@gmail.com"`. For one-off commits in repos without a local config override, use `git -c user.name="nilsmechtel" -c user.email="nils.mech@gmail.com" commit ...`.
 - **App authorized_users**: When deploying an app, the worker's `admin_users` and the deploying user are always injected into every key of `authorized_users` (including `"*"`). This guarantees admins can always call any app method regardless of the app's access rules.
 - **Permissions**: Use `check_permissions(context, authorized_users, resource_name)` from `bioengine.utils`
 - **Schema methods**: Decorate public API methods with `@schema_method` and use `pydantic.Field` for parameter descriptions

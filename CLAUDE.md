@@ -12,12 +12,12 @@ BioEngine spans three GitHub repositories with distinct roles:
 
 ### Directory layout convention
 
-The `bioimage-io/bioimage.io` repo is expected to be cloned as a sibling directory named `bioimage-io`:
+The `bioimage-io/bioimage.io` repo is expected to be cloned as a sibling directory named `bioimage.io` (matching the actual repo name):
 
 ```
 workspace/
 ├── bioengine/          ← this repo (aicell-lab/bioengine)
-└── bioimage-io/        ← bioimage-io/bioimage.io
+└── bioimage.io/        ← bioimage-io/bioimage.io
 ```
 
 To set up on a new machine:
@@ -26,8 +26,8 @@ To set up on a new machine:
 # Clone this repo
 git clone git@github.com:aicell-lab/bioengine.git
 
-# Clone the BioImage.IO website repo as ../bioimage-io
-git clone git@github.com:bioimage-io/bioimage.io.git bioimage-io
+# Clone the BioImage.IO website repo as ../bioimage.io
+git clone git@github.com:bioimage-io/bioimage.io.git
 ```
 
 The git remote `bioimage-io` is also added to this repo so agents and developers can reference the website repo without knowing its local path:
@@ -197,7 +197,7 @@ If `.env` already exists, just `source .env` before running the worker or tests.
 
 **bioimage-io/bioimage.io sibling repo:** Clone the BioImage.IO website repo as a sibling of this repo (required for editing skills and UI components):
 ```bash
-git clone git@github.com:bioimage-io/bioimage.io.git ../bioimage-io
+git clone git@github.com:bioimage-io/bioimage.io.git ../bioimage.io
 ```
 
 ### Run Locally
@@ -250,18 +250,18 @@ pytest tests/end_to_end/ -v
 - `apps/model-runner/` — Production model-runner app
 - `apps/cellpose-finetuning/` — Cellpose fine-tuning app
 - `pyproject.toml` — Package version and dependencies; install with `pip install -e ".[cli]"` for CLI use
-- `../bioimage-io/public/skills/bioengine/` — Agent skills for working with BioEngine (in `bioimage-io/bioimage.io` repo)
+- `../bioimage.io/public/skills/bioengine/` — Agent skills for working with BioEngine (in `bioimage-io/bioimage.io` repo)
 
 ---
 
 ## BioEngine Skills
 
-Skills live in the **`../bioimage-io/public/skills/bioengine/`** directory (in the `bioimage-io/bioimage.io` repo). They are Markdown documents that describe BioEngine capabilities to an AI agent and are published at https://bioimage.io/skills/bioengine/SKILL.md.
+Skills live in the **`../bioimage.io/public/skills/bioengine/`** directory (in the `bioimage-io/bioimage.io` repo). They are Markdown documents that describe BioEngine capabilities to an AI agent and are published at https://bioimage.io/skills/bioengine/SKILL.md.
 
 ### Skill structure
 
 ```
-bioimage-io/public/skills/bioengine/
+bioimage.io/public/skills/bioengine/
 ├── SKILL.md                        # Main entry-point — load this first
 ├── references/
 │   ├── manifest_reference.md       # Full manifest.yaml field reference
@@ -296,7 +296,7 @@ The CLI source lives in `bioengine/cli/` in this repo. Install with `pip install
 
 | Skill | URL | Purpose |
 |-------|-----|---------|
-| **BioEngine** | `../bioimage-io/public/skills/bioengine/SKILL.md` (fallback: https://bioimage.io/skills/bioengine/SKILL.md) | Deploy apps, call services, use the CLI — load this first when working with BioEngine |
+| **BioEngine** | `../bioimage.io/public/skills/bioengine/SKILL.md` (fallback: https://bioimage.io/skills/bioengine/SKILL.md) | Deploy apps, call services, use the CLI — load this first when working with BioEngine |
 | Hypha | https://hypha.aicell.io/ws/agent-skills/SKILL.md | Connect to the Hypha distributed computing platform — obtain tokens, discover workspaces, call services via RPC or HTTP, manage artifacts, deploy apps |
 
 ---

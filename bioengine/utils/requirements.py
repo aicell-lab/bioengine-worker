@@ -9,20 +9,29 @@ split_re = re.compile(r"(==|>=|<=|~=|>|<)")
 
 def normalize_requirement(requirement: str) -> str:
     """
-    Normalize a requirement by replacing >= and <= with == for better reproducibility.
+    Normalize a requirement by replacing >=, <=, and ~= with == for better reproducibility.
+
+    ~= is PEP 440's compatible-release operator: ``pkg~=2.12.0`` is
+    equivalent to ``>=2.12.0, <2.13``. Like >=, we collapse it to the
+    explicit lower bound (``==2.12.0``) so the runtime_env install
+    resolves deterministically to the same version the driver has, even
+    when the app's transitive deps would otherwise widen it.
 
     Args:
-        requirement: A pip requirement string (e.g., "numpy>=1.21.0")
+        requirement: A pip requirement string (e.g., "numpy>=1.21.0",
+            "pydantic~=2.12.0")
 
     Returns:
-        Normalized requirement with == instead of >= or <= (e.g., "numpy==1.21.0")
+        Normalized requirement with == instead of >= / <= / ~=
+        (e.g., "numpy==1.21.0", "pydantic==2.12.0")
     """
     if not requirement:
         return requirement
 
-    # Replace >= and <= with == for reproducibility
+    # Replace >=, <=, ~= with == for reproducibility
     requirement = requirement.replace(">=", "==")
     requirement = requirement.replace("<=", "==")
+    requirement = requirement.replace("~=", "==")
 
     return requirement
 

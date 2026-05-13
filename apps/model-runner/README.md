@@ -16,7 +16,7 @@ These packages are shared by all BioEngine applications. They are intentionally 
 
 ```
 httpx==0.28.1
-hypha-rpc==0.21.11
+hypha-rpc==0.21.40
 pydantic==2.11.9
 ```
 

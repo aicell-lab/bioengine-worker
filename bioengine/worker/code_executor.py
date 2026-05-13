@@ -12,7 +12,7 @@ from hypha_rpc.utils.schema import schema_method
 from pydantic import Field
 
 from bioengine import __version__
-from bioengine.cluster import RayCluster
+from bioengine.cluster.ray_cluster import RayCluster
 from bioengine.utils import check_permissions, create_logger
 
 

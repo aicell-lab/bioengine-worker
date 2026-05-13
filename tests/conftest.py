@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 from hypha_rpc import connect_to_server
 from hypha_rpc.rpc import ObjectProxy, RemoteService
 
-from bioengine.cluster import RayCluster
+from bioengine.cluster.ray_cluster import RayCluster
 
 # Load environment variables from .env file
 load_dotenv()

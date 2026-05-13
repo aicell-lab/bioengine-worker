@@ -744,6 +744,17 @@ class RayCluster:
             exclude_head_node = self.mode == "slurm"
             check_pending_resources = self.mode == "slurm"
 
+            # In single-machine and SLURM modes, BioEngine starts the Ray
+            # cluster and knows the dashboard port — pass the URL through
+            # so the proxy actor does not need to look it up via private API.
+            # The dashboard always binds to localhost; the proxy actor runs
+            # on the head node so localhost resolves correctly there.
+            if self.mode == "external-cluster":
+                dashboard_url = None  # proxy actor will fall back internally
+            else:
+                dashboard_port = self.ray_cluster_config["ports"]["dashboard"]
+                dashboard_url = f"http://127.0.0.1:{dashboard_port}"
+
             # Reuse a stable detached proxy actor across worker restarts
             # If it does not exist yet, create it
             proxy_actor = BioEngineProxyActor.options(
@@ -755,6 +766,7 @@ class RayCluster:
             self.proxy_actor_handle = proxy_actor.remote(
                 exclude_head_node=exclude_head_node,
                 check_pending_resources=check_pending_resources,
+                dashboard_url=dashboard_url,
             )
 
             # Test the connection by getting the cluster state

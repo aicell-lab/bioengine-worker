@@ -1,3 +1,4 @@
+import os
 import re
 import time
 import json
@@ -8,9 +9,13 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import logging
 
 import ray
-from ray._private.state import GlobalState
-from ray._raylet import GcsClientOptions
 from ray.util.state import StateApiClient, get_log
+
+from bioengine.cluster._ray_compat import (
+    GcsClientOptions,
+    GlobalState,
+    get_dashboard_url_fallback,
+)
 from ray.util.state.common import (
     DEFAULT_LIMIT,
     DEFAULT_RPC_TIMEOUT,
@@ -49,7 +54,10 @@ class BioEngineProxyActor:
     """
 
     def __init__(
-        self, exclude_head_node: bool = False, check_pending_resources: bool = False
+        self,
+        exclude_head_node: bool = False,
+        check_pending_resources: bool = False,
+        dashboard_url: Optional[str] = None,
     ):
         """
         Initialize the proxy actor with Ray GCS connection and monitoring options.
@@ -60,9 +68,14 @@ class BioEngineProxyActor:
         Args:
             exclude_head_node: Skip head node in resource calculations (useful for worker-only metrics)
             check_pending_resources: Include pending jobs/actors/tasks in cluster state reports
+            dashboard_url: Ray dashboard base URL (e.g. "http://127.0.0.1:8265"). When BioEngine
+                starts the cluster (single-machine/SLURM modes), the caller knows the URL and
+                passes it in. In external-cluster mode the caller passes None and the actor
+                falls back to a private-API lookup via ``get_dashboard_url_fallback``.
         """
-        # Get the GCS address using ray._private.worker
-        self.gcs_address = ray._private.worker.global_worker.gcs_client.address
+        # Get the GCS address via public API
+        self.gcs_address = ray.get_runtime_context().gcs_address
+        self.dashboard_url = dashboard_url
 
         # Create GCS client options
         gcs_options = GcsClientOptions.create(
@@ -75,9 +88,6 @@ class BioEngineProxyActor:
         # Initialize global state for cluster resources
         self.global_state = GlobalState()
         self.global_state._initialize_global_state(gcs_options)
-
-        # Force initialization of the global state accessor
-        self.global_state._check_connected()
 
         # Initialize the state API client for querying states
         self.state_api_client = StateApiClient(self.gcs_address)
@@ -203,19 +213,19 @@ class BioEngineProxyActor:
         return "node:__internal_head__" in resources
 
     def _get_dashboard_webui_url(self) -> Optional[str]:
-        """Resolve the local Ray dashboard URL for node summary queries."""
-        try:
-            webui_url = ray._private.worker.global_worker.node.address_info.get(
-                "webui_url"
-            )
-            if not webui_url:
-                return None
-            if "://" not in webui_url:
-                webui_url = f"http://{webui_url}"
-            return webui_url
-        except Exception:
-            logger.exception("Failed to resolve Ray dashboard web UI URL")
+        """Resolve the local Ray dashboard URL for node summary queries.
+
+        Uses the URL passed in by the caller (single-machine / SLURM modes set
+        this from their known dashboard port). In external-cluster mode no URL
+        is known up front, so we fall back to the private-API lookup which is
+        confined to ``_ray_compat.get_dashboard_url_fallback``.
+        """
+        webui_url = self.dashboard_url or get_dashboard_url_fallback()
+        if not webui_url:
             return None
+        if "://" not in webui_url:
+            webui_url = f"http://{webui_url}"
+        return webui_url
 
     def _get_per_node_gpu_memory_usage(
         self,
@@ -232,8 +242,18 @@ class BioEngineProxyActor:
             return {}, False
 
         url = f"{webui_url}/nodes?view=summary"
+        # KubeRay (and some other managed Ray distributions) put the dashboard
+        # behind a Bearer-auth proxy that requires the token even from inside
+        # the head pod. Ray Client auto-propagates RAY_AUTH_TOKEN to actor
+        # envs, so we just forward it if present. Local Ray clusters started
+        # by BioEngine itself have no auth and ignore the header.
+        headers = {}
+        auth_token = os.environ.get("RAY_AUTH_TOKEN")
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        request = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(url, timeout=2.0) as response:
+            with urllib.request.urlopen(request, timeout=2.0) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError):
             logger.debug(
@@ -310,7 +330,24 @@ class BioEngineProxyActor:
             }
         """
         total_resources_per_node = self.global_state.total_resources_per_node()
-        available_resources_per_node = self.global_state.available_resources_per_node()
+        try:
+            available_resources_per_node = (
+                self.global_state.available_resources_per_node()
+            )
+        except Exception:
+            # Private-API safety net: if Ray ever removes
+            # available_resources_per_node, report availability as "unknown"
+            # (used = 0) so the rest of the cluster_state structure still
+            # populates and callers don't crash. The cluster-level total/used
+            # via ray.cluster_resources/available_resources would be the
+            # public fallback, but that doesn't give per-node values — so
+            # we degrade gracefully rather than guess.
+            logger.warning(
+                "GlobalState.available_resources_per_node() unavailable; "
+                "per-node 'used' values will report 0 until a public API exists.",
+                exc_info=True,
+            )
+            available_resources_per_node = {}
         gpu_memory_per_node, dashboard_available = self._get_per_node_gpu_memory_usage()
 
         cluster_state = {

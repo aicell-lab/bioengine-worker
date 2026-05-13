@@ -92,7 +92,7 @@ docker build \
     -t bioengine-worker:0.9.0-ray2.54.1 .
 ```
 
-**Full build from source (~5-10 min — needed if you also have BioEngine code changes):**
+**Full build from source (~5-10 min):**
 
 ```bash
 docker build \

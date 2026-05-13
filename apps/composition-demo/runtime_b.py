@@ -13,7 +13,6 @@ logger = logging.getLogger("ray.serve")
         "runtime_env": {
             "pip": [
                 "numpy==1.26.4",
-                "pydantic==2.11.0",
             ],
         },
     },

@@ -55,9 +55,6 @@ logger = logging.getLogger("ray.serve")
         "runtime_env": {
             "pip": [
                 "pandas",  # Example dependency, can be replaced with any other library
-                # Match the BioEngine driver's pydantic-core to keep
-                # cloudpickle.loads of the deployment definition stable.
-                "pydantic==2.11.0",
             ],
             "env_vars": {
                 "EXAMPLE_ENV_VAR": "example_value",  # Example environment variable

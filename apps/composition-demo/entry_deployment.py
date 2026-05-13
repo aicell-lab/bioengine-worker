@@ -20,13 +20,7 @@ logger = logging.getLogger("ray.serve")
         "num_gpus": 0,
         "memory": 256 * 1024**2,
         "runtime_env": {
-            "pip": [
-                # Match the BioEngine driver's pydantic-core to keep
-                # cloudpickle.loads of the deployment definition stable
-                # across the driver-->Ray Serve replica boundary. See
-                # https://bioimage.io/skills/bioengine/SKILL.md.
-                "pydantic==2.11.0",
-            ],
+            "pip": [],
         },
     },
     max_ongoing_requests=20,

@@ -367,7 +367,7 @@ class AppBuilder:
         runtime_env["pip"] = pip_requirements
 
         # Pre-flight: if the runtime_env's resolved pydantic-core differs
-        # from the driver's, abort early with a clear error instead of
+        # from the BioEngine worker's, abort early with a clear error instead of
         # discovering the mismatch later when Ray Serve replicas fail to
         # unpickle the deployment definition with the cryptic
         # "'FieldInfo' object has no attribute 'exclude_if'".
@@ -422,28 +422,28 @@ class AppBuilder:
     ) -> None:
         """Pre-flight check: resolve the deployment's runtime_env pip list
         via ``uv pip compile`` and require the resolved ``pydantic-core``
-        version to match the driver's.
+        version to match the BioEngine worker's installed pydantic-core.
 
         Why this matters: Ray Serve replicas unpickle the deployment
-        definition inside the runtime_env venv. If the venv resolves to
-        a different ``pydantic-core`` than the driver picks objects with,
-        cloudpickle reconstruction fails with errors like
+        definition inside the runtime_env venv. The BioEngine worker
+        pickles them with its own pydantic. If the venv resolves to a
+        different ``pydantic-core``, cloudpickle reconstruction fails
+        with errors like
         ``AttributeError: 'FieldInfo' object has no attribute 'exclude_if'``.
         Failing fast here turns that opaque downstream crash into a clear
         startup error pointing at the version conflict.
 
+        pydantic-core is guaranteed to be installed in the BioEngine
+        worker (pydantic is a hard dep, and pydantic always pulls
+        pydantic-core), and ``update_requirements`` injects pydantic
+        into every deployment's runtime_env pip list — so pydantic-core
+        is always in the resolved set on both sides.
+
         Raises:
             RuntimeError: when the resolved pydantic-core version differs
-                from the driver's installed pydantic-core.
+                from the BioEngine worker's installed pydantic-core.
         """
-        try:
-            driver_pc_version = importlib.metadata.version("pydantic_core")
-        except importlib.metadata.PackageNotFoundError:
-            self.logger.debug(
-                "pydantic-core not installed in the driver; "
-                "skipping runtime_env compatibility pre-flight."
-            )
-            return
+        worker_pc_version = importlib.metadata.version("pydantic_core")
 
         if not pip_requirements:
             return
@@ -451,7 +451,7 @@ class AppBuilder:
         # Write the deployment's pip list to a temp file and have uv
         # resolve it. uv is already in the worker image (preferred Ray
         # runtime_env installer from Ray 2.47+) so this adds no new
-        # build dep on the driver side.
+        # build dep.
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".in", delete=False
         ) as f:
@@ -466,37 +466,16 @@ class AppBuilder:
                     "compile",
                     "--no-header",
                     "--quiet",
-                    "--no-cache",  # avoid HOME-dir cache (driver may run with HOME=/nonexistent)
+                    "--no-cache",  # the worker pod may run with HOME=/nonexistent
                     str(req_path),
                 ],
                 capture_output=True,
                 text=True,
                 timeout=120,
+                check=True,
             )
-        except FileNotFoundError:
-            self.logger.warning(
-                "uv not found on the driver; skipping runtime_env "
-                "pydantic-core pre-flight check."
-            )
-            return
-        except subprocess.TimeoutExpired:
-            self.logger.warning(
-                "uv pip compile timed out resolving runtime_env "
-                "requirements; skipping pydantic-core pre-flight check."
-            )
-            return
         finally:
             req_path.unlink(missing_ok=True)
-
-        if result.returncode != 0:
-            self.logger.warning(
-                "Could not pre-resolve runtime_env requirements with uv "
-                "(returncode %s); skipping pydantic-core pre-flight check. "
-                "stderr: %s",
-                result.returncode,
-                result.stderr.strip()[:400],
-            )
-            return
 
         match = re.search(
             r"^pydantic-core==([0-9A-Za-z.+-]+)",
@@ -504,31 +483,37 @@ class AppBuilder:
             re.MULTILINE,
         )
         if not match:
-            # The app doesn't pull pydantic-core via runtime_env — nothing
-            # to mismatch.
-            return
+            # Should not happen — update_requirements always injects pydantic
+            # which pulls pydantic-core. Surface loudly if it ever does.
+            raise RuntimeError(
+                "uv pip compile resolved the runtime_env pip list without "
+                "any pydantic-core entry. This shouldn't happen: BioEngine "
+                "injects pydantic into every deployment's runtime_env, and "
+                "pydantic always requires pydantic-core. Resolved output:\n"
+                f"{result.stdout[:1000]}"
+            )
 
         resolved_pc_version = match.group(1)
-        if resolved_pc_version == driver_pc_version:
+        if resolved_pc_version == worker_pc_version:
             self.logger.debug(
-                "pydantic-core pre-flight OK: driver and runtime_env "
-                "both at %s.",
-                driver_pc_version,
+                "pydantic-core pre-flight OK: BioEngine worker and "
+                "runtime_env both at %s.",
+                worker_pc_version,
             )
             return
 
         raise RuntimeError(
-            "pydantic-core version mismatch between BioEngine driver "
-            f"({driver_pc_version}) and the application's runtime_env "
+            "pydantic-core version mismatch between the BioEngine worker "
+            f"({worker_pc_version}) and the application's runtime_env "
             f"({resolved_pc_version}). BioEngine pickles Ray Serve "
-            "deployment definitions on the driver and Ray Serve replicas "
-            "unpickle them inside the runtime_env venv, so the two sides "
-            "must agree on pydantic-core. Cross-version unpickle fails "
-            "with errors like \"'FieldInfo' object has no attribute "
-            "'exclude_if'\". Resolution: either pin pydantic in this "
-            "application's requirements so it resolves to "
-            f"pydantic-core=={driver_pc_version}, or rebuild the "
-            f"BioEngine driver image with pydantic-core=={resolved_pc_version}."
+            "deployment definitions in the worker process and Ray Serve "
+            "replicas unpickle them inside the runtime_env venv, so the "
+            "two sides must agree on pydantic-core. Cross-version "
+            "unpickle fails with errors like \"'FieldInfo' object has "
+            "no attribute 'exclude_if'\". Resolution: either pin "
+            "pydantic in this application's requirements so it resolves "
+            f"to pydantic-core=={worker_pc_version}, or rebuild the "
+            f"BioEngine worker image with pydantic-core=={resolved_pc_version}."
         )
 
     def _sanitize_recovery_env_vars(

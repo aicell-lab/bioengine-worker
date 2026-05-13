@@ -101,7 +101,7 @@ docker build \
     -t bioengine-worker:0.9.0-ray2.54.1 .
 ```
 
-Both paths produce equivalent images. The active Ray version is exposed inside the image as `$BIOENGINE_RAY_VERSION` for diagnostics. The supported Ray range is `>=2.33.0, <2.56.0` (set in `pyproject.toml`).
+Both paths produce equivalent images. The active Ray version is exposed inside the image as `$BIOENGINE_RAY_VERSION` for diagnostics. The supported Ray range is `>=2.33.0, <3.0.0` (set in `pyproject.toml`).
 
 See [Deployment Guide](docs/deployment-guide.md) for full instructions for all modes.
 

@@ -13,7 +13,7 @@
 # BIOENGINE_IMAGE: the published image to use as the base. Update this
 #   when you want a newer BioEngine release as the floor.
 # RAY_VERSION:     the exact Ray release to swap in. Must satisfy the
-#   range BioEngine supports (>=2.33.0, <2.56.0) — see pyproject.toml.
+#   range BioEngine supports (>=2.33.0, <3.0.0) — see pyproject.toml.
 
 ARG BIOENGINE_IMAGE=ghcr.io/aicell-lab/bioengine-worker:0.9.0
 FROM ${BIOENGINE_IMAGE}

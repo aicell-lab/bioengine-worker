@@ -41,7 +41,7 @@ RUN pip install --no-deps .
 # Ray install — kept as the final step so RAY_VERSION can be overridden
 # at build time without invalidating any prior layer cache. The default
 # tracks the latest stable Ray release within the BioEngine-supported
-# range (>=2.33.0, <2.56.0). To build against a different Ray:
+# range (>=2.33.0, <3.0.0). To build against a different Ray:
 #
 #   docker build --build-arg RAY_VERSION=2.54.1 \
 #                -f docker/worker.Dockerfile -t bioengine-worker:dev .

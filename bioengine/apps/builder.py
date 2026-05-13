@@ -460,7 +460,15 @@ class AppBuilder:
 
         try:
             result = subprocess.run(
-                ["uv", "pip", "compile", "--no-header", "--quiet", str(req_path)],
+                [
+                    "uv",
+                    "pip",
+                    "compile",
+                    "--no-header",
+                    "--quiet",
+                    "--no-cache",  # avoid HOME-dir cache (driver may run with HOME=/nonexistent)
+                    str(req_path),
+                ],
                 capture_output=True,
                 text=True,
                 timeout=120,

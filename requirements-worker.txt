@@ -4,8 +4,8 @@ haikunator==2.1.0
 httpx[http2]==0.28.1
 hypha-rpc==0.21.40
 numpy==1.26.4
-pydantic==2.11.0
-pydantic-core==2.33.0
+pydantic==2.12.0
+pydantic-core==2.41.1
 pyyaml==6.0.2
 uv==0.5.0
 # Ray is intentionally NOT pinned here — the Dockerfile installs it last,

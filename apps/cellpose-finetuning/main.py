@@ -3610,6 +3610,9 @@ def _predict_and_encode(
                 "tifffile",
                 "Pillow",
                 "hypha-artifact==0.1.2",
+                # Match the BioEngine driver's pydantic-core to keep
+                # cloudpickle.loads of the deployment definition stable.
+                "pydantic==2.11.0",
             ],
         },
     },

@@ -1020,6 +1020,9 @@ class ModelCache:
                 "bioimageio.core==0.10.0",
                 "imageio>=2.37.0",
                 "numpy==1.26.4",
+                # Match the BioEngine driver's pydantic-core to keep
+                # cloudpickle.loads of the deployment definition stable.
+                "pydantic==2.11.0",
                 "tqdm>=4.64.0",
             ],
         },

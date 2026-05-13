@@ -11,8 +11,10 @@ logger = logging.getLogger("ray.serve")
         "num_gpus": 0,
         "memory": 512 * 1024**2,
         "runtime_env": {
-            # No extra packages — pure stdlib text operations
-            "pip": [],
+            "pip": [
+                # Match the BioEngine driver's pydantic-core (see SKILL.md).
+                "pydantic==2.11.0",
+            ],
         },
     },
     max_ongoing_requests=5,

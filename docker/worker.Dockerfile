@@ -49,6 +49,16 @@ RUN pip install --no-deps .
 ARG RAY_VERSION=2.55.1
 RUN pip install "ray[client,serve]==${RAY_VERSION}"
 
+# Re-pin pydantic + pydantic-core AFTER the ray install so Ray's
+# transitive dep doesn't drag a newer pydantic into the driver image.
+# The runtime_env venv on Ray workers tends to resolve to
+# pydantic==2.11.0 / pydantic-core==2.33.0 (driven by torch+cellpose
+# upper bounds in real apps); if the driver pickles FieldInfo with a
+# newer pydantic-core, cloudpickle.loads on the worker fails with
+# "AttributeError: 'FieldInfo' object has no attribute 'exclude_if'".
+# Keeping both sides on the same pydantic-core avoids that.
+RUN pip install --force-reinstall "pydantic==2.11.0" "pydantic-core==2.33.0"
+
 # Surface the active Ray version inside the image for diagnostics
 ENV BIOENGINE_RAY_VERSION=${RAY_VERSION}
 

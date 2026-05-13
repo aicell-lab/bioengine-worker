@@ -1,7 +1,5 @@
 import asyncio
-import json
 import logging
-import os
 from typing import Dict, Optional
 
 import httpx
@@ -127,22 +125,6 @@ async def fetch_geolocation(
     Returns a dict with: region, country_name, country_code, latitude, longitude, timezone.
     All values are None if all providers fail.
     """
-    # --- demo override ---
-    geo_override = os.environ.get("BIOENGINE_GEO_LOCATION")
-    if geo_override:
-        data = json.loads(geo_override)
-        if logger:
-            logger.info(f"Using BIOENGINE_GEO_LOCATION override: {data}")
-        return {
-            "region": data.get("region"),
-            "country_name": data.get("country_name"),
-            "country_code": data.get("country_code"),
-            "latitude": data.get("latitude"),
-            "longitude": data.get("longitude"),
-            "timezone": data.get("timezone"),
-        }
-    # --- end demo override ---
-
     if logger is None:
         logger = logging.getLogger(__name__)
 

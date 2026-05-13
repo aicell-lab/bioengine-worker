@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
 
 import httpx
+import ray
 from hypha_rpc import connect_to_server
 from hypha_rpc.rpc import RemoteService
 from hypha_rpc.sync import login
@@ -1122,6 +1123,8 @@ class BioEngineWorker:
         {
             "service_start_time": 1234567890.123,
             "service_uptime": 3600.456,
+            "bioengine_version": "0.9.1",
+            "ray_version": "2.55.1",
             "worker_mode": "slurm",
             "workspace": "my-workspace",
             "client_id": "client-abc123",
@@ -1143,6 +1146,7 @@ class BioEngineWorker:
             "service_start_time": self.start_time,
             "service_uptime": current_time - self.start_time if self.start_time else 0,
             "bioengine_version": __version__,
+            "ray_version": ray.__version__,
             "worker_mode": self.ray_cluster.mode,
             "workspace": self.workspace,
             "client_id": self.client_id,
